@@ -1,0 +1,96 @@
+# Tagged payload library — VAmPI-relevant Phase 1 slice (plan §9; Task 4).
+#
+# Sourced and restructured from PayloadsAllTheThings, OWASP WSTG, and
+# PortSwigger Academy. The system's value is in the tagging, sink-matching, and
+# oracle wiring — not in reinventing payload strings, so entries carry a
+# `payload_ref` (a stable handle) rather than an inlined exploit string (§9).
+#
+# Entry schema (§9), exactly six fields:
+#   - vuln_class:            the class this entry tests (e.g. bola, mass_assignment)
+#     context:               where/how it applies — human-readable selection aid
+#     inferred_sink_type:    sql | nosql | shell | ldap | template | file_path
+#                            | deserialize_target | html_reflection | url, OR null
+#                            for authz/differential classes that have no injection
+#                            sink (BOLA/IDOR/mass-assignment)
+#     oracle_type:           one of the six §7 families — decides result ordering
+#                            (confidence) and which run_oracle mechanism confirms
+#     payload_ref:           handle for the payload string/template
+#     graph_edge_on_success: §6 edge to write when the oracle confirms
+#
+# Scope (docs/phase1-tasks.md Task 4): the VAmPI toggle classes scored by the
+# Phase 1 gate are BOLA / IDOR / mass-assignment (JWT deferred with the
+# structural oracle). SQLi is included too — VAmPI is genuinely SQLi-vulnerable
+# on /users/v1/{username}, and it is what gives the sink dimension real content
+# (the authz classes are sink-less). One html_reflection entry is present so the
+# get_payloads sink-isolation invariant (§9: "an html_reflection param is never
+# handed a SQLi payload, and vice versa") is testable, not vacuous.
+payloads:
+  # -- VAmPI toggle classes: authorization / differential, no injection sink ---
+  - vuln_class: bola
+    context: >-
+      Broken object-level authorization — one identity reads/acts on another
+      identity's object via an endpoint it can call, by substituting the
+      object's identifier. Confirmed by cross-identity differential diff.
+    inferred_sink_type: null
+    oracle_type: differential
+    payload_ref: bola/object-id-substitution
+    graph_edge_on_success: can_call
+
+  - vuln_class: idor
+    context: >-
+      Insecure direct object reference — a path/query object id is swapped or
+      incremented to reach another user's resource. Same differential mechanism
+      as BOLA, applied to a direct reference rather than an owned-endpoint call.
+    inferred_sink_type: null
+    oracle_type: differential
+    payload_ref: idor/direct-object-reference-swap
+    graph_edge_on_success: can_call
+
+  - vuln_class: mass_assignment
+    context: >-
+      A create/update endpoint binds a client-supplied privileged attribute
+      (VAmPI: admin=true on /users/v1/register). Confirmed by schema diff plus an
+      independent re-read; on success it yields a privileged identity.
+    inferred_sink_type: null
+    oracle_type: differential
+    payload_ref: mass-assignment/admin-flag-injection
+    graph_edge_on_success: derived_credential
+
+  # -- SQLi: VAmPI's documented injection; gives the sink dimension content -----
+  - vuln_class: sqli
+    context: >-
+      Error/boolean SQL injection on a reflected string parameter
+      (VAmPI: /users/v1/{username}). Differential diff plus DB error signature.
+    inferred_sink_type: sql
+    oracle_type: differential
+    payload_ref: sqli/error-based/quote-break
+    graph_edge_on_success: enables
+
+  - vuln_class: sqli_blind
+    context: >-
+      Blind SQL injection, OOB-capable target. Preferred over timing when an
+      out-of-band channel exists — a definitive callback, no statistical noise.
+    inferred_sink_type: sql
+    oracle_type: oob_callback
+    payload_ref: sqli/blind/oob-dns-exfil
+    graph_edge_on_success: enables
+
+  - vuln_class: sqli_blind
+    context: >-
+      Blind SQL injection, timing fallback for targets with no OOB channel.
+      Paired-trial with a negative control; lowest confidence — naive timing-only
+      detection matches the published 0% baseline (§5), so it sorts last.
+    inferred_sink_type: sql
+    oracle_type: timing_statistical
+    payload_ref: sqli/blind/timing-sleep-paired
+    graph_edge_on_success: enables
+
+  # -- html_reflection: present so sink-isolation is testable (see header) ------
+  - vuln_class: xss_reflected
+    context: >-
+      Reflected XSS on an HTML-reflected parameter. Confirmed by headless
+      execution (the script actually ran), not mere reflection.
+    inferred_sink_type: html_reflection
+    oracle_type: execution_confirmation
+    payload_ref: xss/reflected/script-tag-canary
+    graph_edge_on_success: derived_credential
