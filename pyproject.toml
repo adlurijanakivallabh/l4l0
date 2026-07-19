@@ -1,0 +1,59 @@
+[project]
+name = "reachagent"
+version = "0.1.0"
+description = "Web/API authorization-and-vulnerability testing agent — confirmed, multi-hop attack chains via a live reachability graph and deterministic verification."
+readme = "README.md"
+requires-python = ">=3.13"
+license = { text = "Proprietary" }
+dependencies = [
+    # Execution layer — request firing (§12)
+    "httpx>=0.28,<1.0",
+    # Reachability graph, structural layer, Phase 1–2 (§12)
+    "networkx>=3.4,<4.0",
+    # Payload store — YAML for Phase 1 (§9, §12)
+    "pyyaml>=6.0,<7.0",
+    # Expose ReachAgent's own tools as an MCP server from Phase 1 (§13)
+    "mcp>=1.2,<2.0",
+]
+
+[project.scripts]
+# MCP server entry point — human-in-the-loop driving via Claude Desktop/Code (§13)
+reachagent-mcp = "reachagent.mcp.server:main"
+
+[dependency-groups]
+dev = [
+    "ruff>=0.8,<1.0",
+    "pytest>=8.3,<9.0",
+    "mypy>=1.13,<2.0",
+    "types-networkx>=3.6.1.20260624",
+    "types-pyyaml>=6.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/reachagent"]
+
+[tool.ruff]
+src = ["src", "tests"]
+target-version = "py313"
+line-length = 100
+
+[tool.ruff.lint]
+# Baseline + security lint (S = bandit-equivalent, per CLAUDE.md).
+select = ["E", "F", "I", "W", "UP", "B", "S"]
+
+[tool.ruff.lint.per-file-ignores]
+# Assertions, non-crypto randomness, and dummy credentials are expected in tests.
+"tests/**" = ["S101", "S311", "S105", "S106"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+
+[tool.mypy]
+python_version = "3.13"
+packages = ["reachagent"]
+strict = true

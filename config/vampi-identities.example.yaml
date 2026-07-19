@@ -1,0 +1,22 @@
+# VAmPI test identities — EXAMPLE / TEMPLATE (plan §10, §13).
+#
+# Copy to a local, git-ignored file (e.g. config/vampi-identities.yaml) and fill
+# in real credentials, or seed via REACHAGENT_IDENTITIES + REACHAGENT_IDENTITY_*
+# environment variables instead. Credentials are never hardcoded in source (§10).
+#
+# ≥2 identities across VAmPI's role hierarchy: at least two peer users (for
+# cross-user BOLA/IDOR in later phases) plus an admin, so authorization
+# boundaries can be probed in both directions.
+identities:
+  - name: user_a
+    username: alice
+    password: CHANGE_ME
+    role: user
+  - name: user_b
+    username: bob
+    password: CHANGE_ME
+    role: user
+  - name: admin
+    username: root
+    password: CHANGE_ME
+    role: admin
