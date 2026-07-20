@@ -1,0 +1,34 @@
+# VAmPI evaluation environment for the Phase 1 gate (Task 9, plan §14/§15).
+#
+# Brings up the two VAmPI instances the eval harness expects, on the exact URLs
+# reachagent.eval defaults to:
+#   * vulnerable (vulnerable=1) on :5000 — the "toggle ON" target
+#   * secure     (vulnerable=0) on :5002 — the "toggle OFF" control
+#
+# The only variable between them is the `vulnerable` flag, so the toggle-off
+# zero-findings result is a meaningful control. Uses the published erev0s/vampi
+# image (same image both instances already ran under), so no local build.
+#
+#   docker compose up -d      # bring the eval environment up
+#   uv run pytest tests/phase1/test_vampi_eval.py -v   # run the gate
+#   docker compose down       # tear it down
+services:
+  vampi-vulnerable:
+    image: erev0s/vampi
+    container_name: reachagent-vampi-vulnerable
+    ports:
+      - "5000:5000"
+    environment:
+      - vulnerable=1
+      - tokentimetolive=3600
+    restart: unless-stopped
+
+  vampi-secure:
+    image: erev0s/vampi
+    container_name: reachagent-vampi-secure
+    ports:
+      - "5002:5000"
+    environment:
+      - vulnerable=0
+      - tokentimetolive=3600
+    restart: unless-stopped

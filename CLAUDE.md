@@ -36,6 +36,9 @@ for it.
 - Test: `uv run pytest`
 - Phase gate check: `uv run pytest tests/<target>/ -v` — see plan §14/§15 for
   the exact numeric exit criteria per phase before marking a phase done.
+- Eval environment: `docker compose up -d` brings up both VAmPI instances the
+  Phase 1 gate needs — vulnerable on :5000, secure on :5002, matching the URLs
+  `reachagent.eval` defaults to (`docker compose down` to tear down).
 
 ## Working conventions
 
