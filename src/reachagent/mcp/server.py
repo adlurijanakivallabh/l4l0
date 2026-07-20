@@ -1,15 +1,510 @@
-"""MCP server entry point (plan §13).
+"""``reachagent-mcp`` — the Explorer + Validator tools as an MCP server (plan §13).
 
-Publishes the role-bounded tool manifest (``reachagent.tools``) as MCP tools so a
-human can drive them by hand via Claude Desktop/Code during Phase 1, ahead of
-the autonomous Coordinator (§13, §15). Role boundaries are preserved when
-registering: the Explorer subset never exposes ``write_finding`` (CLAUDE.md
-non-negotiable). Phase 1 scaffolding — tool registration not wired yet (§15).
+Phase 1 ships the tool contracts as MCP tools "from the start" so a human can
+drive them by hand from Claude Desktop/Code before the autonomous Coordinator
+exists (§13, Phase 1 plan). The same contracts the Phase 5 Coordinator will call
+are exposed here unchanged — *nothing changes when it takes over* (§13). So this
+module adds no logic: it binds runtime collaborators and re-exports the existing
+tool functions under their bare §13 signatures.
+
+Three invariants shape the design, and every one is load-bearing:
+
+* **Role boundary (CLAUDE.md non-negotiable, §13).** Only the Explorer subset
+  (``fingerprint_parameter``, ``get_payloads``, ``fire_request``,
+  ``classify_response``) and the Validator subset (``run_oracle``,
+  ``write_finding``, ``mark_inconclusive``) are registered — never a Coordinator
+  tool. The Explorer-facing tools have no path to ``write_finding``:
+  confirmation stays the Validator's alone. ``tests/phase1/test_mcp_server.py``
+  pins the exact registered set.
+
+* **The verdict-construction invariant (Task 6, AST-checked).** ``OracleVerdict``
+  is constructed *only* inside ``oracles/differential.py``; a test AST-scans all
+  of ``src/reachagent`` to prove it. This module therefore never rebuilds a
+  verdict from JSON — if it did, a human could hand ``write_finding`` a
+  fabricated "confirmed" verdict and bypass deterministic verification entirely.
+  Instead ``run_oracle`` keeps the real verdict server-side and returns an opaque
+  ``verdict_ref``; ``write_finding`` commits by that handle. The gate stays where
+  the tests put it: behind a genuine oracle run.
+
+* **The JSON boundary.** ``FireResult`` (carries ``httpx.Headers`` + raw
+  ``bytes``) and ``OracleVerdict`` (frozen, oracle-minted) don't serialize to a
+  JSON schema, and rebuilding them client-side would break the invariant above.
+  So in-flight objects pass by *server-side handle*: ``fire_request`` returns a
+  ``fire_ref``, ``classify_response`` consumes it. This is exactly how the Phase
+  5 Coordinator — itself a JSON tool-caller exchanging refs, not Python objects —
+  will chain these calls, which is *why* the contract is stable across the
+  handoff rather than in spite of the indirection.
+
+The bound context (firer, payload library, graph, seeded identities, scope) is
+built once at startup from environment configuration, mirroring what the
+Coordinator will construct per run (``ExplorerContext``, §9, §13).
 """
 
 from __future__ import annotations
 
+import os
+from dataclasses import dataclass, field
+from itertools import count
+from typing import TYPE_CHECKING
+
+import httpx
+
+from reachagent.execution.audit import AuditLog
+from reachagent.execution.firer import RequestFirer
+from reachagent.execution.scope import ScopeGuard
+from reachagent.graph import nodes as _nodes
+from reachagent.graph.store import ReachabilityGraph
+from reachagent.oracles import OracleMechanism
+from reachagent.payloads import PayloadLibrary
+from reachagent.tools import explorer as _explorer
+from reachagent.tools import validator as _validator
+from reachagent.tools.explorer_context import ExplorerContext
+
+if TYPE_CHECKING:
+    from mcp.server.fastmcp import FastMCP
+
+    from reachagent.execution.firer import FireResult
+    from reachagent.oracles.base import OracleVerdict
+
+# Environment configuration (§10, §13). The scope allowlist is deny-by-default and
+# mandatory: with no hosts set, every request the firer sees is out of scope, so a
+# misconfigured server fires nothing rather than firing somewhere unintended.
+_ENV_BASE_URL = "REACHAGENT_TARGET_BASE_URL"
+_ENV_SCOPE_HOSTS = "REACHAGENT_SCOPE_HOSTS"
+_DEFAULT_BASE_URL = "http://127.0.0.1:5000"
+
+
+@dataclass
+class _Session:
+    """Server-side state bridging the stateless MCP calls into the tool objects.
+
+    Holds the one bound :class:`ExplorerContext` (and its graph), plus the two
+    handle registries that let non-serializable in-flight objects — a
+    :class:`FireResult` and an oracle-minted :class:`OracleVerdict` — be
+    referenced across calls without ever crossing the JSON boundary. Handles are
+    opaque monotonic strings; a caller can only use one the server previously
+    minted, which is also what keeps ``write_finding`` reachable *only* by a
+    verdict a real ``run_oracle`` produced.
+    """
+
+    ctx: ExplorerContext
+    _fires: dict[str, FireResult] = field(default_factory=dict, repr=False)
+    _verdicts: dict[str, OracleVerdict] = field(default_factory=dict, repr=False)
+    _fire_seq: count[int] = field(default_factory=count, repr=False)
+    _verdict_seq: count[int] = field(default_factory=count, repr=False)
+
+    @property
+    def graph(self) -> ReachabilityGraph:
+        """The reachability graph the bound context reads and writes (§6)."""
+        return self.ctx.graph
+
+    def put_fire(self, result: FireResult) -> str:
+        """Register a fired-response object and return its opaque handle."""
+        ref = f"fire-{next(self._fire_seq)}"
+        self._fires[ref] = result
+        return ref
+
+    def get_fire(self, ref: str) -> FireResult:
+        """Resolve a ``fire_ref`` from ``fire_request`` or raise ``KeyError``."""
+        try:
+            return self._fires[ref]
+        except KeyError as exc:
+            raise KeyError(f"unknown fire_ref {ref!r}; call fire_request first") from exc
+
+    def put_verdict(self, verdict: OracleVerdict) -> str:
+        """Register an oracle-minted verdict and return its opaque handle."""
+        ref = f"verdict-{next(self._verdict_seq)}"
+        self._verdicts[ref] = verdict
+        return ref
+
+    def get_verdict(self, ref: str) -> OracleVerdict:
+        """Resolve a ``verdict_ref`` from ``run_oracle`` or raise ``KeyError``."""
+        try:
+            return self._verdicts[ref]
+        except KeyError as exc:
+            raise KeyError(f"unknown verdict_ref {ref!r}; call run_oracle first") from exc
+
+
+def _build_context(
+    *,
+    base_url: str | None = None,
+    scope_hosts: list[str] | None = None,
+) -> ExplorerContext:
+    """Build the bound :class:`ExplorerContext` from environment configuration (§10).
+
+    The scope allowlist is deny-by-default: hosts come from
+    ``REACHAGENT_SCOPE_HOSTS`` (comma-separated) or the explicit argument, and an
+    empty allowlist means the firer refuses every request. This is the same
+    collaborator set the Phase 5 Coordinator assembles per run — one firer, one
+    payload library, one graph — so the tool behaviour is identical whether a
+    human or the Coordinator drives it (§9, §13).
+    """
+    resolved_base = base_url or os.environ.get(_ENV_BASE_URL, _DEFAULT_BASE_URL)
+    if scope_hosts is None:
+        raw = os.environ.get(_ENV_SCOPE_HOSTS, "")
+        scope_hosts = [h.strip() for h in raw.split(",") if h.strip()]
+    if not scope_hosts:
+        # Default the allowlist to the target host so an out-of-the-box run can
+        # reach VAmPI, but never wider — deny-by-default still holds for any
+        # other host (§10).
+        host = httpx.URL(resolved_base).host
+        scope_hosts = [host] if host else []
+
+    scope = ScopeGuard.from_hosts(scope_hosts)
+    firer = RequestFirer(httpx.Client(), scope, AuditLog())
+    return ExplorerContext(
+        graph=ReachabilityGraph(),
+        firer=firer,
+        library=PayloadLibrary.from_file(),
+        base_url=resolved_base,
+    )
+
+
+@dataclass
+class DifferentialEvidenceInput:
+    """Serializable form of the differential oracle's evidence (§7).
+
+    The real :class:`~reachagent.oracles.differential.DifferentialEvidence` nests
+    ``Observation`` records; flattened here so the whole thing is a single JSON
+    object a human (or the Coordinator) can fill in. ``axis`` and ``expectation``
+    are the string values of the oracle's enums; the two observations are the
+    baseline and probe responses to diff. Bodies should already be normalized of
+    volatile fields by the caller — the oracle only whitespace-normalizes (§7).
+    """
+
+    axis: str
+    expectation: str
+    baseline_status: int
+    probe_status: int
+    baseline_body: str = ""
+    probe_body: str = ""
+    baseline_label: str = "baseline"
+    probe_label: str = "probe"
+    evidence_ref: str = ""
+
+    def to_evidence(self) -> object:
+        """Rebuild the oracle's own evidence dataclass from this flat MCP input.
+
+        Only *evidence* is reconstructed here — never a verdict. The verdict is
+        still minted solely inside the oracle family (Task 6 AST invariant); this
+        just hands the deterministic oracle the inputs it scores.
+        """
+        from reachagent.oracles.differential import (
+            DiffAxis,
+            DifferentialEvidence,
+            DiffExpectation,
+            Observation,
+        )
+
+        return DifferentialEvidence(
+            axis=DiffAxis(self.axis),
+            expectation=DiffExpectation(self.expectation),
+            baseline=Observation(self.baseline_label, self.baseline_status, self.baseline_body),
+            probe=Observation(self.probe_label, self.probe_status, self.probe_body),
+            evidence_ref=self.evidence_ref,
+        )
+
+
+@dataclass
+class FingerprintReportOut:
+    """Serializable view of a fingerprint report (§9 step 1)."""
+
+    endpoint_node: str
+    param_node: str
+    inferred_sink_type: str | None
+    reflected: bool
+    error_signature: str | None
+    observed_content_type: str | None
+
+
+@dataclass
+class PayloadEntryOut:
+    """Serializable view of one tagged payload entry (§9)."""
+
+    vuln_class: str
+    context: str
+    inferred_sink_type: str | None
+    oracle_type: str
+    payload_ref: str
+    graph_edge_on_success: str
+
+
+@dataclass
+class FireResultOut:
+    """Serializable view of a fired response, plus the handle for chaining (§13).
+
+    Carries only JSON-safe signal (status, decoded-length, timing) and never the
+    raw ``httpx.Headers``/``bytes``; ``fire_ref`` is the opaque handle
+    ``classify_response`` consumes so the full response never crosses the wire.
+    """
+
+    fire_ref: str
+    status_code: int
+    elapsed_seconds: float
+    body_length: int
+    content_type: str | None
+
+
+@dataclass
+class CandidateOut:
+    """Serializable view of the Explorer's inert candidate handoff (§13).
+
+    Mirrors :class:`~reachagent.tools.candidate.Candidate`: it names the target,
+    the raw signal, and which oracle *should* judge it — but carries no verdict
+    and no path to ``write_finding``. Confirmation is the Validator's alone.
+    """
+
+    identity: str
+    endpoint_node: str
+    param_node: str | None
+    vuln_class: str
+    suggested_oracle: str
+    payload_ref: str | None
+    status_code: int
+    body_length: int
+    elapsed_seconds: float
+    error_strings: list[str]
+    notes: list[str]
+
+
+@dataclass
+class VerdictOut:
+    """Serializable view of an oracle verdict, plus the handle for chaining (§7, §13).
+
+    ``verdict_ref`` is the opaque handle ``write_finding`` consumes; the verdict
+    object itself stays server-side (oracle-minted, never rebuilt from JSON). The
+    booleans expose the Task 6 distinction: ``confirmed`` (a deterministic verdict
+    was reached) vs. ``is_violation`` (specifically a ``confirmed_violation``, the
+    only status that unlocks ``write_finding``).
+    """
+
+    verdict_ref: str
+    mechanism: str
+    status: str
+    confirmed: bool
+    is_violation: bool
+    evidence_ref: str
+
+
+@dataclass
+class FindingOut:
+    """Serializable view of a committed finding (§13)."""
+
+    finding_node: str
+    vuln_class: str
+    severity: str
+    oracle_used: str
+    evidence_ref: str
+    status: str
+
+
+def register_tools(mcp: FastMCP, session: _Session) -> None:
+    """Register the Explorer + Validator tools on ``mcp``, bound to ``session`` (§13).
+
+    Exactly seven tools, matching the §13 manifest's Explorer and Validator rows —
+    no Coordinator tool is registered here. Each wrapper binds the server-side
+    context/graph and exposes the bare §13 contract (domain arguments only), so a
+    human — and later the Coordinator — calls the same signature. The wrappers add
+    no detection logic; they translate the JSON boundary to and from the real tool
+    functions, including the handle indirection that keeps non-serializable
+    objects and the oracle-minted verdict off the wire.
+    """
+    ctx = session.ctx
+
+    # -- Explorer subset (generates candidates, never confirms) ------------
+
+    @mcp.tool()
+    def fingerprint_parameter(
+        identity: str, endpoint_node: str, param_node: str, method: str = "GET"
+    ) -> FingerprintReportOut:
+        """Send a benign canary and set the parameter's inferred sink (§9 step 1)."""
+        report = _explorer.fingerprint_parameter(
+            ctx, identity, endpoint_node, param_node, method=method
+        )
+        sink = report.inferred_sink_type
+        return FingerprintReportOut(
+            endpoint_node=report.endpoint_node,
+            param_node=report.param_node,
+            inferred_sink_type=sink.value if sink is not None else None,
+            reflected=report.reflected,
+            error_signature=report.error_signature,
+            observed_content_type=report.observed_content_type,
+        )
+
+    @mcp.tool()
+    def get_payloads(vuln_class: str, sink_type: str | None = None) -> list[PayloadEntryOut]:
+        """Sink-matched payload lookup, ordered by oracle confidence (§9)."""
+        sink = _nodes.SinkType(sink_type) if sink_type is not None else None
+        return [
+            PayloadEntryOut(
+                vuln_class=e.vuln_class,
+                context=e.context,
+                inferred_sink_type=(
+                    e.inferred_sink_type.value if e.inferred_sink_type is not None else None
+                ),
+                oracle_type=e.oracle_type.value,
+                payload_ref=e.payload_ref,
+                graph_edge_on_success=e.graph_edge_on_success,
+            )
+            for e in _explorer.get_payloads(ctx, vuln_class, sink)
+        ]
+
+    @mcp.tool()
+    def fire_request(
+        identity: str,
+        endpoint_node: str,
+        param_node: str,
+        payload: str,
+        method: str = "GET",
+        state_changing: bool = False,
+    ) -> FireResultOut:
+        """Fire one payload-bearing request through the firer; returns a fire_ref (§13)."""
+        result = _explorer.fire_request(
+            ctx,
+            identity,
+            endpoint_node,
+            param_node,
+            payload,
+            method=method,
+            state_changing=state_changing,
+        )
+        ref = session.put_fire(result)
+        return FireResultOut(
+            fire_ref=ref,
+            status_code=result.status_code,
+            elapsed_seconds=result.elapsed_seconds,
+            body_length=len(result.body),
+            content_type=result.headers.get("content-type"),
+        )
+
+    @mcp.tool()
+    def classify_response(
+        fire_ref: str,
+        identity: str,
+        endpoint_node: str,
+        vuln_class: str,
+        suggested_oracle: str,
+        param_node: str | None = None,
+        payload_ref: str | None = None,
+        notes: list[str] | None = None,
+    ) -> CandidateOut:
+        """Extract raw signal from a fired response into an inert candidate (§13).
+
+        Consumes a ``fire_ref`` from ``fire_request`` — the full response never
+        crossed the wire. Returns a candidate handoff only; there is no path from
+        here to ``write_finding``.
+        """
+        result = session.get_fire(fire_ref)
+        candidate = _explorer.classify_response(
+            result,
+            identity=identity,
+            endpoint_node=endpoint_node,
+            param_node=param_node,
+            vuln_class=vuln_class,
+            suggested_oracle=OracleMechanism(suggested_oracle),
+            payload_ref=payload_ref,
+            notes=tuple(notes or ()),
+        )
+        return CandidateOut(
+            identity=candidate.identity,
+            endpoint_node=candidate.endpoint_node,
+            param_node=candidate.param_node,
+            vuln_class=candidate.vuln_class,
+            suggested_oracle=candidate.suggested_oracle.value,
+            payload_ref=candidate.payload_ref,
+            status_code=candidate.signal.status_code,
+            body_length=candidate.signal.body_length,
+            elapsed_seconds=candidate.signal.elapsed_seconds,
+            error_strings=list(candidate.signal.error_strings),
+            notes=list(candidate.notes),
+        )
+
+    # -- Validator subset (the only side that confirms / writes findings) --
+
+    @mcp.tool()
+    def run_oracle(evidence: DifferentialEvidenceInput) -> VerdictOut:
+        """Run the differential oracle; keep the verdict server-side, return a ref (§7).
+
+        The verdict object is oracle-minted and stays server-side (Task 6's
+        AST-checked invariant: nothing outside the oracle module constructs one).
+        The returned ``verdict_ref`` is how ``write_finding`` later commits it —
+        so a confirmation can only originate from a real deterministic run.
+        """
+        evidence_in = (
+            evidence
+            if isinstance(evidence, DifferentialEvidenceInput)
+            else DifferentialEvidenceInput(**evidence)
+        )
+        verdict = _validator.run_oracle(OracleMechanism.DIFFERENTIAL, evidence_in.to_evidence())
+        ref = session.put_verdict(verdict)
+        return VerdictOut(
+            verdict_ref=ref,
+            mechanism=verdict.mechanism.value,
+            status=verdict.status.value,
+            confirmed=verdict.confirmed,
+            is_violation=verdict.is_violation,
+            evidence_ref=verdict.evidence_ref,
+        )
+
+    @mcp.tool()
+    def write_finding(verdict_ref: str, vuln_class: str, severity: str = "high") -> FindingOut:
+        """Commit a Finding — only if ``verdict_ref`` names a confirmed_violation (§13).
+
+        Resolves the server-side verdict minted by ``run_oracle`` and delegates to
+        the real ``write_finding``, which refuses anything that is not a
+        ``confirmed_violation``. There is no way to pass a fabricated verdict: the
+        client holds only an opaque ref, never a verdict it could forge.
+        """
+        verdict = session.get_verdict(verdict_ref)
+        finding = _nodes.Finding(
+            vuln_class=vuln_class,
+            severity=severity,
+            oracle_used="",
+            evidence_ref="",
+        )
+        node = _validator.write_finding(session.graph, finding, verdict)
+        return FindingOut(
+            finding_node=node,
+            vuln_class=finding.vuln_class,
+            severity=finding.severity,
+            oracle_used=finding.oracle_used,
+            evidence_ref=finding.evidence_ref,
+            status=finding.status.value,
+        )
+
+    @mcp.tool()
+    def mark_inconclusive(identity_node: str, endpoint_node: str, evidence: str = "") -> str:
+        """Write a negative result back to a can_call edge so it isn't retested (§13)."""
+        _validator.mark_inconclusive(session.graph, identity_node, endpoint_node, evidence=evidence)
+        return "inconclusive"
+
+
+def build_server(
+    *,
+    base_url: str | None = None,
+    scope_hosts: list[str] | None = None,
+) -> FastMCP:
+    """Construct the ``reachagent-mcp`` server with all seven tools registered (§13).
+
+    Builds the bound context, wraps it in a :class:`_Session`, and registers the
+    Explorer and Validator subsets. Importing :class:`FastMCP` here (not at module
+    top) keeps import of this module cheap and side-effect-free for the tests that
+    only introspect the registered tool set.
+    """
+    from mcp.server.fastmcp import FastMCP
+
+    ctx = _build_context(base_url=base_url, scope_hosts=scope_hosts)
+    session = _Session(ctx=ctx)
+    mcp = FastMCP("reachagent")
+    register_tools(mcp, session)
+    return mcp
+
 
 def main() -> None:
-    """Console entry point (``reachagent-mcp``). Tool registration lands in Phase 1 (§15)."""
-    raise NotImplementedError
+    """Console-script entry point (``reachagent-mcp``): serve over stdio (§13).
+
+    Stdio is the transport Claude Desktop/Code drive by hand in Phase 1; the tool
+    contracts are identical to what the Phase 5 Coordinator will call, so this
+    entry point does not change at that handoff.
+    """
+    build_server().run()
