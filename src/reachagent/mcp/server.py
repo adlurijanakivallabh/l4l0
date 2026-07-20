@@ -42,6 +42,7 @@ Coordinator will construct per run (``ExplorerContext``, §9, §13).
 
 from __future__ import annotations
 
+import json
 import os
 from dataclasses import dataclass, field
 from itertools import count
@@ -174,13 +175,31 @@ class DifferentialEvidenceInput:
 
     axis: str
     expectation: str
-    baseline_status: int
-    probe_status: int
+    baseline_status: int = 0
+    probe_status: int = 0
     baseline_body: str = ""
     probe_body: str = ""
     baseline_label: str = "baseline"
     probe_label: str = "probe"
     evidence_ref: str = ""
+    # Optional handle indirection: instead of inlining bodies, name the two
+    # ``fire_ref`` handles from ``fire_request`` and let the server read their
+    # (server-side) bodies for the diff — so a secret response body is never sent
+    # over the wire to be echoed back (§10, safety_guardrails). ``json_field``, if
+    # set, projects one top-level JSON field from each body before comparison,
+    # which is how mass-assignment / IDOR confirm a single privileged field
+    # (e.g. ``admin``) changed rather than diffing whole documents (§5, §7).
+    baseline_fire_ref: str | None = None
+    probe_fire_ref: str | None = None
+    json_field: str | None = None
+    # Optional per-side record selection for a list body (e.g. ``/users/v1/_debug``
+    # returns every user): ``"username:name2"`` picks the record whose ``username``
+    # is ``name2`` before ``json_field`` is projected from it. This is what lets a
+    # single read-only dump confirm a change to *one* record (IDOR: name2's password
+    # before vs. after) or compare two records (mass-assignment: a control user's
+    # ``admin`` vs. the injected user's) without ever indexing by position.
+    baseline_select: str | None = None
+    probe_select: str | None = None
 
     def to_evidence(self) -> object:
         """Rebuild the oracle's own evidence dataclass from this flat MCP input.
@@ -203,6 +222,78 @@ class DifferentialEvidenceInput:
             probe=Observation(self.probe_label, self.probe_status, self.probe_body),
             evidence_ref=self.evidence_ref,
         )
+
+
+def _project(body: bytes, json_field: str | None, select: str | None = None) -> str:
+    """Reduce a raw response body to the comparable string the oracle diffs.
+
+    Two optional, composable reductions, applied in order:
+
+    * ``select`` (``"key:value"``) picks one record from a list body — the first
+      object whose ``key`` equals ``value``. This is how a single read-only dump
+      (``/users/v1/_debug`` returns every user) is narrowed to *one* record before
+      projection: IDOR compares ``name2``'s password before vs. after, and
+      mass-assignment compares a control user's ``admin`` against the injected
+      user's — neither ever indexes by position.
+    * ``json_field`` then returns that one field's value (recursively searched),
+      so confirmation turns on a *specific* attribute (``admin``, ``password``,
+      ``secret``) rather than a whole document with volatile fields.
+
+    With neither set, the decoded body is returned verbatim (a full cross-identity
+    diff, e.g. BOLA on a single-object response). Never raises: an unparseable body,
+    absent record, or absent field falls back sensibly so a missing signal stays
+    inconclusive rather than crashing the run.
+    """
+    text = body.decode("utf-8", errors="replace")
+    if json_field is None and select is None:
+        return text
+    try:
+        parsed: object = json.loads(text)
+    except (ValueError, TypeError):
+        return text
+    if select is not None:
+        key, _, value = select.partition(":")
+        parsed = _select_record(parsed, key, value)
+        if parsed is None:
+            return ""
+    if json_field is None:
+        return json.dumps(parsed, sort_keys=True)
+    found = _find_field(parsed, json_field)
+    return "" if found is None else json.dumps(found, sort_keys=True)
+
+
+def _select_record(obj: object, key: str, value: str) -> object | None:
+    """First object (anywhere in a nested JSON structure) whose ``key`` == ``value``."""
+    if isinstance(obj, dict):
+        if str(obj.get(key)) == value:
+            return obj
+        for v in obj.values():
+            hit = _select_record(v, key, value)
+            if hit is not None:
+                return hit
+    elif isinstance(obj, list):
+        for item in obj:
+            hit = _select_record(item, key, value)
+            if hit is not None:
+                return hit
+    return None
+
+
+def _find_field(obj: object, field_name: str) -> object:
+    """First value for ``field_name`` anywhere in a nested JSON structure, or None."""
+    if isinstance(obj, dict):
+        if field_name in obj:
+            return obj[field_name]
+        for value in obj.values():
+            hit = _find_field(value, field_name)
+            if hit is not None:
+                return hit
+    elif isinstance(obj, list):
+        for item in obj:
+            hit = _find_field(item, field_name)
+            if hit is not None:
+                return hit
+    return None
 
 
 @dataclass
@@ -435,6 +526,20 @@ def register_tools(mcp: FastMCP, session: _Session) -> None:
             if isinstance(evidence, DifferentialEvidenceInput)
             else DifferentialEvidenceInput(**evidence)
         )
+        # If the caller passed fire_ref handles, resolve the bodies/statuses
+        # server-side (they never crossed the wire) before the oracle diffs them.
+        if evidence_in.baseline_fire_ref is not None:
+            base = session.get_fire(evidence_in.baseline_fire_ref)
+            evidence_in.baseline_status = base.status_code
+            evidence_in.baseline_body = _project(
+                base.body, evidence_in.json_field, evidence_in.baseline_select
+            )
+        if evidence_in.probe_fire_ref is not None:
+            probe = session.get_fire(evidence_in.probe_fire_ref)
+            evidence_in.probe_status = probe.status_code
+            evidence_in.probe_body = _project(
+                probe.body, evidence_in.json_field, evidence_in.probe_select
+            )
         verdict = _validator.run_oracle(OracleMechanism.DIFFERENTIAL, evidence_in.to_evidence())
         ref = session.put_verdict(verdict)
         return VerdictOut(
