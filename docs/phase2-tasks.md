@@ -7,7 +7,7 @@ from the plan, not "implement X." Ordered by dependency.
 
 ## Phase-level numeric gate
 
-The single numeric gate for Phase 2 (§14, §15), verified verbatim by Task 7:
+The single numeric gate for Phase 2 (§14, §15), verified verbatim by Task 8:
 
 > 100% of crAPI's documented multi-step BOLA scenarios (vehicle-location and
 > mechanic-contact chains) reconstructed end-to-end **via template match, not
@@ -196,7 +196,7 @@ a real change, tracked here with its own DoD instead of folded into Task 6.
   ownership-revealing response. A test asserts the `owns` edge is written only
   after that flow runs and matches what the app returned, never asserted ahead of
   it. This is the concrete precondition for the cross-identity BOLA diff in
-  Task 7 — without a real owner on the graph, "identity B reads identity A's
+  Task 8 — without a real owner on the graph, "identity B reads identity A's
   object" has no A to anchor to.
 - Stateful safety holds on a mutating target: recon fires only read-only probes,
   every state-changing crAPI endpoint is materialized-but-unprobed, and the
@@ -205,7 +205,46 @@ a real change, tracked here with its own DoD instead of folded into Task 6.
 - A `docker compose` service brings up crAPI reproducibly (mirroring Phase 1's
   VAmPI compose) so both gate halves run in one reproducible pass.
 
-### 7. crAPI multi-step BOLA end-to-end reconstruction — THE phase gate (§8, §14, §15)
+### 7. Per-instance object node identity at the store (§6, §8)
+Phase 2 Task 6 surfaced this and it must be resolved before the gate, not inside
+it. `Object` nodes are keyed by *type* — `object_id` returns `object:{type}` — so
+every vehicle collapses into one `object:vehicle` node. `owns_edges()` still
+carries both owners' edges, but `owner_of` (a single stamped attribute) reflects
+only the last writer, and the vehicle-location BOLA ("identity B reaches the
+object *instance* owned by identity A") has no per-instance anchor to diff
+against. Fixing this is a store node-keying change — the Task 1 layer — so it is
+tracked here with its own DoD instead of folded into the Task 8 gate, exactly as
+the ownership-discovery gap became its own task (Task 2) rather than being folded
+into recon. It extends the store Task 1 built, but Task 1 is already
+complete/committed, so this is a new task, not a reopening.
+- The store keys object nodes per instance when an instance identifier is known:
+  `object_id(type, instance_key=None)` returns `object:{type}` when the key is
+  absent (unchanged) and `object:{type}:{instance_key}` when present, and `Object`
+  carries an optional `instance_key`. A test round-trips two instances of the same
+  type (two vehicle UUIDs) as two distinct nodes.
+- `owner_of`/`owns_edges` resolve per instance: two identities owning two distinct
+  object instances of the same type produce two owned nodes with two owners — the
+  collapse is gone. A test asserts owner_a's vehicle node ≠ owner_b's vehicle
+  node, each with its own `owner_identity_ref` (the exact case Task 6 could not
+  represent).
+- The instance key is empirical, read from the app's own response: recon's
+  ownership discovery creates one object node per instance the reveal returns,
+  keyed by the identifier in that response (e.g. the vehicle `uuid`), never a
+  positional index or a fabricated key (mirrors the empirical-or-absent rule).
+- §6 discipline: no new node/edge *type* — `instance_key` is a new *attribute* on
+  the existing `Object` node, justified because BOLA operates on object
+  *instances* by definition (§5/§8: "identity B reaches identity A's object",
+  "cross-flow object reuse") and recorded in the decision log.
+- Phase 1 is unregressed: a type-keyed object with no instance key still keys to
+  `object:{type}` (VAmPI and the structural pass declare none), so the VAmPI gate
+  and every Phase 1 test are unchanged — per-instance keying is additive.
+
+### 8. crAPI multi-step BOLA end-to-end reconstruction — THE phase gate (§8, §14, §15)
+- **Precondition (Task 7): per-instance object identity.** The two chains are
+  posed between object *instances* (owner_a's vehicle vs. owner_b's), so the gate
+  cannot be met while objects collapse to one node per type — Task 7 is a hard
+  blocker, not an optimization. The vehicle-location diff anchors on owner_b's
+  vehicle *instance* node, which only exists once Task 7 lands.
 - Both documented multi-step BOLA chains — **vehicle-location** and
   **mechanic-contact** — are reconstructed end-to-end: recon → cross-identity
   differential confirms each hop → Chain Solver links the hops into one
