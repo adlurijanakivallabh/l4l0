@@ -3,15 +3,23 @@
 NetworkX-backed in-process store for Phases 1–2. Migrates to Neo4j (via Neo4j
 MCP, §13) once finding-relationship chain queries become the bottleneck.
 
-Phase 1 scope: the **structural layer** (§6) — ``Endpoint``/``Parameter``/
-``Object`` nodes and ``accepts``/``returns``/``can_call`` edges, written by recon
-(the surface mapper) and the execution layer. The finding-relationship layer
-(``enables``/``derived_credential``, §8) is written only via ``write_finding``
-(§13) and is not implemented here yet.
+The **structural layer** (§6) — ``Endpoint``/``Parameter``/``Object`` nodes and
+``accepts``/``returns``/``can_call``/``owns`` edges, written by recon (the surface
+mapper) and the execution layer.
+
+The **finding-relationship layer** (§6, §8) — the chain mechanism. ``enables``
+(``Finding → Finding``) and ``derived_credential`` (``Finding → Session |
+Identity``) edges connect confirmed findings into attack paths; a
+credential-yielding finding spawns a first-class ``Session``/``Identity`` node the
+Coordinator's Chain Solver re-queries from (§8). Finding nodes themselves are
+written only through ``write_finding`` (§13) and its ``confirmed_violation`` gate;
+the store guards that invariant independently in :meth:`add_finding`.
 
 Node identity is derived deterministically from the node's own fields (see the
-``*_id`` helpers), so re-adding the same endpoint/parameter/object is idempotent
-— recon can be re-run without duplicating the surface.
+``*_id`` helpers), so re-adding the same endpoint/parameter/object/session is
+idempotent — recon and the Chain Solver can re-run without duplicating nodes.
+Typed edges are keyed on ``(source, target, edge_type)``, so re-adding the same
+relationship updates it in place rather than stacking a parallel edge.
 """
 
 from __future__ import annotations
@@ -20,7 +28,7 @@ from collections.abc import Iterator
 
 import networkx as nx
 
-from reachagent.graph.edges import StructuralEdge
+from reachagent.graph.edges import FindingEdge, StructuralEdge
 from reachagent.graph.nodes import (
     Endpoint,
     Finding,
@@ -28,6 +36,7 @@ from reachagent.graph.nodes import (
     Identity,
     Object,
     Parameter,
+    Session,
     SinkType,
 )
 
@@ -64,6 +73,16 @@ def finding_id(vuln_class: str, evidence_ref: str) -> str:
     idempotent rather than stacking duplicate findings.
     """
     return f"finding:{vuln_class}:{evidence_ref}"
+
+
+def session_id(token_ref: str) -> str:
+    """Stable id for a :class:`Session` node (its ``token_ref`` handle).
+
+    Keyed by ``token_ref`` — the secret-free handle the session carries (§10) —
+    so a ``derived_credential`` finding that spawns the same session twice is
+    idempotent rather than stacking duplicate session nodes.
+    """
+    return f"session:{token_ref}"
 
 
 class ReachabilityGraph:
@@ -109,11 +128,54 @@ class ReachabilityGraph:
         self._g.add_node(node, **{_KIND: "identity", _DATA: identity})
         return node
 
+    def add_session(self, session: Session) -> str:
+        """Add (or refresh) a ``Session`` node + its ``authenticates_as`` edge (§6).
+
+        Keyed by ``token_ref`` (:func:`session_id`), so re-adding the same session
+        is idempotent. The node carries only the ``token_ref`` handle — never the
+        token value, which lives solely in the owning identity's isolated store
+        (§10). The ``authenticates_as`` edge to ``Identity(session.identity_ref)``
+        records which identity the session currently represents; a ``Session`` the
+        Chain Solver spawns from a finding (a derived credential, §8) is added the
+        same way, so a derived credential is a first-class, queryable node exactly
+        like a seeded one.
+        """
+        node = session_id(session.token_ref)
+        self._g.add_node(node, **{_KIND: "session", _DATA: session})
+        # Session → Identity: which principal this session acts as (§6).
+        self._g.add_edge(
+            node,
+            identity_id(session.identity_ref),
+            key=StructuralEdge.AUTHENTICATES_AS,
+        )
+        return node
+
     # -- structural edges (§6) --------------------------------------------
 
     def add_returns(self, endpoint_node: str, object_node: str) -> None:
         """Record that ``endpoint_node`` exposes ``object_node`` (§6)."""
         self._g.add_edge(endpoint_node, object_node, key=StructuralEdge.RETURNS)
+
+    def set_owns(self, identity_node: str, object_node: str) -> None:
+        """Record that ``identity_node`` owns ``object_node`` — app-declared (§6).
+
+        The ``owns`` edge is intended ownership per the app's own roles (§6): the
+        cross-user reference point a BOLA diff is posed against ("identity A owns
+        object O; does identity B, who does not, still reach the endpoint that
+        returns O?"). Phase 1 deferred this edge; it is written here so cross-user
+        BOLA can be modelled structurally rather than per-scenario.
+
+        Also stamps ``owner_identity_ref`` onto the ``Object`` node, so the fact
+        is readable both as an edge and as an attribute on the object itself. The
+        edge is keyed on ``(identity, object, owns)``, so re-declaring the same
+        ownership updates in place rather than stacking. Ownership is only ever
+        *declared* here from a source that knows it (recon reading the app's own
+        response, Task 2) — this method never infers an owner.
+        """
+        self._g.add_edge(identity_node, object_node, key=StructuralEdge.OWNS)
+        # Mirror the fact onto the Object node so a reader holding only the object
+        # sees its owner without walking edges. identity_node is the stable id.
+        self._g.nodes[object_node][_DATA].owner_identity_ref = identity_node
 
     def set_can_call(
         self,
@@ -202,6 +264,40 @@ class ReachabilityGraph:
                 out.append((src, dst, data["status"]))
         return out
 
+    def identities(self) -> list[tuple[str, Identity]]:
+        """All identity nodes as ``(id, Identity)`` pairs — seeded and derived alike.
+
+        A derived identity spawned from a finding (§8) is returned here exactly
+        like a seeded one, so the Coordinator can treat it as first-class.
+        """
+        return [(n, d) for n, d in self._nodes_of_kind("identity")]  # type: ignore[misc]
+
+    def sessions(self) -> list[tuple[str, Session]]:
+        """All session nodes as ``(id, Session)`` pairs — seeded and derived alike.
+
+        A ``Session`` the Chain Solver spawns via a ``derived_credential`` edge is
+        returned from this normal query just like a seeded one, which is what makes
+        a derived credential first-class (§8).
+        """
+        return [(n, d) for n, d in self._nodes_of_kind("session")]  # type: ignore[misc]
+
+    def owns_edges(self) -> list[tuple[str, str]]:
+        """All ``owns`` edges as ``(identity_id, object_id)`` pairs (§6)."""
+        return [
+            (src, dst) for src, dst, key in self._g.edges(keys=True) if key == StructuralEdge.OWNS
+        ]
+
+    def owner_of(self, object_node: str) -> str | None:
+        """The identity id that owns ``object_node``, or ``None`` if undeclared (§6).
+
+        Read from the ``Object`` node's ``owner_identity_ref``, which ``set_owns``
+        stamps alongside the edge — so a reader holding only the object sees its
+        owner without walking edges. ``None`` means ownership was never declared
+        (empirical-or-absent, mirroring ``can_call``), not that it is public.
+        """
+        ref: str | None = self._g.nodes[object_node][_DATA].owner_identity_ref
+        return ref
+
     # -- findings & negative results (§13) --------------------------------
 
     def add_finding(self, finding: Finding) -> str:
@@ -239,6 +335,65 @@ class ReachabilityGraph:
         self.set_can_call(
             identity_node, endpoint_node, FindingStatus.INCONCLUSIVE, evidence=evidence
         )
+
+    def add_enables(self, from_finding: str, to_finding: str) -> None:
+        """Link finding A → finding B: A's output makes B possible — the chain edge (§8).
+
+        The ``enables`` edge is the single mechanism the Chain Solver uses to
+        connect confirmed findings into one attack path (§8), so a reconstructed
+        chain is a connected run of these edges rather than a report string.
+        Both endpoints must be existing ``Finding`` nodes — an ``enables`` edge
+        only ever links two confirmations, never a raw candidate — so this raises
+        if either id is not a finding already committed via ``write_finding``.
+        Keyed on ``(from, to, enables)``, so re-linking the same pair is
+        idempotent.
+        """
+        self._require_finding(from_finding)
+        self._require_finding(to_finding)
+        self._g.add_edge(from_finding, to_finding, key=FindingEdge.ENABLES)
+
+    def add_derived_credential(self, from_finding: str, spawned_node: str) -> None:
+        """Link a finding to the ``Session``/``Identity`` it yields (§8).
+
+        A finding that yields a usable session or credential spawns a first-class
+        node the Coordinator treats like a seeded one (§8); this edge records that
+        provenance. ``spawned_node`` must already exist (added via ``add_session``
+        or ``add_identity``) and ``from_finding`` must be a committed ``Finding``,
+        so the edge always connects a real confirmation to a real spawned node.
+        Keyed on ``(from, spawned, derived_credential)`` — idempotent on re-add.
+        """
+        self._require_finding(from_finding)
+        if not self._g.has_node(spawned_node):
+            raise ValueError(
+                f"derived_credential target {spawned_node!r} does not exist; "
+                "spawn the Session/Identity node first"
+            )
+        self._g.add_edge(from_finding, spawned_node, key=FindingEdge.DERIVED_CREDENTIAL)
+
+    def enables_edges(self) -> list[tuple[str, str]]:
+        """All ``enables`` edges as ``(from_finding_id, to_finding_id)`` pairs (§8)."""
+        return [
+            (src, dst) for src, dst, key in self._g.edges(keys=True) if key == FindingEdge.ENABLES
+        ]
+
+    def derived_credential_edges(self) -> list[tuple[str, str]]:
+        """All ``derived_credential`` edges as ``(finding_id, spawned_node_id)`` (§8)."""
+        return [
+            (src, dst)
+            for src, dst, key in self._g.edges(keys=True)
+            if key == FindingEdge.DERIVED_CREDENTIAL
+        ]
+
+    def _require_finding(self, node: str) -> None:
+        """Raise unless ``node`` is an existing ``Finding`` node.
+
+        Guards the finding-relationship layer: an ``enables``/``derived_credential``
+        edge only ever originates from a committed confirmation, never a candidate
+        or an arbitrary node id.
+        """
+        attrs = self._g.nodes.get(node)
+        if attrs is None or attrs.get(_KIND) != "finding":
+            raise ValueError(f"{node!r} is not a committed Finding node")
 
     def node_count(self) -> int:
         """Total node count — cheap coverage check for tests/reporting."""

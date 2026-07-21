@@ -51,8 +51,6 @@ for it.
   per-class.
 - Before adding any new integration, check the "scoped honestly" list in
   §13 — it's probably already been considered and deferred on purpose.
-- Tests live under `tests/phase<N>/` matching the phase that introduced them,
-  not consolidated by feature area.
 
 ## What not to do
 
