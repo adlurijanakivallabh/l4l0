@@ -494,14 +494,17 @@ class SurfaceMapper:
         Two modes, both reading the app's own response, never asserting an owner:
 
           * caller-scoped (``owner_field is None``): the authenticated ``caller``
-            owns whatever the reveal returned to them — the natural "my
-            resources" model, so the owner is the caller.
+            owns whatever the reveal returned to them — the natural "my resources"
+            model. But a 2xx alone is not ownership: a caller with *no* resource
+            gets an empty reveal (``[]``/``{}``/``null``), which is no association,
+            so the owner resolves to ``None`` (no edge). Only a non-empty reveal
+            body attributes the object to the caller.
           * named-owner (``owner_field`` set): the field's value in the JSON body
             is matched to a seeded identity's username; an absent field or a value
             matching no seeded identity resolves to ``None`` (no edge).
         """
         if recipe.owner_field is None:
-            return caller
+            return caller if self._reveal_has_resource(body) else None
         try:
             payload = json.loads(body)
         except (json.JSONDecodeError, ValueError):
@@ -515,6 +518,23 @@ class SurfaceMapper:
             if self._identities.credential(name).username == named:
                 return name
         return None
+
+    @staticmethod
+    def _reveal_has_resource(body: bytes) -> bool:
+        """True iff a caller-scoped reveal body actually returned a resource.
+
+        An empty reveal — an empty list/object, ``null``, or a non-JSON/empty
+        body — is *no association*, so it must not attribute ownership to the
+        caller (empirical-or-absent). A non-empty JSON list or object does.
+        """
+        try:
+            payload = json.loads(body)
+        except (json.JSONDecodeError, ValueError):
+            return False
+        if isinstance(payload, list | Mapping):
+            return len(payload) > 0
+        # A bare scalar (unusual for a "my resources" reveal) is not a resource.
+        return False
 
     @staticmethod
     def _read_field(payload: object, field_name: str) -> str | None:

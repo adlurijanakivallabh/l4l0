@@ -7,6 +7,7 @@ Phase 1 target: VAmPI (§14).
 
 from __future__ import annotations
 
+from reachagent.recon.crapi_recon import ReconResult, run_recon
 from reachagent.recon.mapper import (
     EndpointSpec,
     MapSummary,
@@ -24,7 +25,9 @@ __all__ = [
     "ObjectSpec",
     "OwnershipDiscovery",
     "ParameterSpec",
+    "ReconResult",
     "SurfaceMapper",
     "SurfaceSpec",
     "classify_can_call",
+    "run_recon",
 ]

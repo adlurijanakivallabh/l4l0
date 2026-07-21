@@ -211,6 +211,27 @@ def test_owns_not_written_when_reveal_is_refused(crapi_identities: IdentityStore
     assert summary.owns_skipped_unresolved == 1
 
 
+def test_caller_scoped_empty_reveal_writes_no_edge(crapi_identities: IdentityStore) -> None:
+    # Regression (caught live against crAPI, Task 6): a caller-scoped reveal that
+    # returns 200 with an *empty* body is no association — a caller with no
+    # resource must not be attributed ownership. Only a non-empty reveal does.
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=[])  # 2xx, but the caller owns nothing
+
+    spec = SurfaceSpec.from_mapping(CRAPI_SURFACE)
+    graph = ReachabilityGraph()
+    mapper = _mapper(graph, crapi_identities, handler)
+    crapi_identities.open_session("owner_a", "owner-a-token")
+
+    summary = mapper.run(spec)
+
+    assert graph.owns_edges() == []
+    assert graph.owner_of(object_id("vehicle")) is None
+    assert summary.owns_discovered == 0
+    # A served-but-empty reveal is unresolved, not "no session" (the session exists).
+    assert summary.owns_skipped_unresolved == 1
+
+
 # -- Invariant 4: named-owner reveal resolves through the response --------
 
 

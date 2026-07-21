@@ -1,0 +1,29 @@
+# crAPI test identities — EXAMPLE / TEMPLATE (plan §10, §13; Phase 2 Task 6).
+#
+# Copy to a local, git-ignored file (e.g. config/crapi-identities.yaml) and fill
+# in real credentials, or seed via REACHAGENT_IDENTITIES + REACHAGENT_IDENTITY_*
+# environment variables instead. Credentials are never hardcoded in source (§10).
+#
+# ≥2 identities across crAPI's role hierarchy for the two documented BOLA flows:
+#   * two vehicle-owning peer users — the cross-user pair the vehicle-location
+#     BOLA is posed between (one owns the vehicle, the other must not reach its
+#     location but does);
+#   * a mechanic — the role the mechanic-contact flow needs.
+#
+# `username` is the login email crAPI authenticates with. The values below are
+# crAPI's documented seed users; the passwords are the ones crAPI seeds (change
+# them if your instance differs), and they are still loaded from this local file
+# or the environment, never baked into source (§10).
+identities:
+  - name: owner_a
+    username: adam007@example.com
+    password: CHANGE_ME
+    role: user
+  - name: owner_b
+    username: pogba006@example.com
+    password: CHANGE_ME
+    role: user
+  - name: mechanic
+    username: jhon@example.com
+    password: CHANGE_ME
+    role: mechanic

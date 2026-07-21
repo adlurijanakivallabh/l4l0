@@ -1,0 +1,113 @@
+# crAPI declared surface — recon input for the SurfaceMapper (plan §3, §6; Phase 2 Task 6).
+#
+# Grey-box recon (§16): the endpoint/parameter/object inventory a live OpenAPI
+# ingest of crAPI would produce (crAPI ships an OpenAPI spec), expressed
+# declaratively so the SurfaceMapper stays generic — no per-endpoint logic in the
+# mapper, exactly as for VAmPI.
+#
+# Scope: the two documented multi-step BOLA flows the Phase 2 gate scores (§14) —
+# vehicle-location and mechanic-contact. crAPI's other classes (SSRF, JWT, mass
+# assignment) are out of scope for this phase.
+#
+# `state_changing: true` marks a request the firer must NOT fire during recon
+# (read-only-first, §10): the auth/onboarding calls and the contact-mechanic POST
+# are onboarding/attack *setup*, established out-of-band (Task 6 seeds the session
+# the same way the Phase 1 eval harness did), never fired by recon itself.
+#
+# Ownership on crAPI is created at runtime (a vehicle is associated to a user
+# during onboarding), so an object carries an `ownership` *discovery recipe*
+# (Task 2's OwnershipDiscovery), never a static owner: the mapper reads ownership
+# off the app's own response to the read-only reveal, after a session exists.
+#
+# Object sensitivity tiers follow the §4 scoring rule: 0 public, 1 user-owned,
+# 2 cross-user, 3 admin/system.
+endpoints:
+  # -- Auth / onboarding (state-changing: authorized setup, never recon-fired) --
+  - method: POST
+    path: /identity/api/auth/signup
+    content_type: application/json
+    state_changing: true
+    parameters:
+      - name: email
+        location: body
+      - name: password
+        location: body
+      - name: name
+        location: body
+      - name: number
+        location: body
+
+  - method: POST
+    path: /identity/api/auth/login
+    content_type: application/json
+    state_changing: true
+    parameters:
+      - name: email
+        location: body
+      - name: password
+        location: body
+
+  # -- Vehicle-location BOLA flow -------------------------------------------
+  # The read-only "my vehicles" reveal: returns only the caller's own vehicles,
+  # so it is the caller-scoped ownership reveal for the vehicle object.
+  - method: GET
+    path: /identity/api/v2/vehicle/vehicles
+    content_type: application/json
+    returns:
+      - type: vehicle
+        sensitivity_tier: 2
+        ownership:
+          reveal_path: /identity/api/v2/vehicle/vehicles
+          reveal_method: GET
+          requires_session: true
+          # Caller-scoped: no owner_field — a 2xx reveal means the authenticated
+          # caller owns the vehicle returned to them (crAPI's /vehicles model).
+
+  # The BOLA target: any authenticated user can read *another* user's vehicle
+  # location by its vehicleId (a UUID). Templated; a sample value fills it for
+  # the read-only probe. Cross-user reads are confirmed in Task 7, not here.
+  - method: GET
+    path: /identity/api/v2/vehicle/{vehicleId}/location
+    content_type: application/json
+    parameters:
+      - name: vehicleId
+        location: path
+    returns:
+      - type: vehicle_location
+        sensitivity_tier: 2
+
+  - method: GET
+    path: /identity/api/v2/user/dashboard
+    content_type: application/json
+    returns:
+      - type: user
+        sensitivity_tier: 1
+
+  # -- Mechanic-contact BOLA flow -------------------------------------------
+  # A mechanic report is readable by report_id; the documented BOLA is reading a
+  # report that belongs to another principal. Read-only, templated by report_id.
+  - method: GET
+    path: /workshop/api/mechanic/mechanic_report
+    content_type: application/json
+    parameters:
+      - name: report_id
+        location: query
+    returns:
+      - type: service_report
+        sensitivity_tier: 2
+
+  # Contacting a mechanic creates the report — state-changing, so recon never
+  # fires it; the report it produces is what the BOLA above then reads (Task 7).
+  - method: POST
+    path: /workshop/api/merchant/contact_mechanic
+    content_type: application/json
+    state_changing: true
+    parameters:
+      - name: mechanic_code
+        location: body
+      - name: vin
+        location: body
+      - name: problem_details
+        location: body
+      - name: mechanic_api
+        location: body

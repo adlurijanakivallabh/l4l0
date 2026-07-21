@@ -1,0 +1,22 @@
+# crAPI evaluation environment for the Phase 2 gate (Task 6, plan §14/§15).
+#
+# crAPI is a full multi-service application (identity / workshop / community /
+# web / datastores), not a single image like VAmPI, so it is brought up from its
+# own upstream compose rather than re-declared here. This file `include`s that
+# compose so the crAPI target comes up with one reproducible command, mirroring
+# the role `docker-compose.yml` plays for VAmPI.
+#
+# Point CRAPI_COMPOSE_PATH at your local OWASP/crAPI checkout's compose (from
+# `git clone https://github.com/OWASP/crAPI`), then:
+#
+#   CRAPI_COMPOSE_PATH=/path/to/crAPI/deploy/docker/docker-compose.yml \
+#     docker compose -f docker-compose.crapi.yml up -d
+#   REACHAGENT_CRAPI_BASE_URL=http://127.0.0.1:8888 \
+#     uv run pytest tests/phase2/test_crapi_recon.py -v   # runs the live recon
+#   CRAPI_COMPOSE_PATH=/path/to/crAPI/deploy/docker/docker-compose.yml \
+#     docker compose -f docker-compose.crapi.yml down
+#
+# crAPI's web front exposes the API on 127.0.0.1:8888 — the default
+# REACHAGENT_CRAPI_BASE_URL the recon runner and the live test use.
+include:
+  - ${CRAPI_COMPOSE_PATH:?set CRAPI_COMPOSE_PATH to your local crAPI deploy/docker/docker-compose.yml}
