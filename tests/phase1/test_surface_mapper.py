@@ -16,6 +16,8 @@ at a live VAmPI is the only change for an integration run.
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 import httpx
 import pytest
 
@@ -96,7 +98,7 @@ def identities() -> IdentityStore:
 def _mapper(
     graph: ReachabilityGraph,
     identities: IdentityStore,
-    handler: callable[[httpx.Request], httpx.Response],
+    handler: Callable[[httpx.Request], httpx.Response],
     calls: list[httpx.Request] | None = None,
 ) -> SurfaceMapper:
     client = httpx.Client(transport=httpx.MockTransport(handler))

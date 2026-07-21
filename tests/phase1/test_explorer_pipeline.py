@@ -53,7 +53,7 @@ def _context(
     def recording(request: httpx.Request) -> httpx.Response:
         if calls is not None:
             calls.append(request)
-        return handler(request)  # type: ignore[operator]
+        return handler(request)  # type: ignore[operator, no-any-return]
 
     client = httpx.Client(transport=httpx.MockTransport(recording))
     firer = RequestFirer(client, ScopeGuard.from_hosts(["target.test"]))

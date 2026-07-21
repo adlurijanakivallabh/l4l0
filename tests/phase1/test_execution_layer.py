@@ -93,9 +93,7 @@ def test_get_flagged_state_changing_is_gated(
     assert calls == []
 
 
-def test_every_fired_request_is_audited(
-    firer: RequestFirer, calls: list[httpx.Request]
-) -> None:
+def test_every_fired_request_is_audited(firer: RequestFirer, calls: list[httpx.Request]) -> None:
     firer.fire("user_a", "GET", f"{IN_SCOPE}/orders")
     firer.fire("user_b", "GET", f"{IN_SCOPE}/profile")
     outcomes = [(e.identity, e.method, e.outcome) for e in firer.audit.entries]

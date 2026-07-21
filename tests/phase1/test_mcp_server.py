@@ -86,7 +86,7 @@ def _session_on(handler: object) -> server._Session:
     """A server session whose firer is wired to a MockTransport standing in for VAmPI."""
 
     def _h(request: httpx.Request) -> httpx.Response:
-        return handler(request)  # type: ignore[operator]
+        return handler(request)  # type: ignore[operator, no-any-return]
 
     client = httpx.Client(transport=httpx.MockTransport(_h))
     firer = RequestFirer(client, ScopeGuard.from_hosts(["vampi.test"]))
@@ -129,7 +129,7 @@ def test_fingerprint_then_get_payloads_by_inferred_sink() -> None:
     assert report.inferred_sink_type == "sql"  # type: ignore[attr-defined]
 
     entries = _call(mcp, "get_payloads", vuln_class="sqli", sink_type="sql")
-    assert entries  # type: ignore[truthy-bool]
+    assert entries
     assert all(e.inferred_sink_type == "sql" for e in entries)  # type: ignore[attr-defined]
 
 
