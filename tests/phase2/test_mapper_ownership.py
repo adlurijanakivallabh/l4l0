@@ -376,3 +376,75 @@ def test_vampi_surface_writes_zero_owns_edges() -> None:
     # Structure is still there — ownership is purely additive.
     assert graph.has_node(object_id("user_credentials"))
     assert summary.objects == 2
+
+
+# -- Task 7: per-instance ownership discovery from a reveal ----------------
+
+# A caller-scoped reveal keyed per instance by uuid — crAPI's /vehicles shape.
+_INSTANCE_SURFACE = {
+    "endpoints": [
+        {
+            "method": "GET",
+            "path": "/vehicles",
+            "returns": [
+                {
+                    "type": "vehicle",
+                    "ownership": {
+                        "reveal_path": "/vehicles",
+                        "requires_session": True,
+                        "instance_key_field": "uuid",
+                    },
+                }
+            ],
+        }
+    ]
+}
+
+
+def test_per_instance_reveal_writes_one_node_per_resource(
+    crapi_identities: IdentityStore,
+) -> None:
+    # owner_a's caller-scoped reveal returns two vehicles; each is a distinct
+    # per-instance node keyed by its uuid, both owned by owner_a (Task 7). No
+    # collapse into a single object:vehicle node.
+    def handler(request: httpx.Request) -> httpx.Response:
+        token = request.headers.get("Authorization", "")
+        if "tok-a" in token:
+            return httpx.Response(
+                200, json=[{"uuid": "veh-1", "vin": "V1"}, {"uuid": "veh-2", "vin": "V2"}]
+            )
+        return httpx.Response(200, json=[])
+
+    spec = SurfaceSpec.from_mapping(_INSTANCE_SURFACE)
+    graph = ReachabilityGraph()
+    mapper = _mapper(graph, crapi_identities, handler)
+    crapi_identities.open_session("owner_a", "tok-a")
+    crapi_identities.open_session("owner_b", "tok-b")
+
+    summary = mapper.run(spec)
+
+    # Two distinct instance nodes, each owned by owner_a — counted as two edges.
+    assert graph.owner_of(object_id("vehicle", "veh-1")) == identity_id("owner_a")
+    assert graph.owner_of(object_id("vehicle", "veh-2")) == identity_id("owner_a")
+    assert summary.owns_discovered == 2
+    # owner_b's empty reveal wrote nothing; the flat type node was never created.
+    assert graph.owner_of(object_id("vehicle")) is None
+
+
+def test_per_instance_resource_without_key_is_skipped(
+    crapi_identities: IdentityStore,
+) -> None:
+    # A resource missing the instance_key_field is not attributed — never
+    # fabricate an instance key.
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=[{"vin": "no-uuid-here"}])
+
+    spec = SurfaceSpec.from_mapping(_INSTANCE_SURFACE)
+    graph = ReachabilityGraph()
+    mapper = _mapper(graph, crapi_identities, handler)
+    crapi_identities.open_session("owner_a", "tok-a")
+
+    summary = mapper.run(spec)
+
+    assert graph.owns_edges() == []
+    assert summary.owns_discovered == 0

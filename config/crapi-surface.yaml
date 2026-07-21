@@ -62,6 +62,10 @@ endpoints:
           requires_session: true
           # Caller-scoped: no owner_field — a 2xx reveal means the authenticated
           # caller owns the vehicle returned to them (crAPI's /vehicles model).
+          # Each vehicle is a distinct instance keyed by its uuid, so two owners
+          # of two vehicles get two distinct object nodes (Task 7) — the anchor
+          # the vehicle-location BOLA is posed on.
+          instance_key_field: uuid
 
   # The BOLA target: any authenticated user can read *another* user's vehicle
   # location by its vehicleId (a UUID). Templated; a sample value fills it for

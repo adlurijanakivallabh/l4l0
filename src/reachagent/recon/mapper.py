@@ -55,6 +55,18 @@ class _OwnDiscovery(Enum):
     UNRESOLVED = auto()  # reveal didn't fire, wasn't served, or named no known owner
 
 
+@dataclass(frozen=True)
+class _OwnResult:
+    """One identity's ownership-reveal outcome plus how many ``owns`` edges it wrote.
+
+    ``edges_written`` is > 1 only for a per-instance reveal where the caller owns
+    several instances at once (Task 7); it is 0 for every non-``WROTE`` outcome.
+    """
+
+    outcome: _OwnDiscovery
+    edges_written: int = 0
+
+
 # HTTP methods recon may fire during surface mapping. Everything else is
 # state-changing and gated by read-only-first (§10) — mirrors the firer's own
 # read-only set, kept here so recon refuses *before* even handing it to the firer.
@@ -84,15 +96,21 @@ class OwnershipDiscovery:
         field, the value is matched to a seeded identity's username; if ``None``
         the reveal is **caller-scoped** (the authenticated caller owns whatever
         the endpoint returns to them — the common "my resources" model).
+      * ``instance_key_field`` — if set, each resource in the reveal is a distinct
+        object *instance* keyed by that field's value (e.g. a resource ``uuid``),
+        so two identities owning two different instances of the same type get two
+        distinct object nodes (Task 7). If ``None``, the object is type-level: one
+        ``owns`` edge to the type node, the pre–Task 7 behaviour.
 
-    The recipe never asserts *who* owns the object — only how the mapper reads
-    that fact off the app's own response (Task 2 DoD).
+    The recipe never asserts *who* owns the object, nor fabricates an instance
+    key — only how the mapper reads both off the app's own response (Task 2/7).
     """
 
     reveal_path: str
     reveal_method: str = "GET"
     owner_field: str | None = None
     requires_session: bool = True
+    instance_key_field: str | None = None
 
     def __post_init__(self) -> None:
         # The reveal is a probe, so it must be read-only — a state-changing
@@ -208,6 +226,11 @@ class SurfaceSpec:
                     else None
                 ),
                 requires_session=bool(raw_ownership.get("requires_session", True)),
+                instance_key_field=(
+                    str(raw_ownership["instance_key_field"])
+                    if raw_ownership.get("instance_key_field") is not None
+                    else None
+                ),
             )
         return ObjectSpec(
             type=str(raw["type"]),
@@ -372,6 +395,11 @@ class SurfaceMapper:
           * ``owner_field`` set → the named owner in the JSON body is matched to a
             seeded identity; an unmatched/absent value writes no edge (counted
             ``owns_skipped_unresolved``), never a guessed owner.
+          * ``instance_key_field`` set → each resource in the reveal is a distinct
+            object *instance* (keyed by that field, e.g. a resource ``uuid``), so a
+            caller can own several instances at once and two owners of two
+            instances get two distinct nodes (Task 7). ``owns_discovered`` counts
+            edges written, so a caller owning N instances contributes N.
 
         Generic by construction: the loop reads only the recipe + the response, so
         the same code path serves any target — no per-object or per-target branch.
@@ -385,16 +413,13 @@ class SurfaceMapper:
                 recipe = obj.ownership
                 if recipe is None:
                     continue  # No recipe: empirical-or-absent — write nothing.
-                object_node = self._graph.add_object(
-                    Object(type=obj.type, sensitivity_tier=obj.sensitivity_tier)
-                )
                 for name in self._identities.names():
-                    outcome = self._discover_one_owner(name, recipe, object_node)
-                    if outcome is _OwnDiscovery.WROTE:
-                        discovered += 1
-                    elif outcome is _OwnDiscovery.NO_SESSION:
+                    result = self._discover_one_owner(name, obj, recipe)
+                    if result.outcome is _OwnDiscovery.WROTE:
+                        discovered += result.edges_written
+                    elif result.outcome is _OwnDiscovery.NO_SESSION:
                         skipped_no_session += 1
-                    elif outcome is _OwnDiscovery.UNRESOLVED:
+                    else:  # UNRESOLVED
                         skipped_unresolved += 1
 
         return replace(
@@ -450,43 +475,129 @@ class SurfaceMapper:
         return status
 
     def _discover_one_owner(
-        self, identity: str, recipe: OwnershipDiscovery, object_node: str
-    ) -> _OwnDiscovery:
-        """Fire one ownership reveal for ``identity`` and write the ``owns`` edge if earned.
+        self, identity: str, obj: ObjectSpec, recipe: OwnershipDiscovery
+    ) -> _OwnResult:
+        """Fire one ownership reveal for ``identity`` and write the ``owns`` edge(s).
 
         The empirical partner of :meth:`_probe_one`, held to the same discipline:
-        the edge is written only from an observed 2xx reveal, and any path that
+        an edge is written only from an observed 2xx reveal, and any path that
         can't read a real association (no session, refused, transport error, an
-        unmatched owner field) writes nothing. Returns which outcome occurred so
-        the caller can tally the run summary.
+        unmatched owner field, an empty reveal) writes nothing. Returns an
+        :class:`_OwnResult` so the caller can tally the run summary.
+
+        With ``recipe.instance_key_field`` set, each resource in the reveal is a
+        distinct object *instance* keyed by that field, so the caller can own
+        several instances at once (Task 7); without it, the object is type-level
+        and the caller owns at most the one type node (pre–Task 7 behaviour).
         """
         # "After which workflow step": a session-gated reveal is skipped until
         # onboarding has established this identity's session (empirical-or-absent).
         if recipe.requires_session and self._identities.session(identity) is None:
-            return _OwnDiscovery.NO_SESSION
+            return _OwnResult(_OwnDiscovery.NO_SESSION)
 
         headers = self._auth_headers(identity)
         url = f"{self._base_url}{recipe.reveal_path}"
         try:
             result = self._firer.fire(identity, recipe.reveal_method, url, headers=headers)
         except (OutOfScopeError, ReadOnlyFirstError):
-            return _OwnDiscovery.UNRESOLVED
+            return _OwnResult(_OwnDiscovery.UNRESOLVED)
         except Exception:  # noqa: BLE001 — a transport error is not an ownership signal
-            return _OwnDiscovery.UNRESOLVED
+            return _OwnResult(_OwnDiscovery.UNRESOLVED)
 
         # Only a served reveal carries an association to read; anything else
         # (403/404/5xx) means this identity did not demonstrate ownership here.
         if not 200 <= result.status_code < 300:
-            return _OwnDiscovery.UNRESOLVED
+            return _OwnResult(_OwnDiscovery.UNRESOLVED)
 
-        owner = self._resolve_owner(identity, recipe, result.body)
+        if recipe.instance_key_field is None:
+            return self._write_type_level_owner(identity, obj, recipe, result.body)
+        return self._write_instance_owners(identity, obj, recipe, result.body)
+
+    def _write_type_level_owner(
+        self, identity: str, obj: ObjectSpec, recipe: OwnershipDiscovery, body: bytes
+    ) -> _OwnResult:
+        """Type-level ownership (no ``instance_key_field``): one owns edge, unchanged."""
+        owner = self._resolve_owner(identity, recipe, body)
         if owner is None:
-            # A named-owner reveal whose value matched no seeded identity — never
-            # guess an owner from an unrecognized name.
-            return _OwnDiscovery.UNRESOLVED
+            # No association: an empty caller-scoped reveal, or a named owner that
+            # matched no seeded identity — never guess an owner.
+            return _OwnResult(_OwnDiscovery.UNRESOLVED)
+        node = self._graph.add_object(Object(type=obj.type, sensitivity_tier=obj.sensitivity_tier))
+        self._graph.set_owns(identity_id(owner), node)
+        return _OwnResult(_OwnDiscovery.WROTE, edges_written=1)
 
-        self._graph.set_owns(identity_id(owner), object_node)
-        return _OwnDiscovery.WROTE
+    def _write_instance_owners(
+        self, identity: str, obj: ObjectSpec, recipe: OwnershipDiscovery, body: bytes
+    ) -> _OwnResult:
+        """Per-instance ownership: one distinct object node per resource in the reveal.
+
+        Each resource is keyed by ``recipe.instance_key_field`` read from the
+        response (the app's own identifier, e.g. a resource ``uuid``), never a
+        positional index — so two identities owning two different instances get
+        two distinct nodes (Task 7). A resource with no owner or no instance key
+        is skipped rather than guessed; a reveal that yields no ownable instance
+        is ``UNRESOLVED``.
+        """
+        written = 0
+        key_field = recipe.instance_key_field
+        if key_field is None:  # unreachable via _discover_one_owner; guards the type
+            return _OwnResult(_OwnDiscovery.UNRESOLVED)
+        for item in self._reveal_items(body):
+            owner = self._item_owner(identity, recipe, item)
+            if owner is None:
+                continue
+            key = item.get(key_field)
+            if key is None:
+                continue  # No stable identifier for this instance — don't fabricate one.
+            node = self._graph.add_object(
+                Object(
+                    type=obj.type,
+                    sensitivity_tier=obj.sensitivity_tier,
+                    instance_key=str(key),
+                )
+            )
+            self._graph.set_owns(identity_id(owner), node)
+            written += 1
+        if written == 0:
+            return _OwnResult(_OwnDiscovery.UNRESOLVED)
+        return _OwnResult(_OwnDiscovery.WROTE, edges_written=written)
+
+    def _item_owner(
+        self, caller: str, recipe: OwnershipDiscovery, item: Mapping[str, object]
+    ) -> str | None:
+        """Resolve the owner of one reveal resource, or ``None`` if unresolvable.
+
+        Caller-scoped (``owner_field is None``): the resource is in the caller's
+        own "my resources" reveal, so the owner is the caller. Named-owner: the
+        resource's ``owner_field`` value is matched to a seeded identity's
+        username; an absent field or an unrecognized value resolves to ``None``.
+        """
+        if recipe.owner_field is None:
+            return caller
+        named = item.get(recipe.owner_field)
+        if named is None:
+            return None
+        for name in self._identities.names():
+            if self._identities.credential(name).username == str(named):
+                return name
+        return None
+
+    @staticmethod
+    def _reveal_items(body: bytes) -> list[Mapping[str, object]]:
+        """The reveal's resources as a list of JSON objects (empty if none/unparseable).
+
+        A list body yields its object elements; a single object body yields itself;
+        anything else (empty, scalar, non-JSON) yields no items.
+        """
+        try:
+            payload = json.loads(body)
+        except (json.JSONDecodeError, ValueError):
+            return []
+        if isinstance(payload, list):
+            return [it for it in payload if isinstance(it, Mapping)]
+        if isinstance(payload, Mapping):
+            return [payload]
+        return []
 
     def _resolve_owner(self, caller: str, recipe: OwnershipDiscovery, body: bytes) -> str | None:
         """Resolve the owning identity from a 2xx reveal, or ``None`` if unresolved.

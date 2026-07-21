@@ -56,9 +56,19 @@ def parameter_id(endpoint_key: str, location: str, name: str) -> str:
     return f"param:{endpoint_key}:{location}:{name}"
 
 
-def object_id(obj_type: str) -> str:
-    """Stable id for an :class:`Object` node (its type)."""
-    return f"object:{obj_type}"
+def object_id(obj_type: str, instance_key: str | None = None) -> str:
+    """Stable id for an :class:`Object` node.
+
+    Keyed by type alone (``object:{type}``) for a type-level object, or by
+    type + instance (``object:{type}:{instance_key}``) when the specific instance
+    is known — so two instances of the same type (two vehicles) are two distinct
+    nodes, which cross-user BOLA needs to anchor "identity B reaches identity A's
+    object" on a real instance (§8). A type-only object is the unchanged default,
+    so VAmPI and the structural pass are unaffected.
+    """
+    if instance_key is None:
+        return f"object:{obj_type}"
+    return f"object:{obj_type}:{instance_key}"
 
 
 def identity_id(name: str) -> str:
@@ -117,8 +127,13 @@ class ReachabilityGraph:
         return node
 
     def add_object(self, obj: Object) -> str:
-        """Add (or refresh) an ``Object`` node; returns its stable id."""
-        node = object_id(obj.type)
+        """Add (or refresh) an ``Object`` node; returns its stable id.
+
+        Keyed by ``(type, instance_key)`` (:func:`object_id`): a type-level object
+        and a specific instance of that type are distinct nodes, and re-adding the
+        same instance is idempotent.
+        """
+        node = object_id(obj.type, obj.instance_key)
         self._g.add_node(node, **{_KIND: "object", _DATA: obj})
         return node
 

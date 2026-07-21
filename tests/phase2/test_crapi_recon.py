@@ -151,9 +151,11 @@ def test_owns_written_only_for_a_caller_with_a_vehicle(
 
     summary = mapper.run(surface)
 
-    # Exactly one owns edge — for owner_a. The empty 2xx reveals for owner_b and
-    # the mechanic are *no association*, not ownership (the live-caught bug).
-    assert graph.owns_edges() == [(identity_id("owner_a"), object_id("vehicle"))]
+    # Exactly one owns edge — for owner_a, to the *per-instance* node keyed by the
+    # vehicle's uuid (Task 7). The empty 2xx reveals for owner_b and the mechanic
+    # are *no association*, not ownership (the live-caught bug).
+    assert graph.owns_edges() == [(identity_id("owner_a"), object_id("vehicle", "adam-uuid"))]
+    assert graph.owner_of(object_id("vehicle", "adam-uuid")) == identity_id("owner_a")
     assert summary.owns_discovered == 1
 
 
@@ -248,9 +250,17 @@ def test_live_crapi_recon() -> None:
     # Both vehicle-owning users onboarded and each owns a vehicle; the mechanic
     # owns none, so ownership discovery writes exactly two edges — read from the
     # app's own responses, never asserted.
-    owners = {src for src, _ in graph.owns_edges()}
+    edges = graph.owns_edges()
+    owners = {src for src, _ in edges}
     assert identity_id("owner_a") in owners
     assert identity_id("owner_b") in owners
     assert identity_id("mechanic") not in owners
+    # Task 7: the two owners' vehicles are *distinct* per-instance nodes (keyed by
+    # uuid), each owned by exactly its owner — the object:vehicle collapse is gone.
+    owned_nodes = {dst for _, dst in edges}
+    assert len(owned_nodes) == 2, "each owner's vehicle must be its own instance node"
+    for src, dst in edges:
+        assert dst.startswith("object:vehicle:"), f"expected a per-instance node, got {dst}"
+        assert graph.owner_of(dst) == src
     # The safety gate the Task 7 run depends on: zero destructive side effects.
     assert result.destructive_actions == ()

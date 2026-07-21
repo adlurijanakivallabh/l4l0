@@ -146,6 +146,51 @@ def test_set_owns_is_idempotent_on_redeclare() -> None:
     assert graph.owns_edges() == [(owner, obj)]
 
 
+# -- Task 7: per-instance object node identity ----------------------------
+
+
+def test_two_instances_of_a_type_are_distinct_nodes() -> None:
+    # The object:vehicle collapse Task 6 surfaced: two vehicles of the same type
+    # must be two distinct nodes, keyed by their instance identifier.
+    graph = ReachabilityGraph()
+    a = graph.add_object(Object(type="vehicle", instance_key="uuid-a"))
+    b = graph.add_object(Object(type="vehicle", instance_key="uuid-b"))
+
+    assert a != b
+    assert a == object_id("vehicle", "uuid-a")
+    assert b == object_id("vehicle", "uuid-b")
+    assert graph.has_node(a)
+    assert graph.has_node(b)
+    # Re-adding the same instance is idempotent (same id, one node).
+    assert graph.add_object(Object(type="vehicle", instance_key="uuid-a")) == a
+
+
+def test_two_owners_of_two_instances_resolve_independently() -> None:
+    # The exact case Task 6 could not represent: owner_a owns one vehicle instance,
+    # owner_b another, each with its own owner — no last-writer-wins collapse.
+    graph = ReachabilityGraph()
+    oa = graph.add_identity("owner_a", Identity("user", AuthState.USER, Provenance.SEEDED))
+    ob = graph.add_identity("owner_b", Identity("user", AuthState.USER, Provenance.SEEDED))
+    va = graph.add_object(Object(type="vehicle", instance_key="uuid-a"))
+    vb = graph.add_object(Object(type="vehicle", instance_key="uuid-b"))
+
+    graph.set_owns(oa, va)
+    graph.set_owns(ob, vb)
+
+    assert graph.owner_of(va) == oa
+    assert graph.owner_of(vb) == ob
+    assert set(graph.owns_edges()) == {(oa, va), (ob, vb)}
+
+
+def test_type_level_object_still_keys_by_type() -> None:
+    # Backward compatibility (Phase 1 unregressed): an object with no instance key
+    # keys to object:{type}, exactly as before Task 7.
+    graph = ReachabilityGraph()
+    node = graph.add_object(Object(type="status_message"))
+    assert node == object_id("status_message")
+    assert node == "object:status_message"
+
+
 # -- Invariant 3: a derived_credential target is a first-class queryable node --
 
 

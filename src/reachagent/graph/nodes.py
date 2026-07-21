@@ -104,11 +104,20 @@ class Parameter:
 
 @dataclass
 class Object:
-    """A data object the app exposes, with ownership and sensitivity (§6)."""
+    """A data object the app exposes, with ownership and sensitivity (§6).
+
+    ``instance_key`` distinguishes two instances of the same ``type`` (e.g. two
+    vehicles) — cross-user BOLA is posed between object *instances* (§5, §8), so
+    a type alone is not enough to anchor "identity B reaches identity A's
+    object". ``None`` means a type-level object (the structural default); a set
+    key is the app's own stable identifier for the instance (e.g. a UUID),
+    discovered from a response, never fabricated (Task 7).
+    """
 
     type: str
     owner_identity_ref: str | None = None
     sensitivity_tier: int = 0
+    instance_key: str | None = None
 
 
 @dataclass
