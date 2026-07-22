@@ -395,6 +395,39 @@ class ReachabilityGraph:
             (src, dst) for src, dst, key in self._g.edges(keys=True) if key == FindingEdge.ENABLES
         ]
 
+    def chain_paths(self, start: str) -> list[tuple[str, ...]]:
+        """Multi-hop attack paths from ``start`` over the finding-relationship layer (§8).
+
+        Follows ``enables`` and ``derived_credential`` edges transitively and
+        returns every maximal path — one tuple of node ids per leaf reachable from
+        ``start`` (a leaf being a node with no further chain edge). This is the
+        reconstructed chain §8's Chain Solver walks: a connected run of edges, not
+        a report string. Returned sorted for a stable, backend-independent result
+        so the NetworkX and Neo4j stores can be asserted equal.
+
+        This is the reference (client-side DFS) the Neo4j backend must match with a
+        *single* variable-length Cypher path query rather than reassembling hops.
+        """
+        chain = {FindingEdge.ENABLES, FindingEdge.DERIVED_CREDENTIAL}
+
+        def _out(node: str) -> list[str]:
+            return [dst for _, dst, key in self._g.out_edges(node, keys=True) if key in chain]
+
+        paths: list[tuple[str, ...]] = []
+
+        def _walk(node: str, trail: tuple[str, ...]) -> None:
+            nexts = [n for n in _out(node) if n not in trail]  # cycle-safe
+            if not nexts:
+                if len(trail) > 1:  # a bare start with no chain edge is not a path
+                    paths.append(trail)
+                return
+            for nxt in nexts:
+                _walk(nxt, (*trail, nxt))
+
+        if self._g.has_node(start):
+            _walk(start, (start,))
+        return sorted(paths)
+
     def derived_credential_edges(self) -> list[tuple[str, str]]:
         """All ``derived_credential`` edges as ``(finding_id, spawned_node_id)`` (§8)."""
         return [
