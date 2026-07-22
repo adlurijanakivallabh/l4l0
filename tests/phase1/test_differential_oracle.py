@@ -277,8 +277,15 @@ def test_only_the_oracle_family_constructs_a_verdict() -> None:
                 )
                 if name == "OracleVerdict":
                     constructors.append(str(path.relative_to(src_root)))
-    # The only place a verdict is minted is inside the oracle family itself.
-    assert constructors == ["oracles/differential.py"]
+    # A verdict is minted only inside an oracle family (§7) — never anywhere else
+    # in the codebase. Each registered family constructs its own; as Phase 2 added
+    # the business-rule family, both it and the differential oracle appear here,
+    # and every path is under oracles/ (no tool, recon, or graph module mints one).
+    assert sorted(constructors) == [
+        "oracles/business_rule.py",
+        "oracles/differential.py",
+    ]
+    assert all(p.startswith("oracles/") for p in constructors)
 
 
 def test_candidate_cannot_carry_a_confirmed_status() -> None:

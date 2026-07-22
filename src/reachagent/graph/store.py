@@ -230,6 +230,10 @@ class ReachabilityGraph:
         """All endpoint nodes as ``(id, Endpoint)`` pairs."""
         return [(n, d) for n, d in self._nodes_of_kind("endpoint")]  # type: ignore[misc]
 
+    def objects(self) -> list[tuple[str, Object]]:
+        """All object nodes as ``(id, Object)`` pairs — type-level and per-instance alike."""
+        return [(n, d) for n, d in self._nodes_of_kind("object")]  # type: ignore[misc]
+
     def parameters_of(self, endpoint_node: str) -> list[tuple[str, Parameter]]:
         """Parameters reachable from ``endpoint_node`` via an ``accepts`` edge."""
         out: list[tuple[str, Parameter]] = []
