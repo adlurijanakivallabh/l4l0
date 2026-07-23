@@ -48,6 +48,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
+from enum import StrEnum
 from itertools import count
 from typing import TYPE_CHECKING
 
@@ -97,14 +98,45 @@ class GroundTruth:
         return cls(vulnerable=dict.fromkeys(GROUND_TRUTH_CLASSES, toggle_on))
 
 
+class Outcome(StrEnum):
+    """Why a scored class landed where it did — setup vs. detection.
+
+    The distinction the recall number alone hides: a class that reads
+    ``confirmed=False`` can be either a genuine **detection miss** (the identities
+    authenticated and fired, but the oracle did not confirm) or a **setup failure**
+    (the harness could not even authenticate/seed the target, so detection never
+    ran). Both used to look identical — ``confirmed=False, expected=True`` — so a
+    VAmPI seed flake dragged recall down looking exactly like a detection
+    regression. Tagging the outcome lets the report and the gate tell them apart.
+    """
+
+    CONFIRMED = "confirmed"  # oracle reached confirmed_violation, finding written
+    DETECTION_MISS = "detection_miss"  # setup ok, fired, oracle did not confirm
+    SETUP_FAILED = "setup_failed"  # could not authenticate/seed — detection never ran
+
+
 @dataclass
 class ScenarioResult:
-    """One scored class: whether ReachAgent confirmed it, and whether it should."""
+    """One scored class: whether ReachAgent confirmed it, and whether it should.
+
+    ``outcome`` records *why* — separating a real detection miss from a target
+    setup failure so the latter reads as an environment problem, not a silent
+    detection regression. ``confirmed`` stays a plain bool (a setup failure is
+    never a confirmation) and is derived from ``outcome`` so the two cannot drift.
+    """
 
     vuln_class: str
-    confirmed: bool
+    outcome: Outcome
     expected: bool
     detail: str = ""
+
+    @property
+    def confirmed(self) -> bool:
+        return self.outcome is Outcome.CONFIRMED
+
+    @property
+    def setup_failed(self) -> bool:
+        return self.outcome is Outcome.SETUP_FAILED
 
     @property
     def is_true_positive(self) -> bool:
@@ -116,7 +148,10 @@ class ScenarioResult:
 
     @property
     def is_false_negative(self) -> bool:
-        return not self.confirmed and self.expected
+        # A setup failure is *not* a false negative: detection never got to run, so
+        # it must not be scored against recall (that is the whole point of the
+        # distinction). Only a genuine detection miss counts against recall.
+        return self.outcome is Outcome.DETECTION_MISS and self.expected
 
 
 def precision_recall(scenarios: list[ScenarioResult]) -> tuple[float, float]:
@@ -146,12 +181,26 @@ class ToggleRun:
         return sum(1 for s in self.scenarios if s.confirmed)
 
     @property
+    def setup_failed_count(self) -> int:
+        """Scored classes whose target setup failed before detection could run."""
+        return sum(1 for s in self.scenarios if s.setup_failed)
+
+    @property
     def precision(self) -> float:
         return precision_recall(self.scenarios)[0]
 
     @property
     def recall(self) -> float:
         return precision_recall(self.scenarios)[1]
+
+
+def _on_mark(s: ScenarioResult) -> str:
+    """Report marker for a toggle-ON scenario, separating miss from setup failure."""
+    if s.confirmed:
+        return "✓ confirmed"
+    if s.setup_failed:
+        return "⚠ SETUP FAILED"
+    return "✗ missed"
 
 
 @dataclass
@@ -172,8 +221,26 @@ class GateResult:
         return self.off_run.confirmed_count == 0
 
     @property
+    def setup_failures(self) -> int:
+        """Total scored classes across both toggles whose setup failed.
+
+        The recall metric already excludes these (a setup failure is not a false
+        negative), so without this guard a seed flake could leave, say, one class
+        unscored and the rest passing — reading as a clean gate. Surfacing it lets
+        ``environment_ok``/``passed`` fail loudly on an environment problem instead.
+        """
+        return self.on_run.setup_failed_count + self.off_run.setup_failed_count
+
+    @property
+    def environment_ok(self) -> bool:
+        """True iff every scored class actually ran detection (no setup failures)."""
+        return self.setup_failures == 0
+
+    @property
     def passed(self) -> bool:
-        return self.on_passes and self.off_passes
+        # A setup failure is neither a pass nor a detection regression — the gate is
+        # simply not measurable, so it must not report PASSED on a flaky environment.
+        return self.environment_ok and self.on_passes and self.off_passes
 
     def report(self) -> str:
         """A compact, human-readable gate report with the actual measured numbers."""
@@ -186,18 +253,33 @@ class GateResult:
             f"    precision = {self.on_run.precision:.2%} (need ≥ {self.min_precision:.0%})",
             f"    recall    = {self.on_run.recall:.2%} (need ≥ {self.min_recall:.0%})",
         ]
-        for s in self.on_run.scenarios:
-            mark = "✓ confirmed" if s.confirmed else "✗ missed"
-            lines.append(f"      - {s.vuln_class:<16} {mark}  {s.detail}")
+        lines += [
+            f"      - {s.vuln_class:<16} {_on_mark(s)}  {s.detail}" for s in self.on_run.scenarios
+        ]
         lines += [
             "",
             "  toggle OFF (secure):",
             f"    confirmed findings = {self.off_run.confirmed_count} (need exactly 0)",
         ]
         for s in self.off_run.scenarios:
-            mark = "⚠ FALSE POSITIVE" if s.confirmed else "· clean"
+            mark = (
+                "⚠ SETUP FAILED"
+                if s.setup_failed
+                else ("⚠ FALSE POSITIVE" if s.confirmed else "· clean")
+            )
             lines.append(f"      - {s.vuln_class:<16} {mark}  {s.detail}")
-        lines += ["", f"  GATE: {'PASSED' if self.passed else 'FAILED'}"]
+        if not self.environment_ok:
+            # Distinguish an un-measurable run (target setup broke) from a real
+            # detection regression, so a seed flake never reads as either.
+            lines += [
+                "",
+                f"  ENVIRONMENT: {self.setup_failures} scored class(es) had setup failures — "
+                "gate not measurable (fix the target, not the detector)",
+            ]
+        verdict = (
+            "PASSED" if self.passed else ("NOT MEASURABLE" if not self.environment_ok else "FAILED")
+        )
+        lines += ["", f"  GATE: {verdict}"]
         return "\n".join(lines)
 
 
@@ -419,6 +501,15 @@ def _confirm(
     return True
 
 
+def _detected(confirmed: bool) -> Outcome:
+    """Map a post-setup ``_confirm`` result to its outcome.
+
+    Reached only after setup succeeded and the oracle actually ran, so a
+    non-confirmation here is a genuine detection miss — never a setup failure.
+    """
+    return Outcome.CONFIRMED if confirmed else Outcome.DETECTION_MISS
+
+
 # ---------------------------------------------------------------------------
 # Per-class detection — each confirmation runs end to end through MCP.
 # ---------------------------------------------------------------------------
@@ -438,10 +529,14 @@ def _detect_bola(
     victim_token = tokens.get(_VICTIM[0])
     owner_token = tokens.get(_OWNER[0])
     if not victim_token or not owner_token:
-        return ScenarioResult("bola", False, expected, "setup failed: missing tokens")
+        return ScenarioResult(
+            "bola", Outcome.SETUP_FAILED, expected, "setup failed: missing tokens"
+        )
     book = _discover_book(target, victim_token, _VICTIM[0])
     if book is None:
-        return ScenarioResult("bola", False, expected, "setup failed: no victim book")
+        return ScenarioResult(
+            "bola", Outcome.SETUP_FAILED, expected, "setup failed: no victim book"
+        )
     path = f"/books/v1/{book}"
 
     victim_sess = _session_as(target, victim_token, shared)
@@ -459,7 +554,7 @@ def _detect_bola(
         json_field="secret",
         evidence_ref=f"bola/{path}",
     )
-    return ScenarioResult("bola", confirmed, expected, f"cross-read of {path}")
+    return ScenarioResult("bola", _detected(confirmed), expected, f"cross-read of {path}")
 
 
 def _detect_mass_assignment(
@@ -476,7 +571,9 @@ def _detect_mass_assignment(
     expected = target.toggle_on
     owner_token = tokens.get(_OWNER[0])
     if not owner_token:
-        return ScenarioResult("mass_assignment", False, expected, "setup failed: missing token")
+        return ScenarioResult(
+            "mass_assignment", Outcome.SETUP_FAILED, expected, "setup failed: missing token"
+        )
     _register(target, "evilma", "x", "evilma@example.com", admin=True)
 
     sess = _session_as(target, owner_token, shared)
@@ -495,7 +592,9 @@ def _detect_mass_assignment(
         probe_select="username:evilma",
         evidence_ref="mass_assignment/register",
     )
-    return ScenarioResult("mass_assignment", confirmed, expected, "admin flag on register")
+    return ScenarioResult(
+        "mass_assignment", _detected(confirmed), expected, "admin flag on register"
+    )
 
 
 def _detect_idor(
@@ -512,7 +611,7 @@ def _detect_idor(
     expected = target.toggle_on
     owner_token = tokens.get(_OWNER[0])
     if not owner_token:
-        return ScenarioResult("idor", False, expected, "setup failed: missing token")
+        return ScenarioResult("idor", Outcome.SETUP_FAILED, expected, "setup failed: missing token")
 
     sess = _session_as(target, owner_token, shared)
     mcp = _mcp_for(sess)
@@ -532,7 +631,7 @@ def _detect_idor(
         probe_select=f"username:{_VICTIM[0]}",
         evidence_ref="idor/password-change",
     )
-    return ScenarioResult("idor", confirmed, expected, "cross-user password change")
+    return ScenarioResult("idor", _detected(confirmed), expected, "cross-user password change")
 
 
 # ---------------------------------------------------------------------------

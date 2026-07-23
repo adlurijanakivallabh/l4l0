@@ -25,6 +25,7 @@ import pytest
 
 from reachagent.eval.harness import (
     GateResult,
+    Outcome,
     ScenarioResult,
     ToggleRun,
     evaluate,
@@ -35,7 +36,8 @@ from reachagent.eval.harness import (
 
 
 def _scn(vuln_class: str, *, confirmed: bool, expected: bool) -> ScenarioResult:
-    return ScenarioResult(vuln_class=vuln_class, confirmed=confirmed, expected=expected)
+    outcome = Outcome.CONFIRMED if confirmed else Outcome.DETECTION_MISS
+    return ScenarioResult(vuln_class=vuln_class, outcome=outcome, expected=expected)
 
 
 def test_precision_recall_all_correct() -> None:
@@ -135,6 +137,104 @@ def test_gate_fails_below_recall_threshold() -> None:
     gate = GateResult(on_run=on, off_run=off)
     assert not gate.on_passes
     assert not gate.passed
+
+
+# -- Setup-failure vs. detection-miss distinction -------------------------
+
+
+def _setup_failed(vuln_class: str, *, expected: bool) -> ScenarioResult:
+    return ScenarioResult(
+        vuln_class=vuln_class,
+        outcome=Outcome.SETUP_FAILED,
+        expected=expected,
+        detail="setup failed: missing tokens",
+    )
+
+
+def test_healthy_run_computes_precision_recall_identically_to_before() -> None:
+    # Regression guard for the outcome-category change: when every setup succeeds
+    # (no SETUP_FAILED — environment_ok holds), a detection miss is still a plain
+    # false negative and the metrics come out exactly as the pre-change formula
+    # tp/(tp+fn) would give. 2 confirmed of 3 real vulns → precision 1.0, recall 2/3;
+    # the added branch must not perturb the numbers on the healthy path.
+    on = ToggleRun(
+        toggle_on=True,
+        scenarios=[
+            _scn("bola", confirmed=True, expected=True),
+            _scn("idor", confirmed=True, expected=True),
+            _scn("mass_assignment", confirmed=False, expected=True),  # genuine miss
+        ],
+    )
+    off = ToggleRun(
+        toggle_on=False,
+        scenarios=[_scn(c, confirmed=False, expected=False) for c in ("bola", "idor")],
+    )
+    gate = GateResult(on_run=on, off_run=off)
+
+    assert gate.environment_ok  # all setups succeeded — the healthy path
+    assert gate.setup_failures == 0
+    # Identical to the pre-change math: tp=2, fn=1, fp=0.
+    assert gate.on_run.precision == 1.0
+    assert gate.on_run.recall == pytest.approx(2 / 3)
+    # And the verdict is a real numeric FAIL (recall below 0.80), not NOT MEASURABLE.
+    assert not gate.passed
+    assert "NOT MEASURABLE" not in gate.report()
+
+
+def test_setup_failure_is_not_a_false_negative() -> None:
+    # A class whose setup failed never ran detection, so it must not count against
+    # recall — otherwise a seed flake reads exactly like a detection regression.
+    s = _setup_failed("bola", expected=True)
+    assert not s.confirmed
+    assert s.setup_failed
+    assert not s.is_false_negative  # the crux: excluded from the recall denominator
+
+
+def test_setup_failure_excluded_from_recall_but_detection_miss_counted() -> None:
+    # Owner-only VAmPI seed state: bola setup-failed (no victim token), idor missed,
+    # mass_assignment confirmed. Recall scores only the two classes that ran: 1/2.
+    scenarios = [
+        _setup_failed("bola", expected=True),
+        _scn("mass_assignment", confirmed=True, expected=True),
+        _scn("idor", confirmed=False, expected=True),
+    ]
+    precision, recall = precision_recall(scenarios)
+    assert precision == 1.0
+    assert recall == pytest.approx(1 / 2)
+
+
+def test_gate_is_not_measurable_when_setup_fails() -> None:
+    # Even if the classes that *did* run all pass, a setup failure makes the gate
+    # un-measurable — it must not silently report PASSED on a flaky environment.
+    on = ToggleRun(
+        toggle_on=True,
+        scenarios=[
+            _setup_failed("bola", expected=True),
+            _scn("mass_assignment", confirmed=True, expected=True),
+            _scn("idor", confirmed=True, expected=True),
+        ],
+    )
+    off = ToggleRun(toggle_on=False, scenarios=[])
+    gate = GateResult(on_run=on, off_run=off)
+    assert gate.on_passes  # the measured classes clear the thresholds...
+    assert not gate.environment_ok  # ...but the environment did not hold up
+    assert gate.setup_failures == 1
+    assert not gate.passed
+    assert "NOT MEASURABLE" in gate.report()
+
+
+def test_gate_measurable_and_passing_reports_passed() -> None:
+    on = ToggleRun(
+        toggle_on=True,
+        scenarios=[
+            _scn(c, confirmed=True, expected=True) for c in ("bola", "idor", "mass_assignment")
+        ],
+    )
+    off = ToggleRun(toggle_on=False, scenarios=[])
+    gate = GateResult(on_run=on, off_run=off)
+    assert gate.environment_ok
+    assert gate.passed
+    assert "PASSED" in gate.report()
 
 
 # -- Layer 2: live gate against both VAmPI toggles (skips if unreachable) --
