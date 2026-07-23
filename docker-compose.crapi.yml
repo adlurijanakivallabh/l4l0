@@ -18,5 +18,12 @@
 #
 # crAPI's web front exposes the API on 127.0.0.1:8888 — the default
 # REACHAGENT_CRAPI_BASE_URL the recon runner and the live test use.
+#
+# The project name is pinned so ownership never drifts to the invocation
+# directory's basename (the upstream compose sets no `name:`, so a bare
+# `docker compose up` in its own dir claims project `docker` and collides
+# with the pinned `container_name:` fields on a second bring-up). Pinning
+# here means this wrapper owns the containers no matter the cwd.
+name: reachagent-crapi
 include:
   - ${CRAPI_COMPOSE_PATH:?set CRAPI_COMPOSE_PATH to your local crAPI deploy/docker/docker-compose.yml}
