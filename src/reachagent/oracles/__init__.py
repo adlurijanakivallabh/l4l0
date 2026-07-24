@@ -5,8 +5,10 @@ first (CLAUDE.md). Only a ``confirmed`` result from one of these families
 unlocks ``write_finding`` (§13). The LLM proposes candidates; only a
 Validator-run deterministic check produces a ``Finding`` (§7, unconditional).
 
-Phase 1 (§15) implements the differential cross-identity diff oracle; the other
-five families are stubbed here to keep the registry complete.
+Phase 1 (§15) implements the differential cross-identity diff oracle; Phase 2
+adds ``business_rule_invariant``; Phase 3 adds ``timing_statistical`` (the
+paired-trial oracle backing blind SQLi/NoSQLi/LDAP extraction). The remaining
+families are stubbed until their phase builds them.
 """
 
 from __future__ import annotations

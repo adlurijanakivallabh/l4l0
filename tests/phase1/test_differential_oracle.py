@@ -241,9 +241,9 @@ def test_run_oracle_unknown_mechanism_raises() -> None:
         baseline=Observation("o", 200, "d"),
         probe=Observation("p", 200, "d"),
     )
-    # A registered enum member with no oracle yet (timing lands in a later phase).
+    # A registered enum member with no oracle yet (OOB_CALLBACK lands in a later phase).
     with pytest.raises(UnknownOracleError):
-        validator.run_oracle(OracleMechanism.TIMING_STATISTICAL, ev)
+        validator.run_oracle(OracleMechanism.OOB_CALLBACK, ev)
 
 
 def test_oracle_rejects_wrong_evidence_type() -> None:
@@ -278,12 +278,13 @@ def test_only_the_oracle_family_constructs_a_verdict() -> None:
                 if name == "OracleVerdict":
                     constructors.append(str(path.relative_to(src_root)))
     # A verdict is minted only inside an oracle family (§7) — never anywhere else
-    # in the codebase. Each registered family constructs its own; as Phase 2 added
-    # the business-rule family, both it and the differential oracle appear here,
-    # and every path is under oracles/ (no tool, recon, or graph module mints one).
+    # in the codebase. Phase 1 added differential, Phase 2 business_rule, Phase 3
+    # timing_statistical. Every path is under oracles/ (no tool, recon, or graph
+    # module mints one).
     assert sorted(constructors) == [
         "oracles/business_rule.py",
         "oracles/differential.py",
+        "oracles/timing_statistical.py",
     ]
     assert all(p.startswith("oracles/") for p in constructors)
 
