@@ -387,6 +387,7 @@ class FindingOut:
     oracle_used: str
     evidence_ref: str
     status: str
+    metadata: dict[str, str] = field(default_factory=dict)
 
 
 def register_tools(mcp: FastMCP, session: _Session) -> None:
@@ -552,13 +553,22 @@ def register_tools(mcp: FastMCP, session: _Session) -> None:
         )
 
     @mcp.tool()
-    def write_finding(verdict_ref: str, vuln_class: str, severity: str = "high") -> FindingOut:
+    def write_finding(
+        verdict_ref: str,
+        vuln_class: str,
+        severity: str = "high",
+        metadata: dict[str, str] | None = None,
+    ) -> FindingOut:
         """Commit a Finding — only if ``verdict_ref`` names a confirmed_violation (§13).
 
         Resolves the server-side verdict minted by ``run_oracle`` and delegates to
         the real ``write_finding``, which refuses anything that is not a
         ``confirmed_violation``. There is no way to pass a fabricated verdict: the
         client holds only an opaque ref, never a verdict it could forge.
+
+        ``metadata`` carries deterministic provenance the confirmation established
+        (e.g. a chained hop's precondition: whether its consumed identifier is
+        disclosed upstream or enumerable). It never affects the write gate.
         """
         verdict = session.get_verdict(verdict_ref)
         finding = _nodes.Finding(
@@ -567,7 +577,7 @@ def register_tools(mcp: FastMCP, session: _Session) -> None:
             oracle_used="",
             evidence_ref="",
         )
-        node = _validator.write_finding(session.graph, finding, verdict)
+        node = _validator.write_finding(session.graph, finding, verdict, metadata=metadata)
         return FindingOut(
             finding_node=node,
             vuln_class=finding.vuln_class,
@@ -575,6 +585,7 @@ def register_tools(mcp: FastMCP, session: _Session) -> None:
             oracle_used=finding.oracle_used,
             evidence_ref=finding.evidence_ref,
             status=finding.status.value,
+            metadata=dict(finding.metadata),
         )
 
     @mcp.tool()

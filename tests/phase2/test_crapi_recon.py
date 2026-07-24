@@ -106,7 +106,7 @@ def test_bola_flow_endpoints_materialize_as_nodes(
 def test_surface_file_matches_the_vampi_shape(surface: SurfaceSpec) -> None:
     # Same declarative schema as VAmPI — proves the config, not mapper code,
     # carries the target specifics (the generic-mapper invariant).
-    assert len(surface.endpoints) == 7
+    assert len(surface.endpoints) == 9
     veh = next(o for ep in surface.endpoints for o in ep.returns if o.type == "vehicle")
     assert veh.ownership is not None
     assert veh.ownership.reveal_path == "/identity/api/v2/vehicle/vehicles"
@@ -140,7 +140,9 @@ def test_owns_written_only_for_a_caller_with_a_vehicle(
             if "tok-owner-a" in token:
                 return httpx.Response(200, json=_ADAM_VEHICLE)
             return httpx.Response(200, json=[])  # 2xx but no resource
-        return httpx.Response(200, json={"ok": True})
+        # Every other caller-scoped reveal (community feed, service requests) is
+        # empty here, so this test stays focused on the single vehicle edge.
+        return httpx.Response(200, json=[])
 
     graph = ReachabilityGraph()
     mapper, _ = _mapper(graph, identities, handler)
@@ -171,7 +173,9 @@ def test_no_session_means_no_owns_edge(surface: SurfaceSpec, identities: Identit
 
     assert graph.owns_edges() == []
     assert summary.owns_discovered == 0
-    assert summary.owns_skipped_no_session == 3
+    # Three session-gated ownership recipes (vehicle, service_report, community
+    # feed) × three identities with no session → nine skips, no edges.
+    assert summary.owns_skipped_no_session == 9
 
 
 # -- Invariant 4: stateful safety — zero destructive side effects ----------
@@ -247,20 +251,23 @@ def test_live_crapi_recon() -> None:
         identities=IdentityStore.from_env(live_env),
     )
 
-    # Both vehicle-owning users onboarded and each owns a vehicle; the mechanic
-    # owns none, so ownership discovery writes exactly two edges — read from the
-    # app's own responses, never asserted.
+    # Both vehicle-owning users onboarded and each owns a vehicle. Ownership
+    # discovery also writes the caller-scoped community_feed (owned by every
+    # authenticated caller) and the mechanic's service reports — all read from the
+    # app's own responses, never asserted. This test scopes to the *vehicle* facts.
     edges = graph.owns_edges()
-    owners = {src for src, _ in edges}
-    assert identity_id("owner_a") in owners
-    assert identity_id("owner_b") in owners
-    assert identity_id("mechanic") not in owners
+    vehicle_edges = [(src, dst) for src, dst in edges if dst.startswith("object:vehicle:")]
+    vehicle_owners = {src for src, _ in vehicle_edges}
+    assert identity_id("owner_a") in vehicle_owners
+    assert identity_id("owner_b") in vehicle_owners
+    # The mechanic account owns no *vehicle* (it may own service reports / the
+    # caller-scoped feed, which are separate object types).
+    assert identity_id("mechanic") not in vehicle_owners
     # Task 7: the two owners' vehicles are *distinct* per-instance nodes (keyed by
     # uuid), each owned by exactly its owner — the object:vehicle collapse is gone.
-    owned_nodes = {dst for _, dst in edges}
-    assert len(owned_nodes) == 2, "each owner's vehicle must be its own instance node"
-    for src, dst in edges:
-        assert dst.startswith("object:vehicle:"), f"expected a per-instance node, got {dst}"
+    owned_vehicle_nodes = {dst for _, dst in vehicle_edges}
+    assert len(owned_vehicle_nodes) == 2, "each owner's vehicle must be its own instance node"
+    for src, dst in vehicle_edges:
         assert graph.owner_of(dst) == src
     # The safety gate the Task 7 run depends on: zero destructive side effects.
     assert result.destructive_actions == ()

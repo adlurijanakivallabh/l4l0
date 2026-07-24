@@ -234,6 +234,14 @@ class ReachabilityGraph:
         """All object nodes as ``(id, Object)`` pairs — type-level and per-instance alike."""
         return [(n, d) for n, d in self._nodes_of_kind("object")]  # type: ignore[misc]
 
+    def returns_of(self, endpoint_node: str) -> list[tuple[str, Object]]:
+        """Object nodes reachable from ``endpoint_node`` via a ``returns`` edge."""
+        out: list[tuple[str, Object]] = []
+        for _, target, key in self._g.out_edges(endpoint_node, keys=True):
+            if key == StructuralEdge.RETURNS:
+                out.append((target, self._g.nodes[target][_DATA]))
+        return out
+
     def parameters_of(self, endpoint_node: str) -> list[tuple[str, Parameter]]:
         """Parameters reachable from ``endpoint_node`` via an ``accepts`` edge."""
         out: list[tuple[str, Parameter]] = []

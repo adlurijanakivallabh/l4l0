@@ -57,6 +57,8 @@ def write_finding(
     graph: ReachabilityGraph,
     finding: Finding,
     verdict: OracleVerdict,
+    *,
+    metadata: dict[str, str] | None = None,
 ) -> str:
     """Commit a ``Finding`` node — gated entirely behind a confirmed *violation* (§13).
 
@@ -97,6 +99,11 @@ def write_finding(
         finding.oracle_used = verdict.mechanism.value
     if not finding.evidence_ref:
         finding.evidence_ref = verdict.evidence_ref
+    if metadata:
+        # Provenance the confirmation itself established (e.g. how a chained hop's
+        # consumed identifier is obtained — disclosed vs enumerable). Never LLM
+        # judgment: the caller derives it deterministically from the fired evidence.
+        finding.metadata.update(metadata)
     return graph.add_finding(finding)
 
 

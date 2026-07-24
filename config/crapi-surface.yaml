@@ -6,8 +6,10 @@
 # mapper, exactly as for VAmPI.
 #
 # Scope: the two documented multi-step BOLA flows the Phase 2 gate scores (§14) —
-# vehicle-location and mechanic-contact. crAPI's other classes (SSRF, JWT, mass
-# assignment) are out of scope for this phase.
+# vehicle-location and mechanic-contact. Each is a *chain*: a producer hop that
+# discloses another principal's object identifier, then the cross-user BOLA read
+# that consumes it. crAPI's other classes (SSRF, JWT, mass assignment) are out of
+# scope for this phase.
 #
 # `state_changing: true` marks a request the firer must NOT fire during recon
 # (read-only-first, §10): the auth/onboarding calls and the contact-mechanic POST
@@ -48,6 +50,28 @@ endpoints:
         location: body
 
   # -- Vehicle-location BOLA flow -------------------------------------------
+  # Producer hop: the community "recent posts" feed. It is served identically to
+  # every authenticated principal and embeds each post author's `vehicleid` — a
+  # cross-user identifier (tier 2). Read-only, so recon probes it safely. The
+  # differential oracle confirms it as a cross-identity data exposure (two
+  # distinct identities obtain the same cross-user payload), and the vehicle
+  # UUIDs it discloses are exactly the identifiers the vehicle-location BOLA
+  # below consumes — the genuine precondition that links the two hops.
+  - method: GET
+    path: /community/api/v2/community/posts/recent
+    content_type: application/json
+    returns:
+      - type: community_feed
+        sensitivity_tier: 2
+        ownership:
+          reveal_path: /community/api/v2/community/posts/recent
+          reveal_method: GET
+          requires_session: true
+          # Caller-scoped: any authenticated caller is served the same feed, so a
+          # non-empty 2xx reveal attributes access to the caller. Type-level (no
+          # instance_key): the finding is about the endpoint exposing the feed,
+          # not any one post instance.
+
   # The read-only "my vehicles" reveal: returns only the caller's own vehicles,
   # so it is the caller-scoped ownership reveal for the vehicle object.
   - method: GET
@@ -88,8 +112,32 @@ endpoints:
         sensitivity_tier: 1
 
   # -- Mechanic-contact BOLA flow -------------------------------------------
-  # A mechanic report is readable by report_id; the documented BOLA is reading a
-  # report that belongs to another principal. Read-only, templated by report_id.
+  # The read-only "my service requests" reveal: returns only the reports
+  # associated with the authenticated caller (a mechanic sees the reports
+  # assigned to them), so it is the caller-scoped ownership reveal for the
+  # service_report object. Each report is a distinct instance keyed by its `id`
+  # — the same identifier the BOLA endpoint below consumes as `report_id`.
+  - method: GET
+    path: /workshop/api/mechanic/service_requests
+    content_type: application/json
+    returns:
+      - type: service_report
+        sensitivity_tier: 2
+        ownership:
+          reveal_path: /workshop/api/mechanic/service_requests
+          reveal_method: GET
+          requires_session: true
+          # Caller-scoped: no owner_field — a 2xx reveal means the authenticated
+          # caller owns the reports returned to them. `id` keys each instance, so
+          # two callers owning two reports get two distinct object nodes (Task 7).
+          instance_key_field: id
+          # crAPI wraps the report list under this key ({"service_requests": [...]})
+          # rather than returning a bare array, so the mapper unwraps it first.
+          items_field: service_requests
+
+  # The BOLA target: any authenticated user can read *another* principal's
+  # mechanic report by its report_id. Read-only; the report_id is the instance
+  # key the reveal above discovered. Cross-user reads are confirmed in Task 7.
   - method: GET
     path: /workshop/api/mechanic/mechanic_report
     content_type: application/json

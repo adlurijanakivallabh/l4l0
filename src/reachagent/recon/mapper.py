@@ -101,6 +101,12 @@ class OwnershipDiscovery:
         so two identities owning two different instances of the same type get two
         distinct object nodes (Task 7). If ``None``, the object is type-level: one
         ``owns`` edge to the type node, the pre–Task 7 behaviour.
+      * ``items_field`` — if the reveal wraps its resource list under a JSON key
+        (e.g. ``{"items": [...]}``) rather than returning a bare array, this names
+        that key so the mapper unwraps the collection before keying instances. If
+        ``None``, the body is taken as-is (bare list or single object). The key
+        name is a fact about the target's response shape, so it lives in the
+        surface config, never hardcoded in the mapper.
 
     The recipe never asserts *who* owns the object, nor fabricates an instance
     key — only how the mapper reads both off the app's own response (Task 2/7).
@@ -111,6 +117,7 @@ class OwnershipDiscovery:
     owner_field: str | None = None
     requires_session: bool = True
     instance_key_field: str | None = None
+    items_field: str | None = None
 
     def __post_init__(self) -> None:
         # The reveal is a probe, so it must be read-only — a state-changing
@@ -229,6 +236,11 @@ class SurfaceSpec:
                 instance_key_field=(
                     str(raw_ownership["instance_key_field"])
                     if raw_ownership.get("instance_key_field") is not None
+                    else None
+                ),
+                items_field=(
+                    str(raw_ownership["items_field"])
+                    if raw_ownership.get("items_field") is not None
                     else None
                 ),
             )
@@ -542,7 +554,7 @@ class SurfaceMapper:
         key_field = recipe.instance_key_field
         if key_field is None:  # unreachable via _discover_one_owner; guards the type
             return _OwnResult(_OwnDiscovery.UNRESOLVED)
-        for item in self._reveal_items(body):
+        for item in self._reveal_items(body, recipe.items_field):
             owner = self._item_owner(identity, recipe, item)
             if owner is None:
                 continue
@@ -583,16 +595,20 @@ class SurfaceMapper:
         return None
 
     @staticmethod
-    def _reveal_items(body: bytes) -> list[Mapping[str, object]]:
+    def _reveal_items(body: bytes, items_field: str | None = None) -> list[Mapping[str, object]]:
         """The reveal's resources as a list of JSON objects (empty if none/unparseable).
 
-        A list body yields its object elements; a single object body yields itself;
-        anything else (empty, scalar, non-JSON) yields no items.
+        When ``items_field`` is set the collection is unwrapped from that key first
+        (e.g. ``{"items": [...]}``), so the resources — not the wrapper — are keyed.
+        Otherwise a list body yields its object elements and a single object body
+        yields itself; anything else yields no items.
         """
         try:
             payload = json.loads(body)
         except (json.JSONDecodeError, ValueError):
             return []
+        if items_field is not None and isinstance(payload, Mapping):
+            payload = payload.get(items_field, [])
         if isinstance(payload, list):
             return [it for it in payload if isinstance(it, Mapping)]
         if isinstance(payload, Mapping):
