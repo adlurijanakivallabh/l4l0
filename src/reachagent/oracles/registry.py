@@ -16,6 +16,7 @@ from reachagent.oracles import OracleMechanism
 from reachagent.oracles.base import Oracle
 from reachagent.oracles.business_rule import BusinessRuleOracle
 from reachagent.oracles.differential import DifferentialOracle
+from reachagent.oracles.oob_callback import OOBCallbackOracle
 from reachagent.oracles.timing_statistical import TimingStatisticalOracle
 
 
@@ -28,6 +29,7 @@ _REGISTRY: dict[OracleMechanism, Oracle] = {
     OracleMechanism.DIFFERENTIAL: DifferentialOracle(),
     OracleMechanism.BUSINESS_RULE_INVARIANT: BusinessRuleOracle(),
     OracleMechanism.TIMING_STATISTICAL: TimingStatisticalOracle(),
+    OracleMechanism.OOB_CALLBACK: OOBCallbackOracle(),
 }
 
 

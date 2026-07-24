@@ -60,14 +60,16 @@ def test_run_oracle_reaches_timing_family_without_unknown_error() -> None:
     assert verdict.is_violation
 
 
-def test_exactly_three_families_registered() -> None:
-    # §7 names six families; three are built (differential Phase 1,
-    # business_rule Phase 2, timing_statistical Phase 3). This is the
-    # tripwire against a fourth uncontrolled addition slipping in.
+def test_exactly_four_families_registered() -> None:
+    # §7 names six families; four are built (differential Phase 1, business_rule
+    # Phase 2, timing_statistical + oob_callback Phase 3). This is the exact-set
+    # tripwire against an uncontrolled family addition slipping in — it fails on
+    # both a missing family and an unexpected extra one.
     assert set(_REGISTRY) == {
         OracleMechanism.DIFFERENTIAL,
         OracleMechanism.BUSINESS_RULE_INVARIANT,
         OracleMechanism.TIMING_STATISTICAL,
+        OracleMechanism.OOB_CALLBACK,
     }
 
 
@@ -189,5 +191,6 @@ def test_perfectly_stable_baseline_confirms_any_higher_probe() -> None:
 
 def test_unknown_mechanism_still_raises() -> None:
     # Sanity: the registry still refuses genuinely-unbuilt families loudly.
+    # EXECUTION_CONFIRMATION lands in a later Phase 3 task (Playwright shim).
     with pytest.raises(UnknownOracleError):
-        get_oracle(OracleMechanism.OOB_CALLBACK)
+        get_oracle(OracleMechanism.EXECUTION_CONFIRMATION)
