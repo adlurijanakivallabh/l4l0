@@ -277,6 +277,33 @@ def test_boolean_blind_rejects_two_pairs_below_threshold() -> None:
     assert not result.confirmed
 
 
+def test_clean_target_stays_inconclusive_through_full_ordering() -> None:
+    # A genuinely non-vulnerable target: OOB fires but no callback arrives, timing
+    # shows probe == baseline (no delay), and boolean pairs are all identical (no
+    # divergence). This exercises the ENTIRE chain — OOB then timing then boolean,
+    # with try_boolean left at its default True — proving the stage-handoff logic
+    # doesn't manufacture a false confirmed_violation anywhere between stages. Not
+    # each stage inconclusive in isolation: all three walked end to end, one run.
+    trace: list[str] = []
+    prober = _prober(
+        oob=OOBProbe(nonce="n-clean", callback_domain="n-clean.oob.internal"),
+        observed=frozenset(),  # callback never arrived
+        timing=TimingProbe(_STABLE_BASELINE, _STABLE_BASELINE),  # no delay
+        boolean=[_identical_pair(), _identical_pair(), _identical_pair()],  # no divergence
+        trace=trace,
+    )
+    result = detect_blind_sqli(prober)  # try_boolean defaults to True — full chain
+    assert not result.confirmed
+    assert result.mechanism is None
+    # Every stage was genuinely walked, in §9 order, and none confirmed.
+    assert result.attempted == (
+        OracleMechanism.OOB_CALLBACK,
+        OracleMechanism.TIMING_STATISTICAL,
+        OracleMechanism.DIFFERENTIAL,
+    )
+    assert trace == ["fire_oob", "fire_timing", "fire_boolean"]
+
+
 def test_boolean_blind_rejects_inconsistent_pairs() -> None:
     # 3 pairs but one is identical (no divergence) → inconsistent → rejected.
     prober = _prober(
