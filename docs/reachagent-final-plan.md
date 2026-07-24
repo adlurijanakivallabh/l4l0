@@ -1,7 +1,9 @@
 # ReachAgent — Web/API Exploitation Agent
 ### Final Project Plan (July 2026)
 
-**Status: Locked — v1.4.** Supersedes all prior drafts. Changes from v1.3: tool calling promoted to a first-class design element — §13 now opens with the tool manifest and a full worked trace (fingerprint → sink-matched selection → mutation → oracle verification) instead of leading with MCP servers; role boundaries are now defined by tool access, not just description (§4, §13). External scanners (sqlmap, Nuclei, ZAP, and Burp/Caido's own built-in scanners) are explicitly excluded as core dependencies (§1, §9, §13), with a deferred, optional ingestion mode specified that still requires every imported candidate to pass `run_oracle` before being confirmed.
+**Status: Locked — v1.4.1.** Changes from v1.4: `fire_browser` added to §13 core manifest as an Explorer-owned browser-side tool for Phase 3 DOM taint-tracking, resolving the open verification question from v1.3.
+
+**Status (v1.4):** Supersedes all prior drafts. Changes from v1.3: tool calling promoted to a first-class design element — §13 now opens with the tool manifest and a full worked trace (fingerprint → sink-matched selection → mutation → oracle verification) instead of leading with MCP servers; role boundaries are now defined by tool access, not just description (§4, §13). External scanners (sqlmap, Nuclei, ZAP, and Burp/Caido's own built-in scanners) are explicitly excluded as core dependencies (§1, §9, §13), with a deferred, optional ingestion mode specified that still requires every imported candidate to pass `run_oracle` before being confirmed.
 
 ---
 
@@ -277,7 +279,8 @@ Tool calling is not an implementation detail sitting underneath the three agent 
 |---|---|---|
 | Explorer | `fingerprint_parameter(endpoint, param)` | Sends canary values, sets `inferred_sink_type` |
 | Explorer | `get_payloads(vuln_class, sink_type)` | Sink-matched lookup from the tagged payload library, ordered by oracle confidence |
-| Explorer | `fire_request(identity, endpoint, payload)` | Executes via HTTP client / Playwright MCP / Burp-or-Caido MCP proxy |
+| Explorer | `fire_request(identity, endpoint, payload)` | Executes an HTTP request via the HTTP client / Burp-or-Caido MCP proxy; returns a network fire handle |
+| Explorer | `fire_browser(identity, url, inject_shim=True)` | Drives a Playwright browser context: navigates `url`, installs the §7 DOM taint-tracking shim via `addInitScript` before load, returns a browser fire handle carrying captured taint events. Browser-side transport — distinct from `fire_request`'s network-side transport, not a flag on it. Explorer-owned, same boundary as `fire_request`; the taint evidence it captures is consumed by `run_oracle`'s execution-confirmation family (Validator), never confirmed by the Explorer |
 | Explorer | `classify_response(response)` | Raw signal extraction — status, length, error strings; produces a candidate handoff, never a confirmation |
 | Coordinator | `query_graph(filter)` | Pulls untested edges, recent findings, spawned identities |
 | Coordinator | `score_and_select(candidates)` | Applies the §4 scoring rule, returns the next test |
@@ -286,7 +289,7 @@ Tool calling is not an implementation detail sitting underneath the three agent 
 | Validator | `write_finding(finding)` | Commits a `Finding` node — gated entirely behind a `confirmed` result from `run_oracle` |
 | Validator | `mark_inconclusive(edge)` | Writes back a negative result so the edge isn't retested |
 
-**Tool access is role-bounded, not just role-described.** The Explorer can call `fire_request` but never `write_finding` — it generates candidates, not confirmations. The Coordinator never calls `fire_request` or `run_oracle` directly — only `query_graph`, `score_and_select`, and `check_budget`. Only the Validator can call `run_oracle` and `write_finding`. Implemented as separate tool subsets per role, this is what makes "only a deterministic check can produce a finding" enforceable in code, not just stated as a principle.
+**Tool access is role-bounded, not just role-described.** The Explorer can call `fire_request` and `fire_browser` but never `write_finding` — it generates candidates, not confirmations. The Coordinator never calls `fire_request` or `run_oracle` directly — only `query_graph`, `score_and_select`, and `check_budget`. Only the Validator can call `run_oracle` and `write_finding`. Implemented as separate tool subsets per role, this is what makes "only a deterministic check can produce a finding" enforceable in code, not just stated as a principle.
 
 ### Worked trace — one test, start to finish
 
@@ -315,7 +318,7 @@ Infrastructure ReachAgent consumes to *implement* the tools above — not a repl
 
 | Component | MCP server | Backs which tool |
 |---|---|---|
-| Browser oracle (XSS execution confirmation, DOM taint-tracking) | **Playwright MCP** — Microsoft's official `@playwright/mcp`, 40+ tools via accessibility-tree snapshots | `fire_request`, and `run_oracle`'s execution-confirmation family. Verify during Phase 3 whether it exposes a script-injection tool sufficient for the §7 taint-tracking shim |
+| Browser oracle (XSS execution confirmation, DOM taint-tracking) | **Playwright MCP** — Microsoft's official `@playwright/mcp`, 40+ tools via accessibility-tree snapshots | `fire_browser` (the dedicated browser fire tool, added to the core manifest above for Phase 3 — `fire_request` stays network-side only), and `run_oracle`'s execution-confirmation family. The §7 taint-tracking shim is installed by `fire_browser` via `addInitScript`; this resolves the v1.3 open question of whether the browser integration exposed a sufficient script-injection path |
 | Proxy / traffic capture and replay | **Burp Suite MCP Server** (PortSwigger's official extension) or **Caido's MCP integration** — capture/replay only | `fire_request`. Vendor-maintained, the right trust bar for something in the request path |
 | Graph store queries (Phase 2+, once past NetworkX) | **Neo4j MCP** — official `neo4j/mcp` | `query_graph`, `write_finding`, `mark_inconclusive` |
 

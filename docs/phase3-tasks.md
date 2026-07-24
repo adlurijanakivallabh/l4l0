@@ -143,6 +143,21 @@ Three load-bearing clauses:
 - The shim is injected via Playwright's `addInitScript` (or equivalent), not via a
   proxy that rewrites responses — the injection is browser-side, not network-side, so
   it does not interfere with HTTPS or require a CA cert.
+- **The browser is driven through a new MCP tool, `fire_browser`, not direct Playwright
+  Python calls (§13 manifest change).** Phase 1's manifest has seven tools, none of
+  which wraps a browser — `fire_request` is network-side (httpx). `fire_browser(identity,
+  url, inject_shim=True)` is added to the §13 core manifest as an Explorer-owned tool:
+  it navigates the URL, installs the shim via `addInitScript` before load, and returns a
+  browser fire handle whose captured taint events feed `run_oracle`'s
+  `EXECUTION_CONFIRMATION` family. A test asserts the DOM-XSS taint path reaches
+  `run_oracle` through `mcp.call_tool` (the real dispatch boundary), not a direct call.
+- **`fire_browser` is proven Explorer-only by an extended boundary test.**
+  `tests/phase*/test_tool_boundaries.py` is extended to assert `fire_browser` is exposed
+  on the Explorer tool subset and is **unreachable** from the Coordinator and Validator
+  subsets — the same structural proof that already covers the original seven tools
+  (Explorer never `write_finding`/`run_oracle`; Coordinator never `fire_request`/
+  `run_oracle`). `fire_browser` joins the `fire_request` side of that assertion: a
+  firing tool, Explorer-only, never a confirmation path.
 - Scope is bounded by the hook list above (§5 Partial support). A sink or source not
   in the list is not detected; the DoD does not require exhaustive coverage. Adding a
   new hook requires updating this list in the surface config, not the shim code —
@@ -218,8 +233,13 @@ Three load-bearing clauses:
 
 ### 9. Juice Shop + PortSwigger target setup and THE phase gate (§14, §15)
 - **Precondition (Tasks 1–8):** all six oracle families used in Phase 3 are
-  registered and callable; the Playwright shim is wired; the payload library covers
-  all Phase 3 classes. The gate cannot be met while any Task 1–8 DoD item is open.
+  registered and callable; the Playwright shim is wired **and driven through the
+  `fire_browser` MCP tool (Task 5), which is present in the §13 manifest and proven
+  Explorer-only by `test_tool_boundaries.py`**; the payload library covers all Phase 3
+  classes. The gate cannot be met while any Task 1–8 DoD item is open. The full-run
+  MCP-boundary invariant below is unsatisfiable for the DOM/stored XSS classes unless
+  `fire_browser` exists — the browser cannot otherwise be reached through
+  `mcp.call_tool`.
 - **Juice Shop** is brought up reproducibly via `docker compose` (mirroring the
   Phase 1 VAmPI and Phase 2 crAPI patterns). A `config/juiceshop-surface.yaml`
   declares the injection/XSS/file-upload/path-traversal surface; the SurfaceMapper
