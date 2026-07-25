@@ -14,6 +14,7 @@ dependencies = [
     "pyyaml>=6.0,<7.0",
     # Expose ReachAgent's own tools as an MCP server from Phase 1 (§13)
     "mcp>=1.2,<2.0",
+    "playwright>=1.61.0",
 ]
 
 [project.scripts]
@@ -52,6 +53,9 @@ select = ["E", "F", "I", "W", "UP", "B", "S"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra"
+markers = [
+    "integration: tests that require a real browser / external process (Playwright)",
+]
 
 [tool.mypy]
 python_version = "3.13"

@@ -598,30 +598,29 @@ def register_tools(mcp: FastMCP, session: _Session) -> None:
 
     @mcp.tool()
     def fire_browser(identity: str, url: str, inject_shim: bool = True) -> dict[str, object]:
-        """Install the taint-tracking shim and navigate to ``url`` (§13, Phase 3 Task 5).
+        """Install the taint-tracking shim and navigate to ``url`` (§13, Phase 3 Task 6).
 
         Explorer-owned. Returns discovered source→sink flows as a JSON-safe dict.
-        Each flow is a candidate for the EXECUTION_CONFIRMATION oracle (deferred to
-        Task 6 / #24). The BrowserDriver is built server-side; it never crosses the
-        JSON boundary, matching the same handle-indirection discipline as fire_request.
+        Each flow is a candidate for the EXECUTION_CONFIRMATION oracle. The
+        PlaywrightDriver is built server-side; it never crosses the JSON boundary,
+        matching the same handle-indirection discipline as fire_request.
         """
+        from playwright.sync_api import sync_playwright
+
+        from reachagent.browser.playwright_driver import PlaywrightDriver
         from reachagent.browser.shim import BrowserFireResult, run_taint_shim
 
-        class _StubDriver:
-            """No-op driver until Playwright is wired in #24."""
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch(headless=True)
+            try:
+                page = browser.new_page()
+                driver = PlaywrightDriver(page)
+                result: BrowserFireResult = run_taint_shim(
+                    driver, identity, url, inject_shim=inject_shim
+                )
+            finally:
+                browser.close()
 
-            def add_init_script(self, script: str) -> None:  # noqa: ARG002
-                pass
-
-            def navigate(self, url: str) -> None:  # noqa: ARG002
-                pass
-
-            def evaluate(self, expression: str) -> object:  # noqa: ARG002
-                return []
-
-        result: BrowserFireResult = run_taint_shim(
-            _StubDriver(), identity, url, inject_shim=inject_shim
-        )
         return {
             "url": result.url,
             "identity": result.identity,
