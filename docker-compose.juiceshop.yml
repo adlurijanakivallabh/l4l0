@@ -1,0 +1,24 @@
+# Juice Shop evaluation environment for the Phase 3 gate (Task 9, plan §14/§15).
+#
+# Brings up OWASP Juice Shop on port 3000, mirroring the role
+# docker-compose.yml plays for VAmPI and docker-compose.crapi.yml for crAPI.
+#
+# The project name is pinned so ownership never drifts to the invocation
+# directory's basename. Pinning here means this wrapper owns the containers
+# no matter the cwd.
+#
+#   docker compose -f docker-compose.juiceshop.yml up -d
+#   uv run pytest tests/phase3/test_juiceshop_gate.py -v   # run the gate
+#   docker compose -f docker-compose.juiceshop.yml down
+#
+# Juice Shop exposes its web/API surface on 127.0.0.1:3000.
+# The challenge tracker API is at http://localhost:3000/api/Challenges.
+name: reachagent-juiceshop
+
+services:
+  juiceshop:
+    image: bkimminich/juice-shop:latest
+    container_name: reachagent-juiceshop
+    ports:
+      - "3000:3000"
+    restart: unless-stopped
