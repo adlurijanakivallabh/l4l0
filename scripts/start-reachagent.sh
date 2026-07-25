@@ -1,6 +1,9 @@
 #!/bin/bash
 # ReachAgent environment startup — run this whenever you sit down to work.
-set -e
+# No `set -e`: a failed `docker compose up` must NOT skip the status report
+# below — that report is the whole point of the script. Failures surface as
+# DOWN / non-200 lines, not a silent early exit.
+set -uo pipefail
 
 REACHAGENT_DIR="$HOME/Downloads/reachagent"
 CRAPI_COMPOSE="$HOME/Downloads/crAPI-main/deploy/docker/docker-compose.yml"
@@ -19,12 +22,14 @@ for i in $(seq 1 15); do
 done
 
 echo "==> Starting crAPI (pinned reachagent-crapi project)..."
-cd "$REACHAGENT_DIR"
+cd "$REACHAGENT_DIR" || { echo "  ✗ cannot cd into $REACHAGENT_DIR"; exit 1; }
 CRAPI_COMPOSE_PATH="$CRAPI_COMPOSE" \
-  docker compose -f docker-compose.crapi.yml up -d
+  docker compose -f docker-compose.crapi.yml up -d \
+  || echo "  ✗ crAPI compose failed — see status below / 'docker compose -f docker-compose.crapi.yml logs'"
 
 echo "==> Starting VAmPI (both toggles)..."
-docker compose up -d
+docker compose up -d \
+  || echo "  ✗ VAmPI compose failed — see status below / 'docker compose logs'"
 
 echo "==> Waiting for services to settle..."
 sleep 5
