@@ -60,6 +60,12 @@ class DiffExpectation(StrEnum):
     # Injection: baseline and probe are one request under two conditions a safe
     # app answers identically; a divergence proves the condition reached the sink.
     RESPONSES_INVARIANT = "responses_invariant"
+    # Auth bypass: baseline is the same request with a benign credential that is
+    # correctly REFUSED; probe is the operator-injection variant. If the injection
+    # turns a refusal into a grant, authentication was bypassed. Body-equivalence
+    # is NOT the signal here (a fresh session returns a different body/token than
+    # the refused attempt) — the state transition refused→granted is.
+    AUTH_BYPASS = "auth_bypass"
 
 
 class _AccessOutcome(StrEnum):
@@ -159,6 +165,20 @@ def decide(evidence: DifferentialEvidence) -> FindingStatus:
         )
         if both_granted and not equivalent:
             return FindingStatus.CONFIRMED_VIOLATION
+        return FindingStatus.INCONCLUSIVE
+
+    if evidence.expectation is DiffExpectation.AUTH_BYPASS:
+        # Baseline is the benign attempt that a secure app REFUSES; probe is the
+        # operator-injection variant. Refused-then-granted is the bypass — the
+        # only confirming transition. Handled before the GRANTED-baseline guard
+        # below precisely because a valid baseline here is a *refusal*, not a grant.
+        if baseline_outcome is _AccessOutcome.REFUSED and probe_outcome is _AccessOutcome.GRANTED:
+            return FindingStatus.CONFIRMED_VIOLATION
+        if baseline_outcome is _AccessOutcome.REFUSED and probe_outcome is _AccessOutcome.REFUSED:
+            # Injection was refused too — authentication held. A confirmed fact.
+            return FindingStatus.CONFIRMED_DENIED
+        # Baseline wasn't actually refused (can't prove a bypass without a
+        # refused reference), or an ambiguous probe: no trustworthy verdict.
         return FindingStatus.INCONCLUSIVE
 
     # Access-control axes need a valid baseline (the owner/authorized reference
