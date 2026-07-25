@@ -241,10 +241,10 @@ def test_run_oracle_unknown_mechanism_raises() -> None:
         baseline=Observation("o", 200, "d"),
         probe=Observation("p", 200, "d"),
     )
-    # A registered enum member with no oracle yet (EXECUTION_CONFIRMATION lands
-    # in a later Phase 3 task — the Playwright shim).
+    # A registered enum member with no oracle yet: STRUCTURAL is the last
+    # unbuilt §7 family (EXECUTION_CONFIRMATION was built in Task 6 / #24).
     with pytest.raises(UnknownOracleError):
-        validator.run_oracle(OracleMechanism.EXECUTION_CONFIRMATION, ev)
+        validator.run_oracle(OracleMechanism.STRUCTURAL, ev)
 
 
 def test_oracle_rejects_wrong_evidence_type() -> None:
@@ -285,6 +285,7 @@ def test_only_the_oracle_family_constructs_a_verdict() -> None:
     assert sorted(constructors) == [
         "oracles/business_rule.py",
         "oracles/differential.py",
+        "oracles/execution_confirmation.py",
         "oracles/oob_callback.py",
         "oracles/timing_statistical.py",
     ]

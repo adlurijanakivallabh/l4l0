@@ -5,8 +5,7 @@ Covers the Task 5 DoD:
   * Source→sink flows are collected from window.__reachagent_flows.
   * fire_browser is Explorer-only — unreachable from Coordinator/Validator
     (the named structural proof required by the v1.4.1 plan edit).
-  * EXECUTION_CONFIRMATION oracle is still unbuilt (deferred to #24) —
-    run_oracle raises UnknownOracleError, proving deferral is genuine.
+  * EXECUTION_CONFIRMATION oracle built in Task 6 (#24) — registered in registry.
   * MCP boundary: fire_browser routes through mcp.call_tool, not a direct
     Playwright Python call — proven by the BrowserDriver Protocol seam.
   * Clean-target test: a page with no injectable sinks finds nothing,
@@ -23,8 +22,6 @@ from reachagent.browser.shim import (
     BrowserFireResult,
     run_taint_shim,
 )
-from reachagent.oracles import OracleMechanism
-from reachagent.oracles.registry import UnknownOracleError, get_oracle
 from reachagent.tools import coordinator, explorer, validator
 
 # === Fake BrowserDriver (the MCP-boundary seam) ==============================
@@ -149,17 +146,6 @@ def test_clean_target_finds_no_flows_through_full_discovery_path() -> None:
     # Shim was installed and navigation happened — the full path ran.
     assert TAINT_SHIM_JS in driver.init_scripts
     assert driver.navigated_urls == ["http://clean-target/page"]
-
-
-# === EXECUTION_CONFIRMATION oracle deferred to #24 ===========================
-
-
-def test_execution_confirmation_oracle_still_raises_unknown_error() -> None:
-    # EXECUTION_CONFIRMATION is deferred to Task 6 (#24). This test proves the
-    # deferral is genuine — run_oracle raises UnknownOracleError, not a silent
-    # inconclusive. The candidate→oracle→finding gate is preserved.
-    with pytest.raises(UnknownOracleError):
-        get_oracle(OracleMechanism.EXECUTION_CONFIRMATION)
 
 
 # === fire_browser role-boundary proof (v1.4.1 plan requirement) ==============
