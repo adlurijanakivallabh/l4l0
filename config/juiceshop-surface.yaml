@@ -1,0 +1,234 @@
+# Juice Shop declared surface — recon input for the SurfaceMapper (plan §3, §6; Phase 3 Task 9).
+#
+# Grey-box recon (§16): the endpoint/parameter/object inventory relevant to the
+# four Phase 3 detection classes — injection, XSS, file upload, path traversal.
+# Expressed declaratively so the SurfaceMapper stays generic — no per-challenge
+# logic in the mapper, no Juice Shop challenge names in detection code.
+#
+# Scope (Phase 3 gate, §14): injection (SQLi + NoSQLi), XSS (DOM/reflected/stored),
+# file upload type/extension bypass, path traversal (local file read).
+# Out of scope for this phase: BOLA/auth (Phase 2), SSRF, XXE, SSTi, chatbot,
+# cryptographic issues, business logic.
+#
+# `state_changing: true` marks requests the firer must NOT fire during recon
+# (read-only-first, §10). Auth calls are established out-of-band; the mapper
+# never fires them.
+#
+# Object sensitivity tiers follow the §4 scoring rule:
+#   0 public, 1 user-owned, 2 cross-user, 3 admin/system.
+
+endpoints:
+  # -- Auth (state-changing: established out-of-band, never recon-fired) --------
+  - method: POST
+    path: /rest/user/login
+    content_type: application/json
+    state_changing: true
+    parameters:
+      - name: email
+        location: body
+      - name: password
+        location: body
+
+  - method: POST
+    path: /api/Users
+    content_type: application/json
+    state_changing: true
+    parameters:
+      - name: email
+        location: body
+      - name: password
+        location: body
+
+  # -- Product search — SQLi surface (injection class) -------------------------
+  # Primary SQLi injection point: `q` parameter is passed to a SQL LIKE query.
+  # Reflected in response body (product list). Read-only GET.
+  - method: GET
+    path: /rest/products/search
+    parameters:
+      - name: q
+        location: query
+        injectable: true
+        injection_classes: [sqli, nosqli]
+    returns:
+      - type: product
+        sensitivity_tier: 0
+
+  # -- User login — SQLi/NoSQLi surface (injection class) ----------------------
+  # Login endpoint accepts JSON body; email/password fields are injection points
+  # for auth-bypass SQLi (login admin, login Bender/Jim challenges).
+  - method: POST
+    path: /rest/user/login
+    content_type: application/json
+    parameters:
+      - name: email
+        location: body
+        injectable: true
+        injection_classes: [sqli]
+      - name: password
+        location: body
+        injectable: true
+        injection_classes: [sqli]
+    returns:
+      - type: auth_token
+        sensitivity_tier: 1
+
+  # -- Product reviews — NoSQLi surface (injection class) ----------------------
+  # PUT /rest/products/:id/reviews: review text stored in MongoDB; NoSQL
+  # operator injection in the review body can manipulate stored documents.
+  - method: PUT
+    path: /rest/products/{id}/reviews
+    content_type: application/json
+    parameters:
+      - name: id
+        location: path
+      - name: message
+        location: body
+        injectable: true
+        injection_classes: [nosqli]
+    returns:
+      - type: review
+        sensitivity_tier: 1
+
+  # -- Feedback — stored XSS surface (XSS class) -------------------------------
+  # POST /api/Feedbacks: comment field is stored and later rendered in the admin
+  # panel without sanitisation (server-side XSS protection challenge).
+  # GET /api/Feedbacks: returns stored feedback — used as the read-back probe
+  # for stored XSS confirmation.
+  - method: POST
+    path: /api/Feedbacks
+    content_type: application/json
+    state_changing: true
+    parameters:
+      - name: comment
+        location: body
+        injectable: true
+        injection_classes: [xss_stored]
+      - name: rating
+        location: body
+    returns:
+      - type: feedback
+        sensitivity_tier: 0
+
+  - method: GET
+    path: /api/Feedbacks
+    returns:
+      - type: feedback
+        sensitivity_tier: 0
+
+  # -- User profile — stored XSS surface (XSS class) ---------------------------
+  # Username field rendered without encoding in the admin user list
+  # (client-side XSS protection / CSP bypass challenges).
+  - method: PUT
+    path: /rest/users/{id}
+    content_type: application/json
+    state_changing: true
+    parameters:
+      - name: id
+        location: path
+      - name: username
+        location: body
+        injectable: true
+        injection_classes: [xss_stored]
+    returns:
+      - type: user
+        sensitivity_tier: 1
+
+  # -- Search page — DOM XSS surface (XSS class) --------------------------------
+  # The `q` parameter value is reflected into the DOM via innerHTML without
+  # sanitisation (DOM XSS challenge). Read-only GET; Playwright taint-tracking
+  # shim detects the sink assignment.
+  - method: GET
+    path: /#/search
+    parameters:
+      - name: q
+        location: query
+        injectable: true
+        injection_classes: [xss_dom, xss_reflected]
+
+  # -- Redirect — reflected XSS surface (XSS class) ----------------------------
+  # `to` parameter value is reflected in a redirect response header and in an
+  # error page body (reflected XSS challenge).
+  - method: GET
+    path: /redirect
+    parameters:
+      - name: to
+        location: query
+        injectable: true
+        injection_classes: [xss_reflected]
+
+  # -- File upload — type/extension bypass surface (file upload class) ----------
+  # POST /file-upload: accepts multipart uploads; enforces a MIME-type allowlist
+  # in the client but not reliably server-side (upload type/size challenges).
+  # Baseline: a legitimate image upload (accepted). Probe: disguised executable
+  # or oversized file.
+  - method: POST
+    path: /file-upload
+    content_type: multipart/form-data
+    state_changing: true
+    parameters:
+      - name: file
+        location: body
+        injectable: true
+        injection_classes: [file_upload_bypass]
+    returns:
+      - type: upload_result
+        sensitivity_tier: 0
+
+  # -- Profile image — file upload surface (file upload class) ------------------
+  # POST /profile/image-upload: profile picture upload; same bypass surface as
+  # /file-upload but scoped to the authenticated user's profile.
+  - method: POST
+    path: /profile/image-upload
+    content_type: multipart/form-data
+    state_changing: true
+    parameters:
+      - name: file
+        location: body
+        injectable: true
+        injection_classes: [file_upload_bypass]
+    returns:
+      - type: upload_result
+        sensitivity_tier: 1
+
+  # -- FTP directory — path traversal surface (path traversal class) ------------
+  # GET /ftp/<filename>: serves files from the /ftp directory; path traversal
+  # via encoded `../` sequences can reach files outside the ftp root
+  # (local file read challenge). Read-only GET.
+  - method: GET
+    path: /ftp/{filename}
+    parameters:
+      - name: filename
+        location: path
+        injectable: true
+        injection_classes: [path_traversal]
+    returns:
+      - type: file_content
+        sensitivity_tier: 2
+
+  # -- Support log — path traversal surface (path traversal class) --------------
+  # GET /support/logs: serves support log files; path traversal in the filename
+  # parameter can reach arbitrary files on the server filesystem.
+  - method: GET
+    path: /support/logs
+    parameters:
+      - name: file
+        location: query
+        injectable: true
+        injection_classes: [path_traversal]
+    returns:
+      - type: file_content
+        sensitivity_tier: 2
+
+  # -- Challenge tracker API (read-only, used by gate harness only) -------------
+  # GET /api/Challenges: returns all challenges with solved status. The Phase 3
+  # gate harness queries this to score coverage — never an injection target.
+  - method: GET
+    path: /api/Challenges
+    parameters:
+      - name: sort
+        location: query
+      - name: limit
+        location: query
+    returns:
+      - type: challenge_list
+        sensitivity_tier: 0
