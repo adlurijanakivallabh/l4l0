@@ -35,6 +35,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from reachagent.detection.oracle_gateway import OracleRunner, registry_runner
 from reachagent.oracles import OracleMechanism
 from reachagent.oracles.differential import (
     DiffAxis,
@@ -43,7 +44,6 @@ from reachagent.oracles.differential import (
     Observation,
 )
 from reachagent.oracles.timing_statistical import PairedTrialEvidence
-from reachagent.tools.validator import run_oracle
 
 
 @dataclass(frozen=True)
@@ -91,6 +91,7 @@ class LdapiProber:
     fire_auth_bypass: Callable[[], AuthBypassProbe]
     # Fire the paired timing trials; return measured latencies.
     fire_timing: Callable[[], TimingProbe]
+    oracle_runner: OracleRunner = registry_runner
 
 
 def _auth_bypass_confirms(prober: LdapiProber, evidence_ref: str) -> bool:
@@ -103,7 +104,7 @@ def _auth_bypass_confirms(prober: LdapiProber, evidence_ref: str) -> bool:
         probe=probe.probe,
         evidence_ref=evidence_ref,
     )
-    verdict = run_oracle(OracleMechanism.DIFFERENTIAL, evidence)
+    verdict = prober.oracle_runner(OracleMechanism.DIFFERENTIAL, evidence)
     return verdict.is_violation
 
 
@@ -115,7 +116,7 @@ def _timing_confirms(prober: LdapiProber, evidence_ref: str) -> bool:
         baseline_latencies_ms=probe.baseline_latencies_ms,
         evidence_ref=evidence_ref,
     )
-    verdict = run_oracle(OracleMechanism.TIMING_STATISTICAL, evidence)
+    verdict = prober.oracle_runner(OracleMechanism.TIMING_STATISTICAL, evidence)
     return verdict.is_violation
 
 

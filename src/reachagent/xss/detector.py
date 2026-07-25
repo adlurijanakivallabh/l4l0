@@ -28,9 +28,9 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from reachagent.browser.shim import BrowserFireResult, TaintFlow
+from reachagent.detection.oracle_gateway import OracleRunner, registry_runner
 from reachagent.oracles import OracleMechanism
 from reachagent.oracles.execution_confirmation import ExecutionConfirmationEvidence
-from reachagent.tools.validator import run_oracle
 
 
 @dataclass(frozen=True)
@@ -79,6 +79,7 @@ class XssProber:
 
     fire_dom: Callable[[], DomProbe]
     fire_stored: Callable[[], StoredProbe] | None = None
+    oracle_runner: OracleRunner = registry_runner
 
 
 def _dom_confirms(prober: XssProber, evidence_ref: str) -> tuple[bool, tuple[TaintFlow, ...]]:
@@ -88,7 +89,7 @@ def _dom_confirms(prober: XssProber, evidence_ref: str) -> tuple[bool, tuple[Tai
         flows=probe.result.flows,
         evidence_ref=evidence_ref,
     )
-    verdict = run_oracle(OracleMechanism.EXECUTION_CONFIRMATION, evidence)
+    verdict = prober.oracle_runner(OracleMechanism.EXECUTION_CONFIRMATION, evidence)
     return verdict.is_violation, probe.result.flows
 
 
@@ -106,7 +107,7 @@ def _stored_confirms(prober: XssProber, evidence_ref: str) -> bool:
         response_body=probe.readback_body,
         evidence_ref=evidence_ref,
     )
-    verdict = run_oracle(OracleMechanism.EXECUTION_CONFIRMATION, evidence)
+    verdict = prober.oracle_runner(OracleMechanism.EXECUTION_CONFIRMATION, evidence)
     return verdict.is_violation
 
 

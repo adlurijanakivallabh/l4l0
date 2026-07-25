@@ -33,7 +33,7 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
-from reachagent.graph.nodes import FindingStatus
+from reachagent.detection.oracle_gateway import OracleRunner, registry_runner
 from reachagent.oracles import OracleMechanism
 from reachagent.oracles.differential import (
     DiffAxis,
@@ -43,7 +43,6 @@ from reachagent.oracles.differential import (
 )
 from reachagent.oracles.oob_callback import OOBCallbackEvidence
 from reachagent.oracles.timing_statistical import PairedTrialEvidence
-from reachagent.tools.validator import run_oracle
 
 # A boolean-blind separation must repeat across at least this many trial pairs
 # before it counts — one divergent pair could be jitter, a stable run is signal.
@@ -111,6 +110,7 @@ class BlindSqliProber:
     # Fire ≥3 boolean TRUE/FALSE pairs; return them. Empty if not a boolean-blind
     # candidate (then this path is skipped).
     fire_boolean_pairs: Callable[[], Sequence[BooleanTrialPair]] = lambda: ()
+    oracle_runner: OracleRunner = registry_runner
 
 
 def _oob_confirms(prober: BlindSqliProber, evidence_ref: str) -> tuple[bool, OOBProbe | None]:
@@ -123,7 +123,7 @@ def _oob_confirms(prober: BlindSqliProber, evidence_ref: str) -> tuple[bool, OOB
         observed_nonces=prober.observed_nonces(),
         evidence_ref=evidence_ref,
     )
-    verdict = run_oracle(OracleMechanism.OOB_CALLBACK, evidence)
+    verdict = prober.oracle_runner(OracleMechanism.OOB_CALLBACK, evidence)
     return verdict.is_violation, probe
 
 
@@ -135,7 +135,7 @@ def _timing_confirms(prober: BlindSqliProber, evidence_ref: str) -> bool:
         baseline_latencies_ms=probe.baseline_latencies_ms,
         evidence_ref=evidence_ref,
     )
-    verdict = run_oracle(OracleMechanism.TIMING_STATISTICAL, evidence)
+    verdict = prober.oracle_runner(OracleMechanism.TIMING_STATISTICAL, evidence)
     return verdict.is_violation
 
 
@@ -158,8 +158,8 @@ def _boolean_confirms(prober: BlindSqliProber, evidence_ref: str) -> bool:
             probe=pair.false_condition,
             evidence_ref=evidence_ref,
         )
-        verdict = run_oracle(OracleMechanism.DIFFERENTIAL, evidence)
-        if verdict.status is not FindingStatus.CONFIRMED_VIOLATION:
+        verdict = prober.oracle_runner(OracleMechanism.DIFFERENTIAL, evidence)
+        if verdict.status != "confirmed_violation":
             # Any pair that does not diverge breaks the consistency requirement.
             return False
     return True

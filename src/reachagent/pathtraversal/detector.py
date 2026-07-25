@@ -19,9 +19,9 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from reachagent.detection.oracle_gateway import OracleRunner, registry_runner
 from reachagent.oracles import OracleMechanism
 from reachagent.oracles.structural import StructuralCheckType, StructuralEvidence
-from reachagent.tools.validator import run_oracle
 
 
 @dataclass(frozen=True)
@@ -37,10 +37,12 @@ class PathTraversalProber:
 
     ``fire_probe``: fire the traversal request and return the response body.
     ``sentinel``: known string that proves out-of-scope file access.
+    ``oracle_runner``: injectable oracle seam; defaults to registry (no validator import).
     """
 
     fire_probe: Callable[[], TraversalProbeResult]
     sentinel: str
+    oracle_runner: OracleRunner = registry_runner
 
 
 @dataclass(frozen=True)
@@ -68,5 +70,5 @@ def detect_path_traversal(
         response_body=probe.body,
         evidence_ref=evidence_ref,
     )
-    verdict = run_oracle(OracleMechanism.STRUCTURAL, evidence)
+    verdict = prober.oracle_runner(OracleMechanism.STRUCTURAL, evidence)
     return PathTraversalResult(confirmed=verdict.is_violation, evidence_ref=evidence_ref)

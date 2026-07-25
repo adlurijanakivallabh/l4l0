@@ -19,9 +19,9 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from reachagent.detection.oracle_gateway import OracleRunner, registry_runner
 from reachagent.oracles import OracleMechanism
 from reachagent.oracles.structural import StructuralCheckType, StructuralEvidence
-from reachagent.tools.validator import run_oracle
 
 
 @dataclass(frozen=True)
@@ -37,10 +37,12 @@ class FileUploadProber:
 
     ``fire_baseline``: upload a legitimately allowed file; return its HTTP status.
     ``fire_probe``: upload the disguised/disallowed file; return its HTTP status.
+    ``oracle_runner``: injectable oracle seam; defaults to registry (no validator import).
     """
 
     fire_baseline: Callable[[], UploadProbeResult]
     fire_probe: Callable[[], UploadProbeResult]
+    oracle_runner: OracleRunner = registry_runner
 
 
 @dataclass(frozen=True)
@@ -71,5 +73,5 @@ def detect_file_upload_bypass(
         probe_status=probe.status_code,
         evidence_ref=evidence_ref,
     )
-    verdict = run_oracle(OracleMechanism.STRUCTURAL, evidence)
+    verdict = prober.oracle_runner(OracleMechanism.STRUCTURAL, evidence)
     return FileUploadResult(confirmed=verdict.is_violation, evidence_ref=evidence_ref)
