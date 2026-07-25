@@ -53,3 +53,25 @@ into two correctly-attributed commits, each independently gate-green
 
 f5e42fc is now unreferenced (dangling). The corrected history is the two
 commits above.
+
+## Decision: 0%→75% coverage gap — scoped as future task, not started
+
+**Date:** 2026-07-25
+
+Closing the gap from 0% to the §14/§15 gate floor of 75% requires
+per-challenge exploit logic that was explicitly deferred:
+
+- **SQLi**: real injection strings (UNION SELECT, `')) OR 1=1--`, etc.)
+  rather than a bare `'` that returns 200 identical to baseline.
+- **Path traversal**: Juice Shop rejects `../../etc/passwd` with 403.
+  Requires null-byte trick or encoded-dot-slash (`%2e%2e%2f`) to bypass
+  the FTP directory guard.
+- **XSS (stored)**: POST `/api/Feedbacks` returns 500 without
+  `captchaId`/`captcha` fields. Requires a captcha-aware write path.
+- **File upload**: both baseline and probe return 204; no differential
+  signal on the current endpoint/payload pair.
+
+Current state is the correct stopping point: honest 0% baseline,
+clean provenance (two correctly-attributed commits), all standing gates
+green (344 pytest, ruff, ruff format, mypy). Per-challenge exploit logic
+is scoped as its own future task and not started this session.
