@@ -60,17 +60,12 @@ def test_run_oracle_reaches_timing_family_without_unknown_error() -> None:
     assert verdict.is_violation
 
 
-def test_exactly_five_families_registered() -> None:
-    # §7 names six families; five are built (differential Phase 1, business_rule
-    # Phase 2, timing_statistical + oob_callback + execution_confirmation Phase 3).
-    # This is the exact-set tripwire against an uncontrolled family addition.
-    assert set(_REGISTRY) == {
-        OracleMechanism.DIFFERENTIAL,
-        OracleMechanism.BUSINESS_RULE_INVARIANT,
-        OracleMechanism.TIMING_STATISTICAL,
-        OracleMechanism.OOB_CALLBACK,
-        OracleMechanism.EXECUTION_CONFIRMATION,
-    }
+def test_all_six_families_registered() -> None:
+    # §7 names six families; all six are now built (differential Phase 1,
+    # business_rule Phase 2, timing_statistical + oob_callback +
+    # execution_confirmation + structural Phase 3). This is the exact-set
+    # tripwire against an uncontrolled family addition — it must equal the enum.
+    assert set(_REGISTRY) == set(OracleMechanism)
 
 
 def test_timing_mechanism_is_one_of_the_six_declared_families() -> None:
@@ -190,8 +185,8 @@ def test_perfectly_stable_baseline_confirms_any_higher_probe() -> None:
 
 
 def test_unknown_mechanism_still_raises() -> None:
-    # Sanity: the registry still refuses genuinely-unbuilt families loudly.
-    # STRUCTURAL (JWT forgery / file upload / path traversal) is the last
-    # unbuilt §7 family — EXECUTION_CONFIRMATION was built in Task 6 (#24).
-    with pytest.raises(UnknownOracleError):
-        get_oracle(OracleMechanism.STRUCTURAL)
+    # All six §7 families are now built. The registry must still refuse a
+    # genuinely unknown mechanism — proven by passing an invalid string that
+    # cannot be coerced to any OracleMechanism enum member.
+    with pytest.raises((UnknownOracleError, ValueError)):
+        get_oracle("not_a_real_mechanism")  # type: ignore[arg-type]

@@ -241,10 +241,10 @@ def test_run_oracle_unknown_mechanism_raises() -> None:
         baseline=Observation("o", 200, "d"),
         probe=Observation("p", 200, "d"),
     )
-    # A registered enum member with no oracle yet: STRUCTURAL is the last
-    # unbuilt §7 family (EXECUTION_CONFIRMATION was built in Task 6 / #24).
-    with pytest.raises(UnknownOracleError):
-        validator.run_oracle(OracleMechanism.STRUCTURAL, ev)
+    # All six §7 families are now built. The registry still refuses a genuinely
+    # unknown mechanism — proven by passing an invalid string.
+    with pytest.raises((UnknownOracleError, ValueError)):
+        validator.run_oracle("not_a_real_mechanism", ev)  # type: ignore[arg-type]
 
 
 def test_oracle_rejects_wrong_evidence_type() -> None:
@@ -287,6 +287,7 @@ def test_only_the_oracle_family_constructs_a_verdict() -> None:
         "oracles/differential.py",
         "oracles/execution_confirmation.py",
         "oracles/oob_callback.py",
+        "oracles/structural.py",
         "oracles/timing_statistical.py",
     ]
     assert all(p.startswith("oracles/") for p in constructors)
