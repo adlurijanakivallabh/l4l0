@@ -31,11 +31,13 @@ from typing import TYPE_CHECKING
 # are classes (callable) that would leak into that surface if bound here directly.
 # ``_nodes`` is needed at runtime (``_infer_sink_type`` returns real ``SinkType``
 # values); the bare names below are annotation-only under ``TYPE_CHECKING``.
+from reachagent.browser import shim as _shim
 from reachagent.graph import nodes as _nodes
 from reachagent.tools import candidate as _candidate
 from reachagent.tools import explorer_context as _ctx
 
 if TYPE_CHECKING:
+    from reachagent.browser.shim import BrowserDriver, BrowserFireResult
     from reachagent.execution.firer import FireResult
     from reachagent.graph.nodes import SinkType
     from reachagent.oracles import OracleMechanism
@@ -269,3 +271,25 @@ def classify_response(
         signal=signal,
         notes=notes,
     )
+
+
+def fire_browser(
+    driver: BrowserDriver,
+    identity: str,
+    url: str,
+    *,
+    inject_shim: bool = True,
+) -> BrowserFireResult:
+    """Install the taint-tracking shim and navigate to ``url`` (§13, Phase 3 Task 5).
+
+    Explorer-owned transport for browser-side DOM XSS discovery. Installs the
+    JavaScript shim via ``addInitScript``, navigates, and returns a
+    :class:`~reachagent.browser.shim.BrowserFireResult` carrying any source→sink
+    flows the shim recorded. Each flow is a candidate for the
+    ``EXECUTION_CONFIRMATION`` oracle (deferred to Task 6 / #24).
+
+    Role boundary: this tool is Explorer-only. It has no path to ``write_finding``
+    or ``run_oracle`` — the same invariant as the other four Explorer tools, proven
+    structurally in ``tests/phase*/test_tool_boundaries.py``.
+    """
+    return _shim.run_taint_shim(driver, identity, url, inject_shim=inject_shim)

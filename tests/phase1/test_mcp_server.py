@@ -32,7 +32,13 @@ from reachagent.tools.explorer_context import ExplorerContext
 if TYPE_CHECKING:
     from mcp.server.fastmcp import FastMCP
 
-EXPLORER_TOOLS = {"fingerprint_parameter", "get_payloads", "fire_request", "classify_response"}
+EXPLORER_TOOLS = {
+    "fingerprint_parameter",
+    "get_payloads",
+    "fire_request",
+    "classify_response",
+    "fire_browser",
+}
 VALIDATOR_TOOLS = {"run_oracle", "write_finding", "mark_inconclusive"}
 COORDINATOR_TOOLS = {"query_graph", "score_and_select", "check_budget"}
 

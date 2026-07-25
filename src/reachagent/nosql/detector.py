@@ -25,6 +25,7 @@ the ordering guarantee is unit-testable without a network.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from reachagent.oracles import OracleMechanism
@@ -80,8 +81,6 @@ class NoSqliProber:
     Tests supply in-memory fakes; the live detector supplies firer-backed
     implementations. The detector contains only ordering logic, no I/O.
     """
-
-    from collections.abc import Callable
 
     # Fire the auth-bypass probe pair; return (baseline_obs, probe_obs).
     fire_auth_bypass: Callable[[], AuthBypassProbe]

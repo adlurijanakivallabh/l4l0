@@ -393,7 +393,7 @@ class FindingOut:
 def register_tools(mcp: FastMCP, session: _Session) -> None:
     """Register the Explorer + Validator tools on ``mcp``, bound to ``session`` (§13).
 
-    Exactly seven tools, matching the §13 manifest's Explorer and Validator rows —
+    Exactly eight tools, matching the §13 manifest's Explorer and Validator rows —
     no Coordinator tool is registered here. Each wrapper binds the server-side
     context/graph and exposes the bare §13 contract (domain arguments only), so a
     human — and later the Coordinator — calls the same signature. The wrappers add
@@ -593,6 +593,44 @@ def register_tools(mcp: FastMCP, session: _Session) -> None:
         """Write a negative result back to a can_call edge so it isn't retested (§13)."""
         _validator.mark_inconclusive(session.graph, identity_node, endpoint_node, evidence=evidence)
         return "inconclusive"
+
+    # -- fire_browser: Explorer-owned browser transport for DOM XSS (§13, Task 5) --
+
+    @mcp.tool()
+    def fire_browser(identity: str, url: str, inject_shim: bool = True) -> dict[str, object]:
+        """Install the taint-tracking shim and navigate to ``url`` (§13, Phase 3 Task 5).
+
+        Explorer-owned. Returns discovered source→sink flows as a JSON-safe dict.
+        Each flow is a candidate for the EXECUTION_CONFIRMATION oracle (deferred to
+        Task 6 / #24). The BrowserDriver is built server-side; it never crosses the
+        JSON boundary, matching the same handle-indirection discipline as fire_request.
+        """
+        from reachagent.browser.shim import BrowserFireResult, run_taint_shim
+
+        class _StubDriver:
+            """No-op driver until Playwright is wired in #24."""
+
+            def add_init_script(self, script: str) -> None:  # noqa: ARG002
+                pass
+
+            def navigate(self, url: str) -> None:  # noqa: ARG002
+                pass
+
+            def evaluate(self, expression: str) -> object:  # noqa: ARG002
+                return []
+
+        result: BrowserFireResult = run_taint_shim(
+            _StubDriver(), identity, url, inject_shim=inject_shim
+        )
+        return {
+            "url": result.url,
+            "identity": result.identity,
+            "shim_installed": result.shim_installed,
+            "flows": [
+                {"source": f.source, "sink": f.sink, "value_snippet": f.value_snippet}
+                for f in result.flows
+            ],
+        }
 
 
 def build_server(

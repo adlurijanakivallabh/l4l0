@@ -24,7 +24,25 @@ def test_explorer_never_exposes_write_finding() -> None:
     names = _tool_names(explorer)
     assert "write_finding" not in names
     assert "run_oracle" not in names
-    assert names == {"fingerprint_parameter", "get_payloads", "fire_request", "classify_response"}
+    # fire_browser (Phase 3 Task 5) is the fifth Explorer tool — the browser-side
+    # transport for DOM XSS discovery. It is Explorer-owned like the other four
+    # and, critically, has no write_finding/run_oracle path (asserted above).
+    assert names == {
+        "fingerprint_parameter",
+        "get_payloads",
+        "fire_request",
+        "classify_response",
+        "fire_browser",
+    }
+
+
+def test_fire_browser_is_explorer_only_and_unreachable_from_other_roles() -> None:
+    # The named, concrete boundary proof required by the v1.4.1 plan edit:
+    # fire_browser lives on the Explorer and nowhere else. Coordinator and
+    # Validator must not expose it under any wiring.
+    assert "fire_browser" in _tool_names(explorer)
+    assert "fire_browser" not in _tool_names(coordinator)
+    assert "fire_browser" not in _tool_names(validator)
 
 
 def test_coordinator_never_fires_or_runs_oracles() -> None:

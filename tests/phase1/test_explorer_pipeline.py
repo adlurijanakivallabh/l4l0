@@ -199,8 +199,8 @@ def test_classify_response_emits_candidate_only() -> None:
 
 def test_explorer_module_has_no_path_to_write_finding() -> None:
     # Structural proof the DoD asks for: classify_response (and the whole Explorer
-    # module) cannot reach write_finding. The module exposes exactly the four
-    # tools and imports no validator symbol.
+    # module) cannot reach write_finding. The module exposes exactly the five
+    # tools (fire_browser added Phase 3 Task 5) and imports no validator symbol.
     public = {
         name
         for name in vars(explorer)
@@ -211,6 +211,7 @@ def test_explorer_module_has_no_path_to_write_finding() -> None:
         "get_payloads",
         "fire_request",
         "classify_response",
+        "fire_browser",
     }
     assert "write_finding" not in vars(explorer)
     assert "run_oracle" not in vars(explorer)
