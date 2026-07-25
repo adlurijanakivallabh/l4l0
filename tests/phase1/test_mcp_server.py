@@ -257,3 +257,83 @@ def test_write_finding_cannot_be_reached_without_a_run_oracle_ref() -> None:
     with pytest.raises(KeyError):
         _call(mcp, "write_finding", verdict_ref="verdict-forged", vuln_class="bola")
     assert session.graph.findings() == []
+
+
+def test_run_oracle_structural_resolves_body_from_fire_ref() -> None:
+    # Fix C: the structural oracle resolves response_body server-side from a
+    # probe_fire_ref, so the response body never crosses the MCP wire. The client
+    # supplies only the opaque fire handle; the sentinel match happens on the
+    # body the firer captured, mirroring the differential branch.
+    session = _session_on(lambda r: httpx.Response(200, text="root:x:0:0:root:/root"))
+    ep = session.graph.add_endpoint(Endpoint(method="GET", path="/ftp/{filename}"))
+    param = session.graph.add_parameter(ep, Parameter(name="filename", location="path"))
+    mcp = _register_on_session(session)
+
+    _call(mcp, "fingerprint_parameter", identity="anon", endpoint_node=ep, param_node=param)
+    baseline = _call(
+        mcp,
+        "fire_request",
+        identity="anon",
+        endpoint_node=ep,
+        param_node=param,
+        payload="legal.md",
+        method="GET",
+    )
+    probe = _call(
+        mcp,
+        "fire_request",
+        identity="anon",
+        endpoint_node=ep,
+        param_node=param,
+        payload="../../etc/passwd",
+        method="GET",
+    )
+    verdict = _call(
+        mcp,
+        "run_oracle",
+        mechanism="structural",
+        evidence={
+            "check_type": "path_traversal",
+            "baseline_status": baseline.status_code,  # type: ignore[attr-defined]
+            "probe_status": probe.status_code,  # type: ignore[attr-defined]
+            "sentinel": "root:",
+            "probe_fire_ref": probe.fire_ref,  # type: ignore[attr-defined]
+            "evidence_ref": "path_traversal/ftp",
+        },
+    )
+    # No response_body key supplied — the violation can only fire if the oracle
+    # resolved the body from probe_fire_ref server-side.
+    assert verdict.is_violation is True  # type: ignore[attr-defined]
+
+
+def test_run_oracle_execution_confirmation_resolves_body_from_fire_ref() -> None:
+    # Fix C: the execution_confirmation oracle resolves response_body from a
+    # probe_fire_ref for the stored-XSS read-back — the client passes only the
+    # payload_tag and the fire handle, never the body.
+    tag = "XSSTESTREACH99"
+    session = _session_on(lambda r: httpx.Response(200, text=f"<b>{tag}</b> stored"))
+    ep = session.graph.add_endpoint(Endpoint(method="GET", path="/api/Feedbacks"))
+    param = session.graph.add_parameter(ep, Parameter(name="probe", location="query"))
+    mcp = _register_on_session(session)
+
+    _call(mcp, "fingerprint_parameter", identity="anon", endpoint_node=ep, param_node=param)
+    readback = _call(
+        mcp,
+        "fire_request",
+        identity="anon",
+        endpoint_node=ep,
+        param_node=param,
+        payload="",
+        method="GET",
+    )
+    verdict = _call(
+        mcp,
+        "run_oracle",
+        mechanism="execution_confirmation",
+        evidence={
+            "payload_tag": tag,
+            "probe_fire_ref": readback.fire_ref,  # type: ignore[attr-defined]
+            "evidence_ref": "xss/feedback-stored",
+        },
+    )
+    assert verdict.is_violation is True  # type: ignore[attr-defined]

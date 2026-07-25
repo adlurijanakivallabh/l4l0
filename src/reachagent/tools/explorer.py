@@ -24,6 +24,7 @@ the contract a human or the Phase 5 Coordinator calls is unchanged.
 
 from __future__ import annotations
 
+import urllib.parse
 from typing import TYPE_CHECKING
 
 # Imported as modules, never as names: the role-boundary test asserts this module
@@ -76,14 +77,40 @@ def _fire_with_value(
     value: str,
     *,
     state_changing: bool,
+    extra_fields: dict[str, object] | None = None,
+    upload: _ctx.UploadSpec | None = None,
 ) -> FireResult:
     """Fire ``value`` into a parameter's location through Task 1's firer.
 
     Passes httpx kwargs by explicit name rather than unpacking an untyped dict,
-    so ``state_changing`` can never be shadowed by a caller-supplied key. A path
-    parameter is already baked into ``url`` by recon, so it needs no injection —
-    the request still fires to read the endpoint's behaviour.
+    so ``state_changing`` can never be shadowed by a caller-supplied key.
+
+    Injection per ``location``:
+
+    * ``query`` / ``header`` — single key/value in the query string or headers.
+    * ``body`` — a JSON object. ``extra_fields`` merges sibling keys so a body
+      that needs more than the one injected field (e.g. a feedback POST needing
+      ``rating`` alongside ``comment``) can be formed; the injected ``{name: value}``
+      always wins on key collision.
+    * ``path`` — the payload is substituted into the ``{name}`` placeholder in the
+      URL (percent-encoded), so a traversal/injection value actually lands in the
+      path segment. A path with no matching placeholder fires unchanged (recon
+      already baked a concrete value), preserving prior behaviour.
+
+    ``upload`` selects a ``multipart/form-data`` request: the injected value names
+    the file (``filename``/``content_type``/``content``) and ``extra_fields`` become
+    form fields — the firer's one-param JSON default cannot form a multipart body.
     """
+    if upload is not None:
+        files = {name: (upload.filename, upload.content, upload.content_type)}
+        return ctx.firer.fire(
+            identity,
+            method,
+            url,
+            state_changing=state_changing,
+            files=files,
+            data=dict(extra_fields or {}),
+        )
     if location == "query":
         return ctx.firer.fire(
             identity, method, url, state_changing=state_changing, params={name: value}
@@ -93,9 +120,12 @@ def _fire_with_value(
             identity, method, url, state_changing=state_changing, headers={name: value}
         )
     if location == "body":
-        return ctx.firer.fire(
-            identity, method, url, state_changing=state_changing, json={name: value}
-        )
+        body: dict[str, object] = dict(extra_fields or {})
+        body[name] = value
+        return ctx.firer.fire(identity, method, url, state_changing=state_changing, json=body)
+    if location == "path":
+        injected = url.replace(f"{{{name}}}", urllib.parse.quote(value, safe=""))
+        return ctx.firer.fire(identity, method, injected, state_changing=state_changing)
     return ctx.firer.fire(identity, method, url, state_changing=state_changing)
 
 
@@ -200,6 +230,8 @@ def fire_request(
     *,
     method: str = "GET",
     state_changing: bool = False,
+    extra_fields: dict[str, object] | None = None,
+    upload: _ctx.UploadSpec | None = None,
 ) -> FireResult:
     """Execute one payload-bearing request through Task 1's firer (§13).
 
@@ -207,6 +239,11 @@ def fire_request(
     fingerprinted (:class:`FingerprintRequiredError`), enforcing the §9 rule that
     the benign canary precedes any attack payload. Beyond that it delegates to the
     firer, so scope and read-only-first still gate every request (§10).
+
+    ``extra_fields`` supplies sibling body/form keys when the one injected field
+    is not a complete request (multi-field JSON, or the non-file parts of a
+    multipart form). ``upload`` selects a ``multipart/form-data`` fire whose file
+    part carries ``payload`` as the injected value's file spec.
     """
     if not ctx.is_fingerprinted(param_node):
         raise _ctx.FingerprintRequiredError(
@@ -226,6 +263,8 @@ def fire_request(
         param.name,
         payload,
         state_changing=state_changing,
+        extra_fields=extra_fields,
+        upload=upload,
     )
 
 

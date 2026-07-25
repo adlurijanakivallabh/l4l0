@@ -46,7 +46,7 @@ import json
 import os
 from dataclasses import dataclass, field
 from itertools import count
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import httpx
 
@@ -59,7 +59,7 @@ from reachagent.oracles import OracleMechanism
 from reachagent.payloads import PayloadLibrary
 from reachagent.tools import explorer as _explorer
 from reachagent.tools import validator as _validator
-from reachagent.tools.explorer_context import ExplorerContext
+from reachagent.tools.explorer_context import ExplorerContext, UploadSpec
 
 if TYPE_CHECKING:
     from mcp.server.fastmcp import FastMCP
@@ -449,8 +449,26 @@ def register_tools(mcp: FastMCP, session: _Session) -> None:
         payload: str,
         method: str = "GET",
         state_changing: bool = False,
+        extra_fields: dict[str, Any] | None = None,
+        upload: dict[str, Any] | None = None,
     ) -> FireResultOut:
-        """Fire one payload-bearing request through the firer; returns a fire_ref (§13)."""
+        """Fire one payload-bearing request through the firer; returns a fire_ref (§13).
+
+        ``extra_fields`` supplies sibling body/form keys when one injected field is
+        not a complete request (multi-field JSON, or a multipart form's non-file
+        parts). ``upload`` (keys ``filename``, ``content``, ``content_type``)
+        selects a ``multipart/form-data`` fire — ``content`` is a UTF-8 string sent
+        as the file bytes. The response body is still withheld from this result
+        (only ``body_length`` crosses); ``run_oracle`` resolves the body server-side
+        by ``fire_ref`` (§13).
+        """
+        upload_spec = None
+        if upload is not None:
+            upload_spec = UploadSpec(
+                filename=str(upload.get("filename", "upload.bin")),
+                content=str(upload.get("content", "")).encode("utf-8"),
+                content_type=str(upload.get("content_type", "application/octet-stream")),
+            )
         result = _explorer.fire_request(
             ctx,
             identity,
@@ -459,6 +477,8 @@ def register_tools(mcp: FastMCP, session: _Session) -> None:
             payload,
             method=method,
             state_changing=state_changing,
+            extra_fields=extra_fields,
+            upload=upload_spec,
         )
         ref = session.put_fire(result)
         return FireResultOut(
@@ -514,34 +534,147 @@ def register_tools(mcp: FastMCP, session: _Session) -> None:
     # -- Validator subset (the only side that confirms / writes findings) --
 
     @mcp.tool()
-    def run_oracle(evidence: DifferentialEvidenceInput) -> VerdictOut:
-        """Run the differential oracle; keep the verdict server-side, return a ref (§7).
+    def run_oracle(
+        mechanism: str = OracleMechanism.DIFFERENTIAL,
+        evidence: dict[str, Any] | None = None,
+    ) -> VerdictOut:
+        """Run any of the six §7 oracle families; keep the verdict server-side, return a ref.
 
-        The verdict object is oracle-minted and stays server-side (Task 6's
-        AST-checked invariant: nothing outside the oracle module constructs one).
-        The returned ``verdict_ref`` is how ``write_finding`` later commits it —
-        so a confirmation can only originate from a real deterministic run.
+        ``mechanism`` selects the oracle family (default: ``differential`` for
+        backward compatibility with existing callers). ``evidence`` is a flat dict
+        whose keys depend on the mechanism:
+
+        * **differential** — same keys as before: ``axis``, ``expectation``,
+          ``baseline_status``, ``probe_status``, ``baseline_body``, ``probe_body``,
+          ``baseline_fire_ref``, ``probe_fire_ref``, ``json_field``,
+          ``baseline_select``, ``probe_select``, ``evidence_ref``.
+        * **structural** — ``check_type`` (``file_upload_bypass`` /
+          ``path_traversal`` / ``jwt_forgery``), ``baseline_status``,
+          ``probe_status``, ``sentinel``, ``response_body``, ``evidence_ref``.
+        * **timing_statistical** — ``probe_latencies_ms`` (list[float]),
+          ``baseline_latencies_ms`` (list[float]), ``threshold_multiplier``
+          (float, default 3.0), ``evidence_ref``.
+        * **oob_callback** — ``probe_nonce`` (str), ``observed_nonces``
+          (list[str]), ``evidence_ref``.
+        * **execution_confirmation** — ``flows`` (list of
+          ``{source, sink, value_snippet, url}`` dicts), ``payload_tag`` (str),
+          ``response_body`` (str), ``evidence_ref``.
+        * **business_rule_invariant** — ``rule`` (str), ``baseline_status``
+          (int), ``baseline_body`` (str), ``violating_status`` (int),
+          ``violating_body`` (str), ``evidence_ref``.
         """
-        evidence_in = (
-            evidence
-            if isinstance(evidence, DifferentialEvidenceInput)
-            else DifferentialEvidenceInput(**evidence)
-        )
-        # If the caller passed fire_ref handles, resolve the bodies/statuses
-        # server-side (they never crossed the wire) before the oracle diffs them.
-        if evidence_in.baseline_fire_ref is not None:
-            base = session.get_fire(evidence_in.baseline_fire_ref)
-            evidence_in.baseline_status = base.status_code
-            evidence_in.baseline_body = _project(
-                base.body, evidence_in.json_field, evidence_in.baseline_select
+        ev = evidence or {}
+        mech = OracleMechanism(mechanism)
+        oracle_evidence: object
+
+        if mech is OracleMechanism.DIFFERENTIAL:
+            evidence_in = (
+                ev if isinstance(ev, DifferentialEvidenceInput) else DifferentialEvidenceInput(**ev)
             )
-        if evidence_in.probe_fire_ref is not None:
-            probe = session.get_fire(evidence_in.probe_fire_ref)
-            evidence_in.probe_status = probe.status_code
-            evidence_in.probe_body = _project(
-                probe.body, evidence_in.json_field, evidence_in.probe_select
+            if evidence_in.baseline_fire_ref is not None:
+                base = session.get_fire(evidence_in.baseline_fire_ref)
+                evidence_in.baseline_status = base.status_code
+                evidence_in.baseline_body = _project(
+                    base.body, evidence_in.json_field, evidence_in.baseline_select
+                )
+            if evidence_in.probe_fire_ref is not None:
+                probe = session.get_fire(evidence_in.probe_fire_ref)
+                evidence_in.probe_status = probe.status_code
+                evidence_in.probe_body = _project(
+                    probe.body, evidence_in.json_field, evidence_in.probe_select
+                )
+            oracle_evidence = evidence_in.to_evidence()
+
+        elif mech is OracleMechanism.STRUCTURAL:
+            from reachagent.oracles.structural import StructuralCheckType, StructuralEvidence
+
+            # Resolve response_body from a fire_ref when supplied (mirrors the
+            # differential branch's server-side body resolution — fix C, §13).
+            response_body = str(ev.get("response_body", ""))
+            if not response_body and ev.get("probe_fire_ref"):
+                probe_fire = session.get_fire(str(ev["probe_fire_ref"]))
+                response_body = probe_fire.body.decode("utf-8", errors="replace")
+
+            oracle_evidence = StructuralEvidence(
+                check_type=StructuralCheckType(ev.get("check_type", "")),
+                baseline_status=int(ev.get("baseline_status", 0)),
+                probe_status=int(ev.get("probe_status", 0)),
+                sentinel=str(ev.get("sentinel", "")),
+                response_body=response_body,
+                evidence_ref=str(ev.get("evidence_ref", "")),
             )
-        verdict = _validator.run_oracle(OracleMechanism.DIFFERENTIAL, evidence_in.to_evidence())
+
+        elif mech is OracleMechanism.TIMING_STATISTICAL:
+            from reachagent.oracles.timing_statistical import PairedTrialEvidence
+
+            oracle_evidence = PairedTrialEvidence(
+                probe_latencies_ms=tuple(float(x) for x in ev.get("probe_latencies_ms", [])),
+                baseline_latencies_ms=tuple(float(x) for x in ev.get("baseline_latencies_ms", [])),
+                threshold_multiplier=float(ev.get("threshold_multiplier", 3.0)),
+                evidence_ref=str(ev.get("evidence_ref", "")),
+            )
+
+        elif mech is OracleMechanism.OOB_CALLBACK:
+            from reachagent.oracles.oob_callback import OOBCallbackEvidence
+
+            oracle_evidence = OOBCallbackEvidence(
+                probe_nonce=str(ev.get("probe_nonce", "")),
+                observed_nonces=frozenset(ev.get("observed_nonces", [])),
+                evidence_ref=str(ev.get("evidence_ref", "")),
+            )
+
+        elif mech is OracleMechanism.EXECUTION_CONFIRMATION:
+            from reachagent.browser.shim import TaintFlow
+            from reachagent.oracles.execution_confirmation import ExecutionConfirmationEvidence
+
+            flows = tuple(
+                TaintFlow(
+                    source=str(f.get("source", "")),
+                    sink=str(f.get("sink", "")),
+                    value_snippet=str(f.get("value_snippet", "")),
+                    url=str(f.get("url", "")),
+                )
+                for f in ev.get("flows", [])
+            )
+            # Resolve response_body from a fire_ref when supplied (fix C, §13).
+            exec_body = str(ev.get("response_body", ""))
+            if not exec_body and ev.get("probe_fire_ref"):
+                exec_fire = session.get_fire(str(ev["probe_fire_ref"]))
+                exec_body = exec_fire.body.decode("utf-8", errors="replace")
+
+            oracle_evidence = ExecutionConfirmationEvidence(
+                flows=flows,
+                payload_tag=str(ev.get("payload_tag", "")),
+                response_body=exec_body,
+                evidence_ref=str(ev.get("evidence_ref", "")),
+            )
+
+        elif mech is OracleMechanism.BUSINESS_RULE_INVARIANT:
+            from reachagent.oracles.business_rule import (
+                BusinessRule,
+                BusinessRuleEvidence,
+                ReplayObservation,
+            )
+
+            oracle_evidence = BusinessRuleEvidence(
+                rule=BusinessRule(ev.get("rule", "")),
+                baseline=ReplayObservation(
+                    label="baseline",
+                    status_code=int(ev.get("baseline_status", 0)),
+                    body=str(ev.get("baseline_body", "")),
+                ),
+                violating=ReplayObservation(
+                    label="violating",
+                    status_code=int(ev.get("violating_status", 0)),
+                    body=str(ev.get("violating_body", "")),
+                ),
+                evidence_ref=str(ev.get("evidence_ref", "")),
+            )
+
+        else:
+            raise ValueError(f"unhandled mechanism: {mechanism!r}")
+
+        verdict = _validator.run_oracle(mech, oracle_evidence)
         ref = session.put_verdict(verdict)
         return VerdictOut(
             verdict_ref=ref,

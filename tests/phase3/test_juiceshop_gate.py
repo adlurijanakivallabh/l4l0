@@ -226,3 +226,50 @@ def test_report_contains_key_metrics() -> None:
     assert "75.0%" in report
     assert "0.0%" in report
     assert "PASSED" in report  # 3/4 = 0.75 exactly at floor → passes
+
+
+# ---------------------------------------------------------------------------
+# Layer 2: live gate — skips when Juice Shop is unreachable.
+# ---------------------------------------------------------------------------
+
+
+def _juiceshop_reachable() -> bool:
+    import httpx
+
+    try:
+        resp = httpx.get(f"{_JUICE_URL}/api/Challenges", timeout=3.0)
+        return resp.status_code == 200
+    except httpx.HTTPError:
+        return False
+
+
+@pytest.mark.skipif(
+    not _juiceshop_reachable(),
+    reason="Juice Shop not reachable at REACHAGENT_JUICESHOP_URL — set it or docker compose up",
+)
+def test_live_juiceshop_run_scores_through_mcp() -> None:
+    """Live run drives all four in-scope classes through the MCP boundary and scores.
+
+    This is not a pass/fail gate on ReachAgent's coverage (Juice Shop's per-seed
+    randomised state makes an absolute floor flaky in CI); it asserts the run
+    *executes end to end through mcp.call_tool*, populates the tracker-scored
+    JuiceshopRun with in-scope challenges, and produces a coherent metric object.
+    The numeric gate is enforced by ``python -m reachagent.eval.juiceshop``.
+    """
+    from reachagent.eval.juiceshop_live import JuiceshopTarget, run_juiceshop
+
+    target = JuiceshopTarget(base_url=_JUICE_URL)
+    run = run_juiceshop(target)
+
+    # The run touched real in-scope challenges from the live tracker.
+    assert run.total_in_scope > 0
+    # Every scored result is an in-scope class (generic category mapping held).
+    assert all(in_scope_class_of(r.vuln_class) for r in run.results)
+    # Metrics are computable and bounded.
+    assert 0.0 <= run.coverage <= 1.0
+    assert 0.0 <= run.fp_rate <= 1.0
+
+
+def in_scope_class_of(vuln_class: str) -> bool:
+    """A run result's vuln_class must be one of the four in-scope keys."""
+    return vuln_class in {"injection", "xss", "file_upload", "path_traversal"}

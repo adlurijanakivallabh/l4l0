@@ -35,6 +35,21 @@ class FingerprintRequiredError(RuntimeError):
     """
 
 
+@dataclass(frozen=True)
+class UploadSpec:
+    """One multipart file part for a ``multipart/form-data`` fire.
+
+    Present so the firer's default one-field JSON body can be replaced by a real
+    multipart request (file upload type/extension bypass detection needs a file
+    part plus sibling form fields). ``content`` is raw bytes; ``content_type`` is
+    the declared MIME the bypass probe claims (often a lie the server must catch).
+    """
+
+    filename: str
+    content: bytes
+    content_type: str
+
+
 @dataclass
 class ExplorerContext:
     """One Explorer's state against a single target (§9, §13).
