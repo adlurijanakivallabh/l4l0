@@ -31,6 +31,10 @@ echo "==> Starting VAmPI (both toggles)..."
 docker compose up -d \
   || echo "  ✗ VAmPI compose failed — see status below / 'docker compose logs'"
 
+echo "==> Starting Juice Shop (Phase 3 gate)..."
+docker compose -f docker-compose.juiceshop.yml up -d \
+  || echo "  ✗ Juice Shop compose failed — see status below / 'docker compose -f docker-compose.juiceshop.yml logs'"
+
 echo "==> Waiting for services to settle..."
 sleep 5
 
@@ -52,11 +56,16 @@ echo -n "-- VAmPI secure (5002): "
 vamp_secure=$(curl -s http://localhost:5002/ | grep -o '"vulnerable":[01]' || echo "DOWN")
 echo "$vamp_secure"
 
+echo -n "-- Juice Shop (3000): "
+juice_code=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3000 || echo "000")
+echo "HTTP $juice_code"
+
 echo ""
 if $neo4j_up \
   && [[ "$crapi_code" == "200" ]] \
   && [[ "$vamp_vuln" == '"vulnerable":1' ]] \
-  && [[ "$vamp_secure" == '"vulnerable":0' ]]; then
+  && [[ "$vamp_secure" == '"vulnerable":0' ]] \
+  && [[ "$juice_code" == "200" ]]; then
   echo "✅ All services up and correctly toggled. Ready to work."
 else
   echo "⚠️  Something isn't right — check the lines above before starting Claude Code."
