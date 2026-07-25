@@ -269,3 +269,119 @@ def test_real_server_clean_php_rejected(upload_server: str) -> None:
     )
     result = detect_file_upload_bypass(prober, evidence_ref="upload/clean/integration")
     assert result.confirmed is False
+
+
+# === Live integration test: crAPI /identity/api/v2/user/pictures ==============
+#
+# Finding type: NO_VALIDATION_EXISTS
+#
+# crAPI's upload endpoint has no allowlist, content-type check, or magic-byte
+# validation — every file type returns 200. This is distinct from "validation
+# was bypassed": there is no validation to bypass. The detector confirms the
+# finding (baseline .jpg accepted, probe .php accepted). The body assertion
+# below proves the dangerous payload is *stored verbatim*, not merely that the
+# upload returned 200 — a validated endpoint would reject before storage.
+
+_CRAPI_BASE = "http://localhost:8888"
+_CRAPI_CREDS = {"email": "test@test.com", "password": "Test1234!"}
+
+
+def _crapi_token() -> str | None:
+    import http.client
+    import json
+    import urllib.parse
+
+    try:
+        parsed = urllib.parse.urlparse(_CRAPI_BASE)
+        conn = http.client.HTTPConnection(parsed.hostname, parsed.port, timeout=5)
+        body = json.dumps(_CRAPI_CREDS).encode()
+        conn.request(
+            "POST",
+            "/identity/api/auth/login",
+            body=body,
+            headers={"Content-Type": "application/json", "Content-Length": str(len(body))},
+        )
+        resp = conn.getresponse()
+        data = json.loads(resp.read())
+        conn.close()
+        return data.get("token")  # type: ignore[no-any-return]
+    except Exception:
+        return None
+
+
+def _crapi_upload(
+    filename: str, content: bytes, content_type: str, token: str
+) -> dict[str, object]:
+    import http.client
+    import json
+    import urllib.parse
+
+    boundary = "----ReachAgentBoundary"
+    body = (
+        (
+            f"--{boundary}\r\n"
+            f'Content-Disposition: form-data; name="file"; filename="{filename}"\r\n'
+            f"Content-Type: {content_type}\r\n\r\n"
+        ).encode()
+        + content
+        + f"\r\n--{boundary}--\r\n".encode()
+    )
+    parsed = urllib.parse.urlparse(_CRAPI_BASE)
+    conn = http.client.HTTPConnection(parsed.hostname, parsed.port)
+    conn.request(
+        "POST",
+        "/identity/api/v2/user/pictures",
+        body=body,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": f"multipart/form-data; boundary={boundary}",
+            "Content-Length": str(len(body)),
+        },
+    )
+    resp = conn.getresponse()
+    data: dict[str, object] = json.loads(resp.read())
+    conn.close()
+    return {"_status": resp.status, **data}
+
+
+@pytest.mark.integration
+def test_crapi_upload_no_validation_stores_arbitrary_content() -> None:
+    """Live crAPI: POST /identity/api/v2/user/pictures has no file validation.
+
+    Finding type: NO_VALIDATION_EXISTS — the endpoint accepts any file type and
+    stores content verbatim. This is distinct from "validation was bypassed":
+    there is no validation to bypass.
+
+    Two-part confirmation:
+      1. Detector confirms: baseline .jpg accepted (200), probe .php accepted (200).
+      2. Body assertion: PHP payload decoded from the stored base64 ``picture``
+         field equals the uploaded bytes exactly. A validated endpoint would
+         reject before storage; crAPI stores it as-is, proving the dangerous
+         content persists — not merely that the upload returned 200.
+    """
+    import base64
+
+    token = _crapi_token()
+    if token is None:
+        pytest.skip("crAPI not reachable at localhost:8888")
+
+    php_payload = b"<?php echo 1; ?>"
+
+    prober = FileUploadProber(
+        fire_baseline=lambda: UploadProbeResult(
+            int(_crapi_upload("photo.jpg", b"\xff\xd8\xff\xe0JFIF", "image/jpeg", token)["_status"])
+        ),
+        fire_probe=lambda: UploadProbeResult(
+            int(_crapi_upload("shell.php", php_payload, "application/x-php", token)["_status"])
+        ),
+    )
+    result = detect_file_upload_bypass(prober, evidence_ref="upload/crapi/no-validation")
+    assert result.confirmed is True
+
+    # Stronger: verify the PHP payload is stored verbatim, not just accepted.
+    stored = _crapi_upload("shell.php", php_payload, "application/x-php", token)
+    assert stored["_status"] == 200
+    picture_field = str(stored.get("picture", ""))
+    # Response format: "data:image/jpeg;base64,<b64>" — split on last comma.
+    b64_part = picture_field.split(",")[-1]
+    assert base64.b64decode(b64_part) == php_payload
