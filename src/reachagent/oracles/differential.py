@@ -1,17 +1,17 @@
 """Differential cross-identity/cross-request/cross-condition diff oracle (plan §7).
 
 The Phase 1 oracle (§15). One generic mechanism covers BOLA, BFLA, GraphQL
-resolver BOLA, mass assignment, boolean-blind SQLi, NoSQLi, and LDAP, and
-business-logic price/parameter tampering (§7) — not per-class checkers. That
-genericity is the point: the *axis* records what varied between two responses,
-the *expectation* records what a secure app would do, and one decision table maps
-(observed relationship vs expectation) to exactly one deterministic verdict.
+resolver BOLA, mass assignment, boolean-blind SQLi, NoSQLi auth-bypass, LDAP,
+and business-logic price/parameter tampering (§7) — not per-class checkers. The
+*axis* records what varied between two responses; the *expectation* records what
+a secure app would do; one ``decide()`` function maps (observed relationship vs
+expectation) to exactly one deterministic verdict.
 
 The decision path contains **zero LLM input**: it is pure comparison of two
 :class:`Observation` records against a declared :class:`DiffExpectation`. Same
 evidence in, same :class:`~reachagent.graph.nodes.FindingStatus` out, every time.
 
-Three axes, one mechanism (§7):
+Three axes (§7):
 
   * **cross-identity** — same request, two identities (owner vs. another
     principal). BOLA/BFLA: an unauthorized identity getting the owner's data is a
@@ -22,8 +22,22 @@ Three axes, one mechanism (§7):
     app answers identically (boolean-blind injection: divergence proves the
     condition reached the backend).
 
-The axis is provenance only; the *expectation* drives the decision, so the same
-table serves all three without branching per class.
+**Two structural groups in ``decide()`` — not one flat table:**
+
+  * **Access-control expectations** (``PROBE_UNAUTHORIZED``, ``PROBE_AUTHORIZED``):
+    the baseline is a *reference access* that must be GRANTED before the diff
+    means anything. A refused or errored baseline yields no trustworthy verdict.
+    These pass through the baseline-GRANTED guard.
+
+  * **Injection/bypass expectations** (``RESPONSES_INVARIANT``, ``AUTH_BYPASS``):
+    the baseline plays a different role — one side of a condition pair, or a
+    *refused* reference that proves a bypass. Neither requires the baseline to be
+    GRANTED; both are handled before the access-control guard for that principled
+    reason, not as ad-hoc exceptions. The two groups map onto two semantic
+    categories; any new expectation would fall into one of them.
+
+The axis is provenance only; the expectation drives the decision, so the same
+``decide()`` function serves all classes without per-class branching.
 """
 
 from __future__ import annotations
