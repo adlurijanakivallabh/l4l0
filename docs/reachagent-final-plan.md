@@ -1,6 +1,8 @@
 # ReachAgent — Web/API Exploitation Agent
 ### Final Project Plan (July 2026)
 
+**Status: Locked — v1.5.** Changes from v1.4.1: client-side structural classes (clickjacking, CORS misconfiguration, CSRF) added to §5/§7; the §9 external-scanner rule is formalized into three behavior-defined tiers (recon/transport facts vs. signal-gated exploitation candidate sources vs. transport-aggregator MCPs); public payload corpora (PayloadsAllTheThings, SecLists) named as tagged reference sources in §9/§12; CVE-match added as an evidence type under STRUCTURAL_VERIFICATION (§7); fingerprint_parameter gains context-aware class-prioritization in §13. No seventh oracle family — all new classes route through the existing structural-verification mechanism.
+
 **Status: Locked — v1.4.1.** Changes from v1.4: `fire_browser` added to §13 core manifest as an Explorer-owned browser-side tool for Phase 3 DOM taint-tracking, resolving the open verification question from v1.3.
 
 **Status (v1.4):** Supersedes all prior drafts. Changes from v1.3: tool calling promoted to a first-class design element — §13 now opens with the tool manifest and a full worked trace (fingerprint → sink-matched selection → mutation → oracle verification) instead of leading with MCP servers; role boundaries are now defined by tool access, not just description (§4, §13). External scanners (sqlmap, Nuclei, ZAP, and Burp/Caido's own built-in scanners) are explicitly excluded as core dependencies (§1, §9, §13), with a deferred, optional ingestion mode specified that still requires every imported candidate to pass `run_oracle` before being confirmed.
@@ -115,6 +117,11 @@ Ratings are calibrated against published results and documented technique limita
 | GraphQL — batching/alias auth bypass | **Full** | Deterministic — was the rate limit enforced under batching | |
 | GraphQL — introspection/schema recovery | **Full** | Direct query if enabled; field-suggestion inference if disabled | |
 | GraphQL — depth/complexity DoS | **Full** | Multi-trial complexity-regression against a measured baseline curve | Self-contained, repeatable measurement — no per-target hardcoded threshold needed |
+| Clickjacking | **Full** | Structural — response lacks BOTH `X-Frame-Options` AND CSP `frame-ancestors`, confirmed against a framing-attempt render | Deterministic header check; finding requires both defenses absent, not just one |
+| CORS misconfiguration | **Full** | Structural — reflected/permissive `Access-Control-Allow-Origin` **with** `Access-Control-Allow-Credentials: true` | The credentialed-reflection pair is the actual finding; a bare `ACAO: *` without credentials is not written as a violation |
+| CSRF | **Partial** | Structural — cross-origin state-changing request succeeds without an unpredictable token, proven by a differential (with-token vs. forged/absent-token) replay | Token *absence* alone is not a finding; needs a confirmed cross-origin state change. No generic oracle for apps relying on SameSite or custom-header defenses |
+| Request smuggling | **Weak** | None generic | CL.TE/TE.CL desync detection is front-end/back-end-pair specific and needs raw socket control the transport layer doesn't expose yet; deferred |
+| Web cache poisoning | **Weak** | None generic | Requires modeling an unkeyed-input-to-cache-key relationship per target; no generic oracle. Deferred |
 | Multi-hop cross-class chains | **Full — core differentiator** | Chain Solver over `enables` / `derived_credential` edges | See §8 |
 
 ---
@@ -168,7 +175,7 @@ Still six oracle mechanisms — four of them generalized in v1.2 to absorb previ
 | **Evaluation/execution confirmation** | SSTI (expression evaluated), XSS reflected/stored/DOM — DOM now fed by a Playwright taint-tracking shim that hooks common sinks (`innerHTML`, `document.write`, `eval`, `location`) and sources (`location.hash`, `postMessage`) to discover candidate flows systematically instead of only confirming guessed ones |
 | **Out-of-band callback** | Blind SSRF, command injection, OOB-first blind SQLi (tried before falling back to timing) |
 | **Timing/statistical (generalized)** | Time-based blind SQLi/NoSQLi/LDAP, always paired against a negative-control trial to rule out network jitter; GraphQL complexity regression (latency measured as a function of query depth, fit against a baseline curve rather than a hardcoded threshold) |
-| **Structural verification** | JWT forgeries, file upload/path traversal (retrieved content matched against a known artifact) |
+| **Structural verification** | JWT forgeries, file upload/path traversal (retrieved content matched against a known artifact), clickjacking (both framing defenses absent), CORS misconfiguration (credentialed ACAO reflection), CSRF (differential token-replay); also CVE-match evidence — a fingerprinted version matched against a known-vulnerable range is treated as structural evidence, still confirmed by this family, never self-reported |
 | **Business-rule / invariant anomaly check** | Known business-logic patterns via a 4-template library (single-use reuse, quantity/limit, price tamper, step-order) run as cheap sequential replay; race conditions reuse the *same* anomaly check, escalated to single-packet concurrent delivery only when sequential replay finds nothing — the graph must first identify a consumable/limited resource before this technique is worth pointing at it, and it remains lower-priority than the other five |
 
 **Rule, unconditionally:** the LLM can propose a candidate; only a Validator-run deterministic check produces a `Finding` node.
@@ -201,7 +208,7 @@ This uniform spawn-and-requery mechanism is the actual differentiator versus eve
 
 ## 9. Payload strategy
 
-**Custom, tagged payloads remain a core strength of the system.** ReachAgent's own payload library and its own deterministic oracles are the system of record for what counts as a confirmed finding — nothing is delegated to an external scanner's judgment (see below).
+**Custom, tagged payloads remain a core strength of the system.** ReachAgent's own payload library and its own deterministic oracles are the system of record for what counts as a confirmed finding — nothing is delegated to an external scanner's judgment (see below). The library may be seeded from public payload corpora — PayloadsAllTheThings, SecLists, and similar — as *reference payloads only*: each imported entry is tagged with `vuln_class` / `inferred_sink_type` / `oracle_type` on ingest, and an untagged payload is not loadable. These corpora expand the payload set; they never expand what counts as confirmed — every payload, imported or hand-written, still routes through `run_oracle`.
 
 ### The pipeline as actual tool calls
 
@@ -231,6 +238,18 @@ sqlmap, Nuclei, ZAP, Burp Scanner, Caido's Scanner, and similar tools are not sh
 - It would blur what ReachAgent actually contributes: the tagged-payload-plus-deterministic-oracle pipeline and the graph built on it, not an aggregation of other tools' output.
 
 **Deferred, optional: an ingestion mode.** A future mode could import external-scanner findings as *candidates* — the same unverified status an Explorer-discovered lead has, never a pre-confirmed `Finding`. An imported candidate still has to pass through `run_oracle` before it's written as `confirmed_violation`, exactly like anything ReachAgent found on its own. Not scheduled in §15; revisit only after Phase 7.
+
+### Tool-orchestration tiers
+
+The external tool universe is large and growing (hundreds of recon, scanner, exploitation, and AI-agent tools). We do not maintain a whitelist. Instead every tool is placed by **what its output is** — a fact, a claim, or a transport — into exactly one of three tiers. None of the three can produce a `Finding`:
+
+| Tier | Output is | Examples (non-exhaustive) | Role in the graph |
+|---|---|---|---|
+| Recon / transport | A **fact** (endpoint, param, subdomain, detected version) | Nmap, ffuf, feroxbuster, subfinder, httpx, katana, wappalyzer, theHarvester, Amass | Emitted as transport-tier graph nodes/edges — never a candidate, never a finding |
+| Signal-gated exploitation | A **claim** of a vulnerability | sqlmap, Nuclei, Wapiti, Arachni, Metasploit modules, wpscan (active), PentestGPT-style agents | Invoked only as a candidate *source*, and only once the graph already holds a signal for that class; output is an unverified candidate that still passes `run_oracle`. Never self-reports a confirmed finding |
+| Transport aggregator | A **transport** (carries requests/responses) | HexStrike, Burp/Caido MCP, any multi-tool MCP | A fire transport, not a detector. Built-in scanners stay off (§13) |
+
+The tier is decided by the nature of a tool's output, not by its name — any current or future recon/scanner/exploitation tool maps to exactly one tier by this test. A tool that both recons and exploits (increasingly, one autonomous agent does both) is split by output: its facts enter the recon tier, its claims the signal-gated tier. Nothing from any tier is written as `confirmed` without passing ReachAgent's own `run_oracle`. This is the §9 invariant restated at the orchestration boundary, not a loophole around it.
 
 ---
 
@@ -264,7 +283,7 @@ sqlmap, Nuclei, ZAP, Burp Scanner, Caido's Scanner, and similar tools are not sh
 | Proxy | mitmproxy or Caido for capture/replay |
 | OOB/collaborator | Self-hosted interact.sh instance |
 | Race-condition module | HTTP/2 single-packet delivery (Turbo Intruder's published technique, reimplemented or shelled out to) |
-| Payload store | YAML for Phase 1, SQLite once lookups by `(vuln_class, inferred_sink_type)` need indexing |
+| Payload store | YAML for Phase 1, SQLite once lookups by `(vuln_class, inferred_sink_type)` need indexing; seeded from tagged public corpora (PayloadsAllTheThings, SecLists) plus custom entries — every entry tagged on ingest |
 | Reporting | Markdown + JSON for machine-readable chain data, optional HTML render for human review |
 
 ---
@@ -277,7 +296,7 @@ Tool calling is not an implementation detail sitting underneath the three agent 
 
 | Role | Tool | Purpose |
 |---|---|---|
-| Explorer | `fingerprint_parameter(endpoint, param)` | Sends canary values, sets `inferred_sink_type` |
+| Explorer | `fingerprint_parameter(endpoint, param)` | Sends canary values, sets `inferred_sink_type`; context-aware class-prioritization — the LLM may propose the likely class to probe first, but the oracle still confirms |
 | Explorer | `get_payloads(vuln_class, sink_type)` | Sink-matched lookup from the tagged payload library, ordered by oracle confidence |
 | Explorer | `fire_request(identity, endpoint, payload)` | Executes an HTTP request via the HTTP client / Burp-or-Caido MCP proxy; returns a network fire handle |
 | Explorer | `fire_browser(identity, url, inject_shim=True)` | Drives a Playwright browser context: navigates `url`, installs the §7 DOM taint-tracking shim via `addInitScript` before load, returns a browser fire handle carrying captured taint events. Browser-side transport — distinct from `fire_request`'s network-side transport, not a flag on it. Explorer-owned, same boundary as `fire_request`; the taint evidence it captures is consumed by `run_oracle`'s execution-confirmation family (Validator), never confirmed by the Explorer |
@@ -332,6 +351,8 @@ Build the manifest above as actual MCP tools starting in Phase 1, not only as in
 - **Ticketing/reporting** (GitHub Issues, Jira) — deferred; Markdown/JSON reporting is sufficient through Phase 7
 - **CI/CD triggering** — out of scope, same treatment as the C2/mobile exclusions in §1
 - **External scanner ingestion** (sqlmap, Nuclei, ZAP) — deferred and optional per §9, not a Phase 1–7 dependency
+- **Recon-tier tool MCPs** (any fact-emitting tool: ffuf/feroxbuster/subfinder/wappalyzer/…) — optional, feed transport-tier structural facts only, per the §9 tier rule; never a detection dependency
+- **Signal-gated exploitation-tier tools** (any claim-emitting tool: sqlmap/Nuclei/wpscan-active/…) — optional candidate sources gated on an existing graph signal, output still passes `run_oracle`; deferred, same treatment as external-scanner ingestion in §9
 - **Secrets management** for test-identity credentials — environment-based or a local secrets store, never hardcoded, consistent with §10
 
 ---
