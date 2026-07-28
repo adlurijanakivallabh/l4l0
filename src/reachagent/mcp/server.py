@@ -553,7 +553,11 @@ def register_tools(mcp: FastMCP, session: _Session) -> None:
           ``cors_misconfig``), ``baseline_status``, ``probe_status``,
           ``sentinel``, ``response_body``, ``evidence_ref``; for
           ``clickjacking``: ``x_frame_options``, ``csp``; for ``cors_misconfig``:
-          ``acao``, ``acac``, ``probe_origin``.
+          ``acao``, ``acac``, ``probe_origin``. For ``clickjacking`` /
+          ``cors_misconfig`` the four header fields (``x_frame_options``,
+          ``csp``, ``acao``, ``acac``) are resolved from ``probe_fire_ref``
+          server-side when not inlined — headers never cross the wire, same
+          rule as bodies (§10/§13). ``probe_origin`` stays caller-supplied.
         * **timing_statistical** — ``probe_latencies_ms`` (list[float]),
           ``baseline_latencies_ms`` (list[float]), ``threshold_multiplier``
           (float, default 3.0), ``evidence_ref``.
@@ -591,12 +595,26 @@ def register_tools(mcp: FastMCP, session: _Session) -> None:
         elif mech is OracleMechanism.STRUCTURAL:
             from reachagent.oracles.structural import StructuralCheckType, StructuralEvidence
 
-            # Resolve response_body from a fire_ref when supplied (mirrors the
-            # differential branch's server-side body resolution — fix C, §13).
-            response_body = str(ev.get("response_body", ""))
-            if not response_body and ev.get("probe_fire_ref"):
+            # Resolve response_body AND the framing/CORS response headers from a
+            # fire_ref when supplied (mirrors the differential branch's server-side
+            # body resolution — fix C, §13). The fire is fetched once and reused;
+            # headers never cross the MCP wire (§10/§13). An explicit inline value
+            # in ``ev`` always wins over what the fire_ref carries.
+            probe_fire = None
+            if ev.get("probe_fire_ref"):
                 probe_fire = session.get_fire(str(ev["probe_fire_ref"]))
+
+            response_body = str(ev.get("response_body", ""))
+            if not response_body and probe_fire is not None:
                 response_body = probe_fire.body.decode("utf-8", errors="replace")
+
+            def _hdr(ev_key: str, header_name: str) -> str:
+                explicit = ev.get(ev_key)
+                if explicit is not None:
+                    return str(explicit)
+                if probe_fire is not None:
+                    return str(probe_fire.headers.get(header_name, ""))
+                return ""
 
             oracle_evidence = StructuralEvidence(
                 check_type=StructuralCheckType(ev.get("check_type", "")),
@@ -604,10 +622,10 @@ def register_tools(mcp: FastMCP, session: _Session) -> None:
                 probe_status=int(ev.get("probe_status", 0)),
                 sentinel=str(ev.get("sentinel", "")),
                 response_body=response_body,
-                x_frame_options=str(ev.get("x_frame_options", "")),
-                csp=str(ev.get("csp", "")),
-                acao=str(ev.get("acao", "")),
-                acac=str(ev.get("acac", "")),
+                x_frame_options=_hdr("x_frame_options", "x-frame-options"),
+                csp=_hdr("csp", "content-security-policy"),
+                acao=_hdr("acao", "access-control-allow-origin"),
+                acac=_hdr("acac", "access-control-allow-credentials"),
                 probe_origin=str(ev.get("probe_origin", "")),
                 evidence_ref=str(ev.get("evidence_ref", "")),
             )

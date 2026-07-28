@@ -162,6 +162,31 @@ def _fire_get(mcp: object, sess: server._Session, identity: str, path: str) -> s
     return str(fired["fire_ref"])
 
 
+def _fire_get_with_origin(
+    mcp: object, sess: server._Session, identity: str, path: str, origin: str
+) -> str:
+    """A read-only GET that carries an attacker ``Origin`` request header.
+
+    Routes through the existing explorer seam: a parameter whose ``location`` is
+    ``header`` fires ``headers={name: value}``, so an ``Origin`` header-parameter
+    sends the attacker origin without any new firer support. Still a GET — the
+    read-only-first invariant holds.
+    """
+    ep = sess.graph.add_endpoint(Endpoint(method="GET", path=path))
+    param = sess.graph.add_parameter(ep, Parameter(name="Origin", location="header"))
+    _call(mcp, "fingerprint_parameter", identity=identity, endpoint_node=ep, param_node=param)
+    fired = _call(
+        mcp,
+        "fire_request",
+        identity=identity,
+        endpoint_node=ep,
+        param_node=param,
+        payload=origin,
+        method="GET",
+    )
+    return str(fired["fire_ref"])
+
+
 def _fire_post_json(
     mcp: object,
     sess: server._Session,
@@ -235,6 +260,39 @@ def _confirm_structural(
             "probe_status": probe_status,
             "sentinel": sentinel,
             "probe_fire_ref": probe_fire_ref,
+            "evidence_ref": evidence_ref,
+        },
+    )
+    if not verdict.get("is_violation"):
+        return False
+    _call(mcp, "write_finding", verdict_ref=str(verdict["verdict_ref"]), vuln_class=vuln_class)
+    return True
+
+
+def _confirm_structural_headers(
+    mcp: object,
+    *,
+    vuln_class: str,
+    check_type: str,
+    probe_fire_ref: str,
+    evidence_ref: str,
+    probe_origin: str = "",
+) -> bool:
+    """Confirm a header-derived structural class (clickjacking / CORS).
+
+    The four framing/CORS response headers are resolved server-side from
+    ``probe_fire_ref`` (§10/§13) — only the opaque fire handle and the attacker
+    ``probe_origin`` we sent cross the wire, never the headers themselves. On an
+    ``is_violation`` verdict, commits the finding via the Validator.
+    """
+    verdict = _call(
+        mcp,
+        "run_oracle",
+        mechanism="structural",
+        evidence={
+            "check_type": check_type,
+            "probe_fire_ref": probe_fire_ref,
+            "probe_origin": probe_origin,
             "evidence_ref": evidence_ref,
         },
     )
@@ -418,6 +476,48 @@ def _detect_xss_stored(target: JuiceshopTarget, token: str | None) -> bool:
     return True
 
 
+def _detect_clickjacking(target: JuiceshopTarget, token: str | None) -> bool:
+    """Clickjacking: GET the app root, confirm no effective framing defense.
+
+    ``X-Frame-Options`` / CSP ``frame-ancestors`` are read from the captured
+    response server-side (resolved from the fire_ref); both absent → framable.
+    Read-only GET.
+    """
+    shared = _SharedState()
+    sess = _session_as(target, token, shared)
+    mcp = _mcp_for(sess)
+    fire_ref = _fire_get(mcp, sess, "anon", "/")
+    return _confirm_structural_headers(
+        mcp,
+        vuln_class="clickjacking",
+        check_type="clickjacking",
+        probe_fire_ref=fire_ref,
+        evidence_ref="clickjacking/root",
+    )
+
+
+def _detect_cors(target: JuiceshopTarget, token: str | None) -> bool:
+    """CORS misconfig: GET the app root with an attacker ``Origin`` header.
+
+    Confirms the response reflects that origin in ``Access-Control-Allow-Origin``
+    with credentials on (both headers resolved server-side from the fire_ref).
+    Read-only GET.
+    """
+    shared = _SharedState()
+    sess = _session_as(target, token, shared)
+    mcp = _mcp_for(sess)
+    attacker_origin = "https://evil.example"
+    fire_ref = _fire_get_with_origin(mcp, sess, "anon", "/", attacker_origin)
+    return _confirm_structural_headers(
+        mcp,
+        vuln_class="cors_misconfig",
+        check_type="cors_misconfig",
+        probe_fire_ref=fire_ref,
+        evidence_ref="cors/root",
+        probe_origin=attacker_origin,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Scoring — per-challenge via a tracker before/after delta.
 # ---------------------------------------------------------------------------
@@ -461,6 +561,8 @@ def run_juiceshop(target: JuiceshopTarget, *, token: str | None = None) -> Juice
         "path_traversal": _detect_path_traversal(target, token),
         "file_upload": _detect_file_upload(target, token),
         "xss": _detect_xss_stored(target, token),
+        "clickjacking": _detect_clickjacking(target, token),
+        "cors": _detect_cors(target, token),
     }
     # Silence the unused-variable check while keeping the class-level signal
     # available for future per-challenge attribution work.

@@ -376,3 +376,103 @@ def test_run_oracle_structural_cors_misconfig_violation() -> None:
         },
     )
     assert verdict.is_violation is True  # type: ignore[attr-defined]
+
+
+def test_run_oracle_structural_resolves_framing_headers_from_fire_ref() -> None:
+    # Task D: the four framing/CORS headers resolve server-side from probe_fire_ref
+    # just like the body. Here the captured response carries X-Frame-Options: DENY;
+    # no x_frame_options key is passed, so the DENIED verdict can only come from the
+    # oracle reading the header off the fire the firer captured. Without resolution
+    # the field would default to "" and (both defenses absent) mis-fire a violation.
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text="ok", headers={"X-Frame-Options": "DENY"})
+
+    session = _session_on(handler)
+    ep = session.graph.add_endpoint(Endpoint(method="GET", path="/"))
+    param = session.graph.add_parameter(ep, Parameter(name="probe", location="query"))
+    mcp = _register_on_session(session)
+
+    _call(mcp, "fingerprint_parameter", identity="anon", endpoint_node=ep, param_node=param)
+    fired = _call(
+        mcp, "fire_request", identity="anon", endpoint_node=ep, param_node=param, payload=""
+    )
+    verdict = _call(
+        mcp,
+        "run_oracle",
+        mechanism="structural",
+        evidence={
+            "check_type": "clickjacking",
+            "probe_fire_ref": fired.fire_ref,  # type: ignore[attr-defined]
+            "evidence_ref": "clickjacking/fire-ref",
+        },
+    )
+    # XFO: DENY resolved from the fire_ref → defended → NOT a violation.
+    assert verdict.is_violation is False  # type: ignore[attr-defined]
+
+
+def test_run_oracle_structural_resolves_cors_headers_from_fire_ref() -> None:
+    # Task D: ACAO/ACAC resolve server-side from probe_fire_ref. The captured
+    # response reflects the attacker origin with credentials on; only probe_origin
+    # crosses the wire. Without resolution acao would default to "" → inconclusive,
+    # so the violation proves the headers were read off the fire.
+    origin = "https://evil.example"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            text="ok",
+            headers={
+                "Access-Control-Allow-Origin": origin,
+                "Access-Control-Allow-Credentials": "true",
+            },
+        )
+
+    session = _session_on(handler)
+    ep = session.graph.add_endpoint(Endpoint(method="GET", path="/"))
+    param = session.graph.add_parameter(ep, Parameter(name="Origin", location="header"))
+    mcp = _register_on_session(session)
+
+    _call(mcp, "fingerprint_parameter", identity="anon", endpoint_node=ep, param_node=param)
+    fired = _call(
+        mcp, "fire_request", identity="anon", endpoint_node=ep, param_node=param, payload=origin
+    )
+    verdict = _call(
+        mcp,
+        "run_oracle",
+        mechanism="structural",
+        evidence={
+            "check_type": "cors_misconfig",
+            "probe_fire_ref": fired.fire_ref,  # type: ignore[attr-defined]
+            "probe_origin": origin,
+            "evidence_ref": "cors/fire-ref",
+        },
+    )
+    # Reflected ACAO + credentials, resolved from the fire_ref → violation.
+    assert verdict.is_violation is True  # type: ignore[attr-defined]
+
+
+def test_run_oracle_structural_inline_header_wins_over_fire_ref() -> None:
+    # Precedence: an explicit inline header value beats what the fire_ref carries,
+    # same rule as response_body. The captured response has no framing defense, but
+    # an inline x_frame_options=DENY must still flip the verdict to denied.
+    session = _session_on(lambda r: httpx.Response(200, text="ok"))
+    ep = session.graph.add_endpoint(Endpoint(method="GET", path="/"))
+    param = session.graph.add_parameter(ep, Parameter(name="probe", location="query"))
+    mcp = _register_on_session(session)
+
+    _call(mcp, "fingerprint_parameter", identity="anon", endpoint_node=ep, param_node=param)
+    fired = _call(
+        mcp, "fire_request", identity="anon", endpoint_node=ep, param_node=param, payload=""
+    )
+    verdict = _call(
+        mcp,
+        "run_oracle",
+        mechanism="structural",
+        evidence={
+            "check_type": "clickjacking",
+            "x_frame_options": "DENY",
+            "probe_fire_ref": fired.fire_ref,  # type: ignore[attr-defined]
+            "evidence_ref": "clickjacking/inline-wins",
+        },
+    )
+    assert verdict.is_violation is False  # type: ignore[attr-defined]
