@@ -32,6 +32,19 @@ violations deterministically:
     NOT exploitable with credentials (browsers reject the pair), so it is never
     a violation. Client-side structural class (§5/§7, v1.5).
 
+  * **CSRF_MISSING_PROTECTION** — a *structural precondition* for CSRF, not a
+    confirmed exploit. Confirming a real CSRF would require firing a forged
+    cross-origin state-change, which violates read-only-first (§10); we do not
+    do that. Instead we read a normal probe's ``Set-Cookie`` and confirm the
+    session cookie is sent cross-site (``SameSite=None``) with no anti-CSRF
+    token mechanism in play — the deterministic precondition that leaves the
+    app open to forgery. A token present, or ``SameSite=Lax``/``Strict``, means
+    the precondition does not hold → denied. An absent ``SameSite`` attribute is
+    inconclusive: modern browsers default to ``Lax`` (which blocks top-level
+    cross-site POST), so flagging its absence would overclaim. Partial
+    client-side structural class (§5/§7, v1.5) — read-only-first preserved
+    because no forged state-change is fired.
+
 All paths are deterministic: no LLM, no heuristics. Same evidence in,
 same verdict out, every time.
 """
@@ -54,6 +67,7 @@ class StructuralCheckType(StrEnum):
     JWT_FORGERY = "jwt_forgery"
     CLICKJACKING = "clickjacking"
     CORS_MISCONFIG = "cors_misconfig"
+    CSRF_MISSING_PROTECTION = "csrf_missing_protection"
 
 
 @dataclass(frozen=True)
@@ -93,6 +107,15 @@ class StructuralEvidence:
       Origin-reflected ACAO with credentials on → violation; ``ACAO: *`` with
       credentials is not exploitable → denied.
 
+    CSRF_MISSING_PROTECTION:
+      ``set_cookie``: the raw ``Set-Cookie`` header value from a normal read
+      probe. ``csrf_token_present``: whether the app exposes an anti-CSRF token
+      mechanism (the detector determines this). A ``SameSite=None`` session
+      cookie with no token mechanism → the structural precondition for CSRF
+      holds → violation. This confirms a *precondition*, NOT a confirmed CSRF
+      exploit: no forged cross-origin state-change is fired, so read-only-first
+      (§10) is preserved.
+
     ``evidence_ref``: short, secret-free provenance handle (§13).
     """
 
@@ -106,6 +129,8 @@ class StructuralEvidence:
     acao: str = ""
     acac: str = ""
     probe_origin: str = ""
+    set_cookie: str = ""
+    csrf_token_present: bool = False
     evidence_ref: str = ""
 
 
@@ -139,6 +164,25 @@ def _csp_frame_ancestors_is_effective(csp: str) -> bool:
     if not sources:
         return False
     return sources != ["*"]
+
+
+def _cookie_samesite(set_cookie: str) -> str:
+    """Parse the ``SameSite`` attribute of the FIRST cookie in a Set-Cookie value.
+
+    Returns the value lower-cased (``"none"``/``"lax"``/``"strict"``), or ``""``
+    when the attribute is absent. Case-insensitive; tolerates whitespace around
+    ``=``. Only the leading cookie's attributes are read — splitting on ``,`` is
+    unsafe for cookies (expires dates contain commas), so we split on ``;`` and
+    never cross into a second cookie.
+    """
+    first = set_cookie.split(";")
+    for attr in first:
+        name, sep, value = attr.partition("=")
+        if not sep:
+            continue
+        if name.strip().lower() == "samesite":
+            return value.strip().lower()
+    return ""
 
 
 def decide(evidence: StructuralEvidence) -> FindingStatus:
@@ -199,6 +243,19 @@ def decide(evidence: StructuralEvidence) -> FindingStatus:
         # Reflection without credentials, or any other shape → denied.
         if wildcard or origin_reflected or credentials_on:
             return FindingStatus.CONFIRMED_DENIED
+        return FindingStatus.INCONCLUSIVE
+
+    if evidence.check_type is StructuralCheckType.CSRF_MISSING_PROTECTION:
+        samesite = _cookie_samesite(evidence.set_cookie)
+        # SameSite=None ships the session cookie cross-site; with no token
+        # mechanism the structural precondition for CSRF holds (precondition,
+        # not a confirmed exploit — no forged state-change is fired, §10).
+        if samesite == "none" and not evidence.csrf_token_present:
+            return FindingStatus.CONFIRMED_VIOLATION
+        # A token, or SameSite=Lax/Strict, means the precondition does not hold.
+        if evidence.csrf_token_present or samesite in ("lax", "strict"):
+            return FindingStatus.CONFIRMED_DENIED
+        # Absent SameSite → browsers default to Lax → flagging it would overclaim.
         return FindingStatus.INCONCLUSIVE
 
     return FindingStatus.INCONCLUSIVE
