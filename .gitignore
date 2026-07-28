@@ -9,3 +9,6 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 .env
+
+# Local chat-log dumps — not source
+reachagentchat/
