@@ -549,8 +549,11 @@ def register_tools(mcp: FastMCP, session: _Session) -> None:
           ``baseline_fire_ref``, ``probe_fire_ref``, ``json_field``,
           ``baseline_select``, ``probe_select``, ``evidence_ref``.
         * **structural** — ``check_type`` (``file_upload_bypass`` /
-          ``path_traversal`` / ``jwt_forgery``), ``baseline_status``,
-          ``probe_status``, ``sentinel``, ``response_body``, ``evidence_ref``.
+          ``path_traversal`` / ``jwt_forgery`` / ``clickjacking`` /
+          ``cors_misconfig``), ``baseline_status``, ``probe_status``,
+          ``sentinel``, ``response_body``, ``evidence_ref``; for
+          ``clickjacking``: ``x_frame_options``, ``csp``; for ``cors_misconfig``:
+          ``acao``, ``acac``, ``probe_origin``.
         * **timing_statistical** — ``probe_latencies_ms`` (list[float]),
           ``baseline_latencies_ms`` (list[float]), ``threshold_multiplier``
           (float, default 3.0), ``evidence_ref``.
@@ -601,6 +604,11 @@ def register_tools(mcp: FastMCP, session: _Session) -> None:
                 probe_status=int(ev.get("probe_status", 0)),
                 sentinel=str(ev.get("sentinel", "")),
                 response_body=response_body,
+                x_frame_options=str(ev.get("x_frame_options", "")),
+                csp=str(ev.get("csp", "")),
+                acao=str(ev.get("acao", "")),
+                acac=str(ev.get("acac", "")),
+                probe_origin=str(ev.get("probe_origin", "")),
                 evidence_ref=str(ev.get("evidence_ref", "")),
             )
 

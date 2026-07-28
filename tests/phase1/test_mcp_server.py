@@ -337,3 +337,42 @@ def test_run_oracle_execution_confirmation_resolves_body_from_fire_ref() -> None
         },
     )
     assert verdict.is_violation is True  # type: ignore[attr-defined]
+
+
+def test_run_oracle_structural_clickjacking_violation() -> None:
+    # MCP structural branch must forward x_frame_options + csp fields.
+    # Both framing defenses absent → framable → violation.
+    session = _session_on(lambda r: httpx.Response(200, text="ok"))
+    mcp = _register_on_session(session)
+    verdict = _call(
+        mcp,
+        "run_oracle",
+        mechanism="structural",
+        evidence={
+            "check_type": "clickjacking",
+            "x_frame_options": "",
+            "csp": "",
+            "evidence_ref": "clickjacking/mcp",
+        },
+    )
+    assert verdict.is_violation is True  # type: ignore[attr-defined]
+
+
+def test_run_oracle_structural_cors_misconfig_violation() -> None:
+    # MCP structural branch must forward acao, acac, probe_origin fields.
+    # Origin-reflected ACAO + credentials on → violation.
+    session = _session_on(lambda r: httpx.Response(200, text="ok"))
+    mcp = _register_on_session(session)
+    verdict = _call(
+        mcp,
+        "run_oracle",
+        mechanism="structural",
+        evidence={
+            "check_type": "cors_misconfig",
+            "acao": "https://evil.example",
+            "acac": "true",
+            "probe_origin": "https://evil.example",
+            "evidence_ref": "cors/mcp",
+        },
+    )
+    assert verdict.is_violation is True  # type: ignore[attr-defined]
