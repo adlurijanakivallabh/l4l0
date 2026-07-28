@@ -476,3 +476,99 @@ def test_run_oracle_structural_inline_header_wins_over_fire_ref() -> None:
         },
     )
     assert verdict.is_violation is False  # type: ignore[attr-defined]
+
+
+def test_run_oracle_structural_resolves_set_cookie_from_fire_ref() -> None:
+    # CSRF: Set-Cookie resolves server-side from probe_fire_ref, same as the
+    # framing/CORS headers. The captured response ships a SameSite=None session
+    # cookie; no set_cookie key is passed, so the violation can only come from
+    # the oracle reading the header off the fire the firer captured.
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, text="ok", headers={"Set-Cookie": "session=abc; SameSite=None; Secure"}
+        )
+
+    session = _session_on(handler)
+    ep = session.graph.add_endpoint(Endpoint(method="GET", path="/"))
+    param = session.graph.add_parameter(ep, Parameter(name="probe", location="query"))
+    mcp = _register_on_session(session)
+
+    _call(mcp, "fingerprint_parameter", identity="anon", endpoint_node=ep, param_node=param)
+    fired = _call(
+        mcp, "fire_request", identity="anon", endpoint_node=ep, param_node=param, payload=""
+    )
+    verdict = _call(
+        mcp,
+        "run_oracle",
+        mechanism="structural",
+        evidence={
+            "check_type": "csrf_missing_protection",
+            "probe_fire_ref": fired.fire_ref,  # type: ignore[attr-defined]
+            "csrf_token_present": False,
+            "evidence_ref": "csrf/fire-ref",
+        },
+    )
+    # SameSite=None + no token, resolved from the fire_ref → precondition holds.
+    assert verdict.is_violation is True  # type: ignore[attr-defined]
+
+
+def test_run_oracle_structural_csrf_token_present_denies() -> None:
+    # An anti-CSRF token mechanism defeats the precondition even with a
+    # SameSite=None cookie: csrf_token_present is a caller-supplied boolean.
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, text="ok", headers={"Set-Cookie": "session=abc; SameSite=None; Secure"}
+        )
+
+    session = _session_on(handler)
+    ep = session.graph.add_endpoint(Endpoint(method="GET", path="/"))
+    param = session.graph.add_parameter(ep, Parameter(name="probe", location="query"))
+    mcp = _register_on_session(session)
+
+    _call(mcp, "fingerprint_parameter", identity="anon", endpoint_node=ep, param_node=param)
+    fired = _call(
+        mcp, "fire_request", identity="anon", endpoint_node=ep, param_node=param, payload=""
+    )
+    verdict = _call(
+        mcp,
+        "run_oracle",
+        mechanism="structural",
+        evidence={
+            "check_type": "csrf_missing_protection",
+            "probe_fire_ref": fired.fire_ref,  # type: ignore[attr-defined]
+            "csrf_token_present": True,
+            "evidence_ref": "csrf/token-present",
+        },
+    )
+    assert verdict.is_violation is False  # type: ignore[attr-defined]
+
+
+def test_run_oracle_structural_csrf_inline_set_cookie_wins() -> None:
+    # Precedence: an inline set_cookie beats what the fire_ref carries. The
+    # captured response ships SameSite=Lax (no precondition), but an inline
+    # SameSite=None cookie must still flip the verdict to a violation.
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text="ok", headers={"Set-Cookie": "session=abc; SameSite=Lax"})
+
+    session = _session_on(handler)
+    ep = session.graph.add_endpoint(Endpoint(method="GET", path="/"))
+    param = session.graph.add_parameter(ep, Parameter(name="probe", location="query"))
+    mcp = _register_on_session(session)
+
+    _call(mcp, "fingerprint_parameter", identity="anon", endpoint_node=ep, param_node=param)
+    fired = _call(
+        mcp, "fire_request", identity="anon", endpoint_node=ep, param_node=param, payload=""
+    )
+    verdict = _call(
+        mcp,
+        "run_oracle",
+        mechanism="structural",
+        evidence={
+            "check_type": "csrf_missing_protection",
+            "set_cookie": "s=1; SameSite=None",
+            "probe_fire_ref": fired.fire_ref,  # type: ignore[attr-defined]
+            "csrf_token_present": False,
+            "evidence_ref": "csrf/inline-wins",
+        },
+    )
+    assert verdict.is_violation is True  # type: ignore[attr-defined]

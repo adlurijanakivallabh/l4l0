@@ -550,14 +550,20 @@ def register_tools(mcp: FastMCP, session: _Session) -> None:
           ``baseline_select``, ``probe_select``, ``evidence_ref``.
         * **structural** — ``check_type`` (``file_upload_bypass`` /
           ``path_traversal`` / ``jwt_forgery`` / ``clickjacking`` /
-          ``cors_misconfig``), ``baseline_status``, ``probe_status``,
-          ``sentinel``, ``response_body``, ``evidence_ref``; for
-          ``clickjacking``: ``x_frame_options``, ``csp``; for ``cors_misconfig``:
-          ``acao``, ``acac``, ``probe_origin``. For ``clickjacking`` /
+          ``cors_misconfig`` / ``csrf_missing_protection``),
+          ``baseline_status``, ``probe_status``, ``sentinel``,
+          ``response_body``, ``evidence_ref``; for ``clickjacking``:
+          ``x_frame_options``, ``csp``; for ``cors_misconfig``: ``acao``,
+          ``acac``, ``probe_origin``; for ``csrf_missing_protection``:
+          ``set_cookie``, ``csrf_token_present``. For ``clickjacking`` /
           ``cors_misconfig`` the four header fields (``x_frame_options``,
           ``csp``, ``acao``, ``acac``) are resolved from ``probe_fire_ref``
           server-side when not inlined — headers never cross the wire, same
-          rule as bodies (§10/§13). ``probe_origin`` stays caller-supplied.
+          rule as bodies (§10/§13). ``probe_origin`` stays caller-supplied. For
+          ``csrf_missing_protection`` the ``set_cookie`` field is resolved from
+          ``probe_fire_ref`` server-side (never crosses the wire, same rule as
+          the other headers); ``csrf_token_present`` is a caller-supplied
+          boolean signal the detector determines, not header-derived.
         * **timing_statistical** — ``probe_latencies_ms`` (list[float]),
           ``baseline_latencies_ms`` (list[float]), ``threshold_multiplier``
           (float, default 3.0), ``evidence_ref``.
@@ -627,6 +633,8 @@ def register_tools(mcp: FastMCP, session: _Session) -> None:
                 acao=_hdr("acao", "access-control-allow-origin"),
                 acac=_hdr("acac", "access-control-allow-credentials"),
                 probe_origin=str(ev.get("probe_origin", "")),
+                set_cookie=_hdr("set_cookie", "set-cookie"),
+                csrf_token_present=bool(ev.get("csrf_token_present", False)),
                 evidence_ref=str(ev.get("evidence_ref", "")),
             )
 

@@ -277,13 +277,16 @@ def _confirm_structural_headers(
     probe_fire_ref: str,
     evidence_ref: str,
     probe_origin: str = "",
+    csrf_token_present: bool = False,
 ) -> bool:
-    """Confirm a header-derived structural class (clickjacking / CORS).
+    """Confirm a header-derived structural class (clickjacking / CORS / CSRF).
 
     The four framing/CORS response headers are resolved server-side from
     ``probe_fire_ref`` (§10/§13) — only the opaque fire handle and the attacker
-    ``probe_origin`` we sent cross the wire, never the headers themselves. On an
-    ``is_violation`` verdict, commits the finding via the Validator.
+    ``probe_origin`` we sent cross the wire, never the headers themselves. Also
+    serves ``csrf_missing_protection`` whose ``Set-Cookie`` is likewise resolved
+    server-side from the fire_ref. On an ``is_violation`` verdict, commits the
+    finding via the Validator.
     """
     verdict = _call(
         mcp,
@@ -293,6 +296,7 @@ def _confirm_structural_headers(
             "check_type": check_type,
             "probe_fire_ref": probe_fire_ref,
             "probe_origin": probe_origin,
+            "csrf_token_present": csrf_token_present,
             "evidence_ref": evidence_ref,
         },
     )
@@ -518,6 +522,29 @@ def _detect_cors(target: JuiceshopTarget, token: str | None) -> bool:
     )
 
 
+def _detect_csrf(target: JuiceshopTarget, token: str | None) -> bool:
+    """CSRF precondition: GET the app root, confirm the session cookie is
+    cross-site-sendable (SameSite=None) with no anti-CSRF token mechanism.
+
+    ``Set-Cookie`` is read from the captured response server-side (resolved from
+    the fire_ref). This confirms the structural PRECONDITION only — no forged
+    state-change is fired, so read-only-first (§10) holds. Juice Shop exposes no
+    anti-CSRF token mechanism, so ``csrf_token_present`` is False.
+    """
+    shared = _SharedState()
+    sess = _session_as(target, token, shared)
+    mcp = _mcp_for(sess)
+    fire_ref = _fire_get(mcp, sess, "anon", "/")
+    return _confirm_structural_headers(
+        mcp,
+        vuln_class="csrf_missing_protection",
+        check_type="csrf_missing_protection",
+        probe_fire_ref=fire_ref,
+        evidence_ref="csrf/root",
+        csrf_token_present=False,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Scoring — per-challenge via a tracker before/after delta.
 # ---------------------------------------------------------------------------
@@ -563,6 +590,7 @@ def run_juiceshop(target: JuiceshopTarget, *, token: str | None = None) -> Juice
         "xss": _detect_xss_stored(target, token),
         "clickjacking": _detect_clickjacking(target, token),
         "cors": _detect_cors(target, token),
+        "csrf": _detect_csrf(target, token),
     }
     # Silence the unused-variable check while keeping the class-level signal
     # available for future per-challenge attribution work.
