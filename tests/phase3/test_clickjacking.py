@@ -73,6 +73,38 @@ def test_detector_whitespace_xfo_is_not_a_defense() -> None:
     assert result.confirmed is True
 
 
+def test_detector_xfo_allowall_is_violation() -> None:
+    # Browsers ignore invalid XFO values; ALLOWALL leaves the page framable.
+    result = detect_clickjacking(
+        _prober(x_frame_options="ALLOWALL"), evidence_ref="clickjacking/xfo-allowall"
+    )
+    assert result.confirmed is True
+
+
+def test_detector_frame_ancestors_wildcard_is_violation() -> None:
+    # frame-ancestors * permits all framing → no defense.
+    result = detect_clickjacking(
+        _prober(csp="frame-ancestors *"), evidence_ref="clickjacking/fa-wildcard"
+    )
+    assert result.confirmed is True
+
+
+def test_detector_xfo_allow_from_is_denied() -> None:
+    result = detect_clickjacking(
+        _prober(x_frame_options="ALLOW-FROM https://trusted.example"),
+        evidence_ref="clickjacking/xfo-allowfrom",
+    )
+    assert result.confirmed is False
+
+
+def test_detector_frame_ancestors_explicit_origins_is_denied() -> None:
+    result = detect_clickjacking(
+        _prober(csp="frame-ancestors 'self' https://x.com"),
+        evidence_ref="clickjacking/fa-origins",
+    )
+    assert result.confirmed is False
+
+
 # === Oracle-level unit tests (CLICKJACKING decide branch) =====================
 
 
@@ -100,4 +132,15 @@ def test_oracle_clickjacking_both_present_is_denied() -> None:
     assert (
         decide(_cj_evidence(x_frame_options="DENY", csp="frame-ancestors 'self'"))
         is FindingStatus.CONFIRMED_DENIED
+    )
+
+
+def test_oracle_clickjacking_xfo_allowall_is_violation() -> None:
+    assert decide(_cj_evidence(x_frame_options="ALLOWALL")) is FindingStatus.CONFIRMED_VIOLATION
+
+
+def test_oracle_clickjacking_frame_ancestors_wildcard_is_violation() -> None:
+    assert (
+        decide(_cj_evidence(x_frame_options="", csp="frame-ancestors *"))
+        is FindingStatus.CONFIRMED_VIOLATION
     )

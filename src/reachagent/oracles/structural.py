@@ -17,10 +17,14 @@ violations deterministically:
     was accepted (2xx) when it should have been refused (401/403). Baseline: a
     valid token is accepted. Probe: the forged token.
 
-  * **CLICKJACKING** — a framable response: the page ships NEITHER an
-    ``X-Frame-Options`` header NOR a CSP ``frame-ancestors`` directive, so a
-    third-party page can frame it. Either defense present → not framable. Both
-    absent → violation. Client-side structural class (§5/§7, v1.5).
+  * **CLICKJACKING** — a framable response: the page ships no *effective*
+    framing defense. ``X-Frame-Options`` counts only when its value is ``DENY``,
+    ``SAMEORIGIN`` or ``ALLOW-FROM <uri>`` (browsers ignore any other value, so
+    junk like ``ALLOWALL`` is no defense). A CSP ``frame-ancestors`` directive
+    counts only when its source list is non-empty and not solely ``*`` — a bare
+    ``frame-ancestors *`` permits all framing and is no defense. Either effective
+    defense present → not framable. Both absent → violation. Client-side
+    structural class (§5/§7, v1.5).
 
   * **CORS_MISCONFIG** — an origin-reflected ``Access-Control-Allow-Origin``
     combined with ``Access-Control-Allow-Credentials: true``, letting a
@@ -74,11 +78,12 @@ class StructuralEvidence:
       ``probe_status``: response to the forged token. 2xx = forgery accepted.
 
     CLICKJACKING:
-      ``x_frame_options``: the response's ``X-Frame-Options`` header value (any
-      non-empty value counts as a framing defense present). ``csp``: the raw
-      ``Content-Security-Policy`` header value — a ``frame-ancestors`` directive
-      in it (matched case-insensitively) also counts as a defense. Both
-      absent/ineffective → framable → violation.
+      ``x_frame_options``: the response's ``X-Frame-Options`` header value —
+      effective only when it is ``DENY``, ``SAMEORIGIN`` or ``ALLOW-FROM <uri>``
+      (case-insensitive); any other value is ignored by browsers. ``csp``: the
+      raw ``Content-Security-Policy`` header value — its ``frame-ancestors``
+      directive is effective only when its source list is non-empty and not
+      solely ``*``. Both defenses absent/ineffective → framable → violation.
 
     CORS_MISCONFIG:
       ``acao``: the ``Access-Control-Allow-Origin`` value the server returned.
@@ -104,9 +109,36 @@ class StructuralEvidence:
     evidence_ref: str = ""
 
 
-def _csp_has_frame_ancestors(csp: str) -> bool:
-    """Whether the CSP header value contains a ``frame-ancestors`` directive."""
-    return "frame-ancestors" in csp.lower()
+def _xfo_is_effective(xfo: str) -> bool:
+    """Whether an ``X-Frame-Options`` value actually blocks framing.
+
+    Browsers honour only ``DENY``, ``SAMEORIGIN`` and ``ALLOW-FROM <uri>``; any
+    other value (empty, ``ALLOWALL``, garbage) is ignored and leaves the page
+    framable. Matched case-insensitively.
+    """
+    value = xfo.strip().lower()
+    return value in ("deny", "sameorigin") or value.startswith("allow-from ")
+
+
+def _csp_frame_ancestors_is_effective(csp: str) -> bool:
+    """Whether the CSP ``frame-ancestors`` directive actually restricts framing.
+
+    Effective only when the directive is present with a non-empty source list
+    that is not solely ``*`` — a bare ``frame-ancestors *`` permits all framing
+    and is no defense. Pure string parse, no network.
+    """
+    lowered = csp.lower()
+    marker = "frame-ancestors"
+    idx = lowered.find(marker)
+    if idx == -1:
+        return False
+    # Source list runs from after the directive name to the next ';'.
+    rest = csp[idx + len(marker) :]
+    rest = rest.split(";", 1)[0]
+    sources = rest.split()
+    if not sources:
+        return False
+    return sources != ["*"]
 
 
 def decide(evidence: StructuralEvidence) -> FindingStatus:
@@ -142,10 +174,12 @@ def decide(evidence: StructuralEvidence) -> FindingStatus:
         return FindingStatus.INCONCLUSIVE
 
     if evidence.check_type is StructuralCheckType.CLICKJACKING:
-        # A framing defense is effective if XFO is present (any value) OR the
-        # CSP carries a frame-ancestors directive. Violation only when BOTH are
-        # absent — one defense present is enough to deny.
-        defended = bool(evidence.x_frame_options.strip()) or _csp_has_frame_ancestors(evidence.csp)
+        # A framing defense is effective only when XFO is DENY/SAMEORIGIN/
+        # ALLOW-FROM, OR the CSP frame-ancestors source list is non-empty and
+        # not solely '*'. Violation only when BOTH are ineffective.
+        defended = _xfo_is_effective(evidence.x_frame_options) or _csp_frame_ancestors_is_effective(
+            evidence.csp
+        )
         if defended:
             return FindingStatus.CONFIRMED_DENIED
         return FindingStatus.CONFIRMED_VIOLATION
