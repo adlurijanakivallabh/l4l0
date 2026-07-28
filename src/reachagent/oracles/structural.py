@@ -17,7 +17,18 @@ violations deterministically:
     was accepted (2xx) when it should have been refused (401/403). Baseline: a
     valid token is accepted. Probe: the forged token.
 
-All three paths are deterministic: no LLM, no heuristics. Same evidence in,
+  * **CLICKJACKING** — a framable response: the page ships NEITHER an
+    ``X-Frame-Options`` header NOR a CSP ``frame-ancestors`` directive, so a
+    third-party page can frame it. Either defense present → not framable. Both
+    absent → violation. Client-side structural class (§5/§7, v1.5).
+
+  * **CORS_MISCONFIG** — an origin-reflected ``Access-Control-Allow-Origin``
+    combined with ``Access-Control-Allow-Credentials: true``, letting a
+    cross-origin attacker read authenticated responses. A bare ``ACAO: *`` is
+    NOT exploitable with credentials (browsers reject the pair), so it is never
+    a violation. Client-side structural class (§5/§7, v1.5).
+
+All paths are deterministic: no LLM, no heuristics. Same evidence in,
 same verdict out, every time.
 """
 
@@ -37,6 +48,8 @@ class StructuralCheckType(StrEnum):
     FILE_UPLOAD_BYPASS = "file_upload_bypass"
     PATH_TRAVERSAL = "path_traversal"
     JWT_FORGERY = "jwt_forgery"
+    CLICKJACKING = "clickjacking"
+    CORS_MISCONFIG = "cors_misconfig"
 
 
 @dataclass(frozen=True)
@@ -60,6 +73,21 @@ class StructuralEvidence:
       ``baseline_status``: response to a valid token (must be 2xx).
       ``probe_status``: response to the forged token. 2xx = forgery accepted.
 
+    CLICKJACKING:
+      ``x_frame_options``: the response's ``X-Frame-Options`` header value (any
+      non-empty value counts as a framing defense present). ``csp``: the raw
+      ``Content-Security-Policy`` header value — a ``frame-ancestors`` directive
+      in it (matched case-insensitively) also counts as a defense. Both
+      absent/ineffective → framable → violation.
+
+    CORS_MISCONFIG:
+      ``acao``: the ``Access-Control-Allow-Origin`` value the server returned.
+      ``acac``: the ``Access-Control-Allow-Credentials`` value returned
+      (credentials on iff it lower-cases to ``true``). ``probe_origin``: the
+      attacker ``Origin`` we sent — reflection is present when ``acao`` equals it.
+      Origin-reflected ACAO with credentials on → violation; ``ACAO: *`` with
+      credentials is not exploitable → denied.
+
     ``evidence_ref``: short, secret-free provenance handle (§13).
     """
 
@@ -68,7 +96,17 @@ class StructuralEvidence:
     probe_status: int = 0
     sentinel: str = ""
     response_body: str = ""
+    x_frame_options: str = ""
+    csp: str = ""
+    acao: str = ""
+    acac: str = ""
+    probe_origin: str = ""
     evidence_ref: str = ""
+
+
+def _csp_has_frame_ancestors(csp: str) -> bool:
+    """Whether the CSP header value contains a ``frame-ancestors`` directive."""
+    return "frame-ancestors" in csp.lower()
 
 
 def decide(evidence: StructuralEvidence) -> FindingStatus:
@@ -100,6 +138,32 @@ def decide(evidence: StructuralEvidence) -> FindingStatus:
         if 200 <= evidence.probe_status < 300:
             return FindingStatus.CONFIRMED_VIOLATION
         if evidence.probe_status in range(400, 500):
+            return FindingStatus.CONFIRMED_DENIED
+        return FindingStatus.INCONCLUSIVE
+
+    if evidence.check_type is StructuralCheckType.CLICKJACKING:
+        # A framing defense is effective if XFO is present (any value) OR the
+        # CSP carries a frame-ancestors directive. Violation only when BOTH are
+        # absent — one defense present is enough to deny.
+        defended = bool(evidence.x_frame_options.strip()) or _csp_has_frame_ancestors(evidence.csp)
+        if defended:
+            return FindingStatus.CONFIRMED_DENIED
+        return FindingStatus.CONFIRMED_VIOLATION
+
+    if evidence.check_type is StructuralCheckType.CORS_MISCONFIG:
+        acao = evidence.acao.strip()
+        # No ACAO returned at all → CORS is off, nothing to judge.
+        if not acao:
+            return FindingStatus.INCONCLUSIVE
+        credentials_on = evidence.acac.strip().lower() == "true"
+        origin_reflected = bool(evidence.probe_origin) and acao == evidence.probe_origin
+        wildcard = acao == "*"
+        # Origin-reflected ACAO with credentials → attacker reads authed data.
+        if origin_reflected and credentials_on:
+            return FindingStatus.CONFIRMED_VIOLATION
+        # ACAO: * with credentials is rejected by browsers → not exploitable.
+        # Reflection without credentials, or any other shape → denied.
+        if wildcard or origin_reflected or credentials_on:
             return FindingStatus.CONFIRMED_DENIED
         return FindingStatus.INCONCLUSIVE
 
