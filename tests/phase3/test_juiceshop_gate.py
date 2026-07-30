@@ -25,6 +25,7 @@ from reachagent.eval.juiceshop_harness import (
     PortswiggerResult,
     in_scope_class,
 )
+from reachagent.eval.juiceshop_live import score_run
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -226,6 +227,108 @@ def test_report_contains_key_metrics() -> None:
     assert "75.0%" in report
     assert "0.0%" in report
     assert "PASSED" in report  # 3/4 = 0.75 exactly at floor → passes
+
+
+# ---------------------------------------------------------------------------
+# Layer 1b: class-level false-positive scoring — pure, synthetic snapshots.
+#
+# score_run consumes before/after tracker snapshots plus the per-class oracle
+# signal. The FP rule: a class whose detector confirmed a finding but where NO
+# in-scope challenge flipped unsolved→solved this run counts as one class-level
+# false positive (invariant 2), off the coverage denominator.
+# ---------------------------------------------------------------------------
+
+
+def _snap(*entries: tuple[str, str, bool]) -> dict[str, dict[str, object]]:
+    """Build a tracker snapshot from ``(key, category, solved)`` tuples."""
+    return {key: {"category": cat, "solved": solved} for key, cat, solved in entries}
+
+
+def test_score_run_flip_credits_tp_no_class_fp() -> None:
+    # One injection challenge flips unsolved→solved; oracle confirmed the class.
+    before = _snap(("c1", "Injection", False))
+    after = _snap(("c1", "Injection", True))
+    run = score_run(before, after, {"injection": True})
+    assert run.true_positives == 1
+    assert run.class_false_positives == 0
+    assert run.false_positives == 0
+    assert run.coverage == pytest.approx(1.0)
+
+
+def test_score_run_confirmed_but_no_flip_is_class_fp() -> None:
+    # Oracle confirmed injection, but the challenge was already solved (no flip).
+    before = _snap(("c1", "Injection", True))
+    after = _snap(("c1", "Injection", True))
+    run = score_run(before, after, {"injection": True})
+    assert run.true_positives == 0
+    assert run.class_false_positives == 1
+    assert run.false_positives == 1
+    # Class FP stays off the coverage denominator (still 1 in-scope challenge).
+    assert run.total_in_scope == 1
+    assert run.coverage == pytest.approx(0.0)
+    assert run.fp_rate == pytest.approx(1.0)
+
+
+def test_score_run_no_detection_no_fp() -> None:
+    # Detector never confirmed the class → no class FP even though nothing flipped.
+    before = _snap(("c1", "Injection", True))
+    after = _snap(("c1", "Injection", True))
+    run = score_run(before, after, {"injection": False})
+    assert run.class_false_positives == 0
+    assert run.false_positives == 0
+    assert run.fp_rate == pytest.approx(0.0)
+
+
+def test_score_run_mixed_classes_counts_fp_per_class() -> None:
+    # injection flips (TP, no FP); xss confirmed but no flip (one class FP);
+    # file_upload not confirmed (no FP); path_traversal confirmed + flips (TP).
+    before = _snap(
+        ("i1", "Injection", False),
+        ("x1", "XSS", False),
+        ("f1", "Improper Input Validation", True),
+        ("p1", "Vulnerable Components", False),
+    )
+    after = _snap(
+        ("i1", "Injection", True),
+        ("x1", "XSS", False),
+        ("f1", "Improper Input Validation", True),
+        ("p1", "Vulnerable Components", True),
+    )
+    detections = {
+        "injection": True,
+        "xss": True,
+        "file_upload": False,
+        "path_traversal": True,
+    }
+    run = score_run(before, after, detections)
+    assert run.true_positives == 2  # injection + path_traversal flipped
+    assert run.class_false_positives == 1  # xss confirmed, nothing flipped
+    assert run.false_positives == 1
+    assert run.total_in_scope == 4
+    # 2 TP, 1 FP → fp_rate = 1/3.
+    assert run.fp_rate == pytest.approx(1 / 3)
+
+
+def test_score_run_one_class_flip_suppresses_that_classs_fp() -> None:
+    # Two injection challenges, only one flips. The class had a flip, so the
+    # confirmed injection oracle is NOT a class FP.
+    before = _snap(("i1", "Injection", False), ("i2", "Injection", False))
+    after = _snap(("i1", "Injection", True), ("i2", "Injection", False))
+    run = score_run(before, after, {"injection": True})
+    assert run.true_positives == 1
+    assert run.class_false_positives == 0
+    assert run.false_positives == 0
+
+
+def test_score_run_ignores_out_of_scope_categories() -> None:
+    # Out-of-scope categories never enter results and never trigger a class FP.
+    before = _snap(("b1", "Broken Access Control", False))
+    after = _snap(("b1", "Broken Access Control", True))
+    run = score_run(before, after, {"injection": True})
+    assert run.total_in_scope == 0
+    # No in-scope injection challenge exists, so a confirmed injection oracle
+    # still records one class FP (claimed exploitable, nothing in-scope flipped).
+    assert run.class_false_positives == 1
 
 
 # ---------------------------------------------------------------------------

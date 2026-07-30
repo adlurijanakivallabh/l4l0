@@ -74,6 +74,11 @@ class JuiceshopRun:
     """All in-scope challenge results from one Juice Shop run."""
 
     results: list[ChallengeResult] = field(default_factory=list)
+    # Class-level false positives: a class whose oracle confirmed a finding while
+    # NO in-scope challenge of that class flipped unsolved→solved this run (we
+    # claimed the class exploitable; Juice Shop's tracker disagreed). Kept off the
+    # coverage denominator — it is a false-positive signal only (invariant 2).
+    class_false_positives: int = 0
 
     @property
     def total_in_scope(self) -> int:
@@ -90,8 +95,16 @@ class JuiceshopRun:
 
     @property
     def false_positives(self) -> int:
-        """Confirmed by ReachAgent but NOT solved in tracker."""
-        return sum(1 for r in self.results if r.confirmed and not r.tracker_solved)
+        """Confirmed by ReachAgent but NOT solved in tracker.
+
+        Per-challenge FPs (a challenge credited but not tracker-solved) plus
+        class-level FPs (a class whose oracle confirmed but which produced no
+        tracker flip this run). Under tracker-delta attribution the per-challenge
+        term is 0 by construction, so ``class_false_positives`` is what makes the
+        rate meaningful instead of structurally zero.
+        """
+        per_challenge = sum(1 for r in self.results if r.confirmed and not r.tracker_solved)
+        return per_challenge + self.class_false_positives
 
     @property
     def coverage(self) -> float:
