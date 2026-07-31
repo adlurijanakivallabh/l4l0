@@ -232,10 +232,13 @@ def test_report_contains_key_metrics() -> None:
 # ---------------------------------------------------------------------------
 # Layer 1b: class-level false-positive scoring — pure, synthetic snapshots.
 #
-# score_run consumes before/after tracker snapshots plus the per-class oracle
-# signal. The FP rule: a class whose detector confirmed a finding but where NO
-# in-scope challenge flipped unsolved→solved this run counts as one class-level
-# false positive (invariant 2), off the coverage denominator.
+# score_run consumes before/after tracker snapshots plus the set of real
+# vuln_class strings whose oracle confirmed this run. The FP rule: an in-scope
+# class whose oracle confirmed a finding but where NO in-scope challenge of that
+# class flipped unsolved→solved this run counts as one class-level false positive
+# (invariant 2), off the coverage denominator. A confirmed vuln_class that maps
+# out of scope (jwt_forgery, clickjacking, cors_misconfig, csrf_missing_protection)
+# books neither coverage nor an in-scope FP.
 # ---------------------------------------------------------------------------
 
 
@@ -245,10 +248,10 @@ def _snap(*entries: tuple[str, str, bool]) -> dict[str, dict[str, object]]:
 
 
 def test_score_run_flip_credits_tp_no_class_fp() -> None:
-    # One injection challenge flips unsolved→solved; oracle confirmed the class.
+    # One injection challenge flips unsolved→solved; sqli oracle confirmed.
     before = _snap(("c1", "Injection", False))
     after = _snap(("c1", "Injection", True))
-    run = score_run(before, after, {"injection": True})
+    run = score_run(before, after, {"sqli"})
     assert run.true_positives == 1
     assert run.class_false_positives == 0
     assert run.false_positives == 0
@@ -256,10 +259,10 @@ def test_score_run_flip_credits_tp_no_class_fp() -> None:
 
 
 def test_score_run_confirmed_but_no_flip_is_class_fp() -> None:
-    # Oracle confirmed injection, but the challenge was already solved (no flip).
+    # sqli oracle confirmed, but the injection challenge was already solved (no flip).
     before = _snap(("c1", "Injection", True))
     after = _snap(("c1", "Injection", True))
-    run = score_run(before, after, {"injection": True})
+    run = score_run(before, after, {"sqli"})
     assert run.true_positives == 0
     assert run.class_false_positives == 1
     assert run.false_positives == 1
@@ -270,10 +273,10 @@ def test_score_run_confirmed_but_no_flip_is_class_fp() -> None:
 
 
 def test_score_run_no_detection_no_fp() -> None:
-    # Detector never confirmed the class → no class FP even though nothing flipped.
+    # No vuln_class confirmed → no class FP even though nothing flipped.
     before = _snap(("c1", "Injection", True))
     after = _snap(("c1", "Injection", True))
-    run = score_run(before, after, {"injection": False})
+    run = score_run(before, after, set())
     assert run.class_false_positives == 0
     assert run.false_positives == 0
     assert run.fp_rate == pytest.approx(0.0)
@@ -294,13 +297,8 @@ def test_score_run_mixed_classes_counts_fp_per_class() -> None:
         ("f1", "Improper Input Validation", True),
         ("p1", "Vulnerable Components", True),
     )
-    detections = {
-        "injection": True,
-        "xss": True,
-        "file_upload": False,
-        "path_traversal": True,
-    }
-    run = score_run(before, after, detections)
+    confirmed = {"sqli", "xss", "path_traversal"}  # file_upload NOT confirmed
+    run = score_run(before, after, confirmed)
     assert run.true_positives == 2  # injection + path_traversal flipped
     assert run.class_false_positives == 1  # xss confirmed, nothing flipped
     assert run.false_positives == 1
@@ -311,24 +309,117 @@ def test_score_run_mixed_classes_counts_fp_per_class() -> None:
 
 def test_score_run_one_class_flip_suppresses_that_classs_fp() -> None:
     # Two injection challenges, only one flips. The class had a flip, so the
-    # confirmed injection oracle is NOT a class FP.
+    # confirmed sqli oracle is NOT a class FP.
     before = _snap(("i1", "Injection", False), ("i2", "Injection", False))
     after = _snap(("i1", "Injection", True), ("i2", "Injection", False))
-    run = score_run(before, after, {"injection": True})
+    run = score_run(before, after, {"sqli"})
     assert run.true_positives == 1
     assert run.class_false_positives == 0
     assert run.false_positives == 0
 
 
 def test_score_run_ignores_out_of_scope_categories() -> None:
-    # Out-of-scope categories never enter results and never trigger a class FP.
+    # Out-of-scope tracker categories never enter results; a confirmed in-scope
+    # vuln_class with no in-scope challenge still books one class FP.
     before = _snap(("b1", "Broken Access Control", False))
     after = _snap(("b1", "Broken Access Control", True))
-    run = score_run(before, after, {"injection": True})
+    run = score_run(before, after, {"sqli"})
     assert run.total_in_scope == 0
-    # No in-scope injection challenge exists, so a confirmed injection oracle
-    # still records one class FP (claimed exploitable, nothing in-scope flipped).
+    # No in-scope injection challenge exists, so a confirmed sqli oracle still
+    # records one class FP (claimed exploitable, nothing in-scope flipped).
     assert run.class_false_positives == 1
+
+
+# --- Fix A: real vuln_class attribution, no jwt_forgery conflation -----------
+
+
+def test_score_run_jwt_forgery_only_is_not_a_path_traversal_fp() -> None:
+    # jwt_forgery confirmed (out-of-scope Broken-Auth class), the /ftp
+    # path_traversal oracle did NOT confirm, and no path_traversal challenge
+    # flipped. This must NOT book a path_traversal class FP — the old lossy
+    # per-in-scope-class bool did exactly that.
+    before = _snap(("p1", "Vulnerable Components", False))
+    after = _snap(("p1", "Vulnerable Components", False))
+    run = score_run(before, after, {"jwt_forgery"})
+    assert run.class_false_positives == 0
+    assert run.false_positives == 0
+    assert run.fp_rate == pytest.approx(0.0)
+
+
+def test_score_run_out_of_scope_confirmation_not_masked_by_unrelated_flip() -> None:
+    # A path_traversal challenge flips (real TP). A separate jwt_forgery
+    # confirmation must stay out of scope regardless — it is neither coverage nor
+    # an in-scope FP, and the unrelated flip must not silently absorb it.
+    before = _snap(("p1", "Vulnerable Components", False))
+    after = _snap(("p1", "Vulnerable Components", True))
+    run = score_run(before, after, {"jwt_forgery", "path_traversal"})
+    assert run.true_positives == 1  # the /ftp flip
+    assert run.class_false_positives == 0  # jwt_forgery books nothing
+    assert run.false_positives == 0
+
+
+def test_score_run_path_traversal_fp_still_books_when_ftp_confirmed_no_flip() -> None:
+    # The genuine path_traversal (in-scope) FP path still works: confirmed but no
+    # /ftp-category flip → one class FP. Only the jwt_forgery conflation is gone.
+    before = _snap(("p1", "Vulnerable Components", False))
+    after = _snap(("p1", "Vulnerable Components", False))
+    run = score_run(before, after, {"path_traversal"})
+    assert run.class_false_positives == 1
+    assert run.false_positives == 1
+
+
+def test_score_run_client_side_structural_classes_book_no_in_scope_fp() -> None:
+    # clickjacking / cors_misconfig / csrf_missing_protection all map out of scope
+    # (pinned behavior): confirming all three, with no in-scope challenge and no
+    # flip, books zero class FPs.
+    before = _snap(("i1", "Injection", True))
+    after = _snap(("i1", "Injection", True))
+    run = score_run(before, after, {"clickjacking", "cors_misconfig", "csrf_missing_protection"})
+    assert run.class_false_positives == 0
+    assert run.false_positives == 0
+    assert run.fp_rate == pytest.approx(0.0)
+
+
+# --- Fix B: drive the real class-FP path to the ceiling and gate verdict ------
+
+
+def test_class_fp_rate_exactly_at_ceiling_passes() -> None:
+    # Nine in-scope TPs (nine injection flips) + one class-level FP from a
+    # confirmed-but-no-flip file_upload → fp_rate = 1/10 = 0.10, exactly at ceiling.
+    before = _snap(*[(f"i{n}", "Injection", False) for n in range(9)])
+    after = _snap(*[(f"i{n}", "Injection", True) for n in range(9)])
+    # file_upload confirmed but no in-scope file_upload challenge flips (none present).
+    run = score_run(before, after, {"sqli", "file_upload"})
+    assert run.true_positives == 9
+    assert run.class_false_positives == 1
+    assert run.false_positives == 1
+    assert run.fp_rate == pytest.approx(0.10)
+    assert run.fp_rate_passes  # exactly at ceiling
+
+
+def test_class_fp_rate_one_over_ceiling_fails() -> None:
+    # Eight in-scope TPs + one class FP → fp_rate = 1/9 ≈ 0.111 > 0.10 → fails.
+    before = _snap(*[(f"i{n}", "Injection", False) for n in range(8)])
+    after = _snap(*[(f"i{n}", "Injection", True) for n in range(8)])
+    run = score_run(before, after, {"sqli", "file_upload"})
+    assert run.true_positives == 8
+    assert run.class_false_positives == 1
+    assert run.fp_rate == pytest.approx(1 / 9)
+    assert not run.fp_rate_passes
+
+
+def test_gate_fails_on_class_fp_driven_over_ceiling_run() -> None:
+    # Same over-ceiling run, wrapped in the composite gate: coverage floor is met
+    # (all in-scope challenges flipped), but the class-FP-driven fp_rate breaches
+    # the ceiling, so Phase3GateResult.passed must be False.
+    before = _snap(*[(f"i{n}", "Injection", False) for n in range(8)])
+    after = _snap(*[(f"i{n}", "Injection", True) for n in range(8)])
+    run = score_run(before, after, {"sqli", "file_upload"})
+    gate = Phase3GateResult(juiceshop=run)
+    assert run.coverage_passes  # 8/8 flipped
+    assert not run.fp_rate_passes
+    assert not gate.passed
+    assert "FAILED" in gate.report()
 
 
 # ---------------------------------------------------------------------------

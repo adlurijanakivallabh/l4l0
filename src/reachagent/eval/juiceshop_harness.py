@@ -49,6 +49,30 @@ _CATEGORY_MAP: dict[str, str] = {
 }
 
 
+# Maps vuln_class strings (the values passed to write_finding) to in-scope class
+# keys. A vuln_class whose challenges fall outside the Phase 3 in-scope set (e.g.
+# jwt_forgery → Broken Auth) returns None — such confirmations are neither coverage
+# nor in-scope false positives, so they're silently out of scope.
+_VULN_CLASS_TO_SCOPE: dict[str, str | None] = {
+    "sqli": "injection",
+    "xss": "xss",
+    "file_upload": "file_upload",
+    "path_traversal": "path_traversal",
+    # Out-of-scope vuln_class strings (confirmed findings whose tracker categories
+    # don't map to the four IN_SCOPE_CLASSES) → None. They write findings but book
+    # neither coverage nor in-scope FPs.
+    "jwt_forgery": None,
+    "clickjacking": None,
+    "cors_misconfig": None,
+    "csrf_missing_protection": None,
+}
+
+
+def vuln_class_to_scope_class(vuln_class: str) -> str | None:
+    """Map a vuln_class (write_finding key) to its in-scope class, or None if out of scope."""
+    return _VULN_CLASS_TO_SCOPE.get(vuln_class)
+
+
 def in_scope_class(category: str) -> str | None:
     """Return the in-scope class key for a tracker category, or None if out of scope."""
     return _CATEGORY_MAP.get(category.lower())

@@ -28,6 +28,7 @@ from reachagent.eval.juiceshop_harness import (
     ChallengeResult,
     JuiceshopRun,
     in_scope_class,
+    vuln_class_to_scope_class,
 )
 from reachagent.execution.audit import AuditLog
 from reachagent.execution.firer import RequestFirer
@@ -450,7 +451,7 @@ def _confirm_structural_headers(
 # ---------------------------------------------------------------------------
 
 
-def _detect_sqli(target: JuiceshopTarget, token: str | None) -> bool:
+def _detect_sqli(target: JuiceshopTarget, token: str | None) -> set[str]:
     """Injection: SQLi auth-bypass on the login POST + UNION/error-based search q=.
 
     Two technique families, each end-to-end through MCP and oracle-gated:
@@ -465,12 +466,14 @@ def _detect_sqli(target: JuiceshopTarget, token: str | None) -> bool:
       each probe a UNION-select that makes the response diverge. Differential
       ``responses_invariant``.
 
-    Returns True if any technique's oracle confirmed a violation.
+    Returns the set of ``vuln_class`` strings this run confirmed (``{"sqli"}`` or
+    empty) — the scoring seam keys on the real vuln_class, never a per-in-scope-class
+    bool.
     """
     shared = _SharedState()
     sess = _session_as(target, token, shared)
     mcp = _mcp_for(sess)
-    confirmed = False
+    confirmed: set[str] = set()
 
     # --- auth-bypass on the login POST (read-only-first cleared, state-changing) ---
     login_path = "/rest/user/login"
@@ -501,7 +504,7 @@ def _detect_sqli(target: JuiceshopTarget, token: str | None) -> bool:
             probe_ref=str(probe["fire_ref"]),
             evidence_ref=ref,
         ):
-            confirmed = True
+            confirmed.add("sqli")
 
     # --- UNION/error-based injection on the product-search query ---
     search_path = "/rest/products/search"
@@ -527,12 +530,12 @@ def _detect_sqli(target: JuiceshopTarget, token: str | None) -> bool:
             probe_ref=str(probe["fire_ref"]),
             evidence_ref=ref,
         ):
-            confirmed = True
+            confirmed.add("sqli")
 
     return confirmed
 
 
-def _detect_path_traversal(target: JuiceshopTarget, token: str | None) -> bool:
+def _detect_path_traversal(target: JuiceshopTarget, token: str | None) -> set[str]:
     """Path/file access class: forged-JWT acceptance + in-app file-read via /ftp.
 
     * **JWT forgery** — a tagged ``alg:none`` unsigned token asserting an identity is
@@ -542,12 +545,17 @@ def _detect_path_traversal(target: JuiceshopTarget, token: str | None) -> bool:
     * **file read** — ``GET /ftp/{filename}`` with the null-byte extension-filter
       bypass, a pure read-only traversal. Structural ``path_traversal`` sentinel.
 
-    Both are read-only GETs — no state change.
+    Both are read-only GETs — no state change. Returns the set of ``vuln_class``
+    strings confirmed this run — ``jwt_forgery`` and ``path_traversal`` are reported
+    *separately*, never collapsed into one bool: ``jwt_forgery`` is an out-of-scope
+    (Broken-Auth) class and must not be mis-booked as a ``path_traversal`` FP, and a
+    false ``jwt_forgery`` confirmation must never be masked by a ``path_traversal``
+    challenge flip.
     """
     shared = _SharedState()
     sess = _session_as(target, token, shared)
     mcp = _mcp_for(sess)
-    confirmed = False
+    confirmed: set[str] = set()
 
     # --- forged (alg:none) JWT accepted on a read-only identity endpoint ---
     whoami = "/rest/user/whoami"
@@ -565,7 +573,7 @@ def _detect_path_traversal(target: JuiceshopTarget, token: str | None) -> bool:
             probe_fire_ref=str(probe["fire_ref"]),
             evidence_ref="path_traversal/jwt-none",
         ):
-            confirmed = True
+            confirmed.add("jwt_forgery")
 
     # --- in-app file read via /ftp null-byte bypass (read-only traversal) ---
     ftp = "/ftp/{filename}"
@@ -583,12 +591,12 @@ def _detect_path_traversal(target: JuiceshopTarget, token: str | None) -> bool:
         probe_fire_ref=str(ftp_probe["fire_ref"]),
         evidence_ref="path_traversal/ftp-nullbyte",
     ):
-        confirmed = True
+        confirmed.add("path_traversal")
 
     return confirmed
 
 
-def _detect_file_upload(target: JuiceshopTarget, token: str | None) -> bool:
+def _detect_file_upload(target: JuiceshopTarget, token: str | None) -> set[str]:
     """Improper-input-validation class: upload-filter bypass + registration/feedback
     validation bypass, all structural ``file_upload_bypass`` (illegitimate input the
     server should reject was accepted with a 2xx).
@@ -608,7 +616,7 @@ def _detect_file_upload(target: JuiceshopTarget, token: str | None) -> bool:
     shared = _SharedState()
     sess = _session_as(target, _setup_user_token(target), shared)
     mcp = _mcp_for(sess)
-    confirmed = False
+    confirmed: set[str] = set()
 
     # --- upload endpoint: disallowed type / oversized file ---
     # One shared param, fired for the baseline and both probes; fingerprint it once
@@ -660,7 +668,7 @@ def _detect_file_upload(target: JuiceshopTarget, token: str | None) -> bool:
             probe_fire_ref=str(probe["fire_ref"]),
             evidence_ref=ref,
         ):
-            confirmed = True
+            confirmed.add("file_upload")
 
     # --- registration validation bypass ---
     users_path = "/api/Users"
@@ -698,7 +706,7 @@ def _detect_file_upload(target: JuiceshopTarget, token: str | None) -> bool:
             probe_fire_ref=str(probe["fire_ref"]),
             evidence_ref=ref,
         ):
-            confirmed = True
+            confirmed.add("file_upload")
 
     # --- feedback rating-validation bypass (zero stars) ---
     feedback_path = "/api/Feedbacks"
@@ -732,12 +740,12 @@ def _detect_file_upload(target: JuiceshopTarget, token: str | None) -> bool:
         probe_fire_ref=str(fb_probe["fire_ref"]),
         evidence_ref="file_upload/feedback-zero-star",
     ):
-        confirmed = True
+        confirmed.add("file_upload")
 
     return confirmed
 
 
-def _detect_xss_stored(target: JuiceshopTarget, token: str | None) -> bool:
+def _detect_xss_stored(target: JuiceshopTarget, token: str | None) -> set[str]:
     """XSS: API-reachable stored payload, execution_confirmation via the readback.
 
     Posts an iframe-javascript payload as a feedback comment and reads it back
@@ -773,12 +781,12 @@ def _detect_xss_stored(target: JuiceshopTarget, token: str | None) -> bool:
         },
     )
     if not verdict.get("is_violation"):
-        return False
+        return set()
     _call(mcp, "write_finding", verdict_ref=str(verdict["verdict_ref"]), vuln_class="xss")
-    return True
+    return {"xss"}
 
 
-def _detect_clickjacking(target: JuiceshopTarget, token: str | None) -> bool:
+def _detect_clickjacking(target: JuiceshopTarget, token: str | None) -> set[str]:
     """Clickjacking: GET the app root, confirm no effective framing defense.
 
     ``X-Frame-Options`` / CSP ``frame-ancestors`` are read from the captured
@@ -789,16 +797,17 @@ def _detect_clickjacking(target: JuiceshopTarget, token: str | None) -> bool:
     sess = _session_as(target, token, shared)
     mcp = _mcp_for(sess)
     fire_ref = _fire_get(mcp, sess, "anon", "/")
-    return _confirm_structural_headers(
+    confirmed = _confirm_structural_headers(
         mcp,
         vuln_class="clickjacking",
         check_type="clickjacking",
         probe_fire_ref=fire_ref,
         evidence_ref="clickjacking/root",
     )
+    return {"clickjacking"} if confirmed else set()
 
 
-def _detect_cors(target: JuiceshopTarget, token: str | None) -> bool:
+def _detect_cors(target: JuiceshopTarget, token: str | None) -> set[str]:
     """CORS misconfig: GET the app root with an attacker ``Origin`` header.
 
     Confirms the response reflects that origin in ``Access-Control-Allow-Origin``
@@ -810,7 +819,7 @@ def _detect_cors(target: JuiceshopTarget, token: str | None) -> bool:
     mcp = _mcp_for(sess)
     attacker_origin = "https://evil.example"
     fire_ref = _fire_get_with_origin(mcp, sess, "anon", "/", attacker_origin)
-    return _confirm_structural_headers(
+    confirmed = _confirm_structural_headers(
         mcp,
         vuln_class="cors_misconfig",
         check_type="cors_misconfig",
@@ -818,9 +827,10 @@ def _detect_cors(target: JuiceshopTarget, token: str | None) -> bool:
         evidence_ref="cors/root",
         probe_origin=attacker_origin,
     )
+    return {"cors_misconfig"} if confirmed else set()
 
 
-def _detect_csrf(target: JuiceshopTarget, token: str | None) -> bool:
+def _detect_csrf(target: JuiceshopTarget, token: str | None) -> set[str]:
     """CSRF precondition: GET the app root, confirm the session cookie is
     cross-site-sendable (SameSite=None) with no anti-CSRF token mechanism.
 
@@ -833,7 +843,7 @@ def _detect_csrf(target: JuiceshopTarget, token: str | None) -> bool:
     sess = _session_as(target, token, shared)
     mcp = _mcp_for(sess)
     fire_ref = _fire_get(mcp, sess, "anon", "/")
-    return _confirm_structural_headers(
+    confirmed = _confirm_structural_headers(
         mcp,
         vuln_class="csrf_missing_protection",
         check_type="csrf_missing_protection",
@@ -841,6 +851,7 @@ def _detect_csrf(target: JuiceshopTarget, token: str | None) -> bool:
         evidence_ref="csrf/root",
         csrf_token_present=False,
     )
+    return {"csrf_missing_protection"} if confirmed else set()
 
 
 # ---------------------------------------------------------------------------
@@ -863,44 +874,60 @@ def run_juiceshop(target: JuiceshopTarget, *, token: str | None = None) -> Juice
       one-detection-marks-all-challenges inflation.
 
     Each detection function runs entirely through ``mcp.call_tool`` (MCP boundary,
-    §14/§15).
+    §14/§15) and returns the set of real ``vuln_class`` strings its oracles confirmed
+    this run. The scoring seam keys on that real ``vuln_class`` — never a lossy
+    per-in-scope-class bool — so a confirmation is attributed to the class it was
+    actually made under (e.g. ``jwt_forgery`` stays distinct from ``path_traversal``).
 
     False-positive scoring (invariant 2). The oracle verdict discarded by the old
-    ``_ = detections`` is now honest signal: for each in-scope class whose detector
-    confirmed a finding (``run_oracle`` returned ``is_violation``) but where **no**
-    in-scope challenge of that class flipped ``unsolved → solved`` this run, we
-    record one *class-level* false positive (:attr:`JuiceshopRun.class_false_positives`).
-    That is the honest reading of "ReachAgent claimed the class exploitable and the
-    tracker disagreed", and it keeps ``fp_rate`` from being structurally zero under
-    delta attribution. It is deliberately kept off the coverage denominator.
+    ``_ = detections`` is now honest signal: for each **in-scope** class whose oracle
+    confirmed a finding but where **no** in-scope challenge of that class flipped
+    ``unsolved → solved`` this run, we record one *class-level* false positive
+    (:attr:`JuiceshopRun.class_false_positives`). An out-of-scope confirmation
+    (``jwt_forgery``, ``clickjacking``, ``cors_misconfig``, ``csrf_missing_protection``
+    — vuln classes whose tracker categories are not in the four Phase 3
+    ``IN_SCOPE_CLASSES``) is neither coverage nor an in-scope FP: it is simply out of
+    scope and books nothing. This keeps ``fp_rate`` meaningful instead of structurally
+    zero under delta attribution, and it is deliberately kept off the coverage
+    denominator.
     """
     before = fetch_tracker(target)
 
-    detections: dict[str, bool] = {
-        "injection": _detect_sqli(target, token),
-        "path_traversal": _detect_path_traversal(target, token),
-        "file_upload": _detect_file_upload(target, token),
-        "xss": _detect_xss_stored(target, token),
-        "clickjacking": _detect_clickjacking(target, token),
-        "cors": _detect_cors(target, token),
-        "csrf": _detect_csrf(target, token),
-    }
+    # Every detector returns the set of vuln_class strings it confirmed. The union
+    # is the run's confirmed-vuln_class set, scored by real class in score_run. The
+    # three client-side structural detectors (clickjacking/cors/csrf) are included:
+    # their vuln classes are out of scope, so score_run books no in-scope FP for
+    # them — but they still write findings and are routed through the same
+    # out-of-scope rule rather than silently dropped.
+    confirmed_vuln_classes: set[str] = set()
+    confirmed_vuln_classes |= _detect_sqli(target, token)
+    confirmed_vuln_classes |= _detect_path_traversal(target, token)
+    confirmed_vuln_classes |= _detect_file_upload(target, token)
+    confirmed_vuln_classes |= _detect_xss_stored(target, token)
+    confirmed_vuln_classes |= _detect_clickjacking(target, token)
+    confirmed_vuln_classes |= _detect_cors(target, token)
+    confirmed_vuln_classes |= _detect_csrf(target, token)
 
     after = fetch_tracker(target)
-    run = score_run(before, after, detections)
-    return run
+    return score_run(before, after, confirmed_vuln_classes)
 
 
 def score_run(
     before: dict[str, dict[str, object]],
     after: dict[str, dict[str, object]],
-    detections: dict[str, bool],
+    confirmed_vuln_classes: set[str],
 ) -> JuiceshopRun:
     """Build a :class:`JuiceshopRun` from before/after tracker snapshots + oracle signal.
 
     Pure — no live target — so the per-challenge delta and the class-level
-    false-positive rule are unit-testable with synthetic inputs. ``detections`` maps
-    a class key to whether its detector's oracle confirmed a finding this run.
+    false-positive rule are unit-testable with synthetic inputs.
+    ``confirmed_vuln_classes`` is the set of real ``vuln_class`` strings whose oracle
+    confirmed a finding this run (e.g. ``{"sqli", "jwt_forgery"}``).
+
+    Coverage attribution is unchanged: a challenge is credited only if the tracker
+    flipped it ``unsolved → solved`` this run (delta), never inflated by a
+    confirmation. Class-level FPs are booked only for in-scope classes; a confirmed
+    vuln_class that maps out of scope books nothing.
     """
     run = JuiceshopRun()
     flipped_classes: set[str] = set()
@@ -920,8 +947,16 @@ def score_run(
                 tracker_solved=solved_after,
             )
         )
-    # Class-level false positives: oracle confirmed the class but nothing flipped.
+    # Map each confirmed vuln_class to its in-scope class; an out-of-scope
+    # confirmation (vuln_class_to_scope_class → None) books nothing.
+    confirmed_scope_classes = {
+        scope
+        for vc in confirmed_vuln_classes
+        if (scope := vuln_class_to_scope_class(vc)) is not None
+    }
+    # Class-level false positive: an in-scope class's oracle confirmed but no
+    # in-scope challenge of that class flipped this run.
     for scope_class in IN_SCOPE_CLASSES:
-        if detections.get(scope_class, False) and scope_class not in flipped_classes:
+        if scope_class in confirmed_scope_classes and scope_class not in flipped_classes:
             run.class_false_positives += 1
     return run
