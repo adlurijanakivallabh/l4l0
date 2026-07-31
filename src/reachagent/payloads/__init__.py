@@ -20,11 +20,25 @@ from reachagent.payloads.library import (
     PayloadLibrary,
     PayloadLibraryError,
 )
+from reachagent.payloads.payload_resolver import (
+    MissingSlotError,
+    UnknownPayloadRefError,
+    known_refs,
+    required_slots,
+    resolve,
+    resolve_entry,
+)
 
 __all__ = [
+    "MissingSlotError",
     "PayloadEntry",
     "PayloadLibrary",
     "PayloadLibraryError",
+    "UnknownPayloadRefError",
     "build_library",
+    "known_refs",
     "load_corpus_entries",
+    "required_slots",
+    "resolve",
+    "resolve_entry",
 ]
