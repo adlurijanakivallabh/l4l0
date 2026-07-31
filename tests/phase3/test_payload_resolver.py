@@ -31,6 +31,8 @@ from reachagent.payloads import (
 )
 
 # A full context kit — every slot the vocabulary defines, so any ref resolves.
+# file_target is a real file path (path-traversal/LFI target), semantically
+# distinct from any URL — the separation that fixes the {target} overload.
 _KIT = {
     "nonce": "n1",
     "collab": "c.example",
@@ -40,7 +42,7 @@ _KIT = {
     "predicate": "1=1",
     "pattern": ".*",
     "expr": "7*7",
-    "target": "etc/passwd",
+    "file_target": "etc/passwd",
     "object_id": "2",
     "priv_field": "isAdmin",
 }
@@ -172,3 +174,85 @@ def _looks_like_param_binding(value: str) -> bool:
     """True if the value starts with an ``ident=`` binding (a location artifact)."""
     head = value.split("=", 1)[0]
     return "=" in value and head.isidentifier() and len(head) > 0
+
+
+# -- Invariant 6: semantic validity per sink class ---------------------------
+#
+# The guard that would have caught the {target} overload: resolve every base +
+# corpus entry with a realistic kit and assert the value is plausible for its
+# vuln_class's SINK (taken from the catalog, so this generalises to the next
+# overloaded-slot mistake — it is not a one-off check of the two LFI refs).
+
+
+def _catalog_entries() -> list:
+    base = list(PayloadLibrary.from_file().all_entries())
+    return base + list(load_corpus_entries())
+
+
+def _has_url(value: str) -> bool:
+    return "http://" in value or "https://" in value
+
+
+def test_resolved_value_is_semantically_valid_for_its_sink() -> None:
+    for entry in _catalog_entries():
+        sink = entry.inferred_sink_type
+        sink_name = sink.value if sink is not None else None
+        value = resolve(entry.payload_ref, **_KIT)
+        ref = entry.payload_ref
+
+        if sink_name == "file_path":
+            # A traversal payload: has a ../ or ..%2f sequence and is NOT a URL.
+            assert ("../" in value) or ("..%2f" in value.lower()), ref
+            assert not _has_url(value), ref  # the bug: file_path must not be a URL
+
+        elif sink_name == "sql":
+            # Contains a SQL metacharacter or keyword.
+            upper = value.upper()
+            assert (
+                ("'" in value)
+                or ("UNION" in upper)
+                or ("SLEEP" in upper)
+                or (" OR " in upper)
+                or (" AND " in upper)
+            ), ref
+
+        elif sink_name == "html_reflection":
+            # A markup payload carrying the execution-confirmation canary.
+            assert "<" in value, ref
+            assert _KIT["canary"] in value, ref
+
+        elif sink_name == "url":
+            # SSRF: the value itself IS a URL.
+            assert _has_url(value), ref
+
+        elif sink_name == "nosql":
+            # A Mongo query operator.
+            assert ("$ne" in value) or ("$regex" in value) or ("$gt" in value), ref
+
+        elif sink_name == "template":
+            # SSTI: the arithmetic expression the engine evaluates.
+            assert _KIT["expr"] in value, ref
+
+        elif sink_name == "ldap":
+            # An LDAP filter fragment.
+            assert ("(" in value) or ("*" in value), ref
+
+        elif sink_name == "shell":
+            # A command separator chaining an OOB lookup.
+            assert (";" in value) or ("|" in value) or ("`" in value), ref
+
+
+def test_file_target_defaults_to_etc_passwd_with_no_kit() -> None:
+    # file_target has a default, so path-traversal/LFI require no slot at all and
+    # resolve to a canonical read-only target rather than raising.
+    assert required_slots("patt/path-traversal/dot-dot-slash") == frozenset()
+    assert required_slots("seclists/fuzzing/lfi/encoded-traversal") == frozenset()
+    assert resolve("patt/path-traversal/dot-dot-slash") == "../../../../etc/passwd"
+    assert resolve("seclists/fuzzing/lfi/encoded-traversal") == "..%2f..%2f..%2f..%2fetc/passwd"
+
+
+def test_file_target_override_is_honored() -> None:
+    assert (
+        resolve("patt/path-traversal/dot-dot-slash", file_target="windows/win.ini")
+        == "../../../../windows/win.ini"
+    )

