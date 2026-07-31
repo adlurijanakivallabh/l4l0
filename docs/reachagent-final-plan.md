@@ -1,6 +1,8 @@
 # ReachAgent — Web/API Exploitation Agent
 ### Final Project Plan (July 2026)
 
+**Status: Locked — v1.6.** Changes from v1.5: payload corpora expand from a curated tagged subset to full vendored PayloadsAllTheThings and SecLists repositories (§9/§12); the signal-gated exploitation tier (§9) is activated for sqlmap, nikto, dirb, ffuf, and feroxbuster — each still gated on an existing graph signal for its class, output still an unverified candidate routed through run_oracle. No tier rule changed, no new oracle family, nothing tool-sourced is ever written as confirmed without run_oracle.
+
 **Status: Locked — v1.5.** Changes from v1.4.1: client-side structural classes (clickjacking, CORS misconfiguration, CSRF) added to §5/§7; the §9 external-scanner rule is formalized into three behavior-defined tiers (recon/transport facts vs. signal-gated exploitation candidate sources vs. transport-aggregator MCPs); public payload corpora (PayloadsAllTheThings, SecLists) named as tagged reference sources in §9/§12; CVE-match added as an evidence type under STRUCTURAL_VERIFICATION (§7); fingerprint_parameter gains context-aware class-prioritization in §13. No seventh oracle family — all new classes route through the existing structural-verification mechanism.
 
 **Status: Locked — v1.4.1.** Changes from v1.4: `fire_browser` added to §13 core manifest as an Explorer-owned browser-side tool for Phase 3 DOM taint-tracking, resolving the open verification question from v1.3.
@@ -208,7 +210,7 @@ This uniform spawn-and-requery mechanism is the actual differentiator versus eve
 
 ## 9. Payload strategy
 
-**Custom, tagged payloads remain a core strength of the system.** ReachAgent's own payload library and its own deterministic oracles are the system of record for what counts as a confirmed finding — nothing is delegated to an external scanner's judgment (see below). The library may be seeded from public payload corpora — PayloadsAllTheThings, SecLists, and similar — as *reference payloads only*: each imported entry is tagged with `vuln_class` / `inferred_sink_type` / `oracle_type` on ingest, and an untagged payload is not loadable. These corpora expand the payload set; they never expand what counts as confirmed — every payload, imported or hand-written, still routes through `run_oracle`.
+**Custom, tagged payloads remain a core strength of the system.** ReachAgent's own payload library and its own deterministic oracles are the system of record for what counts as a confirmed finding — nothing is delegated to an external scanner's judgment (see below). The library is seeded from the full PayloadsAllTheThings and SecLists repositories, vendored under third_party/, ingested via a folder-to-(vuln_class, inferred_sink_type) mapping and a regex rule table for oracle_type assignment. Every entry is tagged on ingest; untagged entries are not loadable. Corpora expand the payload set; they never expand what counts as confirmed — every payload, vendored or hand-written, still routes through `run_oracle`.
 
 ### The pipeline as actual tool calls
 
@@ -245,9 +247,15 @@ The external tool universe is large and growing (hundreds of recon, scanner, exp
 
 | Tier | Output is | Examples (non-exhaustive) | Role in the graph |
 |---|---|---|---|
-| Recon / transport | A **fact** (endpoint, param, subdomain, detected version) | Nmap, ffuf, feroxbuster, subfinder, httpx, katana, wappalyzer, theHarvester, Amass | Emitted as transport-tier graph nodes/edges — never a candidate, never a finding |
-| Signal-gated exploitation | A **claim** of a vulnerability | sqlmap, Nuclei, Wapiti, Arachni, Metasploit modules, wpscan (active), PentestGPT-style agents | Invoked only as a candidate *source*, and only once the graph already holds a signal for that class; output is an unverified candidate that still passes `run_oracle`. Never self-reports a confirmed finding |
+| Recon / transport | A **fact** (endpoint, param, subdomain, detected version) | Nmap, ffuf, feroxbuster, dirb, subfinder, httpx, katana, wappalyzer, theHarvester, Amass | Emitted as transport-tier graph nodes/edges — never a candidate, never a finding |
+| Signal-gated exploitation | A **claim** of a vulnerability | sqlmap, nikto, Nuclei, Wapiti, Arachni, Metasploit modules, wpscan (active), PentestGPT-style agents | Invoked only as a candidate *source*, and only once the graph already holds a signal for that class; output is an unverified candidate that still passes `run_oracle`. Never self-reports a confirmed finding |
 | Transport aggregator | A **transport** (carries requests/responses) | HexStrike, Burp/Caido MCP, any multi-tool MCP | A fire transport, not a detector. Built-in scanners stay off (§13) |
+
+**Named activations (v1.6), each gated on an existing graph signal for its class:**
+
+- **sqlmap** — signal-gated exploitation. Invoked only after ReachAgent's own probe has raised a SQLi-class signal on a parameter (a `sql` `inferred_sink_type` or a boolean/timing lead); its output is an unverified SQLi candidate that still passes `run_oracle`.
+- **nikto** — signal-gated exploitation. Invoked only after a server/technology or version signal already exists for the class it would claim (e.g. a fingerprinted stack or CVE-range lead); its output is an unverified candidate that still passes `run_oracle`, never a self-reported finding.
+- **ffuf, dirb, feroxbuster** — recon / transport, **not** signal-gated. They are content-discovery fuzzers that emit endpoint/path *facts*, not vulnerability *claims*, so they sit in the recon row and feed transport-tier graph nodes/edges — never a candidate, never a finding. They are not gated on a class signal because they make no class claim.
 
 The tier is decided by the nature of a tool's output, not by its name — any current or future recon/scanner/exploitation tool maps to exactly one tier by this test. A tool that both recons and exploits (increasingly, one autonomous agent does both) is split by output: its facts enter the recon tier, its claims the signal-gated tier. Nothing from any tier is written as `confirmed` without passing ReachAgent's own `run_oracle`. This is the §9 invariant restated at the orchestration boundary, not a loophole around it.
 
@@ -283,7 +291,7 @@ The tier is decided by the nature of a tool's output, not by its name — any cu
 | Proxy | mitmproxy or Caido for capture/replay |
 | OOB/collaborator | Self-hosted interact.sh instance |
 | Race-condition module | HTTP/2 single-packet delivery (Turbo Intruder's published technique, reimplemented or shelled out to) |
-| Payload store | YAML for Phase 1, SQLite once lookups by `(vuln_class, inferred_sink_type)` need indexing; seeded from tagged public corpora (PayloadsAllTheThings, SecLists) plus custom entries — every entry tagged on ingest |
+| Payload store | YAML for Phase 1, SQLite once lookups by `(vuln_class, inferred_sink_type)` need indexing; seeded from the full vendored public corpora (PayloadsAllTheThings, SecLists) under `third_party/` plus custom entries — every entry tagged on ingest |
 | Reporting | Markdown + JSON for machine-readable chain data, optional HTML render for human review |
 
 ---
