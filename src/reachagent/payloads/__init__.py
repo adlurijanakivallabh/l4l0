@@ -11,6 +11,10 @@ lookups need indexing (§12).
 
 from __future__ import annotations
 
+from reachagent.payloads.corpus import (
+    build_library,
+    load_corpus_entries,
+)
 from reachagent.payloads.library import (
     PayloadEntry,
     PayloadLibrary,
@@ -21,4 +25,6 @@ __all__ = [
     "PayloadEntry",
     "PayloadLibrary",
     "PayloadLibraryError",
+    "build_library",
+    "load_corpus_entries",
 ]

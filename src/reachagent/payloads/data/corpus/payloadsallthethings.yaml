@@ -1,0 +1,158 @@
+# Vendored, curated, pre-tagged subset of PayloadsAllTheThings (plan §9/§12).
+#
+# These are *reference payload handles*, not a live mirror of the upstream repo:
+# each row pairs a stable `payload_ref` (naming the corpus + technique) with the
+# full six-field ReachAgent tag schema. The raw exploit strings live behind the
+# handle exactly as the base slice does (§9) — the system's value is in the
+# tagging + oracle wiring, never in re-hosting payload text, and vendoring keeps
+# detection network-free and tests reproducible (CLAUDE.md).
+#
+# Provenance: swisskyrepo/PayloadsAllTheThings (MIT). Every entry is tagged on
+# ingest; an entry that cannot be mapped to a known sink/oracle/edge is
+# unloadable (PayloadLibraryError) — corpora expand the payload SET only, never
+# what counts as confirmed. Every payload still routes through run_oracle.
+source: PayloadsAllTheThings
+upstream: https://github.com/swisskyrepo/PayloadsAllTheThings
+payloads:
+  # -- SQL injection ---------------------------------------------------------
+  - vuln_class: sqli
+    context: >-
+      Error-based SQLi: an unbalanced quote provokes a DB error signature on a
+      reflected string parameter. Differential diff of error vs benign baseline.
+    inferred_sink_type: sql
+    oracle_type: differential
+    payload_ref: patt/sqli/error-based/quote-break
+    graph_edge_on_success: enables
+
+  - vuln_class: sqli
+    context: >-
+      UNION-based SQLi: append a UNION SELECT with a matched column count to pull
+      adjacent columns into the reflected response. Differential row-shape diff.
+    inferred_sink_type: sql
+    oracle_type: differential
+    payload_ref: patt/sqli/union/column-count-match
+    graph_edge_on_success: enables
+
+  - vuln_class: sqli
+    context: >-
+      Authentication-bypass SQLi: an OR-tautology comment-terminated operator on
+      a login form flips a refused credential to a grant. Differential auth_bypass.
+    inferred_sink_type: sql
+    oracle_type: differential
+    payload_ref: patt/sqli/auth-bypass/or-tautology
+    graph_edge_on_success: derived_credential
+
+  - vuln_class: sqli_blind
+    context: >-
+      Boolean-blind SQLi: a TRUE/FALSE predicate pair yields a stable response
+      divergence with no error or reflection. Differential over the pair.
+    inferred_sink_type: sql
+    oracle_type: differential
+    payload_ref: patt/sqli/blind/boolean-predicate-pair
+    graph_edge_on_success: enables
+
+  - vuln_class: sqli_blind
+    context: >-
+      OOB-exfil blind SQLi: a DNS/HTTP out-of-band lookup carries extracted data
+      to a controlled collaborator. Definitive callback — preferred over timing.
+    inferred_sink_type: sql
+    oracle_type: oob_callback
+    payload_ref: patt/sqli/blind/oob-dns-exfil
+    graph_edge_on_success: enables
+
+  - vuln_class: sqli_blind
+    context: >-
+      Time-based blind SQLi: a conditional sleep gates response latency. Paired
+      trial with a negative control; sorts last (statistical, noisy — §5).
+    inferred_sink_type: sql
+    oracle_type: timing_statistical
+    payload_ref: patt/sqli/blind/time-based-sleep
+    graph_edge_on_success: enables
+
+  # -- NoSQL injection -------------------------------------------------------
+  - vuln_class: nosqli
+    context: >-
+      NoSQL operator injection: a query-selector operator ($ne/$gt) submitted as
+      a structured value bypasses an auth check. Differential auth_bypass.
+    inferred_sink_type: nosql
+    oracle_type: differential
+    payload_ref: patt/nosql/operator/ne-auth-bypass
+    graph_edge_on_success: derived_credential
+
+  - vuln_class: nosqli
+    context: >-
+      NoSQL boolean-blind: a $regex/$where predicate pair diverges the response
+      without error. Differential over the TRUE/FALSE pair.
+    inferred_sink_type: nosql
+    oracle_type: differential
+    payload_ref: patt/nosql/blind/regex-predicate-pair
+    graph_edge_on_success: enables
+
+  # -- LDAP injection --------------------------------------------------------
+  - vuln_class: ldapi
+    context: >-
+      LDAP filter injection: a wildcard/always-true filter fragment on a bind or
+      search parameter bypasses the intended filter. Differential auth_bypass.
+    inferred_sink_type: ldap
+    oracle_type: differential
+    payload_ref: patt/ldap/filter/wildcard-always-true
+    graph_edge_on_success: derived_credential
+
+  # -- Command injection (blind, OOB-confirmed) ------------------------------
+  - vuln_class: command_injection
+    context: >-
+      Blind OS command injection: a shell separator chains an out-of-band lookup
+      (nslookup/curl) to a collaborator. OOB callback confirms execution.
+    inferred_sink_type: shell
+    oracle_type: oob_callback
+    payload_ref: patt/cmdi/blind/oob-separator-chain
+    graph_edge_on_success: enables
+
+  # -- Server-side template injection ---------------------------------------
+  - vuln_class: ssti
+    context: >-
+      SSTI polyglot: an arithmetic template expression that renders to its
+      evaluated product proves server-side evaluation. Execution-confirmed.
+    inferred_sink_type: template
+    oracle_type: execution_confirmation
+    payload_ref: patt/ssti/polyglot/arithmetic-eval
+    graph_edge_on_success: enables
+
+  # -- SSRF (blind, OOB-confirmed) ------------------------------------------
+  - vuln_class: ssrf
+    context: >-
+      Blind SSRF: a URL parameter coerced to fetch an attacker-controlled
+      out-of-band endpoint. OOB callback confirms outbound reachability.
+    inferred_sink_type: url
+    oracle_type: oob_callback
+    payload_ref: patt/ssrf/blind/oob-fetch
+    graph_edge_on_success: enables
+
+  # -- Reflected / stored XSS (execution-confirmed) -------------------------
+  - vuln_class: xss_reflected
+    context: >-
+      Reflected XSS: an img/onerror handler carrying a tagged canary that fires
+      on render. Confirmed by headless execution, not mere reflection.
+    inferred_sink_type: html_reflection
+    oracle_type: execution_confirmation
+    payload_ref: patt/xss/reflected/img-onerror-canary
+    graph_edge_on_success: derived_credential
+
+  - vuln_class: xss_stored
+    context: >-
+      Stored XSS: an SVG/onload handler persisted and re-served, firing a tagged
+      canary on later render. Execution-confirmed on readback.
+    inferred_sink_type: html_reflection
+    oracle_type: execution_confirmation
+    payload_ref: patt/xss/stored/svg-onload-canary
+    graph_edge_on_success: derived_credential
+
+  # -- Path traversal (structural) ------------------------------------------
+  - vuln_class: path_traversal
+    context: >-
+      Path traversal: a dot-dot-slash sequence escapes the intended directory to
+      read an out-of-scope file. Structural — sentinel content in the response.
+    inferred_sink_type: file_path
+    oracle_type: structural
+    payload_ref: patt/path-traversal/dot-dot-slash
+    graph_edge_on_success: enables
