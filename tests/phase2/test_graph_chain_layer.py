@@ -300,9 +300,9 @@ def test_no_edge_type_outside_the_ss6_set() -> None:
 
 
 def test_no_node_kind_outside_the_ss6_set() -> None:
-    """Every node-kind tag is one of the §6 node types."""
+    """Every node-kind tag is one of the §6 node types (incl. the v1.8 transport tier)."""
     graph = ReachabilityGraph()
-    from reachagent.graph.nodes import Endpoint, Parameter
+    from reachagent.graph.nodes import Endpoint, Host, Parameter, Service
 
     owner = graph.add_identity("name1", Identity("user", AuthState.USER, Provenance.SEEDED))
     ep = graph.add_endpoint(Endpoint(method="GET", path="/x"))
@@ -311,8 +311,23 @@ def test_no_node_kind_outside_the_ss6_set() -> None:
     graph.set_owns(owner, obj)
     graph.add_session(Session(token_ref="tok", identity_ref="name1"))
     _committed_finding(graph, "bola", "bola/a")
+    # Transport-tier kinds (§6, §9; v1.8) are part of the schema — exercise them so
+    # this guard is a true global tripwire, not one that passes only by their absence.
+    host = graph.add_host(Host(address="10.0.0.1", source="nmap"))
+    graph.add_service(host, Service(port=443, protocol="tcp", service_name="https"))
 
-    allowed = {"endpoint", "parameter", "object", "identity", "session", "finding"}
+    allowed = {
+        "endpoint",
+        "parameter",
+        "object",
+        "identity",
+        "session",
+        "finding",
+        "host",
+        "service",
+    }
     seen = {attrs["kind"] for _, attrs in graph._g.nodes(data=True)}  # noqa: SLF001
     assert seen <= allowed
+    # And we actually exercised the transport tier (not a vacuous pass).
+    assert {"host", "service"} <= seen
     assert object_id("vehicle_location") in graph._g  # noqa: SLF001
