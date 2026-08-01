@@ -1,6 +1,8 @@
 # ReachAgent — Web/API Exploitation Agent
 ### Final Project Plan (July 2026)
 
+**Status: Locked — v1.8.** Changes from v1.7: the §6 graph model gains an explicit **transport-tier layer** — the `Host` and `Service` node types plus the `runs_service` and `resolves_to` edges — closing the gap where §9 promised recon emits "transport-tier graph nodes/edges" but §6 defined none. Detected technology/CMS/framework/version is recorded as **attributes** (`technology`/`detected_version` on `Host`, reused on `Endpoint`), never a `Technology` node — absorbing the recon facts into the existing schema rather than growing it per-class. Discovered subdomains are `Host` nodes; discovered paths are ordinary `Endpoint` nodes. Transport-tier nodes and edges are **facts only** — they never carry a finding status and are never a `can_call` or `Finding`. No new oracle family, no §5 rating change.
+
 **Status: Locked — v1.7.** Changes from v1.6: the recon and signal-gated tool lists in §9 expand from a handful of named examples to a comprehensive, categorized set covering network/service recon, subdomain/content discovery, CMS/framework fingerprinting, and exploitation-assist tooling. HexStrike AI (and similar all-in-one autonomous pentest-agent frameworks) evaluated and explicitly excluded as an orchestrator — its own autonomous decision-making and exploit-generation duplicate what run_oracle exists to do; the individual underlying tools it wraps (nmap, amass, gobuster, nuclei, etc.) remain available through ReachAgent's own tiers directly. No new oracle family, no tier-rule change.
 
 **Status: Locked — v1.6.** Changes from v1.5: payload corpora expand from a curated tagged subset to full vendored PayloadsAllTheThings and SecLists repositories (§9/§12); the signal-gated exploitation tier (§9) is activated for sqlmap, nikto, dirb, ffuf, and feroxbuster — each still gated on an existing graph signal for its class, output still an unverified candidate routed through run_oracle. No tier rule changed, no new oracle family, nothing tool-sourced is ever written as confirmed without run_oracle.
@@ -140,9 +142,11 @@ The graph has two layers: **structural facts** (what the app actually does) and 
 |---|---|
 | `Identity` | role, auth_state (unauth/user/admin/synthetic), provenance (seeded vs. derived-from-finding) |
 | `Session` | token/cookie ref, bound Identity, live/expired status |
-| `Endpoint` | method, path, content_type, protocol (REST/GraphQL), graphql_operation_type |
+| `Endpoint` | method, path, content_type, protocol (REST/GraphQL), graphql_operation_type; optional `technology`/`detected_version` when a stack is fingerprinted per-endpoint (transport-tier attributes, §9) |
 | `Parameter` | name, location, inferred_sink_type (sql/nosql/shell/ldap/template/file_path/deserialize_target/html_reflection/url) |
 | `Object` | type, owner_identity_ref, sensitivity_tier |
+| `Host` | **transport-tier (§9).** address (IP or hostname), hostname, source (which recon tool asserted it), optional technology / detected_version. A discovered subdomain is a `Host` (a subdomain is just a hostname) — no separate `Subdomain` node. Detected CMS/framework/version is an attribute here, never a `Technology` node. Facts only: never a finding status |
+| `Service` | **transport-tier (§9).** port, protocol (tcp/udp), service_name, banner, detected_version. A port/service pair is a `Service`. Facts only: never a finding status |
 | `InternalResource` | for SSRF — internal IP ranges, cloud metadata endpoints, OOB collaborator domain |
 | `ExecutionContext` | for injection/RCE-class findings — confirms code execution occurred; deliberately not wired to any interactive/post-exploitation tooling |
 | `Finding` | vuln_class, severity, oracle_used, evidence_ref, status |
@@ -157,6 +161,10 @@ The graph has two layers: **structural facts** (what the app actually does) and 
 | `accepts(Endpoint → Parameter)` | endpoint's input surface |
 | `reaches(Endpoint → InternalResource)` | SSRF-relevant outbound reachability |
 | `authenticates_as(Session → Identity)` | which identity a session currently represents |
+| `runs_service(Host → Service)` | **transport-tier (§9).** a host exposes a port/service — the nmap-shaped fact |
+| `resolves_to(Host → Endpoint)` | **transport-tier (§9).** a host serves an HTTP path — how a gobuster/whatweb-discovered `Endpoint` attaches to the `Host` that serves it |
+
+Two transport-tier edges are the minimal set: `runs_service` attaches the port/service facts a network scanner (nmap) emits to their host, and `resolves_to` attaches the HTTP-path facts a content-discovery/fingerprint tool (gobuster/ffuf/whatweb) emits to their host. Discovered paths reuse the existing `Endpoint` node rather than a new type, so no third edge or node is introduced — the recon facts are absorbed into the schema, not grown per tool (CLAUDE.md).
 
 ### Finding-relationship edges (chain mechanism)
 
@@ -165,7 +173,7 @@ The graph has two layers: **structural facts** (what the app actually does) and 
 | `enables(Finding → Finding)` | finding A's output makes finding B possible — the chain edge |
 | `derived_credential(Finding → Session \| Identity)` | a finding that yields a usable session or credential spawns a new node the Coordinator treats as first-class |
 
-Every `can_call` and `Finding` edge carries a status: `confirmed_allowed`, `confirmed_denied`, `confirmed_violation`, or `inconclusive`.
+Every `can_call` and `Finding` edge carries a status: `confirmed_allowed`, `confirmed_denied`, `confirmed_violation`, or `inconclusive`. **Transport-tier nodes (`Host`, `Service`) and edges (`runs_service`, `resolves_to`) carry no status at all** — they are recon facts, never a `can_call`, never a `Finding`, and are never confirmed by an oracle. A recon fact only becomes actionable when a downstream role turns it into an `Endpoint`/`Parameter` the Explorer probes; the transport tier itself asserts nothing about a vulnerability (§9).
 
 ---
 
