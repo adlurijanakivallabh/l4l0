@@ -151,6 +151,28 @@ def test_fingerprint_then_get_payloads_by_inferred_sink() -> None:
     assert [ranks[e.oracle_type] for e in entries] == sorted(ranks[e.oracle_type] for e in entries)
 
 
+def test_build_server_loads_vendored_corpus() -> None:
+    mcp = _built()
+    entries = _call(mcp, "get_payloads", vuln_class="sqli", sink_type="sql")
+    corpus_entry = next(e for e in entries if "#L" in e.payload_ref)  # type: ignore[attr-defined]
+    assert corpus_entry.resolved_value  # type: ignore[attr-defined]
+
+
+def test_mcp_get_payloads_serializes_resolved_value() -> None:
+    mcp = _built()
+    _content, structured = asyncio.run(
+        mcp.call_tool("get_payloads", {"vuln_class": "sqli", "sink_type": "sql"})
+    )
+    assert isinstance(structured, dict)
+    results = structured["result"]
+    assert isinstance(results, list) and results
+    first = results[0]
+    assert isinstance(first, dict)
+    assert first["vuln_class"] == "sqli"
+    assert isinstance(first["resolved_value"], str) and first["resolved_value"]
+    assert isinstance(first["slot_kit"], dict)
+
+
 def test_get_payloads_full_library_resolves_and_fires_corpus_entry() -> None:
     from reachagent.payloads import build_library
 
@@ -211,6 +233,21 @@ def test_get_payloads_mints_unique_per_fire_correlators() -> None:
     assert first[0].slot_kit["canary"] != second[0].slot_kit["canary"]  # type: ignore[attr-defined]
     assert first[0].slot_kit["nonce"] != second[0].slot_kit["nonce"]  # type: ignore[attr-defined]
     assert first[0].slot_kit["canary"] in first[0].resolved_value  # type: ignore[attr-defined]
+
+
+def test_get_payloads_mints_unique_correlators_per_entry() -> None:
+    session = _session_on(lambda r: httpx.Response(200, text="ok"))
+    mcp = _register_on_session(session)
+    entries = _call(
+        mcp,
+        "get_payloads",
+        vuln_class="sqli_blind",
+        sink_type="sql",
+        slot_kit={"collab": "oob.example"},
+    )
+    assert len(entries) == 2  # OOB and timing templates
+    assert len({e.slot_kit["nonce"] for e in entries}) == len(entries)  # type: ignore[attr-defined]
+    assert len({e.slot_kit["canary"] for e in entries}) == len(entries)  # type: ignore[attr-defined]
 
 
 def test_get_payloads_sink_isolation_holds_through_mcp_path() -> None:
