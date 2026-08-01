@@ -163,3 +163,43 @@ endpoints:
         location: body
       - name: mechanic_api
         location: body
+
+  # -- Order-details BOLA flow (crAPI's third documented BOLA) --------------
+  # Same generic shape as vehicle-location, but the object id is an ENUMERABLE
+  # integer (order_id), not an unguessable UUID — so the detector classifies it
+  # enumerable_identifier (a standalone cross-user BOLA, no upstream producer,
+  # no fabricated enables edge), exactly like the mechanic-report flow.
+  #
+  # The read-only "my orders" reveal: returns only the caller's own orders, so it
+  # is the caller-scoped ownership reveal. Each order is a distinct instance keyed
+  # by its `id` — the same integer the BOLA target below consumes as order_id.
+  - method: GET
+    path: /workshop/api/shop/orders
+    content_type: application/json
+    returns:
+      - type: order
+        sensitivity_tier: 2
+        ownership:
+          reveal_path: /workshop/api/shop/orders
+          reveal_method: GET
+          requires_session: true
+          # Caller-scoped: no owner_field — a 2xx reveal means the authenticated
+          # caller owns the orders returned to them. `id` keys each instance, so
+          # two owners of two orders get two distinct object nodes (Task 7).
+          instance_key_field: id
+          # crAPI wraps the order list under this key ({"orders": [...]}) rather
+          # than returning a bare array, so the mapper unwraps it first.
+          items_field: orders
+
+  # The BOLA target: any authenticated user can read *another* principal's order
+  # by its enumerable order_id. Read-only; the order_id is the instance key the
+  # reveal above discovered. The short integer id makes this an enumerable BOLA.
+  - method: GET
+    path: /workshop/api/shop/orders/{order_id}
+    content_type: application/json
+    parameters:
+      - name: order_id
+        location: path
+    returns:
+      - type: order
+        sensitivity_tier: 2

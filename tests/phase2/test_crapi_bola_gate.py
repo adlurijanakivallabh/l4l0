@@ -22,7 +22,15 @@ import httpx
 import pytest
 
 from reachagent.bola.detector import detect
-from reachagent.graph.nodes import AuthState, Endpoint, Identity, Object, Provenance
+from reachagent.graph.nodes import (
+    AuthState,
+    Endpoint,
+    FindingStatus,
+    Identity,
+    Object,
+    Parameter,
+    Provenance,
+)
 from reachagent.graph.store import (
     ReachabilityGraph,
     finding_id,
@@ -111,6 +119,66 @@ def _seed_graph_report() -> ReachabilityGraph:
     graph.set_owns(_OWNER_A, obj)
     ep = graph.add_endpoint(Endpoint(method="GET", path=_RPT_PATH))
     graph.add_returns(ep, obj)
+    return graph
+
+
+# Enumerable identifiers (short sequential integers) — crAPI's report_id / order_id
+# are small ints, so a cross-user read needs NO upstream producer (guessable): the
+# detector must classify these enumerable_identifier and write NO enables edge.
+_RPT_ENUM_ID = "4"
+_ORDER_ENUM_ID = "7"
+_RPT_QUERY_PATH = "/workshop/api/mechanic/mechanic_report"  # ?report_id=<id> (strategy 3)
+_ORDER_TPL = "/workshop/api/shop/orders/{order_id}"  # {order_id} (strategy 2)
+_ORDER_CONCRETE = f"/workshop/api/shop/orders/{_ORDER_ENUM_ID}"
+
+
+def _seed_graph_enumerable_report() -> ReachabilityGraph:
+    """Seed the mechanic-report BOLA with an ENUMERABLE (short-int) report_id.
+
+    Mirrors crAPI: ``GET /workshop/api/mechanic/mechanic_report?report_id=<id>``
+    where report_id is a small sequential integer. owner_a owns report instance
+    "4"; the endpoint returns the same object type + declares the query param, so
+    the detector's strategy-3 (query-injection) fires with ``consumed="4"``. Being
+    a short int, "4" is enumerable → standalone BOLA, no upstream producer.
+    """
+    graph = ReachabilityGraph()
+    for name, role in [("owner_a", "user"), ("mechanic", "mechanic")]:
+        graph.add_identity(
+            name, Identity(role=role, auth_state=AuthState.USER, provenance=Provenance.SEEDED)
+        )
+    obj = graph.add_object(
+        Object(type="service_report", sensitivity_tier=2, instance_key=_RPT_ENUM_ID)
+    )
+    graph.set_owns(_OWNER_A, obj)
+    ep = graph.add_endpoint(Endpoint(method="GET", path=_RPT_QUERY_PATH))
+    graph.add_parameter(ep, Parameter(name="report_id", location="query"))
+    graph.add_returns(ep, obj)
+    return graph
+
+
+def _seed_graph_order() -> ReachabilityGraph:
+    """Seed the order-details BOLA (crAPI's third documented BOLA) — ENUMERABLE.
+
+    ``GET /workshop/api/shop/orders/{order_id}`` with a small-int order_id. owner_a
+    owns order instance "7"; the detector's strategy-2 (path-template) substitutes
+    "7" into ``{order_id}`` with ``consumed="7"``. Short int → enumerable → a
+    standalone cross-user BOLA, no fabricated enables edge (same shape as the
+    enumerable mechanic-report — no detector change needed).
+    """
+    graph = ReachabilityGraph()
+    for name in ("owner_a", "owner_b"):
+        graph.add_identity(
+            name, Identity(role="user", auth_state=AuthState.USER, provenance=Provenance.SEEDED)
+        )
+    obj = graph.add_object(Object(type="order", sensitivity_tier=2, instance_key=_ORDER_ENUM_ID))
+    graph.set_owns(_OWNER_A, obj)
+    # The BOLA target is reached by substituting the instance key into the path
+    # template (strategy 2) — NOT by a returns edge to this endpoint. That mirrors
+    # recon: the owned order *instance* is discovered via the "my orders" reveal;
+    # the {order_id} target is reached by substitution only, so no returns edge is
+    # attached here (attaching one would also trigger the direct-read strategy 1 and
+    # emit a second, template-less hop that real recon does not produce).
+    graph.add_endpoint(Endpoint(method="GET", path=_ORDER_TPL))
     return graph
 
 
@@ -228,10 +296,24 @@ def test_two_hop_chain_enables_edge_and_chain_paths() -> None:
     assert graph.has_node(veh_fn)
     assert graph.has_node(rpt_fn)
 
+    # Both hops were written via run_oracle → write_finding: each is a committed
+    # Finding whose status is confirmed_violation (the only status add_finding
+    # accepts). This is the hermetic proof of "both hops confirmed via run_oracle"
+    # — a Finding node cannot exist in the graph any other way.
+    findings = dict(graph.findings())
+    assert findings[veh_fn].status is FindingStatus.CONFIRMED_VIOLATION
+    assert findings[rpt_fn].status is FindingStatus.CONFIRMED_VIOLATION
+    assert findings[veh_fn].oracle_used  # an oracle mechanism was stamped, not blank
+
     # Genuine precondition: the vehicle hop leaked the report id the report hop
     # consumed, so vehicle enables report — and not the reverse.
     assert (veh_fn, rpt_fn) in graph.enables_edges()
     assert (rpt_fn, veh_fn) not in graph.enables_edges()
+
+    # The disclosed precondition is stamped on the report finding's metadata (the
+    # node, not just the result dict) — the report hop here consumes an UNGUESSABLE
+    # UUID, so it is a genuine two-finding chain, exactly the live-layer assertion.
+    assert findings[rpt_fn].metadata.get("chain_precondition") == "requires_disclosed_identifier"
 
     # chain_paths from the vehicle finding must include both nodes.
     paths = graph.chain_paths(veh_fn)
@@ -262,6 +344,90 @@ def test_detector_fires_only_get_requests() -> None:
     )
     for req in seen:
         assert req.method == "GET", f"detector fired non-GET: {req.method} {req.url.path}"
+
+
+# ---------------------------------------------------------------------------
+# Invariant 5: enumerable BOLA (mechanic-report / order-details) — standalone,
+# NO fabricated enables edge, precondition provenance stamped on the finding.
+# These are the hermetic parity for the live layer's chain-2 assertions.
+# ---------------------------------------------------------------------------
+
+
+def test_enumerable_report_bola_is_standalone_no_enables_edge() -> None:
+    # crAPI mechanic-report: a short-int report_id is guessable, so a cross-user
+    # read needs no upstream producer. The detector must confirm the BOLA, classify
+    # it enumerable_identifier, stamp that on the finding metadata, and write NO
+    # incoming enables edge (no producer disclosed the id — inventing one would lie).
+    #
+    # The report endpoint both returns the report type AND takes ?report_id, so it
+    # is reachable two honest ways: a direct read (consumed=None → 'direct') and the
+    # query-injection instance read (consumed='4' → 'enumerable'). Both are real
+    # BOLAs; neither gets an enables edge (no upstream producer). We assert the
+    # enumerable hop carries the standalone-BOLA invariant.
+    graph = _seed_graph_enumerable_report()
+    result = detect(
+        graph,
+        BASE_URL,
+        owner_tokens={_OWNER_A: _TOK_A},
+        non_owner_tokens={_MECHANIC: _TOK_M},
+        transport=_violation_transport(_TOK_A),
+    )
+
+    findings = dict(graph.findings())
+    # The enumerable (instance-injection) hop: report_id=4 baked into the label.
+    enum_fn = finding_id("bola", f"bola/{_RPT_QUERY_PATH}?report_id={_RPT_ENUM_ID}")
+    assert enum_fn in findings, f"enumerable report hop not confirmed; got {list(findings)}"
+
+    # Confirmed as a finding (via run_oracle → write_finding → confirmed_violation).
+    assert findings[enum_fn].status is FindingStatus.CONFIRMED_VIOLATION
+    # Enumerable precondition, recorded in the result AND stamped on the node.
+    assert result.preconditions[enum_fn] == "enumerable_identifier"
+    assert findings[enum_fn].metadata.get("chain_precondition") == "enumerable_identifier"
+
+    # NO enables edge anywhere — no producer disclosed a short id, so the whole run
+    # has zero fabricated dependencies (the standalone-BOLA invariant).
+    assert result.chain_edges == []
+    assert not any(dst == enum_fn for _, dst in graph.enables_edges())
+
+
+def test_order_details_bola_is_enumerable_standalone() -> None:
+    # crAPI's THIRD documented BOLA — order-details (GET /…/orders/{order_id}).
+    # Same generic shape as the enumerable report, via strategy-2 (path template):
+    # a short-int order_id → enumerable_identifier, standalone, no enables edge.
+    # No detector change was needed — this is the "trivially expressible" add.
+    graph = _seed_graph_order()
+    result = detect(
+        graph,
+        BASE_URL,
+        owner_tokens={_OWNER_A: _TOK_A},
+        non_owner_tokens={_OWNER_B: _TOK_B},
+        transport=_violation_transport(_TOK_A),
+    )
+
+    assert len(result.confirmed_hops) == 1
+    hop = result.confirmed_hops[0]
+    assert hop.path == _ORDER_CONCRETE  # order_id substituted into the template
+    findings = dict(graph.findings())
+    assert findings[hop.finding_node].status is FindingStatus.CONFIRMED_VIOLATION
+    assert result.preconditions[hop.finding_node] == "enumerable_identifier"
+    assert findings[hop.finding_node].metadata.get("chain_precondition") == "enumerable_identifier"
+    assert not any(dst == hop.finding_node for _, dst in graph.enables_edges())
+    assert result.chain_edges == []
+
+
+def test_order_details_secure_target_no_finding() -> None:
+    # No-false-positive parity for the order flow: a secure crAPI refuses the
+    # non-owner (403), so no BOLA is confirmed and no finding is written.
+    graph = _seed_graph_order()
+    result = detect(
+        graph,
+        BASE_URL,
+        owner_tokens={_OWNER_A: _TOK_A},
+        non_owner_tokens={_OWNER_B: _TOK_B},
+        transport=_secure_transport(),
+    )
+    assert result.confirmed_hops == []
+    assert graph.findings() == []
 
 
 # ---------------------------------------------------------------------------

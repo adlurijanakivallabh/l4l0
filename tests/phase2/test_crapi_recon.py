@@ -106,7 +106,7 @@ def test_bola_flow_endpoints_materialize_as_nodes(
 def test_surface_file_matches_the_vampi_shape(surface: SurfaceSpec) -> None:
     # Same declarative schema as VAmPI — proves the config, not mapper code,
     # carries the target specifics (the generic-mapper invariant).
-    assert len(surface.endpoints) == 9
+    assert len(surface.endpoints) == 11  # +2 for the order-details BOLA flow
     veh = next(o for ep in surface.endpoints for o in ep.returns if o.type == "vehicle")
     assert veh.ownership is not None
     assert veh.ownership.reveal_path == "/identity/api/v2/vehicle/vehicles"
@@ -173,9 +173,9 @@ def test_no_session_means_no_owns_edge(surface: SurfaceSpec, identities: Identit
 
     assert graph.owns_edges() == []
     assert summary.owns_discovered == 0
-    # Three session-gated ownership recipes (vehicle, service_report, community
-    # feed) × three identities with no session → nine skips, no edges.
-    assert summary.owns_skipped_no_session == 9
+    # Four session-gated ownership recipes (vehicle, service_report, community
+    # feed, order) × three identities with no session → twelve skips, no edges.
+    assert summary.owns_skipped_no_session == 12
 
 
 # -- Invariant 4: stateful safety — zero destructive side effects ----------
@@ -217,6 +217,51 @@ def test_state_changing_endpoints_are_materialized_but_unprobed(
     login = endpoint_id("POST", "/identity/api/auth/login")
     for name in identities.names():
         assert graph.can_call_status(identity_id(name), login) is None
+
+
+def test_run_recon_full_path_fires_get_only_zero_destructive(
+    surface: SurfaceSpec, identities: IdentityStore
+) -> None:
+    """The full ``run_recon`` entry point (onboard + map) fires GET only (§10).
+
+    Hermetic parity for the live gate's ``recon.destructive_actions == ()`` clause,
+    driving the *whole* ``run_recon`` — onboarding over an injected client, then
+    the scope-guarded read-only-first firer — not just the mapper. A record of
+    every request each client saw proves: (a) recon itself fired only GETs; (b) the
+    state-changing endpoints (signup/login/contact_mechanic) reached the wire only
+    via the *onboarding* client (authorized setup), never the recon firer; and (c)
+    ``destructive_actions`` is empty.
+    """
+    onboard_seen: list[httpx.Request] = []
+    recon_seen: list[httpx.Request] = []
+
+    def onboard_handler(request: httpx.Request) -> httpx.Response:
+        onboard_seen.append(request)
+        # crAPI login → a bearer token, so onboarding establishes sessions.
+        return httpx.Response(200, json={"token": f"tok-{request.url.path}"})
+
+    def recon_handler(request: httpx.Request) -> httpx.Response:
+        recon_seen.append(request)
+        return httpx.Response(200, json=[])
+
+    result = run_recon(
+        base_url=BASE_URL,
+        surface_path=_SURFACE_PATH,
+        graph=ReachabilityGraph(),
+        identities=identities,
+        firer_client=httpx.Client(transport=httpx.MockTransport(recon_handler)),
+        onboard_client=httpx.Client(transport=httpx.MockTransport(onboard_handler)),
+    )
+
+    # (a) recon fired GET only — the contact-mechanic POST that CREATES a report is
+    # out-of-band setup, never fired by recon.
+    for req in recon_seen:
+        assert req.method == "GET", f"recon fired non-GET: {req.method} {req.url.path}"
+    assert not any(req.url.path.endswith("contact_mechanic") for req in recon_seen)
+    # (b) the only POSTs anywhere were the onboarding logins (authorized setup).
+    assert all(req.method == "POST" and req.url.path.endswith("/login") for req in onboard_seen)
+    # (c) the gate's safety clause holds: zero destructive side effects.
+    assert result.destructive_actions == ()
 
 
 # -- Layer 5: live crAPI recon (skips cleanly when crAPI isn't up) ---------
