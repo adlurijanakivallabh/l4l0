@@ -33,9 +33,11 @@ from reachagent.graph.nodes import (
     Endpoint,
     Finding,
     FindingStatus,
+    Host,
     Identity,
     Object,
     Parameter,
+    Service,
     Session,
     SinkType,
 )
@@ -93,6 +95,61 @@ def session_id(token_ref: str) -> str:
     idempotent rather than stacking duplicate session nodes.
     """
     return f"session:{token_ref}"
+
+
+def host_id(address: str) -> str:
+    """Stable id for a transport-tier :class:`Host` node (§6, §9; v1.8).
+
+    Keyed by ``address`` (an IP or hostname), so re-asserting the same host from a
+    second recon tool refreshes the one node rather than stacking duplicates — the
+    same idempotency discipline as every other node id. A discovered subdomain is
+    just a host with a hostname address, so it keys here too (no ``Subdomain`` id).
+    """
+    return f"host:{address}"
+
+
+def service_id(host_address: str, port: int, protocol: str) -> str:
+    """Stable id for a transport-tier :class:`Service` node, scoped to its host (§6, §9).
+
+    Keyed by ``(host_address, port, protocol)`` so the same port on two hosts stays
+    distinct and re-scanning one host is idempotent. A service is meaningless
+    without the host that exposes it, so its id is host-scoped by construction.
+    """
+    return f"service:{host_address}:{protocol.lower()}/{port}"
+
+
+def _merge_host(existing: Host, incoming: Host) -> Host:
+    """Enrich ``existing`` with ``incoming``'s non-``None`` facts — never shrink (§9).
+
+    Recon facts about a host accumulate across tools/records: a later assertion
+    fills gaps and unions the ``technology`` set, but never replaces a known value
+    with ``None`` or drops previously-seen technology. ``source`` keeps the first
+    asserter and folds in any new one as comma-joined provenance, so a merged host
+    stays auditable to every tool that contributed. Pure — returns a new ``Host``.
+    """
+    return Host(
+        address=existing.address,
+        hostname=existing.hostname or incoming.hostname,
+        source=_merge_csv(existing.source, incoming.source),
+        technology=_merge_csv(existing.technology, incoming.technology),
+        detected_version=existing.detected_version or incoming.detected_version,
+    )
+
+
+def _merge_csv(existing: str | None, incoming: str | None) -> str | None:
+    """Union two optional comma-separated fact strings, order-stable, deduped.
+
+    ``None``/absent on either side is tolerated; the result preserves first-seen
+    order so a merged ``technology``/``source`` reads deterministically.
+    """
+    seen: list[str] = []
+    for source in (existing, incoming):
+        if not source:
+            continue
+        for token in (t.strip() for t in source.split(",")):
+            if token and token not in seen:
+                seen.append(token)
+    return ", ".join(seen) or None
 
 
 class ReachabilityGraph:
@@ -164,6 +221,56 @@ class ReachabilityGraph:
             key=StructuralEdge.AUTHENTICATES_AS,
         )
         return node
+
+    # -- transport-tier nodes (§6, §9; v1.8) — recon facts only -----------
+    #
+    # Host/Service nodes carry NO status: they are never a can_call, never a
+    # Finding, never confirmed by an oracle. Only recon-tier fact-emitters write
+    # them (§9). Idempotent by their *_id helpers, like every other node.
+
+    def add_host(self, host: Host) -> str:
+        """Add (or *merge*) a transport-tier :class:`Host` node; return its id (§6, §9).
+
+        Re-asserting the same address is idempotent and **enriching, not
+        clobbering**: a second recon tool (or a second whatweb record) that names
+        the same host merges its non-``None`` attributes onto the existing node
+        rather than overwriting richer facts with sparser ones. This is the correct
+        idempotency for a *fact* store — recon facts accumulate, they never shrink.
+        A first ``source`` is preserved (the original asserter); a later differing
+        source is folded into a comma-joined provenance so attribution stays honest.
+        Stored under ``_DATA`` like every structural node, so ``hosts()`` reads it
+        back uniformly.
+        """
+        node = host_id(host.address)
+        existing = self._g.nodes.get(node)
+        if existing is not None and existing.get(_KIND) == "host":
+            self._g.nodes[node][_DATA] = _merge_host(existing[_DATA], host)
+        else:
+            self._g.add_node(node, **{_KIND: "host", _DATA: host})
+        return node
+
+    def add_service(self, host_node: str, service: Service) -> str:
+        """Add a transport-tier :class:`Service` and its ``runs_service`` edge (§6, §9).
+
+        The service is attached to ``host_node`` in the same call — a service is
+        meaningless without the host that exposes it, so the node and its
+        ``runs_service(Host → Service)`` edge are written together (mirrors how
+        ``add_session`` writes its ``authenticates_as`` edge). Idempotent, keyed by
+        ``(host_address, port, protocol)``.
+        """
+        host: Host = self._g.nodes[host_node][_DATA]
+        node = service_id(host.address, service.port, service.protocol)
+        self._g.add_node(node, **{_KIND: "service", _DATA: service})
+        self._g.add_edge(host_node, node, key=StructuralEdge.RUNS_SERVICE)
+        return node
+
+    def add_resolves_to(self, host_node: str, endpoint_node: str) -> None:
+        """Record that ``host_node`` serves ``endpoint_node`` — a transport fact (§6, §9).
+
+        How a recon-discovered path (gobuster/ffuf) or fingerprinted endpoint
+        (whatweb) attaches to the ``Host`` that serves it. Facts only — no status.
+        """
+        self._g.add_edge(host_node, endpoint_node, key=StructuralEdge.RESOLVES_TO)
 
     # -- structural edges (§6) --------------------------------------------
 
@@ -307,6 +414,45 @@ class ReachabilityGraph:
         a derived credential first-class (§8).
         """
         return [(n, d) for n, d in self._nodes_of_kind("session")]  # type: ignore[misc]
+
+    # -- transport-tier queries (§6, §9; v1.8) ----------------------------
+
+    def hosts(self) -> list[tuple[str, Host]]:
+        """All transport-tier host nodes as ``(id, Host)`` pairs (§9). Facts only."""
+        return [(n, d) for n, d in self._nodes_of_kind("host")]  # type: ignore[misc]
+
+    def services(self) -> list[tuple[str, Service]]:
+        """All transport-tier service nodes as ``(id, Service)`` pairs (§9). Facts only."""
+        return [(n, d) for n, d in self._nodes_of_kind("service")]  # type: ignore[misc]
+
+    def host(self, host_node: str) -> Host:
+        """The :class:`Host` dataclass stored at ``host_node``."""
+        data: Host = self._g.nodes[host_node][_DATA]
+        return data
+
+    def services_of(self, host_node: str) -> list[tuple[str, Service]]:
+        """Services reachable from ``host_node`` via a ``runs_service`` edge (§9)."""
+        out: list[tuple[str, Service]] = []
+        for _, target, key in self._g.out_edges(host_node, keys=True):
+            if key == StructuralEdge.RUNS_SERVICE:
+                out.append((target, self._g.nodes[target][_DATA]))
+        return out
+
+    def resolves_to_edges(self) -> list[tuple[str, str]]:
+        """All ``resolves_to`` edges as ``(host_id, endpoint_id)`` pairs (§9)."""
+        return [
+            (src, dst)
+            for src, dst, key in self._g.edges(keys=True)
+            if key == StructuralEdge.RESOLVES_TO
+        ]
+
+    def runs_service_edges(self) -> list[tuple[str, str]]:
+        """All ``runs_service`` edges as ``(host_id, service_id)`` pairs (§9)."""
+        return [
+            (src, dst)
+            for src, dst, key in self._g.edges(keys=True)
+            if key == StructuralEdge.RUNS_SERVICE
+        ]
 
     def owns_edges(self) -> list[tuple[str, str]]:
         """All ``owns`` edges as ``(identity_id, object_id)`` pairs (§6)."""

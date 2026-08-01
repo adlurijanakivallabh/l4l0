@@ -91,6 +91,11 @@ class Endpoint:
     content_type: str | None = None
     protocol: Protocol = Protocol.REST
     graphql_operation_type: str | None = None
+    # Transport-tier attributes (§9, v1.8): a stack fingerprinted per-endpoint by a
+    # recon tool (whatweb). Attributes, not a Technology node (§6 — absorb, don't
+    # sprawl). Facts only; they never carry a finding status.
+    technology: str | None = None
+    detected_version: str | None = None
 
 
 @dataclass
@@ -125,6 +130,45 @@ class InternalResource:
     """SSRF-relevant target — internal ranges, metadata endpoints, OOB domain (§6)."""
 
     descriptor: str
+
+
+@dataclass
+class Host:
+    """A transport-tier host asserted by a recon tool (§6, §9; v1.8).
+
+    A discovered subdomain is a ``Host`` (a subdomain is just a hostname) — there
+    is deliberately no ``Subdomain`` node. Detected CMS/framework/version is an
+    *attribute* here (``technology``/``detected_version``), never a ``Technology``
+    node — absorbing recon facts into the existing schema, not growing it per-class
+    (CLAUDE.md).
+
+    Facts only: a ``Host`` never carries a finding status, is never a ``can_call``
+    or ``Finding``, and is never confirmed by an oracle. ``source`` records which
+    recon tool asserted the host, so a transport fact is auditable to its emitter.
+    """
+
+    address: str
+    hostname: str | None = None
+    source: str | None = None
+    technology: str | None = None
+    detected_version: str | None = None
+
+
+@dataclass
+class Service:
+    """A transport-tier port/service asserted by a recon tool (§6, §9; v1.8).
+
+    A port/service pair (e.g. ``443/tcp https``) is a ``Service`` node attached to
+    its ``Host`` by a ``runs_service`` edge. Facts only — never a finding status,
+    never confirmed by an oracle. ``source`` records the asserting recon tool.
+    """
+
+    port: int
+    protocol: str = "tcp"
+    service_name: str | None = None
+    banner: str | None = None
+    detected_version: str | None = None
+    source: str | None = None
 
 
 @dataclass

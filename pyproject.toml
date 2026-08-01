@@ -15,6 +15,7 @@ dependencies = [
     # Expose ReachAgent's own tools as an MCP server from Phase 1 (§13)
     "mcp>=1.2,<2.0",
     "playwright>=1.61.0",
+    "defusedxml>=0.7.1",
 ]
 
 [project.scripts]

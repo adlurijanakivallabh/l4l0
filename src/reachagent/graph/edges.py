@@ -21,6 +21,9 @@ class StructuralEdge(StrEnum):
     ACCEPTS = "accepts"  # Endpoint → Parameter
     REACHES = "reaches"  # Endpoint → InternalResource, SSRF outbound reachability
     AUTHENTICATES_AS = "authenticates_as"  # Session → Identity
+    # Transport-tier (§9, v1.8) — recon facts, never a can_call/Finding, no status.
+    RUNS_SERVICE = "runs_service"  # Host → Service, a host exposes a port/service
+    RESOLVES_TO = "resolves_to"  # Host → Endpoint, a host serves an HTTP path
 
 
 class FindingEdge(StrEnum):

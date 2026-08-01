@@ -1,0 +1,22 @@
+[
+  {
+    "target": "http://target.test/",
+    "http_status": 200,
+    "plugins": {
+      "WordPress": { "version": ["6.4.2"] },
+      "PHP": { "version": ["8.2.1"] },
+      "nginx": { "version": ["1.24.0"] },
+      "HTTPServer": { "string": ["nginx/1.24.0"] },
+      "Title": { "string": ["Target Site"] },
+      "Cookies": { "string": ["wordpress_test_cookie"] }
+    }
+  },
+  {
+    "target": "http://target.test/blog",
+    "http_status": 200,
+    "plugins": {
+      "WordPress": { "version": ["6.4.2"] },
+      "MetaGenerator": { "string": ["WordPress 6.4.2"] }
+    }
+  }
+]

@@ -1,0 +1,6 @@
+# amass enum -d target.test -o - (recorded sample; not run at test time)
+www.target.test
+api.target.test
+mail.target.test
+admin.target.test
+www.target.test
