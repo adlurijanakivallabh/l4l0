@@ -58,6 +58,7 @@ templates are in-tree and reviewable, not fetched at runtime.
 from __future__ import annotations
 
 import re
+import uuid
 from pathlib import Path
 
 from reachagent.payloads.library import PayloadEntry, PayloadLibraryError
@@ -161,6 +162,29 @@ def required_slots(payload_ref: str) -> frozenset[str]:
 def template_refs() -> frozenset[str]:
     """The hand-authored template refs — the override layer (parameterized payloads)."""
     return frozenset(_TEMPLATES)
+
+
+def mint_fire_kit(**overrides: object) -> dict[str, object]:
+    """Mint the per-fire slot kit a resolution needs — mechanical, no oracle logic.
+
+    Some slots are *per-fire correlators* the caller can't hardcode: ``nonce`` must
+    be unique per probe so an OOB callback attributes to exactly one fire (§7
+    oob_callback), and ``canary`` must be a unique tag so execution-confirmation
+    proves *this* payload ran (§7 execution_confirmation). This helper generates a
+    fresh, unique pair per call, plus a sensible ``sleep`` default for timing
+    payloads. ``overrides`` (e.g. ``collab`` — the environment's OOB domain, or a
+    caller-chosen ``sleep``) win over the minted defaults.
+
+    Purely mechanical string generation — the Explorer mints correlators, it never
+    interprets a response, so no oracle logic leaks into candidate generation.
+    ``uuid4`` (not a crypto RNG) is deliberate: a correlator needs uniqueness, not
+    unpredictability, and this stays dependency-free.
+    """
+    nonce = "ra" + uuid.uuid4().hex[:12]  # unique OOB subdomain label
+    canary = "RA" + uuid.uuid4().hex[:10].upper()  # unique execution-confirmation tag
+    kit: dict[str, object] = {"nonce": nonce, "canary": canary, "sleep": 5}
+    kit.update({k: v for k, v in overrides.items() if v is not None})
+    return kit
 
 
 def resolves(payload_ref: str) -> bool:

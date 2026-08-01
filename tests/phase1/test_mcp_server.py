@@ -26,7 +26,7 @@ from reachagent.execution import RequestFirer, ScopeGuard
 from reachagent.graph.nodes import Endpoint, Parameter
 from reachagent.graph.store import ReachabilityGraph
 from reachagent.mcp import server
-from reachagent.payloads import PayloadLibrary
+from reachagent.payloads import MissingSlotError, PayloadLibrary
 from reachagent.tools.explorer_context import ExplorerContext
 
 if TYPE_CHECKING:
@@ -88,8 +88,8 @@ def test_startup_is_clean_and_tools_are_discoverable() -> None:
 # -- Invariant 3: the registered tools are hand-callable end to end -------
 
 
-def _session_on(handler: object) -> server._Session:
-    """A server session whose firer is wired to a MockTransport standing in for VAmPI."""
+def _session_on(handler: object, *, library: PayloadLibrary | None = None) -> server._Session:
+    """A server session whose firer is wired to a MockTransport target."""
 
     def _h(request: httpx.Request) -> httpx.Response:
         return handler(request)  # type: ignore[operator, no-any-return]
@@ -99,7 +99,7 @@ def _session_on(handler: object) -> server._Session:
     ctx = ExplorerContext(
         graph=ReachabilityGraph(),
         firer=firer,
-        library=PayloadLibrary.from_file(),
+        library=library or PayloadLibrary.from_file(),
         base_url="http://vampi.test",
     )
     return server._Session(ctx=ctx)
@@ -137,6 +137,116 @@ def test_fingerprint_then_get_payloads_by_inferred_sink() -> None:
     entries = _call(mcp, "get_payloads", vuln_class="sqli", sink_type="sql")
     assert entries
     assert all(e.inferred_sink_type == "sql" for e in entries)  # type: ignore[attr-defined]
+    assert all(e.resolved_value for e in entries)  # type: ignore[attr-defined]
+    assert all(e.slot_kit["sleep"] == 5 for e in entries)  # type: ignore[attr-defined]
+    # Oracle-confidence ordering survives MCP serialization.
+    ranks = {
+        "structural": 0,
+        "execution_confirmation": 1,
+        "oob_callback": 2,
+        "differential": 3,
+        "business_rule_invariant": 4,
+        "timing_statistical": 5,
+    }
+    assert [ranks[e.oracle_type] for e in entries] == sorted(ranks[e.oracle_type] for e in entries)
+
+
+def test_get_payloads_full_library_resolves_and_fires_corpus_entry() -> None:
+    from reachagent.payloads import build_library
+
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(500, text="You have an error in your SQL syntax")
+
+    session = _session_on(handler, library=build_library())
+    ep = session.graph.add_endpoint(Endpoint(method="GET", path="/users/v1/name"))
+    param = session.graph.add_parameter(ep, Parameter(name="q", location="query"))
+    mcp = _register_on_session(session)
+
+    _call(mcp, "fingerprint_parameter", identity="user_a", endpoint_node=ep, param_node=param)
+    entries = _call(mcp, "get_payloads", vuln_class="sqli", sink_type="sql")
+    corpus_entry = next(e for e in entries if "#L" in e.payload_ref)  # type: ignore[attr-defined]
+
+    assert corpus_entry.resolved_value  # type: ignore[attr-defined]
+    fired = _call(
+        mcp,
+        "fire_request",
+        identity="user_a",
+        endpoint_node=ep,
+        param_node=param,
+        payload=corpus_entry.resolved_value,  # type: ignore[attr-defined]
+    )
+    assert fired.status_code == 500  # type: ignore[attr-defined]
+    assert seen[-1].url.params["q"] == corpus_entry.resolved_value  # type: ignore[attr-defined]
+
+
+def test_get_payloads_surfaces_missing_template_slots() -> None:
+    session = _session_on(lambda r: httpx.Response(200, text="ok"))
+    mcp = _register_on_session(session)
+    with pytest.raises(MissingSlotError):
+        _call(mcp, "get_payloads", vuln_class="sqli_blind", sink_type="sql")
+
+
+def test_get_payloads_honors_caller_slot_kit() -> None:
+    session = _session_on(lambda r: httpx.Response(200, text="ok"))
+    mcp = _register_on_session(session)
+    entries = _call(
+        mcp,
+        "get_payloads",
+        vuln_class="xss_reflected",
+        sink_type="html_reflection",
+        slot_kit={"canary": "CALLER_CANARY"},
+    )
+    assert entries[0].slot_kit["canary"] == "CALLER_CANARY"  # type: ignore[attr-defined]
+    assert entries[0].resolved_value == "<script>CALLER_CANARY</script>"  # type: ignore[attr-defined]
+
+
+def test_get_payloads_mints_unique_per_fire_correlators() -> None:
+    session = _session_on(lambda r: httpx.Response(200, text="<p>x</p>"))
+    mcp = _register_on_session(session)
+    first = _call(mcp, "get_payloads", vuln_class="xss_reflected", sink_type="html_reflection")
+    second = _call(mcp, "get_payloads", vuln_class="xss_reflected", sink_type="html_reflection")
+    assert first[0].slot_kit["canary"] != second[0].slot_kit["canary"]  # type: ignore[attr-defined]
+    assert first[0].slot_kit["nonce"] != second[0].slot_kit["nonce"]  # type: ignore[attr-defined]
+    assert first[0].slot_kit["canary"] in first[0].resolved_value  # type: ignore[attr-defined]
+
+
+def test_get_payloads_sink_isolation_holds_through_mcp_path() -> None:
+    from reachagent.payloads import build_library
+
+    session = _session_on(lambda r: httpx.Response(200, text="ok"), library=build_library())
+    mcp = _register_on_session(session)
+    html_entries = _call(mcp, "get_payloads", vuln_class="sqli", sink_type="html_reflection")
+    assert html_entries == []
+
+
+def test_load_library_falls_back_when_snapshot_load_fails(monkeypatch, caplog) -> None:
+    def broken_loader():
+        raise OSError("snapshot absent")
+
+    monkeypatch.setattr(server, "build_library", broken_loader)
+    with caplog.at_level("WARNING"):
+        library = server._load_library()
+    assert len(library) == len(PayloadLibrary.from_file())
+    assert "falling back to base payload slice" in caplog.text
+
+
+def test_explorer_resolution_wiring_has_no_validator_import() -> None:
+    import ast
+    from pathlib import Path
+
+    path = Path(__file__).parents[2] / "src" / "reachagent" / "tools" / "explorer.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    imports = [
+        alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Import)
+        for alias in node.names
+    ]
+    imports.extend(node.module or "" for node in ast.walk(tree) if isinstance(node, ast.ImportFrom))
+    assert not any("reachagent.tools.validator" in name for name in imports)
 
 
 def test_fire_request_returns_ref_consumed_by_classify_response() -> None:

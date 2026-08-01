@@ -23,6 +23,7 @@ from reachagent.payloads.library import (
 from reachagent.payloads.payload_resolver import (
     MissingSlotError,
     UnknownPayloadRefError,
+    mint_fire_kit,
     required_slots,
     resolve,
     resolve_entry,
@@ -38,6 +39,7 @@ __all__ = [
     "UnknownPayloadRefError",
     "build_library",
     "load_corpus_entries",
+    "mint_fire_kit",
     "required_slots",
     "resolve",
     "resolve_entry",

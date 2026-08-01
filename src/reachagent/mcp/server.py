@@ -43,6 +43,7 @@ Coordinator will construct per run (``ExplorerContext``, §9, §13).
 from __future__ import annotations
 
 import json
+import logging
 import os
 from dataclasses import dataclass, field
 from itertools import count
@@ -56,10 +57,17 @@ from reachagent.execution.scope import ScopeGuard
 from reachagent.graph import nodes as _nodes
 from reachagent.graph.store import ReachabilityGraph
 from reachagent.oracles import OracleMechanism
-from reachagent.payloads import PayloadLibrary
+from reachagent.payloads import (
+    PayloadLibrary,
+    build_library,
+    mint_fire_kit,
+    resolve_entry,
+)
 from reachagent.tools import explorer as _explorer
 from reachagent.tools import validator as _validator
 from reachagent.tools.explorer_context import ExplorerContext, UploadSpec
+
+_log = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from mcp.server.fastmcp import FastMCP
@@ -156,9 +164,30 @@ def _build_context(
     return ExplorerContext(
         graph=ReachabilityGraph(),
         firer=firer,
-        library=PayloadLibrary.from_file(),
+        library=_load_library(),
         base_url=resolved_base,
     )
+
+
+def _load_library() -> PayloadLibrary:
+    """Load the full library (base slice + vendored corpus), degrading gracefully.
+
+    The running Explorer should see the whole 14k-entry corpus, not just the base
+    slice, so the Phase 5 Coordinator drives the same payloads a live run would
+    (§9). ``build_library`` reads the ``third_party/`` snapshot off disk; a checkout
+    that hasn't vendored it (or a malformed one) must still start — so any corpus
+    load failure falls back to the base slice with a logged warning rather than
+    blocking tool startup. 14k entries is an in-memory list; load is cheap.
+    """
+    try:
+        return build_library()
+    except Exception as exc:  # noqa: BLE001 — startup must survive an absent/broken snapshot
+        _log.warning(
+            "corpus load failed (%s); falling back to base payload slice — "
+            "the vendored third_party/ snapshot may be absent (see docs/vendored-corpora.md)",
+            exc,
+        )
+        return PayloadLibrary.from_file()
 
 
 @dataclass
@@ -310,7 +339,7 @@ class FingerprintReportOut:
 
 @dataclass
 class PayloadEntryOut:
-    """Serializable view of one tagged payload entry (§9)."""
+    """Serializable view of one tagged payload plus its fireable value (§9)."""
 
     vuln_class: str
     context: str
@@ -318,6 +347,8 @@ class PayloadEntryOut:
     oracle_type: str
     payload_ref: str
     graph_edge_on_success: str
+    resolved_value: str
+    slot_kit: dict[str, Any]
 
 
 @dataclass
@@ -424,22 +455,39 @@ def register_tools(mcp: FastMCP, session: _Session) -> None:
         )
 
     @mcp.tool()
-    def get_payloads(vuln_class: str, sink_type: str | None = None) -> list[PayloadEntryOut]:
-        """Sink-matched payload lookup, ordered by oracle confidence (§9)."""
+    def get_payloads(
+        vuln_class: str,
+        sink_type: str | None = None,
+        slot_kit: dict[str, Any] | None = None,
+    ) -> list[PayloadEntryOut]:
+        """Return sink-matched entries with resolved, fireable values (§9).
+
+        A fresh kit is minted for each entry, so per-fire correlators are unique even
+        when one lookup returns multiple payloads. Caller-supplied values (for example
+        an OOB collaborator domain or timing delay) override minted defaults. Resolver
+        errors propagate: dead refs and missing required slots never become empty
+        payloads.
+        """
         sink = _nodes.SinkType(sink_type) if sink_type is not None else None
-        return [
-            PayloadEntryOut(
-                vuln_class=e.vuln_class,
-                context=e.context,
-                inferred_sink_type=(
-                    e.inferred_sink_type.value if e.inferred_sink_type is not None else None
-                ),
-                oracle_type=e.oracle_type.value,
-                payload_ref=e.payload_ref,
-                graph_edge_on_success=e.graph_edge_on_success,
+        entries = _explorer.get_payloads(ctx, vuln_class, sink)
+        outputs = []
+        for e in entries:
+            kit = mint_fire_kit(**(slot_kit or {}))
+            outputs.append(
+                PayloadEntryOut(
+                    vuln_class=e.vuln_class,
+                    context=e.context,
+                    inferred_sink_type=(
+                        e.inferred_sink_type.value if e.inferred_sink_type is not None else None
+                    ),
+                    oracle_type=e.oracle_type.value,
+                    payload_ref=e.payload_ref,
+                    graph_edge_on_success=e.graph_edge_on_success,
+                    resolved_value=resolve_entry(e, **kit),
+                    slot_kit=kit,
+                )
             )
-            for e in _explorer.get_payloads(ctx, vuln_class, sink)
-        ]
+        return outputs
 
     @mcp.tool()
     def fire_request(
