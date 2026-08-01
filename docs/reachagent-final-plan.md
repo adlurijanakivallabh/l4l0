@@ -92,6 +92,8 @@ This is what makes "prioritizes chain-completing tests over fresh exploration" a
 
 ## 5. Vulnerability coverage matrix
 
+Ratings track **oracle wiring**, not payload volume: seeding thousands of vendored corpus payloads (§9/§12) expands the *set* a class can be probed with but never moves a Full/Partial/Weak level — a level changes only when a new §7 oracle mechanism confirms (or fails to confirm) the class. The corpus vendoring in v1.6+ therefore leaves every rating below unchanged.
+
 Ratings are calibrated against published results and documented technique limitations, not estimated.
 
 | Class | Support | Primary oracle | Basis |
@@ -303,7 +305,7 @@ The tier is decided by the nature of a tool's output, not by its name — any cu
 | Proxy | mitmproxy or Caido for capture/replay |
 | OOB/collaborator | Self-hosted interact.sh instance |
 | Race-condition module | HTTP/2 single-packet delivery (Turbo Intruder's published technique, reimplemented or shelled out to) |
-| Payload store | YAML for Phase 1, SQLite once lookups by `(vuln_class, inferred_sink_type)` need indexing; seeded from the full vendored public corpora (PayloadsAllTheThings, SecLists) under `third_party/` plus custom entries — every entry tagged on ingest |
+| Payload store | Base slice in YAML; the bulk corpus is the **vendored PayloadsAllTheThings + SecLists snapshot under `third_party/`**, ingested at load time via a folder→(vuln_class, sink) map + a regex oracle-tagging table (§9). Current ingest is ~14.5k entries; `get_payloads` filters an in-memory list in sub-millisecond time, so **SQLite is still deferred** — it becomes warranted only if the `(vuln_class, inferred_sink_type)` lookup is a measured bottleneck (an order of magnitude more entries, or per-request re-loading). Every entry tagged on ingest; raw strings stay behind a `source/relpath#Ln` locator, read on demand (network-free) |
 | Reporting | Markdown + JSON for machine-readable chain data, optional HTML render for human review |
 
 ---

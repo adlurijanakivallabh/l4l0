@@ -23,10 +23,11 @@ from reachagent.payloads.library import (
 from reachagent.payloads.payload_resolver import (
     MissingSlotError,
     UnknownPayloadRefError,
-    known_refs,
     required_slots,
     resolve,
     resolve_entry,
+    resolves,
+    template_refs,
 )
 
 __all__ = [
@@ -36,9 +37,10 @@ __all__ = [
     "PayloadLibraryError",
     "UnknownPayloadRefError",
     "build_library",
-    "known_refs",
     "load_corpus_entries",
     "required_slots",
     "resolve",
     "resolve_entry",
+    "resolves",
+    "template_refs",
 ]

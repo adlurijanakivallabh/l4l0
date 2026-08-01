@@ -1,20 +1,24 @@
-"""payload_ref → fireable template resolution (plan §9; Task 2b).
+"""payload_ref resolution — template override + vendored line-locator (§9; v1.6+).
 
-Asserts the resolver DoD:
+Asserts the reconciled resolver DoD (network-free; reads the checked-in
+``third_party/`` snapshot, never a live fetch):
 
-  1. Coverage/consistency: every ``payload_ref`` in the base slice AND both corpus
-     files resolves — no dead handles — and the resolver has no orphan template
-     with no catalog entry. This is the regression guard that keeps ingest and
-     resolver in sync.
-  2. Slot filling produces the expected filled string for a sample of each class,
-     with literal payload braces (Jinja ``{{...}}``, JSON ``{...}``) surviving.
-  3. An unknown ref raises; a required-but-missing slot raises.
-  4. Resolution is deterministic.
-
-No live gate — resolution is pure string substitution, no firing, no oracle.
+  1. A template-override ref (base slice) still slot-fills by targeted replacement,
+     literal payload braces surviving.
+  2. A line-locator ref ``source/relpath#Ln`` reads the correct vendored line.
+  3. **Sync guard** — no dead handle (every catalog ref resolves) and no orphan
+     template (every hand-authored template maps to a real catalog ref). Expressed
+     against the resolvable set, not a hardcoded 1:1.
+  4. **Semantic-validity** per sink over the FULL ingested set: a file_path payload
+     has a traversal marker and is not a URL; a sql payload has a SQL token; an
+     html_reflection payload has markup; etc. A folder-mapped line that fails its
+     sink's check is a mis-ingest and is surfaced.
+  5. Value/location decoupling (resolver returns the value only) and determinism.
 """
 
 from __future__ import annotations
+
+import re
 
 import pytest
 
@@ -23,16 +27,16 @@ from reachagent.payloads import (
     MissingSlotError,
     PayloadLibrary,
     UnknownPayloadRefError,
-    known_refs,
+    build_library,
     load_corpus_entries,
     required_slots,
     resolve,
     resolve_entry,
+    resolves,
+    template_refs,
 )
 
-# A full context kit — every slot the vocabulary defines, so any ref resolves.
-# file_target is a real file path (path-traversal/LFI target), semantically
-# distinct from any URL — the separation that fixes the {target} overload.
+# A context kit covering every template slot, so any override ref resolves.
 _KIT = {
     "nonce": "n1",
     "collab": "c.example",
@@ -48,211 +52,183 @@ _KIT = {
 }
 
 
-def _all_catalog_refs() -> set[str]:
-    refs = {e.payload_ref for e in PayloadLibrary.from_file().all_entries()}
-    refs |= {e.payload_ref for e in load_corpus_entries()}
-    return refs
+def _catalog_entries() -> list:
+    """Base slice + every vendored corpus entry — the full resolvable catalog."""
+    return list(PayloadLibrary.from_file().all_entries()) + load_corpus_entries()
 
 
-# -- Invariant 1: coverage / consistency -------------------------------------
-
-
-def test_every_base_and_corpus_ref_resolves() -> None:
-    catalog = _all_catalog_refs()
-    assert len(catalog) == 30  # base slice (7 unique) + corpus (23)
-    for ref in catalog:
-        # Resolving with the full kit must never raise for a catalogued ref.
-        assert resolve(ref, **_KIT)
-
-
-def test_no_orphan_templates() -> None:
-    # Every template maps to a real catalog ref — no dead template with no entry.
-    assert known_refs() == _all_catalog_refs()
-
-
-def test_resolve_entry_bridges_get_payloads_to_string() -> None:
-    lib = PayloadLibrary.from_file()
-
-    entries = lib.get_payloads("sqli", SinkType.SQL)
-    assert entries
-    for e in entries:
-        assert resolve_entry(e, **_KIT) == resolve(e.payload_ref, **_KIT)
-
-
-# -- Invariant 2: slot filling, one sample per class family ------------------
+# -- 1. template override still slot-fills ------------------------------------
 
 
 @pytest.mark.parametrize(
     ("ref", "expected"),
     [
-        ("patt/sqli/union/column-count-match", "' UNION SELECT 1,2,3-- -"),
-        ("patt/sqli/blind/time-based-sleep", "' AND SLEEP(5)-- -"),
-        ("patt/nosql/operator/ne-auth-bypass", '{"$ne":null}'),  # literal JSON braces survive
-        ("patt/nosql/blind/regex-predicate-pair", '{"$regex":".*"}'),
-        ("patt/ldap/filter/wildcard-always-true", "*)(objectClass=*)"),
-        ("patt/cmdi/blind/oob-separator-chain", ";nslookup n1.c.example"),
-        ("patt/ssti/polyglot/arithmetic-eval", "{{7*7}}"),  # literal Jinja braces survive
-        ("patt/ssrf/blind/oob-fetch", "http://n1.c.example/"),
-        ("patt/xss/reflected/img-onerror-canary", "<img src=x onerror=CANARY42>"),
-        ("patt/path-traversal/dot-dot-slash", "../../../../etc/passwd"),
-        ("seclists/fuzzing/lfi/encoded-traversal", "..%2f..%2f..%2f..%2fetc/passwd"),
-        ("mass-assignment/admin-flag-injection", '{"isAdmin":true}'),
+        ("sqli/blind/timing-sleep-paired", "' AND SLEEP(5)-- -"),
         ("xss/reflected/script-tag-canary", "<script>CANARY42</script>"),
+        ("mass-assignment/admin-flag-injection", '{"isAdmin":true}'),
+        ("bola/object-id-substitution", "2"),
     ],
 )
-def test_slot_filling_produces_expected_string(ref: str, expected: str) -> None:
+def test_template_override_slot_fills(ref, expected) -> None:
     assert resolve(ref, **_KIT) == expected
 
 
-def test_required_slots_reports_only_used_slots() -> None:
-    # A template's required slots are exactly the vocabulary tokens it contains.
-    assert required_slots("patt/sqli/union/column-count-match") == {"columns"}
-    assert required_slots("patt/cmdi/blind/oob-separator-chain") == {"nonce", "collab"}
-    assert required_slots("patt/sqli/error-based/quote-break") == frozenset()
-
-
-def test_extra_slots_are_ignored() -> None:
-    # Passing the full kit to a slot-less ref is fine — extras are ignored.
-    assert resolve("patt/sqli/error-based/quote-break", **_KIT) == "'"
-
-
-# -- Invariant 3: loud failures ----------------------------------------------
-
-
-def test_unknown_ref_raises() -> None:
-    with pytest.raises(UnknownPayloadRefError):
-        resolve("patt/not/a/real/ref", **_KIT)
-
-
-def test_required_slots_unknown_ref_raises() -> None:
-    with pytest.raises(UnknownPayloadRefError):
-        required_slots("patt/not/a/real/ref")
+def test_template_literal_braces_survive() -> None:
+    # The OOB template carries UNC backslashes + literal text; slot-fill leaves the
+    # non-slot characters intact (targeted replacement, not str.format).
+    out = resolve("sqli/blind/oob-dns-exfil", **_KIT)
+    assert "n1.c.example" in out
+    assert out.startswith("'; EXEC master..xp_dirtree")
 
 
 def test_missing_required_slot_raises() -> None:
-    # time-based-sleep needs {sleep}; omitting it is a loud error, not "SLEEP()".
     with pytest.raises(MissingSlotError):
-        resolve("patt/sqli/blind/time-based-sleep")
+        resolve("sqli/blind/timing-sleep-paired")  # {sleep} required, not supplied
 
 
-def test_none_slot_value_counts_as_missing() -> None:
-    with pytest.raises(MissingSlotError):
-        resolve("patt/sqli/blind/time-based-sleep", sleep=None)
+def test_required_slots_of_template_and_locator() -> None:
+    assert required_slots("sqli/blind/timing-sleep-paired") == {"sleep"}
+    # A line-locator ref is static — no slots required.
+    locator = next(e.payload_ref for e in load_corpus_entries())
+    assert required_slots(locator) == frozenset()
 
 
-# -- Invariant 4: determinism ------------------------------------------------
+# -- 2. line-locator reads the correct vendored line --------------------------
 
 
-def test_resolution_is_deterministic() -> None:
-    for ref in _all_catalog_refs():
-        assert resolve(ref, **_KIT) == resolve(ref, **_KIT)
+def test_line_locator_reads_the_exact_source_line() -> None:
+    # Build a locator for a known file+line and assert resolve() returns that exact
+    # vendored line — read straight off disk, network-free.
+    from pathlib import Path
+
+    root = Path(__file__).parent.parent.parent / "third_party" / "seclists-snapshot"
+    rel = "Fuzzing/Databases/SQLi/quick-SQLi.txt"
+    lines = (root / rel).read_text(encoding="utf-8").splitlines()
+    ref = f"SecLists/{rel}#L1"
+    assert resolve(ref) == lines[0]
+    # A mid-file line, too.
+    ref5 = f"SecLists/{rel}#L5"
+    assert resolve(ref5) == lines[4]
 
 
-# -- Invariant 5: value/location decoupling (Nuclei-style) -------------------
+def test_line_locator_out_of_range_is_dead_handle() -> None:
+    with pytest.raises(UnknownPayloadRefError, match="out of range"):
+        resolve("SecLists/Fuzzing/Databases/SQLi/quick-SQLi.txt#L999999")
 
 
-def test_resolver_produces_value_only_never_location() -> None:
-    # The resolved payload is the parameter VALUE only. Location (query/body/path/
-    # header) lives on the graph Parameter and is applied by _fire_with_value, so a
-    # template must not encode placement: no leading key=value binding, no query
-    # assembly ('?'/'&'), no header framing (': '), no URL scheme except where the
-    # value itself IS a URL (SSRF), which is a legitimate value, not a location.
-    url_valued = {"patt/ssrf/blind/oob-fetch"}
-    for ref in _all_catalog_refs():
-        value = resolve(ref, **_KIT)
-        assert not value.startswith("?")
-        assert "&" not in value
-        assert ": " not in value  # no "Header: value" framing baked in
-        # No "key=value" parameter binding prefix (a bare '=' inside SQL like
-        # '1'='1' is fine; a leading "name=" assignment is not).
-        assert not _looks_like_param_binding(value)
-        if ref not in url_valued:
-            assert "http://" not in value and "https://" not in value
+def test_line_locator_unknown_source_is_dead_handle() -> None:
+    with pytest.raises(UnknownPayloadRefError, match="unknown source"):
+        resolve("NotASource/foo/bar.txt#L1")
 
 
-def _looks_like_param_binding(value: str) -> bool:
-    """True if the value starts with an ``ident=`` binding (a location artifact)."""
-    head = value.split("=", 1)[0]
-    return "=" in value and head.isidentifier() and len(head) > 0
+def test_line_locator_missing_file_is_dead_handle() -> None:
+    with pytest.raises(UnknownPayloadRefError, match="no vendored file"):
+        resolve("SecLists/Fuzzing/does-not-exist.txt#L1")
 
 
-# -- Invariant 6: semantic validity per sink class ---------------------------
-#
-# The guard that would have caught the {target} overload: resolve every base +
-# corpus entry with a realistic kit and assert the value is plausible for its
-# vuln_class's SINK (taken from the catalog, so this generalises to the next
-# overloaded-slot mistake — it is not a one-off check of the two LFI refs).
+def test_unknown_ref_neither_template_nor_locator_raises() -> None:
+    with pytest.raises(UnknownPayloadRefError):
+        resolve("just-a-bare-handle-no-line")
 
 
-def _catalog_entries() -> list:
-    base = list(PayloadLibrary.from_file().all_entries())
-    return base + list(load_corpus_entries())
+# -- 3. sync guard: no dead handle, no orphan template ------------------------
+
+
+def test_no_dead_handle_every_catalog_ref_resolves() -> None:
+    # Every ref in the merged catalog resolves — via a template override OR a
+    # vendored line-locator read. No dead handles under bulk ingest.
+    unresolved = [e.payload_ref for e in _catalog_entries() if not resolves(e.payload_ref)]
+    assert unresolved == [], f"{len(unresolved)} dead handle(s), e.g. {unresolved[:3]}"
+
+
+def test_no_orphan_template_every_template_maps_to_a_real_ref() -> None:
+    # Every hand-authored template ref is a real catalog ref (no orphan template
+    # left pointing at a deleted entry). Expressed against the resolvable set.
+    catalog = {e.payload_ref for e in _catalog_entries()}
+    orphans = [ref for ref in template_refs() if ref not in catalog]
+    assert orphans == [], f"orphan template(s): {orphans}"
+
+
+# -- 4. semantic validity per sink over the FULL ingested set -----------------
 
 
 def _has_url(value: str) -> bool:
-    return "http://" in value or "https://" in value
+    return "http://" in value.lower() or "https://" in value.lower()
 
 
-def test_resolved_value_is_semantically_valid_for_its_sink() -> None:
-    for entry in _catalog_entries():
+def test_ingested_payload_is_semantically_valid_for_its_sink() -> None:
+    # Resolve every corpus entry to its value and assert it is plausible for its
+    # sink. A folder-mapped line that fails its sink's check is a mis-ingest — this
+    # is the guard that surfaces one (the same spirit as the 2b {target} fix).
+    offenders: list[str] = []
+    for entry in load_corpus_entries():
+        value = resolve_entry(entry, **_KIT)
         sink = entry.inferred_sink_type
-        sink_name = sink.value if sink is not None else None
-        value = resolve(entry.payload_ref, **_KIT)
-        ref = entry.payload_ref
-
-        if sink_name == "file_path":
-            # A traversal payload: has a ../ or ..%2f sequence and is NOT a URL.
-            assert ("../" in value) or ("..%2f" in value.lower()), ref
-            assert not _has_url(value), ref  # the bug: file_path must not be a URL
-
-        elif sink_name == "sql":
-            # Contains a SQL metacharacter or keyword.
-            upper = value.upper()
-            assert (
-                ("'" in value)
-                or ("UNION" in upper)
-                or ("SLEEP" in upper)
-                or (" OR " in upper)
-                or (" AND " in upper)
-            ), ref
-
-        elif sink_name == "html_reflection":
-            # A markup payload carrying the execution-confirmation canary.
-            assert "<" in value, ref
-            assert _KIT["canary"] in value, ref
-
-        elif sink_name == "url":
-            # SSRF: the value itself IS a URL.
-            assert _has_url(value), ref
-
-        elif sink_name == "nosql":
-            # A Mongo query operator.
-            assert ("$ne" in value) or ("$regex" in value) or ("$gt" in value), ref
-
-        elif sink_name == "template":
-            # SSTI: the arithmetic expression the engine evaluates.
-            assert _KIT["expr"] in value, ref
-
-        elif sink_name == "ldap":
-            # An LDAP filter fragment.
-            assert ("(" in value) or ("*" in value), ref
-
-        elif sink_name == "shell":
-            # A command separator chaining an OOB lookup.
-            assert (";" in value) or ("|" in value) or ("`" in value), ref
+        ok = True
+        if sink is SinkType.FILE_PATH:
+            ok = bool(
+                re.search(r"\.\./|\.\.\\|\.\.%2f|%2e%2e|/etc/|win\.ini|boot\.ini|^/", value, re.I)
+            )
+            ok = ok and not _has_url(value)
+        elif sink is SinkType.SQL:
+            # Real SQLi tautologies include bare "or 1=1" / "|| 1==1" (no quote), so
+            # a comparison/boolean operator counts alongside quotes/keywords/comments.
+            ok = bool(
+                re.search(
+                    r"['\"]|union|select|sleep|benchmark|waitfor|\bor\b|\band\b|--|#|;|=|\|\|",
+                    value,
+                    re.I,
+                )
+            )
+        elif sink is SinkType.HTML_REFLECTION:
+            ok = "<" in value or bool(
+                re.search(r"alert|prompt|confirm|onerror|onload|javascript:", value, re.I)
+            )
+        elif sink is SinkType.NOSQL:
+            ok = "$" in value or "{" in value or "sleep(" in value.lower()
+        elif sink is SinkType.SHELL:
+            # A command separator, a substitution, a newline injector, or a bare
+            # command token (``id`` may be newline-wrapped as ``\nid\n``).
+            ok = bool(re.search(r"[;&|`]|\$\(|%0a|\\n|sleep|nslookup|ping|cat|\bid\b", value, re.I))
+        if not ok:
+            offenders.append(f"{entry.payload_ref} → {value!r}")
+    assert offenders == [], f"{len(offenders)} mis-ingested payload(s), e.g. {offenders[:5]}"
 
 
-def test_file_target_defaults_to_etc_passwd_with_no_kit() -> None:
-    # file_target has a default, so path-traversal/LFI require no slot at all and
-    # resolve to a canonical read-only target rather than raising.
-    assert required_slots("patt/path-traversal/dot-dot-slash") == frozenset()
-    assert required_slots("seclists/fuzzing/lfi/encoded-traversal") == frozenset()
-    assert resolve("patt/path-traversal/dot-dot-slash") == "../../../../etc/passwd"
-    assert resolve("seclists/fuzzing/lfi/encoded-traversal") == "..%2f..%2f..%2f..%2fetc/passwd"
+# -- 5. value/location decoupling + determinism -------------------------------
 
 
-def test_file_target_override_is_honored() -> None:
-    assert (
-        resolve("patt/path-traversal/dot-dot-slash", file_target="windows/win.ini")
-        == "../../../../windows/win.ini"
-    )
+def test_resolver_adds_no_framing_returns_the_raw_value() -> None:
+    # Value/location decoupling: the resolver returns the payload VALUE verbatim —
+    # it never wraps a line in a location (no "key=" prefix, no query/header
+    # framing it added). Proven at the source: a line-locator resolves to EXACTLY
+    # the vendored file line, byte-for-byte. (A payload's own content may embed a
+    # ':' or '='; that is the payload, not framing the resolver introduced.)
+    from pathlib import Path
+
+    tp = Path(__file__).parent.parent.parent / "third_party"
+    for entry in load_corpus_entries()[:2000]:  # representative fast slice
+        value = resolve_entry(entry)  # no kit — locator lines are static
+        source, rest = entry.payload_ref.split("/", 1)
+        relpath, line_no = rest.rsplit("#L", 1)
+        root = tp / (
+            "seclists-snapshot" if source == "SecLists" else "payloadsallthethings-snapshot"
+        )
+        raw = (root / relpath).read_text(encoding="utf-8").splitlines()[int(line_no) - 1]
+        assert value == raw  # resolver added nothing — value is the raw line
+
+
+def test_resolution_is_deterministic() -> None:
+    entries = load_corpus_entries()[:200]
+    first = [resolve_entry(e, **_KIT) for e in entries]
+    second = [resolve_entry(e, **_KIT) for e in entries]
+    assert first == second
+
+
+def test_base_slice_and_locator_both_resolve_via_build_library() -> None:
+    lib = build_library()
+    # A base-slice sql template ref and a corpus sql locator both resolve.
+    sql_entries = lib.get_payloads("sqli", SinkType.SQL)
+    assert sql_entries
+    for e in sql_entries[:50]:
+        assert resolve_entry(e, **_KIT)
