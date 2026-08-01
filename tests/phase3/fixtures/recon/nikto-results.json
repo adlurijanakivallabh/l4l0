@@ -1,0 +1,29 @@
+{
+  "host": "target.test",
+  "ip": "93.184.216.34",
+  "port": "80",
+  "banner": "nginx/1.24.0",
+  "vulnerabilities": [
+    {
+      "id": "999990",
+      "method": "GET",
+      "url": "/../../../../etc/passwd",
+      "msg": "Directory traversal: retrieved /etc/passwd outside web root",
+      "osvdb": "3268"
+    },
+    {
+      "id": "888880",
+      "method": "GET",
+      "url": "/search?q=<script>",
+      "msg": "Possible Cross Site Scripting (XSS) in query parameter",
+      "osvdb": "0"
+    },
+    {
+      "id": "777770",
+      "method": "GET",
+      "url": "/admin/",
+      "msg": "Server may leak inodes via ETags, header found with file /admin/",
+      "osvdb": "0"
+    }
+  ]
+}

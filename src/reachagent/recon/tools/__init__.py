@@ -26,7 +26,16 @@ from reachagent.recon.tools.base import (
     ReconToolRunner,
 )
 from reachagent.recon.tools.gobuster import GobusterRunner
+from reachagent.recon.tools.nikto import NiktoRunner
 from reachagent.recon.tools.nmap import NmapRunner
+from reachagent.recon.tools.nuclei import NucleiRunner
+from reachagent.recon.tools.signal_gated import (
+    SignalGatedOutcome,
+    SignalGatedResult,
+    SignalGatedToolRunner,
+    reconfirm_candidate,
+)
+from reachagent.recon.tools.sqlmap import SqlmapRunner
 from reachagent.recon.tools.subdomains import AmassRunner, SubfinderRunner
 from reachagent.recon.tools.whatweb import WhatWebRunner
 
@@ -34,10 +43,17 @@ __all__ = [
     "RECON_ENV_LIVE",
     "AmassRunner",
     "GobusterRunner",
+    "NiktoRunner",
     "NmapRunner",
+    "NucleiRunner",
     "ReconOutcome",
     "ReconResult",
     "ReconToolRunner",
+    "SignalGatedOutcome",
+    "SignalGatedResult",
+    "SignalGatedToolRunner",
+    "SqlmapRunner",
     "SubfinderRunner",
     "WhatWebRunner",
+    "reconfirm_candidate",
 ]

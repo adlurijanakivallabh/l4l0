@@ -319,26 +319,45 @@ def test_wrappers_write_zero_findings_candidates_and_can_call() -> None:
 
 
 def test_recon_wrappers_import_no_validator_or_candidate_symbol() -> None:
-    # Structural proof of "facts only": no recon-tool module imports the Validator
-    # (run_oracle/write_finding) or the Explorer candidate type. A wrapper has no
-    # code path to a confirmation or a candidate — it can only write graph facts.
+    # Structural proof of "facts only" for the RECON (fact-emitter) tier: no recon
+    # wrapper imports the Validator (run_oracle/write_finding) or the Explorer
+    # candidate type. A recon wrapper has no code path to a confirmation OR a
+    # candidate — it can only write graph facts.
+    #
+    # Scope is the fact-emitter modules only. The signal-gated (claim) tier —
+    # base ``signal_gated.py`` + ``sqlmap``/``nuclei``/``nikto`` — legitimately
+    # imports ``Candidate`` (it EMITS candidates by design, §9) and is covered by
+    # its own AST guard in ``test_signal_gated_tools.py`` (which forbids the
+    # validator / run_oracle / write_finding there). Mixing the two tiers into one
+    # glob would wrongly forbid the candidate import the claim tier is built on.
     import ast
 
     import reachagent.recon.tools as pkg
 
     pkg_dir = Path(pkg.__file__).parent
-    forbidden = ("reachagent.tools.validator", "reachagent.tools.candidate", "run_oracle")
+    # The recon (fact) tier — explicitly enumerated so a new signal-gated module
+    # can't silently fall under this fact-tier invariant, and a new recon module
+    # must be added here on purpose.
+    recon_tier_files = {"base.py", "nmap.py", "subdomains.py", "gobuster.py", "whatweb.py"}
+    forbidden = (
+        "reachagent.tools.validator",
+        "reachagent.tools.candidate",
+        "run_oracle",
+        "write_finding",
+    )
     offenders: list[str] = []
     for py in pkg_dir.glob("*.py"):
+        if py.name not in recon_tier_files:
+            continue
         tree = ast.parse(py.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
             if isinstance(node, ast.ImportFrom) and node.module:
                 if any(f in node.module for f in forbidden):
                     offenders.append(f"{py.name}: from {node.module}")
-                if node.module.endswith("tools.validator") or node.module.endswith(
-                    "tools.candidate"
-                ):
-                    offenders.append(f"{py.name}: {node.module}")
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    if any(f in alias.name for f in forbidden):
+                        offenders.append(f"{py.name}: import {alias.name}")
     assert offenders == []
 
 
