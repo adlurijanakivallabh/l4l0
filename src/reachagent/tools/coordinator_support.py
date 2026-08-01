@@ -126,12 +126,19 @@ def context_from(value: object) -> CoordinatorContext:
         if isinstance(raw_context, CoordinatorContext):
             register_context(raw_context)
             return raw_context
+        if isinstance(raw_context, str):
+            return context_from(raw_context)
+        run_id = str(value.get("run_id", "default"))
+        path_id = str(value.get("path_id", "default"))
+        registered = _ACTIVE_CONTEXTS.get((run_id, path_id))
+        if registered is not None and "graph" not in value:
+            return registered
         graph = value.get("graph")
         solver = value.get("solver")
         if isinstance(graph, ReachabilityGraph):
             if not isinstance(solver, ChainSolver):
                 solver = ChainSolver(graph)
-            context = CoordinatorContext(graph, solver, str(value.get("path_id", "default")))
+            context = CoordinatorContext(graph, solver, path_id, run_id)
             register_context(context)
             return context
     if isinstance(value, str):

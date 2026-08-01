@@ -275,6 +275,25 @@ def test_score_and_select_rejects_edge_tested_after_query() -> None:
     )
     assert coordinator.score_and_select(candidates) is None
 
+
+def test_context_registry_keeps_same_path_across_runs_isolated() -> None:
+    first_graph = ReachabilityGraph()
+    first_graph.add_endpoint(Endpoint("GET", "/first"))
+    first_graph.add_identity("one", Identity("user", AuthState.USER, Provenance.SEEDED))
+    first = CoordinatorContext(first_graph, ChainSolver(first_graph, path_budget=1), "p", "run-1")
+    second_graph = ReachabilityGraph()
+    second_graph.add_endpoint(Endpoint("GET", "/second"))
+    second_graph.add_identity("two", Identity("user", AuthState.USER, Provenance.SEEDED))
+    second = CoordinatorContext(
+        second_graph, ChainSolver(second_graph, path_budget=3), "p", "run-2"
+    )
+    coordinator.query_graph(first)
+    coordinator.query_graph(second)
+    assert coordinator.check_budget("run-1:p").remaining == 1
+    assert coordinator.check_budget("run-2:p").remaining == 3
+
+
+def test_coordinator_surface_has_no_execution_or_oracle_imports() -> None:
     tree = ast.parse(open("src/reachagent/tools/coordinator.py", encoding="utf-8").read())
     imported = []
     for node in ast.walk(tree):
