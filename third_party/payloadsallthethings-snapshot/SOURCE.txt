@@ -1,0 +1,24 @@
+Source:  swisskyrepo/PayloadsAllTheThings
+Repo:     https://github.com/swisskyrepo/PayloadsAllTheThings
+Commit:   434cc897f9b1e561f3804631e40643e6c82c3d14
+License:  MIT
+Fetched:  2026-08-01 (dev setup, not detection-time)
+
+Curated minimal snapshot: only the machine-readable Intruder payload files under
+the folders ReachAgent's corpus loader maps (plan §9/§12). The full repo is not
+vendored (most of it is prose .md documentation, not one-per-line payloads).
+These are the real upstream payload lines at the pinned commit — never hand-typed,
+never fetched at detection time (§9: detection is network-free; fetching is dev
+setup only).
+
+Vendored files (upstream relpath preserved under this snapshot root):
+  SQL Injection/Intruder/Auth_Bypass.txt
+  XSS Injection/Intruders/IntrudersXSS.txt
+  Command Injection/Intruder/command_exec.txt
+  File Inclusion/Intruders/Traversal.txt
+  NoSQL Injection/Intruder/NoSQL.txt
+
+Refresh (dev only; re-pin the SHA above afterwards):
+  PATT=<new-sha>
+  B="https://raw.githubusercontent.com/swisskyrepo/PayloadsAllTheThings/$PATT"
+  # re-fetch each relpath above with:  curl -s "$B/<url-encoded relpath>" -o <relpath>

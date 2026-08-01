@@ -1,0 +1,24 @@
+Source:  danielmiessler/SecLists
+Repo:     https://github.com/danielmiessler/SecLists
+Commit:   5aa4cb180154526e41d0f4df03fbe00e5343c0ce
+License:  MIT
+Fetched:  2026-08-01 (dev setup, not detection-time)
+
+Curated minimal snapshot: only the machine-readable payload files under the
+folders ReachAgent's corpus loader maps (plan §9/§12). The full repo is not
+vendored (it is large, and most of it is unmapped wordlists). These are the real
+upstream payload lines at the pinned commit — never hand-typed, never fetched at
+detection time (§9: detection is network-free; fetching is dev setup only).
+
+Vendored files (upstream relpath preserved under this snapshot root):
+  Fuzzing/Databases/SQLi/quick-SQLi.txt
+  Fuzzing/Databases/SQLi/sqli.auth.bypass.txt
+  Fuzzing/Databases/SQLi/sqlmap-risk-classified/High-Risk-Payloads/time_blind.txt
+  Fuzzing/XSS/robot-friendly/XSS-BruteLogic.txt
+  Fuzzing/command-injection-commix.txt
+  Fuzzing/LFI/LFI-Jhaddix.txt
+
+Refresh (dev only; re-pin the SHA above afterwards):
+  SEC=<new-sha>
+  B="https://raw.githubusercontent.com/danielmiessler/SecLists/$SEC"
+  # re-fetch each relpath above with:  curl -s "$B/<url-encoded relpath>" -o <relpath>
