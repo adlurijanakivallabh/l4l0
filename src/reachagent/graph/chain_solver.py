@@ -50,6 +50,7 @@ class ChainSolver:
         self._graph = graph
         self._path_budget = path_budget
         self._budgets: dict[str, int] = {}
+        self._spawned_by_path: dict[str, set[str]] = {}
 
     # -- public API -------------------------------------------------------
 
@@ -106,6 +107,8 @@ class ChainSolver:
             self._graph.add_derived_credential(finding_node, spawned)
             target_identity = spawned
 
+        if spawn is not None:
+            self._spawned_by_path.setdefault(path_id, set()).add(target_identity)
         candidates = self._unexplored(target_identity)
         self._consume(path_id, 1)
         return candidates
@@ -125,6 +128,27 @@ class ChainSolver:
         if path_id not in self._budgets:
             self._budgets[path_id] = self._path_budget
         return self._budgets[path_id]
+
+    def spawned_identity_nodes(self, path_id: str = _DEFAULT_PATH) -> frozenset[str]:
+        """Identity nodes spawned by this solver on ``path_id`` in this run.
+
+        The ledger is deliberately solver-local: durable ``Provenance.DERIVED``
+        marks historical graph state, while this set identifies fresh chain hops
+        for the Coordinator's current run.
+        """
+        return frozenset(self._spawned_by_path.get(path_id, ()))
+
+    def consume_budget(self, path_id: str = _DEFAULT_PATH, units: int = 1) -> bool:
+        """Reserve ordinary Coordinator work against this solver-owned budget.
+
+        ``advance`` consumes its own chain-solver operation. The Coordinator uses
+        this same ledger for each selected Explorer/Validator dispatch, so no
+        second counter exists and a path cannot run past its cap.
+        """
+        if units < 1 or self.budget_remaining(path_id) < units:
+            return False
+        self._consume(path_id, units)
+        return True
 
     # -- internals --------------------------------------------------------
 
