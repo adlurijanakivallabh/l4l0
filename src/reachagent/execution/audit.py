@@ -9,6 +9,7 @@ effect of firing. Every attempt — fired, refused, or errored — produces one
 from __future__ import annotations
 
 import logging
+import threading
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -40,6 +41,7 @@ class AuditLog:
 
     def __init__(self) -> None:
         self._entries: list[AuditEntry] = []
+        self._lock = threading.Lock()
 
     def record(self, identity: str, method: str, target: str, outcome: str) -> AuditEntry:
         """Append one action and mirror it to the logger. Returns the entry."""
@@ -50,7 +52,8 @@ class AuditLog:
             target=target,
             outcome=outcome,
         )
-        self._entries.append(entry)
+        with self._lock:
+            self._entries.append(entry)
         _logger.info(
             "action identity=%s method=%s target=%s outcome=%s",
             entry.identity,
@@ -63,4 +66,5 @@ class AuditLog:
     @property
     def entries(self) -> Sequence[AuditEntry]:
         """Read-only view of everything recorded, in order."""
-        return tuple(self._entries)
+        with self._lock:
+            return tuple(self._entries)

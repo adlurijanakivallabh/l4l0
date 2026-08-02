@@ -17,6 +17,7 @@ Backs the Explorer's ``fire_request`` tool (§13).
 
 from __future__ import annotations
 
+import threading
 import time
 from dataclasses import dataclass
 
@@ -64,20 +65,30 @@ class RequestFirer:
         self._client = client
         self._scope = scope
         self._audit = audit or AuditLog()
-        # Endpoints whose read-only case has been confirmed safe, keyed by the
-        # scheme://host/path the confirming GET was fired against (§10).
-        self._read_only_cleared: set[str] = set()
+        # Endpoints whose read-only case has been confirmed safe, keyed by
+        # identity plus scheme://host[:port]/path. Clearance cannot transfer
+        # between test identities.
+        self._read_only_cleared: set[tuple[str, str]] = set()
+        self._clearance_lock = threading.Lock()
 
     @property
     def audit(self) -> AuditLog:
         """The audit log recording every action (§10)."""
         return self._audit
 
+    @property
+    def http2_enabled(self) -> bool:
+        """Whether underlying HTTPX transport is configured for HTTP/2."""
+        transport = getattr(self._client, "_transport", None)
+        pool = getattr(transport, "_pool", None)
+        return bool(getattr(pool, "_http2", False))
+
     @staticmethod
     def _endpoint_key(url: httpx.URL) -> str:
-        # Query/userinfo excluded — the read-only clearance is per endpoint, and
-        # this key is also what would otherwise leak secrets if logged.
-        return f"{url.scheme}://{url.host}{url.path}"
+        # Query/userinfo excluded — clearance is per network endpoint and path.
+        # Non-default ports remain distinct so clearing :8443 cannot authorize :9443.
+        port = f":{url.port}" if url.port is not None else ""
+        return f"{url.scheme}://{url.host}{port}{url.path}"
 
     def _is_read_only(self, method: str, *, state_changing: bool) -> bool:
         return method.upper() in _READ_ONLY_METHODS and not state_changing
@@ -114,7 +125,10 @@ class RequestFirer:
 
         # Gate 2: read-only-first. A state-changing request may not fire until the
         # read-only case for this endpoint has been confirmed safe (§10).
-        if not read_only and target not in self._read_only_cleared:
+        key = (identity, target)
+        with self._clearance_lock:
+            cleared = key in self._read_only_cleared
+        if not read_only and not cleared:
             self._audit.record(identity, method, target, "refused_read_only_first")
             raise ReadOnlyFirstError(
                 f"read-only case not yet confirmed for {target}; fire a read-only request first"
@@ -125,20 +139,25 @@ class RequestFirer:
         # we don't want it depending on httpx's internal ``.elapsed`` state.
         started = time.monotonic()
         try:
-            response = self._client.request(method, parsed, **kwargs)  # type: ignore[arg-type]
-        except httpx.HTTPError as exc:
+            # Redirects are returned to the caller rather than followed. A client
+            # redirect hop would bypass this execution-layer scope check.
+            kwargs.pop("follow_redirects", None)
+            response = self._client.request(method, parsed, follow_redirects=False, **kwargs)  # type: ignore[arg-type]
+            elapsed_seconds = time.monotonic() - started
+            result = FireResult(
+                status_code=response.status_code,
+                elapsed_seconds=elapsed_seconds,
+                body=response.content,
+                headers=response.headers,
+            )
+        except Exception as exc:  # noqa: BLE001 — every failed attempt must be audited
             self._audit.record(identity, method, target, f"error:{type(exc).__name__}")
             raise
-        elapsed_seconds = time.monotonic() - started
 
         # A successful read-only request clears this endpoint for later mutation.
-        if read_only:
-            self._read_only_cleared.add(target)
+        if read_only and 200 <= result.status_code < 300:
+            with self._clearance_lock:
+                self._read_only_cleared.add(key)
 
-        self._audit.record(identity, method, target, f"fired:{response.status_code}")
-        return FireResult(
-            status_code=response.status_code,
-            elapsed_seconds=elapsed_seconds,
-            body=response.content,
-            headers=response.headers,
-        )
+        self._audit.record(identity, method, target, f"fired:{result.status_code}")
+        return result

@@ -84,6 +84,15 @@ def test_read_only_clearance_is_per_endpoint(
     assert [r.method for r in calls] == ["GET"]
 
 
+def test_read_only_clearance_is_identity_scoped(
+    firer: RequestFirer, calls: list[httpx.Request]
+) -> None:
+    firer.fire("user_a", "GET", f"{IN_SCOPE}/orders")
+    with pytest.raises(ReadOnlyFirstError):
+        firer.fire("user_b", "POST", f"{IN_SCOPE}/orders")
+    assert [r.method for r in calls] == ["GET"]
+
+
 def test_get_flagged_state_changing_is_gated(
     firer: RequestFirer, calls: list[httpx.Request]
 ) -> None:
