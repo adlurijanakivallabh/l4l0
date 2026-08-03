@@ -6,8 +6,6 @@ MCP path uses a real browser while tests keep the hermetic ``FakeBrowser`` seam.
 
 from __future__ import annotations
 
-from reachagent.browser.shim import BrowserDriver
-
 
 class PlaywrightDriver:
     """Live ``BrowserDriver`` backed by a Playwright ``Page``.
@@ -30,6 +28,17 @@ class PlaywrightDriver:
         return self._page.evaluate(expression)  # type: ignore[attr-defined]
 
 
-# Runtime check — PlaywrightDriver must satisfy the Protocol.
-_driver_check: BrowserDriver = PlaywrightDriver.__new__(PlaywrightDriver)
-del _driver_check
+class AsyncPlaywrightDriver:
+    """Async BrowserDriver-shaped wrapper for MCP's asyncio execution path."""
+
+    def __init__(self, page: object) -> None:
+        self._page = page
+
+    async def add_init_script(self, script: str) -> None:
+        await self._page.add_init_script(script)  # type: ignore[attr-defined]
+
+    async def navigate(self, url: str) -> None:
+        await self._page.goto(url, wait_until="load")  # type: ignore[attr-defined]
+
+    async def evaluate(self, expression: str) -> object:
+        return await self._page.evaluate(expression)  # type: ignore[attr-defined]

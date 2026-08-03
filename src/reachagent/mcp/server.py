@@ -229,6 +229,7 @@ class DifferentialEvidenceInput:
     # ``admin`` vs. the injected user's) without ever indexing by position.
     baseline_select: str | None = None
     probe_select: str | None = None
+    error_signatures: tuple[str, ...] = ()
 
     def to_evidence(self) -> object:
         """Rebuild the oracle's own evidence dataclass from this flat MCP input.
@@ -250,6 +251,7 @@ class DifferentialEvidenceInput:
             baseline=Observation(self.baseline_label, self.baseline_status, self.baseline_body),
             probe=Observation(self.probe_label, self.probe_status, self.probe_body),
             evidence_ref=self.evidence_ref,
+            error_signatures=self.error_signatures,
         )
 
 
@@ -812,7 +814,7 @@ def register_tools(mcp: FastMCP, session: _Session) -> None:
     # -- fire_browser: Explorer-owned browser transport for DOM XSS (§13, Task 5) --
 
     @mcp.tool()
-    def fire_browser(identity: str, url: str, inject_shim: bool = True) -> dict[str, object]:
+    async def fire_browser(identity: str, url: str, inject_shim: bool = True) -> dict[str, object]:
         """Install the taint-tracking shim and navigate to ``url`` (§13, Phase 3 Task 6).
 
         Explorer-owned. Returns discovered source→sink flows as a JSON-safe dict.
@@ -820,22 +822,27 @@ def register_tools(mcp: FastMCP, session: _Session) -> None:
         PlaywrightDriver is built server-side; it never crosses the JSON boundary,
         matching the same handle-indirection discipline as fire_request.
         """
-        from playwright.sync_api import sync_playwright
 
-        from reachagent.browser.playwright_driver import PlaywrightDriver
-        from reachagent.browser.shim import BrowserFireResult, run_taint_shim
+        ctx.firer.scope.enforce(url)
 
-        with sync_playwright() as pw:
-            browser = pw.chromium.launch(headless=True)
-            try:
-                page = browser.new_page()
-                driver = PlaywrightDriver(page)
-                result: BrowserFireResult = run_taint_shim(
-                    driver, identity, url, inject_shim=inject_shim
-                )
-            finally:
-                browser.close()
+        from playwright.async_api import async_playwright
 
+        from reachagent.browser.playwright_driver import AsyncPlaywrightDriver
+        from reachagent.browser.shim import BrowserFireResult, run_taint_shim_async
+
+        async def _run() -> BrowserFireResult:
+            async with async_playwright() as pw:
+                browser = await pw.chromium.launch(headless=True)
+                try:
+                    page = await browser.new_page()
+                    driver = AsyncPlaywrightDriver(page)
+                    return await run_taint_shim_async(
+                        driver, identity, url, inject_shim=inject_shim
+                    )
+                finally:
+                    await browser.close()
+
+        result = await _run()
         return {
             "url": result.url,
             "identity": result.identity,

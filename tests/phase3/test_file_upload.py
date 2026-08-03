@@ -81,6 +81,7 @@ def test_bypass_inconclusive_when_baseline_failed() -> None:
 def test_traversal_confirmed_when_sentinel_in_body() -> None:
     ev = StructuralEvidence(
         check_type=StructuralCheckType.PATH_TRAVERSAL,
+        probe_status=200,
         sentinel="root:x:0:0",
         response_body="root:x:0:0:root:/root:/bin/bash\n",
     )

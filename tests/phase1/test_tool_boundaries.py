@@ -94,6 +94,7 @@ def test_mcp_run_oracle_dispatches_structural_path_traversal() -> None:
         mechanism="structural",
         evidence={
             "check_type": "path_traversal",
+            "probe_status": 200,
             "sentinel": "root:x:0:0",
             "response_body": "...root:x:0:0:root:/root:/bin/bash...",
             "evidence_ref": "pt/test",

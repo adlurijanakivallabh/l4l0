@@ -18,6 +18,7 @@ import pytest
 
 from reachagent.browser.shim import (
     TAINT_SHIM_JS,
+    AsyncBrowserDriver,
     BrowserDriver,
     BrowserFireResult,
     run_taint_shim,
@@ -54,6 +55,25 @@ class FakeBrowser:
 
 def _driver(flows: list[dict] | None = None) -> FakeBrowser:
     return FakeBrowser(flows=flows)
+
+
+class AsyncFakeBrowser:
+    def __init__(self) -> None:
+        self.init_scripts: list[str] = []
+        self.urls: list[str] = []
+
+    async def add_init_script(self, script: str) -> None:
+        self.init_scripts.append(script)
+
+    async def navigate(self, url: str) -> None:
+        self.urls.append(url)
+
+    async def evaluate(self, expression: str) -> object:
+        return [{"source": "location.hash", "sink": "innerHTML", "value": "payload"}]
+
+
+def test_async_fake_browser_satisfies_protocol() -> None:
+    assert isinstance(AsyncFakeBrowser(), AsyncBrowserDriver)
 
 
 # === Protocol conformance =====================================================

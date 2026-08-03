@@ -50,6 +50,7 @@ if TYPE_CHECKING:
 _SQL_ERROR_SIGNATURES = (
     "sql syntax",
     "sqlite3.operationalerror",
+    "sqlite_error",
     "psycopg2",
     "you have an error in your sql",
     "unclosed quotation mark",

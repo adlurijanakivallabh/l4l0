@@ -178,7 +178,7 @@ endpoints:
   # POST /profile/image-upload: profile picture upload; same bypass surface as
   # /file-upload but scoped to the authenticated user's profile.
   - method: POST
-    path: /profile/image-upload
+    path: /profile/image/file
     content_type: multipart/form-data
     state_changing: true
     parameters:

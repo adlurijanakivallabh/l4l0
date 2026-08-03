@@ -44,8 +44,23 @@ FP_RATE_CEILING = 0.10
 _CATEGORY_MAP: dict[str, str] = {
     "injection": "injection",
     "xss": "xss",
-    "improper input validation": "file_upload",  # upload type/size challenges
-    "vulnerable components": "path_traversal",  # local file read / arbitrary write
+    "improper input validation": "file_upload",
+    "vulnerable components": "path_traversal",
+}
+
+# Only challenge keys whose technique is verified by the live detector belong in
+# this gate. Broad tracker categories contain unrelated challenges (SSTI,
+# chatbot, JWT, registration, typosquatting, and supply-chain items).
+VERIFIED_CHALLENGE_SCOPE: dict[str, str] = {
+    "loginAdminChallenge": "injection",
+    "loginBenderChallenge": "injection",
+    "loginJimChallenge": "injection",
+    "unionSqlInjectionChallenge": "injection",
+    "dbSchemaChallenge": "injection",
+    "nullByteChallenge": "file_upload",
+    "uploadSizeChallenge": "file_upload",
+    "uploadTypeChallenge": "file_upload",
+    "localXssChallenge": "xss",
 }
 
 
@@ -84,6 +99,16 @@ def in_scope_class(category: str) -> str | None:
 
 
 @dataclass(frozen=True)
+class ChallengeClaim:
+    """One detector-confirmed claim tied to an opaque tracker challenge key."""
+
+    challenge_key: str
+    vuln_class: str
+    evidence_ref: str = ""
+    scope_class: str | None = None
+
+
+@dataclass(frozen=True)
 class ChallengeResult:
     """One in-scope challenge: whether ReachAgent confirmed it and whether it's solved."""
 
@@ -98,11 +123,10 @@ class JuiceshopRun:
     """All in-scope challenge results from one Juice Shop run."""
 
     results: list[ChallengeResult] = field(default_factory=list)
-    # Class-level false positives: a class whose oracle confirmed a finding while
-    # NO in-scope challenge of that class flipped unsolved→solved this run (we
-    # claimed the class exploitable; Juice Shop's tracker disagreed). Kept off the
-    # coverage denominator — it is a false-positive signal only (invariant 2).
+    # Class-level false positives are retained for legacy class-only scoring.
     class_false_positives: int = 0
+    # Exact claims whose tracker key stayed unsolved or disappeared this run.
+    claim_false_positives: int = 0
 
     @property
     def total_in_scope(self) -> int:
@@ -128,7 +152,7 @@ class JuiceshopRun:
         rate meaningful instead of structurally zero.
         """
         per_challenge = sum(1 for r in self.results if r.confirmed and not r.tracker_solved)
-        return per_challenge + self.class_false_positives
+        return per_challenge + self.class_false_positives + self.claim_false_positives
 
     @property
     def coverage(self) -> float:

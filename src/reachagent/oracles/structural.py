@@ -85,7 +85,7 @@ class StructuralEvidence:
     PATH_TRAVERSAL:
       ``sentinel``: known string that proves out-of-scope file access (e.g.
       ``root:x:0:0``). ``response_body``: the server's response. Sentinel present
-      verbatim → traversal confirmed.
+      in a successful response → traversal confirmed.
 
     JWT_FORGERY:
       ``baseline_status``: response to a valid token (must be 2xx).
@@ -204,7 +204,11 @@ def decide(evidence: StructuralEvidence) -> FindingStatus:
         return FindingStatus.INCONCLUSIVE
 
     if evidence.check_type is StructuralCheckType.PATH_TRAVERSAL:
-        if evidence.sentinel and evidence.sentinel in evidence.response_body:
+        if (
+            200 <= evidence.probe_status < 300
+            and evidence.sentinel
+            and evidence.sentinel in evidence.response_body
+        ):
             return FindingStatus.CONFIRMED_VIOLATION
         return FindingStatus.INCONCLUSIVE
 

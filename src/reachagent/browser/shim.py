@@ -23,6 +23,7 @@ not a direct Playwright Python call. The same role-boundary invariant applies:
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
@@ -38,9 +39,16 @@ TAINT_SHIM_JS = r"""
   if (window.__reachagent_shim_installed) return;
   window.__reachagent_shim_installed = true;
   window.__reachagent_flows = [];
+  window.__reachagent_taint_values = [];
+
+  function addTaint(value) {
+    if (value) window.__reachagent_taint_values.push(String(value));
+  }
 
   function record(source, sink, value) {
     var v = String(value).slice(0, 200);
+    var taints = window.__reachagent_taint_values || [];
+    if (!taints.some(function(t) { return t && String(value).indexOf(t) !== -1; })) return;
     window.__reachagent_flows.push({source: source, sink: sink, value: v});
   }
 
@@ -87,7 +95,20 @@ TAINT_SHIM_JS = r"""
   // location.hash: mark taint when hash is non-empty on load and on hashchange
   function checkHash() {
     if (location.hash && location.hash.length > 1) {
+      var raw = location.hash.slice(1);
       window.__reachagent_taint_source = 'location.hash';
+      window.__reachagent_taint_values = [
+        decodeURIComponent(raw),
+        raw,
+      ];
+      var queryIndex = raw.indexOf('?');
+      if (queryIndex !== -1) {
+        try {
+          new URLSearchParams(raw.slice(queryIndex + 1)).forEach(function(value) {
+            addTaint(value);
+          });
+        } catch(e) {}
+      }
     }
   }
   checkHash();
@@ -159,42 +180,34 @@ class BrowserDriver(Protocol):
         ...
 
 
-# ---------------------------------------------------------------------------
-# Core discovery function
-# ---------------------------------------------------------------------------
+@runtime_checkable
+class AsyncBrowserDriver(Protocol):
+    """Async browser surface used by the MCP Playwright path."""
+
+    async def add_init_script(self, script: str) -> None: ...
+
+    async def navigate(self, url: str) -> None: ...
+
+    async def evaluate(self, expression: str) -> object: ...
 
 
-def run_taint_shim(
-    driver: BrowserDriver,
+async def run_taint_shim_async(
+    driver: AsyncBrowserDriver,
     identity: str,
     url: str,
     *,
     inject_shim: bool = True,
 ) -> BrowserFireResult:
-    """Install the taint shim, navigate to ``url``, and collect source→sink flows.
-
-    This is the implementation behind the ``fire_browser`` Explorer tool. It:
-      1. Installs ``TAINT_SHIM_JS`` via ``add_init_script`` (when ``inject_shim``
-         is True — False is for testing the no-shim path).
-      2. Navigates to ``url``.
-      3. Reads ``window.__reachagent_flows`` back from the page.
-      4. Returns a ``BrowserFireResult`` with the discovered flows.
-
-    No oracle is called here. Each flow is a candidate for EXECUTION_CONFIRMATION
-    (deferred to #24); the caller (MCP server / Coordinator) passes it to
-    ``classify_response`` and then to the Validator's ``run_oracle``.
-    """
+    """Async equivalent used by MCP's Playwright async API path."""
     if inject_shim:
-        driver.add_init_script(TAINT_SHIM_JS)
-
-    driver.navigate(url)
-
+        await driver.add_init_script(TAINT_SHIM_JS)
+    await driver.navigate(url)
+    await asyncio.sleep(0.5)
     raw_flows: list[object] = []
     if inject_shim:
-        result = driver.evaluate("window.__reachagent_flows || []")
+        result = await driver.evaluate("window.__reachagent_flows || []")
         if isinstance(result, list):
             raw_flows = result
-
     flows = tuple(
         TaintFlow(
             source=str(f.get("source", "")) if isinstance(f, dict) else "",
@@ -205,7 +218,40 @@ def run_taint_shim(
         for f in raw_flows
         if isinstance(f, dict)
     )
+    return BrowserFireResult(
+        url=url,
+        identity=identity,
+        flows=flows,
+        shim_installed=inject_shim,
+    )
 
+
+def run_taint_shim(
+    driver: BrowserDriver,
+    identity: str,
+    url: str,
+    *,
+    inject_shim: bool = True,
+) -> BrowserFireResult:
+    """Install shim, navigate, and collect source-to-sink flows synchronously."""
+    if inject_shim:
+        driver.add_init_script(TAINT_SHIM_JS)
+    driver.navigate(url)
+    raw_flows: list[object] = []
+    if inject_shim:
+        result = driver.evaluate("window.__reachagent_flows || []")
+        if isinstance(result, list):
+            raw_flows = result
+    flows = tuple(
+        TaintFlow(
+            source=str(f.get("source", "")) if isinstance(f, dict) else "",
+            sink=str(f.get("sink", "")) if isinstance(f, dict) else "",
+            value_snippet=str(f.get("value", "")) if isinstance(f, dict) else "",
+            url=url,
+        )
+        for f in raw_flows
+        if isinstance(f, dict)
+    )
     return BrowserFireResult(
         url=url,
         identity=identity,

@@ -80,6 +80,8 @@ class DiffExpectation(StrEnum):
     # is NOT the signal here (a fresh session returns a different body/token than
     # the refused attempt) — the state transition refused→granted is.
     AUTH_BYPASS = "auth_bypass"
+    # Injection: baseline is served and probe returns an allowlisted DB error.
+    DATABASE_ERROR = "database_error"
 
 
 class _AccessOutcome(StrEnum):
@@ -120,6 +122,7 @@ class DifferentialEvidence:
     baseline: Observation
     probe: Observation
     evidence_ref: str = ""
+    error_signatures: tuple[str, ...] = ()
 
 
 def _outcome(status_code: int) -> _AccessOutcome:
@@ -183,16 +186,24 @@ def decide(evidence: DifferentialEvidence) -> FindingStatus:
 
     if evidence.expectation is DiffExpectation.AUTH_BYPASS:
         # Baseline is the benign attempt that a secure app REFUSES; probe is the
-        # operator-injection variant. Refused-then-granted is the bypass — the
-        # only confirming transition. Handled before the GRANTED-baseline guard
-        # below precisely because a valid baseline here is a *refusal*, not a grant.
+        # operator-injection variant. Refused-then-granted is the bypass.
         if baseline_outcome is _AccessOutcome.REFUSED and probe_outcome is _AccessOutcome.GRANTED:
             return FindingStatus.CONFIRMED_VIOLATION
         if baseline_outcome is _AccessOutcome.REFUSED and probe_outcome is _AccessOutcome.REFUSED:
-            # Injection was refused too — authentication held. A confirmed fact.
             return FindingStatus.CONFIRMED_DENIED
-        # Baseline wasn't actually refused (can't prove a bypass without a
-        # refused reference), or an ambiguous probe: no trustworthy verdict.
+        return FindingStatus.INCONCLUSIVE
+
+    if evidence.expectation is DiffExpectation.DATABASE_ERROR:
+        baseline_served = baseline_outcome is _AccessOutcome.GRANTED
+        probe_is_error = evidence.probe.status_code >= 400
+        body_lower = evidence.probe.body.lower()
+        signature_present = any(
+            signature.lower() in body_lower for signature in evidence.error_signatures
+        )
+        if baseline_served and probe_is_error and signature_present:
+            return FindingStatus.CONFIRMED_VIOLATION
+        if baseline_served and evidence.probe.status_code in (401, 403, 404):
+            return FindingStatus.CONFIRMED_DENIED
         return FindingStatus.INCONCLUSIVE
 
     # Access-control axes need a valid baseline (the owner/authorized reference

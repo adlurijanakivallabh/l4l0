@@ -17,7 +17,7 @@ name: reachagent-juiceshop
 
 services:
   juiceshop:
-    image: bkimminich/juice-shop:latest
+    image: bkimminich/juice-shop@sha256:e68144772ebaaca0ec117b38d44903af92416793230288ef7c5437fc4f26850a
     container_name: reachagent-juiceshop
     ports:
       - "3000:3000"

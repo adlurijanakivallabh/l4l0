@@ -19,6 +19,7 @@ import os
 import pytest
 
 from reachagent.eval.juiceshop_harness import (
+    ChallengeClaim,
     ChallengeResult,
     JuiceshopRun,
     Phase3GateResult,
@@ -330,14 +331,45 @@ def test_score_run_ignores_out_of_scope_categories() -> None:
     assert run.class_false_positives == 1
 
 
-# --- Fix A: real vuln_class attribution, no jwt_forgery conflation -----------
+def test_score_run_exact_claim_credits_only_matching_tracker_key() -> None:
+    before = _snap(
+        ("sqli-one", "Injection", False),
+        ("sqli-two", "Injection", False),
+    )
+    after = _snap(
+        ("sqli-one", "Injection", True),
+        ("sqli-two", "Injection", True),
+    )
+    run = score_run(
+        before,
+        after,
+        {ChallengeClaim("sqli-one", "sqli", "sqli/one")},
+    )
+    assert run.true_positives == 1
+    assert run.results[0].confirmed is True
+    assert run.results[1].confirmed is False
+
+
+def test_score_run_unsolved_claim_is_a_false_positive() -> None:
+    before = _snap(("sqli-one", "Injection", False))
+    after = _snap(("sqli-one", "Injection", False))
+    run = score_run(before, after, {ChallengeClaim("sqli-one", "sqli")})
+    assert run.true_positives == 0
+    assert run.claim_false_positives == 1
+    assert run.false_positives == 1
+
+
+def test_score_run_claim_class_mismatch_is_not_credited() -> None:
+    before = _snap(("xss-one", "XSS", False))
+    after = _snap(("xss-one", "XSS", True))
+    run = score_run(before, after, {ChallengeClaim("xss-one", "sqli")})
+    assert run.true_positives == 0
+    assert run.claim_false_positives == 1
+    assert run.false_positives == 1
 
 
 def test_score_run_jwt_forgery_only_is_not_a_path_traversal_fp() -> None:
-    # jwt_forgery confirmed (out-of-scope Broken-Auth class), the /ftp
-    # path_traversal oracle did NOT confirm, and no path_traversal challenge
-    # flipped. This must NOT book a path_traversal class FP — the old lossy
-    # per-in-scope-class bool did exactly that.
+    # jwt_forgery is out of scope; it must not book a path-traversal FP.
     before = _snap(("p1", "Vulnerable Components", False))
     after = _snap(("p1", "Vulnerable Components", False))
     run = score_run(before, after, {"jwt_forgery"})
@@ -359,8 +391,7 @@ def test_score_run_out_of_scope_confirmation_not_masked_by_unrelated_flip() -> N
 
 
 def test_score_run_path_traversal_fp_still_books_when_ftp_confirmed_no_flip() -> None:
-    # The genuine path_traversal (in-scope) FP path still works: confirmed but no
-    # /ftp-category flip → one class FP. Only the jwt_forgery conflation is gone.
+    # Legacy class-only path scoring remains explicit and class-level.
     before = _snap(("p1", "Vulnerable Components", False))
     after = _snap(("p1", "Vulnerable Components", False))
     run = score_run(before, after, {"path_traversal"})

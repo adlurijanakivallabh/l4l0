@@ -72,6 +72,11 @@ class RequestFirer:
         self._clearance_lock = threading.Lock()
 
     @property
+    def scope(self) -> ScopeGuard:
+        """Scope allowlist used for every request."""
+        return self._scope
+
+    @property
     def audit(self) -> AuditLog:
         """The audit log recording every action (§10)."""
         return self._audit
@@ -92,6 +97,15 @@ class RequestFirer:
 
     def _is_read_only(self, method: str, *, state_changing: bool) -> bool:
         return method.upper() in _READ_ONLY_METHODS and not state_changing
+
+    def _read_only_clears(self, method: str, status_code: int) -> bool:
+        """Whether read-only response proves endpoint can be safely probed.
+
+        Only a successful GET/HEAD/OPTIONS response clears. An OPTIONS response
+        is a safe preflight, but a 404/405 does not establish that the POST route
+        itself is safe, so it must not bypass read-only-first.
+        """
+        return 200 <= status_code < 300
 
     def fire(
         self,
@@ -155,7 +169,7 @@ class RequestFirer:
             raise
 
         # A successful read-only request clears this endpoint for later mutation.
-        if read_only and 200 <= result.status_code < 300:
+        if read_only and self._read_only_clears(method, result.status_code):
             with self._clearance_lock:
                 self._read_only_cleared.add(key)
 

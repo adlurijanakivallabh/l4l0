@@ -74,6 +74,24 @@ def test_state_changing_request_allowed_after_read_only_confirmed(
     assert [r.method for r in calls] == ["GET", "POST"]
 
 
+def test_options_not_successful_does_not_clear_method_specific_route(
+    calls: list[httpx.Request],
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        return httpx.Response(405)
+
+    firer = RequestFirer(
+        httpx.Client(transport=httpx.MockTransport(handler)),
+        ScopeGuard.from_hosts(["target.test"]),
+    )
+    result = firer.fire("user_a", "OPTIONS", f"{IN_SCOPE}/login")
+    assert result.status_code == 405
+    with pytest.raises(ReadOnlyFirstError):
+        firer.fire("user_a", "POST", f"{IN_SCOPE}/login")
+    assert [request.method for request in calls] == ["OPTIONS"]
+
+
 def test_read_only_clearance_is_per_endpoint(
     firer: RequestFirer, calls: list[httpx.Request]
 ) -> None:
