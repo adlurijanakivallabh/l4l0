@@ -19,6 +19,8 @@ import os
 import pytest
 
 from reachagent.eval.juiceshop_harness import (
+    VERIFIED_CHALLENGE_SCOPE,
+    BaselineState,
     ChallengeClaim,
     ChallengeResult,
     JuiceshopRun,
@@ -230,9 +232,48 @@ def test_report_contains_key_metrics() -> None:
     assert "PASSED" in report  # 3/4 = 0.75 exactly at floor → passes
 
 
-# ---------------------------------------------------------------------------
-# Layer 1b: class-level false-positive scoring — pure, synthetic snapshots.
-#
+def _verified_snapshot(*, solved: str | None = None) -> dict[str, dict[str, object]]:
+    category_by_scope = {
+        "injection": "Injection",
+        "file_upload": "Improper Input Validation",
+        "xss": "XSS",
+    }
+    return {
+        key: {"category": category_by_scope[scope], "solved": key == solved}
+        for key, scope in VERIFIED_CHALLENGE_SCOPE.items()
+    }
+
+
+def test_verified_clean_baseline_classifies_clean() -> None:
+    from reachagent.eval.juiceshop_harness import classify_baseline
+
+    assert classify_baseline(_verified_snapshot()).state is BaselineState.CLEAN
+
+
+def test_verified_dirty_baseline_classifies_dirty() -> None:
+    from reachagent.eval.juiceshop_harness import classify_baseline
+
+    result = classify_baseline(_verified_snapshot(solved="uploadTypeChallenge"))
+    assert result.state is BaselineState.DIRTY
+    assert result.solved_keys == ("uploadTypeChallenge",)
+
+
+def test_verified_missing_key_classifies_invalid() -> None:
+    from reachagent.eval.juiceshop_harness import classify_baseline
+
+    snapshot = _verified_snapshot()
+    del snapshot["uploadTypeChallenge"]
+    assert classify_baseline(snapshot).state is BaselineState.INVALID
+
+
+def test_unmeasurable_gate_requires_environment_ok() -> None:
+    run = JuiceshopRun.not_measurable(baseline=None, detail="dirty")
+    gate = Phase3GateResult(juiceshop=run)
+    assert not gate.environment_ok
+    assert not gate.passed
+    assert "NOT MEASURABLE" in gate.report()
+
+
 # score_run consumes before/after tracker snapshots plus the set of real
 # vuln_class strings whose oracle confirmed this run. The FP rule: an in-scope
 # class whose oracle confirmed a finding but where NO in-scope challenge of that
@@ -368,6 +409,19 @@ def test_score_run_claim_class_mismatch_is_not_credited() -> None:
     assert run.false_positives == 1
 
 
+def test_claim_scope_override_cannot_reclassify_vulnerability() -> None:
+    before = _verified_snapshot()
+    after = _verified_snapshot(solved="localXssChallenge")
+    run = score_run(
+        before,
+        after,
+        {ChallengeClaim("localXssChallenge", "jwt_forgery", scope_class="xss")},
+        strict_scope=True,
+    )
+    assert run.true_positives == 0
+    assert run.claim_false_positives == 1
+
+
 def test_score_run_jwt_forgery_only_is_not_a_path_traversal_fp() -> None:
     # jwt_forgery is out of scope; it must not book a path-traversal FP.
     before = _snap(("p1", "Vulnerable Components", False))
@@ -468,9 +522,15 @@ def _juiceshop_reachable() -> bool:
         return False
 
 
+def _juiceshop_live_enabled() -> bool:
+    return os.environ.get("REACHAGENT_JUICESHOP_EPHEMERAL") == "1" and _juiceshop_reachable()
+
+
 @pytest.mark.skipif(
-    not _juiceshop_reachable(),
-    reason="Juice Shop not reachable at REACHAGENT_JUICESHOP_URL — set it or docker compose up",
+    not _juiceshop_live_enabled(),
+    reason=(
+        "set REACHAGENT_JUICESHOP_EPHEMERAL=1 and provide reachable Juice Shop for live MCP gate"
+    ),
 )
 def test_live_juiceshop_run_scores_through_mcp() -> None:
     """Live run drives all four in-scope classes through the MCP boundary and scores.
@@ -485,6 +545,9 @@ def test_live_juiceshop_run_scores_through_mcp() -> None:
 
     target = JuiceshopTarget(base_url=_JUICE_URL)
     run = run_juiceshop(target)
+
+    if not run.measurable:
+        pytest.skip(f"persistent target is not a clean measurable baseline: {run.detail}")
 
     # The run touched real in-scope challenges from the live tracker.
     assert run.total_in_scope > 0

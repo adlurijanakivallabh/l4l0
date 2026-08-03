@@ -269,3 +269,11 @@ Three load-bearing clauses:
   the log, not by inspection.
 - The full run is driven through the MCP tool boundary — no direct Python calls into
   detection tools, matching the Phase 1 and Phase 2 gate discipline.
+- **Clean-target requirement:** numeric runs use `REACHAGENT_JUICESHOP_EPHEMERAL=1`
+  with `python -m reachagent.eval.juiceshop --fresh`. The runner starts the pinned
+  digest without volumes, waits for valid `/api/Challenges` data with a known
+  unsolved verified key, validates all nine verified keys as clean, and always
+  tears down the container. Missing, malformed, wrong-category, pre-solved, or
+  disappearing keys produce `NOT MEASURABLE`, never a silent 0% result. Persistent
+  URL mode remains useful for exploratory runs but is not a clean numeric gate
+  unless baseline classification reports `CLEAN`.

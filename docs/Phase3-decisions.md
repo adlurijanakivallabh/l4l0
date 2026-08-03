@@ -54,9 +54,28 @@ into two correctly-attributed commits, each independently gate-green
 f5e42fc is now unreferenced (dangling). The corrected history is the two
 commits above.
 
-## Decision: 0%→75% coverage gap — scoped as future task, not started
+## Decision: clean-target Juice Shop gate is opt-in and measurable-only
 
-**Date:** 2026-07-25
+**Date:** 2026-08-03
+
+Numeric Juice Shop gate runs use disposable containers only when explicitly
+requested with `REACHAGENT_JUICESHOP_EPHEMERAL=1` and `--fresh`. Container uses
+pinned image digest, Docker-assigned loopback port, no mounts, and unconditional
+`docker rm --force --volumes` teardown.
+
+Readiness requires HTTP 200 from `/api/Challenges`, valid tracker schema, all
+nine verified keys, and at least one known-unsolved key. Baseline classifier
+rejects missing, malformed, wrong-category, or pre-solved keys. Any dirty or
+invalid baseline, disappearing post-run key, or teardown failure reports
+`NOT MEASURABLE`; it never becomes silent `0%` coverage. Persistent URL mode
+remains available for exploratory runs, but is not a clean numeric gate unless
+tracker baseline is clean.
+
+Current verified ceiling is nine tracker keys. Broader Juice Shop category items
+remain outside detector-backed scoring and are reported as documented scope,
+not aspirational coverage.
+
+## Decision: 0%→75% coverage gap — scoped as future task, not started
 
 Closing the gap from 0% to the §14/§15 gate floor of 75% requires
 per-challenge exploit logic that was explicitly deferred:

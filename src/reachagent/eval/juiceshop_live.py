@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from itertools import count
 from typing import TYPE_CHECKING
@@ -26,15 +27,19 @@ import httpx
 from reachagent.eval.juiceshop_harness import (
     IN_SCOPE_CLASSES,
     VERIFIED_CHALLENGE_SCOPE,
+    BaselineState,
     ChallengeClaim,
     ChallengeResult,
     JuiceshopRun,
+    claim_scope_class,
+    classify_baseline,
     in_scope_class,
+    validate_tracker_snapshot,
     vuln_class_to_scope_class,
 )
 from reachagent.execution.audit import AuditLog
 from reachagent.execution.firer import RequestFirer
-from reachagent.execution.scope import ScopeGuard
+from reachagent.execution.scope import ScopeGuard, ScopeRule
 from reachagent.graph.nodes import Endpoint, Parameter
 from reachagent.graph.store import ReachabilityGraph
 from reachagent.mcp import server
@@ -65,20 +70,38 @@ class JuiceshopTarget:
     def host(self) -> str:
         return httpx.URL(self.base_url).host
 
+    @property
+    def port(self) -> int | None:
+        return httpx.URL(self.base_url).port
 
-# ---------------------------------------------------------------------------
-# Tracker client — reads challenge solved-state from Juice Shop's own API.
-# ---------------------------------------------------------------------------
+
+class TrackerSnapshotError(RuntimeError):
+    """Tracker response cannot support honest gate scoring."""
 
 
 def fetch_tracker(target: JuiceshopTarget) -> dict[str, dict[str, object]]:
-    """Return {challenge_key: {category, solved}} from GET /api/Challenges."""
-    resp = httpx.get(f"{target.api}/api/Challenges", timeout=_HTTP_TIMEOUT)
-    resp.raise_for_status()
-    return {
-        ch["key"]: {"category": ch["category"], "solved": bool(ch["solved"])}
-        for ch in resp.json()["data"]
-    }
+    """Return strictly validated tracker rows for required gate scoring."""
+    try:
+        resp = httpx.get(f"{target.api}/api/Challenges", timeout=_HTTP_TIMEOUT)
+        resp.raise_for_status()
+        body = resp.json()
+    except (httpx.HTTPError, ValueError) as exc:
+        raise TrackerSnapshotError(f"tracker request failed: {exc}") from exc
+    if not isinstance(body, dict) or not isinstance(body.get("data"), list):
+        raise TrackerSnapshotError("tracker response data is not a list")
+    tracker: dict[str, dict[str, object]] = {}
+    for row in body["data"]:
+        if not isinstance(row, dict):
+            raise TrackerSnapshotError("tracker response contains malformed row")
+        key = row.get("key")
+        category = row.get("category")
+        solved = row.get("solved")
+        if not isinstance(key, str) or key in tracker:
+            raise TrackerSnapshotError("tracker response contains invalid or duplicate key")
+        if not isinstance(category, str) or not isinstance(solved, bool):
+            raise TrackerSnapshotError(f"tracker row {key!r} has invalid schema")
+        tracker[key] = {"category": category, "solved": solved}
+    return tracker
 
 
 # ---------------------------------------------------------------------------
@@ -169,8 +192,9 @@ def _session_as(
     target: JuiceshopTarget, token: str | None, shared: _SharedState
 ) -> server._Session:
     headers = {"Authorization": f"Bearer {token}"} if token else {}
-    client = httpx.Client(headers=headers, timeout=_HTTP_TIMEOUT)
-    firer = RequestFirer(client, ScopeGuard.from_hosts([target.host]), AuditLog())
+    client = httpx.Client(headers=headers, timeout=_HTTP_TIMEOUT, trust_env=False)
+    scope = ScopeGuard([ScopeRule(host=target.host, port=target.port)])
+    firer = RequestFirer(client, scope, AuditLog())
     ctx = ExplorerContext(
         graph=shared.graph,
         firer=firer,
@@ -268,7 +292,7 @@ def _fire_body(
     *,
     method: str = "POST",
     state_changing: bool = True,
-    extra_fields: dict[str, object] | None = None,
+    extra_fields: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     """Fire a single body-param request (JSON object) through MCP; return the raw result.
 
@@ -879,7 +903,12 @@ def _detect_csrf(target: JuiceshopTarget, token: str | None) -> set[str]:
 # ---------------------------------------------------------------------------
 
 
-def run_juiceshop(target: JuiceshopTarget, *, token: str | None = None) -> JuiceshopRun:
+def run_juiceshop(
+    target: JuiceshopTarget,
+    *,
+    token: str | None = None,
+    before: dict[str, dict[str, object]] | None = None,
+) -> JuiceshopRun:
     """Drive all four in-scope detection classes through MCP; score per-challenge.
 
     Scoring model (per-challenge, not class-to-all):
@@ -911,7 +940,17 @@ def run_juiceshop(target: JuiceshopTarget, *, token: str | None = None) -> Juice
     zero under delta attribution, and it is deliberately kept off the coverage
     denominator.
     """
-    before = fetch_tracker(target)
+    if before is None:
+        try:
+            before = fetch_tracker(target)
+        except TrackerSnapshotError as exc:
+            return JuiceshopRun.not_measurable(baseline=None, detail=str(exc))
+    assessment = classify_baseline(before)
+    if assessment.state is not BaselineState.CLEAN:
+        return JuiceshopRun.not_measurable(
+            baseline=assessment,
+            detail=assessment.detail,
+        )
 
     # Detector outputs remain class-level until each detector can prove a specific
     # opaque tracker key. Passing them as legacy strings intentionally avoids
@@ -933,11 +972,23 @@ def run_juiceshop(target: JuiceshopTarget, *, token: str | None = None) -> Juice
     confirmed_vuln_classes |= {
         claim for claim in _detect_xss_stored(target, token) if isinstance(claim, ChallengeClaim)
     }
-    confirmed_vuln_classes |= _detect_clickjacking(target, token)
-    confirmed_vuln_classes |= _detect_cors(target, token)
-    confirmed_vuln_classes |= _detect_csrf(target, token)
+    # Structural client-side classes remain out of scope for this gate. Their
+    # detectors still execute and write only oracle-confirmed findings, but their
+    # class labels must not enter strict typed claim scoring as mixed modes.
+    _detect_clickjacking(target, token)
+    _detect_cors(target, token)
+    _detect_csrf(target, token)
 
-    after = fetch_tracker(target)
+    try:
+        after = fetch_tracker(target)
+    except TrackerSnapshotError as exc:
+        return JuiceshopRun.not_measurable(baseline=None, detail=str(exc))
+    after_assessment = validate_tracker_snapshot(after)
+    if after_assessment.state is not BaselineState.CLEAN:
+        return JuiceshopRun.not_measurable(
+            baseline=after_assessment,
+            detail=f"post-run tracker is not measurable: {after_assessment.detail}",
+        )
     return score_run(before, after, confirmed_vuln_classes, strict_scope=True)
 
 
@@ -954,6 +1005,24 @@ def score_run(
     matching to verified runtime keys, avoiding broad category inflation. Legacy
     class-string behavior remains available for older synthetic metric tests.
     """
+    if strict_scope:
+        assessment = validate_tracker_snapshot(before)
+        after_assessment = validate_tracker_snapshot(after)
+        if assessment.state is not BaselineState.CLEAN:
+            return JuiceshopRun.not_measurable(
+                baseline=assessment,
+                detail=assessment.detail,
+            )
+        if after_assessment.state is not BaselineState.CLEAN:
+            return JuiceshopRun.not_measurable(
+                baseline=after_assessment,
+                detail=f"post-run tracker is not measurable: {after_assessment.detail}",
+            )
+        if set(before) != set(after):
+            return JuiceshopRun.not_measurable(
+                baseline=after_assessment,
+                detail="post-run tracker key set differs from clean baseline",
+            )
     run = JuiceshopRun()
     typed_claims = {claim for claim in claims if isinstance(claim, ChallengeClaim)}
     legacy_classes = {claim for claim in claims if isinstance(claim, str)}
@@ -971,10 +1040,24 @@ def score_run(
         solved_after = bool(ch_info["solved"])
         newly_solved = solved_after and not bool(before.get(ch_key, {}).get("solved", False))
         matched_claim = any(
-            (claim.scope_class or vuln_class_to_scope_class(claim.vuln_class)) == scope_class
+            claim_scope_class(
+                claim.vuln_class,
+                claim.challenge_key,
+                claim.scope_class,
+            )
+            == scope_class
             for claim in typed_claims
             if claim.challenge_key == ch_key
         )
+        reason = "tracker remains unsolved"
+        if newly_solved and matched_claim:
+            reason = "tracker solved after matching oracle claim"
+        elif newly_solved:
+            reason = "tracker solved without matching oracle claim"
+        elif solved_after:
+            reason = "tracker was already solved before run"
+        elif typed_mode and any(claim.challenge_key == ch_key for claim in typed_claims):
+            reason = "oracle claim did not produce tracker completion"
         if newly_solved:
             flipped_classes.add(scope_class)
         run.results.append(
@@ -983,16 +1066,17 @@ def score_run(
                 challenge_key=ch_key,
                 confirmed=(newly_solved and matched_claim) if typed_mode else newly_solved,
                 tracker_solved=solved_after,
+                reason=reason,
             )
         )
     if typed_mode:
         claims_by_key = {claim.challenge_key: claim for claim in typed_claims}
         for claim in claims_by_key.values():
             expected_scope = scope.get(claim.challenge_key) if scope is not None else None
-            claim_scope = (
-                claim.scope_class
-                or (scope.get(claim.challenge_key) if scope is not None else None)
-                or vuln_class_to_scope_class(claim.vuln_class)
+            claim_scope = claim_scope_class(
+                claim.vuln_class,
+                claim.challenge_key,
+                claim.scope_class,
             )
             if expected_scope is None and scope is not None:
                 continue

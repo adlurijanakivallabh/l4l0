@@ -25,6 +25,7 @@ The harness itself only does target *setup* and tracker *scoring* over HTTP.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import StrEnum
 
 # In-scope challenge classes (Phase 3 gate §14). Mapped from the Juice Shop
 # tracker's category strings generically — no per-challenge logic.
@@ -33,6 +34,7 @@ IN_SCOPE_CLASSES: tuple[str, ...] = ("injection", "xss", "file_upload", "path_tr
 # Gate thresholds (§14/§15).
 COVERAGE_FLOOR = 0.75
 FP_RATE_CEILING = 0.10
+DOCUMENTED_COVERAGE_CEILING = "9 verified tracker keys; broader category items remain out of scope"
 
 
 # ---------------------------------------------------------------------------
@@ -64,6 +66,80 @@ VERIFIED_CHALLENGE_SCOPE: dict[str, str] = {
 }
 
 
+class BaselineState(StrEnum):
+    """Validation state for required tracker rows before measurement."""
+
+    CLEAN = "clean"
+    DIRTY = "dirty"
+    INVALID = "invalid"
+
+
+class MeasurementStatus(StrEnum):
+    """Whether tracker state supports numeric gate metrics."""
+
+    MEASURABLE = "measurable"
+    NOT_MEASURABLE = "not_measurable"
+
+
+@dataclass(frozen=True)
+class BaselineAssessment:
+    """Why a tracker snapshot is or is not safe to score."""
+
+    state: BaselineState
+    solved_keys: tuple[str, ...] = ()
+    missing_keys: tuple[str, ...] = ()
+    detail: str = ""
+
+
+def validate_tracker_snapshot(
+    snapshot: dict[str, dict[str, object]],
+) -> BaselineAssessment:
+    """Validate required tracker keys and their expected schema."""
+    missing = tuple(key for key in VERIFIED_CHALLENGE_SCOPE if key not in snapshot)
+    if missing:
+        return BaselineAssessment(
+            BaselineState.INVALID,
+            missing_keys=missing,
+            detail=f"baseline invalid: missing keys {', '.join(missing)}",
+        )
+
+    invalid: list[str] = []
+    for key, expected_scope in VERIFIED_CHALLENGE_SCOPE.items():
+        row = snapshot[key]
+        if not isinstance(row, dict):
+            invalid.append(key)
+            continue
+        category = row.get("category")
+        solved = row.get("solved")
+        if not isinstance(category, str) or in_scope_class(category) != expected_scope:
+            invalid.append(key)
+        if not isinstance(solved, bool):
+            invalid.append(key)
+    if invalid:
+        invalid_keys = tuple(dict.fromkeys(invalid))
+        return BaselineAssessment(
+            BaselineState.INVALID,
+            missing_keys=invalid_keys,
+            detail=f"baseline invalid: malformed or wrong-category keys {', '.join(invalid_keys)}",
+        )
+    return BaselineAssessment(BaselineState.CLEAN)
+
+
+def classify_baseline(snapshot: dict[str, dict[str, object]]) -> BaselineAssessment:
+    """Validate required keys, categories, and boolean unsolved state."""
+    schema = validate_tracker_snapshot(snapshot)
+    if schema.state is BaselineState.INVALID:
+        return schema
+    solved = tuple(key for key in VERIFIED_CHALLENGE_SCOPE if snapshot[key]["solved"] is True)
+    if solved:
+        return BaselineAssessment(
+            BaselineState.DIRTY,
+            solved_keys=solved,
+            detail=f"baseline dirty: {', '.join(solved)}",
+        )
+    return schema
+
+
 # Maps vuln_class strings (the values passed to write_finding) to in-scope class
 # keys. A vuln_class whose challenges fall outside the Phase 3 in-scope set (e.g.
 # jwt_forgery → Broken Auth) returns None — such confirmations are neither coverage
@@ -84,8 +160,29 @@ _VULN_CLASS_TO_SCOPE: dict[str, str | None] = {
 
 
 def vuln_class_to_scope_class(vuln_class: str) -> str | None:
-    """Map a vuln_class (write_finding key) to its in-scope class, or None if out of scope."""
+    """Map a vuln_class (write_finding key) to its in-scope class."""
     return _VULN_CLASS_TO_SCOPE.get(vuln_class)
+
+
+_CLAIM_SCOPE_OVERRIDES: dict[tuple[str, str], str] = {
+    ("path_traversal", "nullByteChallenge"): "file_upload",
+}
+
+
+def claim_scope_class(
+    vuln_class: str,
+    challenge_key: str,
+    explicit_scope: str | None = None,
+) -> str | None:
+    """Return valid claim scope; reject arbitrary vuln-class reclassification."""
+    mapped = vuln_class_to_scope_class(vuln_class)
+    if explicit_scope is None:
+        return mapped
+    if explicit_scope == mapped:
+        return explicit_scope
+    if _CLAIM_SCOPE_OVERRIDES.get((vuln_class, challenge_key)) == explicit_scope:
+        return explicit_scope
+    return None
 
 
 def in_scope_class(category: str) -> str | None:
@@ -116,6 +213,7 @@ class ChallengeResult:
     challenge_key: str  # opaque tracker key — never a challenge name in logic
     confirmed: bool  # ReachAgent confirmed a finding for this challenge
     tracker_solved: bool  # Juice Shop tracker confirmed this challenge solved
+    reason: str = ""
 
 
 @dataclass
@@ -127,30 +225,47 @@ class JuiceshopRun:
     class_false_positives: int = 0
     # Exact claims whose tracker key stayed unsolved or disappeared this run.
     claim_false_positives: int = 0
+    status: MeasurementStatus = MeasurementStatus.MEASURABLE
+    detail: str = ""
+    baseline: BaselineAssessment | None = None
+
+    @property
+    def measurable(self) -> bool:
+        return self.status is MeasurementStatus.MEASURABLE
+
+    @classmethod
+    def not_measurable(
+        cls,
+        *,
+        baseline: BaselineAssessment | None,
+        detail: str,
+    ) -> JuiceshopRun:
+        return cls(
+            status=MeasurementStatus.NOT_MEASURABLE,
+            detail=detail,
+            baseline=baseline,
+        )
 
     @property
     def total_in_scope(self) -> int:
-        return len(self.results)
+        return len(self.results) if self.measurable else 0
 
     @property
     def tracker_solved_count(self) -> int:
-        return sum(1 for r in self.results if r.tracker_solved)
+        return sum(1 for r in self.results if r.tracker_solved) if self.measurable else 0
 
     @property
     def true_positives(self) -> int:
         """Confirmed by ReachAgent AND solved in tracker."""
+        if not self.measurable:
+            return 0
         return sum(1 for r in self.results if r.confirmed and r.tracker_solved)
 
     @property
     def false_positives(self) -> int:
-        """Confirmed by ReachAgent but NOT solved in tracker.
-
-        Per-challenge FPs (a challenge credited but not tracker-solved) plus
-        class-level FPs (a class whose oracle confirmed but which produced no
-        tracker flip this run). Under tracker-delta attribution the per-challenge
-        term is 0 by construction, so ``class_false_positives`` is what makes the
-        rate meaningful instead of structurally zero.
-        """
+        """False positives; unavailable for an unmeasurable run."""
+        if not self.measurable:
+            return 0
         per_challenge = sum(1 for r in self.results if r.confirmed and not r.tracker_solved)
         return per_challenge + self.class_false_positives + self.claim_false_positives
 
@@ -205,15 +320,27 @@ class PortswiggerResult:
 
 @dataclass
 class Phase3GateResult:
-    """Composite Phase 3 gate verdict — invariants 1, 2, and 3."""
+    """Composite Phase 3 gate verdict — invariants 1, 2, and 3.
+
+    ``setup_failures`` separates an unmeasurable target from a real detector
+    failure. A dirty or unavailable ephemeral target must never become a silent
+    zero-coverage ``JuiceshopRun``.
+    """
 
     juiceshop: JuiceshopRun
     portswigger: PortswiggerResult = field(default_factory=PortswiggerResult)
+    setup_failures: int = 0
+    setup_failure_details: list[str] = field(default_factory=list)
+
+    @property
+    def environment_ok(self) -> bool:
+        return self.setup_failures == 0 and self.juiceshop.measurable
 
     @property
     def passed(self) -> bool:
         return (
-            self.juiceshop.coverage_passes
+            self.environment_ok
+            and self.juiceshop.coverage_passes
             and self.juiceshop.fp_rate_passes
             and self.portswigger.passes
         )
@@ -221,6 +348,16 @@ class Phase3GateResult:
     def report(self) -> str:
         j = self.juiceshop
         ps = self.portswigger
+        if not self.environment_ok or not j.measurable:
+            reason = j.detail or "; ".join(self.setup_failure_details)
+            reason = reason or "environment setup failed"
+            lines = [
+                "=== Phase 3 Gate Report ===",
+                "GATE: NOT MEASURABLE",
+                f"Reason: {reason}",
+                "Coverage and false-positive metrics were not scored.",
+            ]
+            return "\n".join(lines)
         lines = [
             "=== Phase 3 Gate Report ===",
             f"In-scope challenges : {j.total_in_scope}",
@@ -231,9 +368,21 @@ class Phase3GateResult:
             + ("✅" if j.coverage_passes else "❌"),
             f"FP rate             : {j.fp_rate:.1%}  (ceiling {FP_RATE_CEILING:.0%}) "
             + ("✅" if j.fp_rate_passes else "❌"),
+            f"Coverage ceiling    : {DOCUMENTED_COVERAGE_CEILING}",
             "",
-            "--- Invariant 3 (PortSwigger blind-SQLi) ---",
+            "--- Per-challenge results ---",
         ]
+        lines.extend(
+            f"  {result.challenge_key}: {'confirmed' if result.confirmed else 'not confirmed'}; "
+            f"tracker_solved={result.tracker_solved}; {result.reason}"
+            for result in j.results
+        )
+        lines.extend(
+            [
+                "",
+                "--- Invariant 3 (PortSwigger blind-SQLi) ---",
+            ]
+        )
         if not ps.available:
             lines.append("SKIPPED — lab credentials not provisioned")
         else:
@@ -243,8 +392,11 @@ class Phase3GateResult:
                 f"Clean lab FP count  : {ps.clean_lab_fp_count} "
                 + ("✅" if ps.clean_lab_fp_count == 0 else "❌"),
             ]
+        verdict = "PASSED" if self.passed else "FAILED"
+        if not self.environment_ok:
+            verdict = "NOT MEASURABLE"
         lines += [
             "",
-            f"=== {'PASSED' if self.passed else 'FAILED'} ===",
+            f"=== {verdict} ===",
         ]
         return "\n".join(lines)
