@@ -6,27 +6,24 @@ plan, not "implement X." Ordered by dependency.
 
 ## Phase-level numeric gate
 
-The single numeric gate for Phase 3 (§14, §15), verified verbatim by Task 9:
+Historical target gate: ≥75% of Juice Shop's injection/XSS/file-upload/path-
+traversal challenge-tracker items, false-positive rate ≤10%, and confirmed
+blind-SQLi on PortSwigger vulnerable/non-vulnerable variants. Current API-only
+Docker mode must not present that historical target as achievable: strict
+runtime denominator is nine `VERIFIED_CHALLENGE_SCOPE` keys, with a current
+class-correct deterministic ceiling of 4/9 (three SQLi auth-bypass keys plus the
+null-byte input-validation key). The null-byte package-artifact result is now
+labeled `file_upload`; `unionSqlInjectionChallenge` and `dbSchemaChallenge` remain
+uncredited until exact extraction attribution replaces generic response
+divergence. Upload challenges lack persistence/retrieval/execution evidence, and
+DOM-XSS challenge attribution requires browser-rendered execution unavailable in
+current API-only runner. Phase 3 remains incomplete until at least 7/9 is honestly
+reachable, or scope is explicitly re-baselined.
+Three load-bearing clauses remain for any browser-capable re-baselined run:
 
-> ≥75% of Juice Shop's injection/XSS/file-upload/path-traversal challenge-tracker
-> items solved; false-positive rate ≤10% against confirmed challenge completions;
-> confirmed blind-SQLi finding on PortSwigger's labs with zero false positives on
-> the labs' non-vulnerable variants.
-
-Three load-bearing clauses:
-- **≥75% Juice Shop coverage.** Scored against the built-in challenge tracker (ground
-  truth), not self-reported. Covers injection (SQLi, NoSQLi, LDAP), XSS (all three
-  variants), file upload, and path traversal. A challenge counts only when the tracker
-  confirms it solved — a finding that does not trigger the tracker is not a solved
-  challenge.
-- **≤10% false-positive rate.** Measured against confirmed challenge completions: a
-  finding on a challenge the tracker has not confirmed is a false positive. The rate is
-  `false_positives / (true_positives + false_positives)` over the full run.
-- **Blind-SQLi on PortSwigger, zero false positives on non-vulnerable variants.**
-  Juice Shop does not cleanly isolate the blind case; PortSwigger's labs are the
-  dedicated ground truth for the OOB-first/paired-timing oracle specifically. A
-  confirmed finding on the vulnerable lab plus zero findings on the same lab's
-  non-vulnerable variant is the pass condition — not "found something on PortSwigger."
+- **≥75% Juice Shop coverage.** Scored against built-in challenge tracker (ground truth), not self-reported. Current API-only mode is capped at 4/9 class-correct keys; 75% requires at least 7/9 matching typed claims.
+- **≤10% false-positive rate.** Measured against confirmed challenge completions: a finding on a challenge the tracker has not confirmed is a false positive. The rate is `false_positives / (true_positives + false_positives)` over full run.
+- **Blind-SQLi on PortSwigger, zero false positives on non-vulnerable variants.** Juice Shop does not cleanly isolate blind case; PortSwigger labs remain dedicated ground truth for OOB-first/paired-timing oracle. A confirmed finding on vulnerable lab plus zero findings on non-vulnerable variant is pass condition.
 
 ## Scope notes
 
@@ -249,12 +246,7 @@ Three load-bearing clauses:
 - **PortSwigger blind-SQLi labs** are accessed via the Burp Suite MCP Server or
   Caido MCP integration (§13: "capture/replay only") for the OOB-first oracle
   specifically. The lab URL and session token are loaded from env, never hardcoded.
-- **Gate invariant 1 — ≥75% Juice Shop challenge coverage:** the run's output is
-  compared against the Juice Shop challenge tracker API. A challenge counts as solved
-  only when the tracker confirms it. The pass condition is
-  `solved / total_in_scope >= 0.75` where `total_in_scope` covers injection, XSS,
-  file upload, and path traversal challenges only (not business-logic or auth
-  challenges, which are Phase 2/4 scope).
+- **Gate invariant 1 — historical ≥75% Juice Shop challenge coverage:** strict runtime scope is exactly the nine `VERIFIED_CHALLENGE_SCOPE` keys, not category-wide tracker rows. Current API-only Docker runner has class-correct ceiling 4/9: three SQLi auth-bypass keys plus the relabeled null-byte input-validation key. `unionSqlInjectionChallenge` and `dbSchemaChallenge` remain uncredited until exact extraction attribution; upload type/size lack persistence/retrieval/execution signal; DOM-XSS lacks browser attribution. Historical threshold requires ≥7/9 matching typed claims and is currently unattainable; gate must report measured failure, not imply unexplained target failure.
 - **Gate invariant 2 — ≤10% false-positive rate:** `false_positives /
   (true_positives + false_positives) <= 0.10` over the full Juice Shop run, where a
   false positive is a confirmed finding on a challenge the tracker has not confirmed.
@@ -270,10 +262,11 @@ Three load-bearing clauses:
 - The full run is driven through the MCP tool boundary — no direct Python calls into
   detection tools, matching the Phase 1 and Phase 2 gate discipline.
 - **Clean-target requirement:** numeric runs use `REACHAGENT_JUICESHOP_EPHEMERAL=1`
-  with `python -m reachagent.eval.juiceshop --fresh`. The runner starts the pinned
-  digest without volumes, waits for valid `/api/Challenges` data with a known
-  unsolved verified key, validates all nine verified keys as clean, and always
-  tears down the container. Missing, malformed, wrong-category, pre-solved, or
-  disappearing keys produce `NOT MEASURABLE`, never a silent 0% result. Persistent
-  URL mode remains useful for exploratory runs but is not a clean numeric gate
-  unless baseline classification reports `CLEAN`.
+  with `python -m reachagent.eval.juiceshop --fresh`. Runner starts pinned
+  digest without volumes, waits for valid `/api/Challenges` data with known
+  unsolved verified key, validates all nine verified keys clean, and always tears
+  down container. Missing, malformed, wrong-category, pre-solved, or disappearing
+  keys produce `NOT MEASURABLE`, never silent 0% result. Persistent URL mode
+  remains useful for exploratory runs but is not clean numeric gate unless baseline
+  classification reports `CLEAN`. Clean measurable run below 75% is an honest
+  capability result under current API-only ceiling, not a setup failure.

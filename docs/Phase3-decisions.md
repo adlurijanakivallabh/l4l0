@@ -71,26 +71,41 @@ invalid baseline, disappearing post-run key, or teardown failure reports
 remains available for exploratory runs, but is not a clean numeric gate unless
 tracker baseline is clean.
 
-Current verified ceiling is nine tracker keys. Broader Juice Shop category items
-remain outside detector-backed scoring and are reported as documented scope,
-not aspirational coverage.
+Current strict denominator remains nine tracker keys; current API-only
+class-correct ceiling is 4/9. Broader Juice Shop category items remain outside
+strict detector-backed scoring and are not aspirational coverage.
 
-## Decision: 0%→75% coverage gap — scoped as future task, not started
+## Decision: API-only Juice Shop ceiling after upload investigation
 
-Closing the gap from 0% to the §14/§15 gate floor of 75% requires
-per-challenge exploit logic that was explicitly deferred:
+**Date:** 2026-08-04
 
-- **SQLi**: real injection strings (UNION SELECT, `')) OR 1=1--`, etc.)
-  rather than a bare `'` that returns 200 identical to baseline.
-- **Path traversal**: Juice Shop rejects `../../etc/passwd` with 403.
-  Requires null-byte trick or encoded-dot-slash (`%2e%2e%2f`) to bypass
-  the FTP directory guard.
-- **XSS (stored)**: POST `/api/Feedbacks` returns 500 without
-  `captchaId`/`captcha` fields. Requires a captcha-aware write path.
-- **File upload**: both baseline and probe return 204; no differential
-  signal on the current endpoint/payload pair.
+Fresh pinned-image investigation against Juice Shop 20.1.1 used disposable
+containers with no mounts and successful teardown. `POST /file-upload` returned
+identical `204 No Content` responses with zero-byte bodies for allowed files,
+disallowed extensions, MIME mismatches, and files below Multer's 200,000-byte
+limit. Responses exposed no `Location`, filename, artifact identifier, or
+retrieval URL. Apparent retrieval paths returned SPA HTML; container inspection
+found no uploaded files and no execution. Inputs over the limit returned Multer
+`500 File too large`; repeated timing distributions overlapped. Tracker flips
+are evaluation ground truth, not generic upload vulnerability evidence. Existing
+`ok.jpg` baseline also solves `uploadTypeChallenge`, so it is not policy-valid.
 
-Current state is the correct stopping point: honest 0% baseline,
-clean provenance (two correctly-attributed commits), all standing gates
-green (344 pytest, ruff, ruff format, mypy). Per-challenge exploit logic
-is scoped as its own future task and not started this session.
+Current strict denominator remains nine tracker keys. API-only class-correct
+ceiling is **4/9 (44.4%)**: three SQLi auth-bypass keys plus the null-byte
+input-validation key, now labeled `file_upload`. `unionSqlInjectionChallenge`
+and `dbSchemaChallenge` are not credited until exact extraction attribution
+replaces generic response divergence. `uploadSizeChallenge` and
+`uploadTypeChallenge` lack persistence/retrieval/execution evidence.
+`localXssChallenge` requires browser-rendered DOM execution and tracker
+attribution unavailable in current API-only runner. Historical 75% requires
+7/9; current capability cannot pass it. Generic §5 support ratings remain
+unchanged and do not imply target-specific Juice Shop coverage.
+
+## Decision: 0%→75% gap requires capability, not payload tuning
+
+Remaining gap is architectural: DOM-XSS needs browser navigation plus source/sink
+execution attribution; upload confirmation needs persistent artifact storage plus
+deterministic retrieval/execution evidence. Additional payload strings cannot
+manufacture either signal. Current relabeling makes the null-byte input-validation
+claim class-correct, yielding a 4/9 API-only ceiling. Do not claim 75% until at
+least 7/9 matching typed tracker claims are honestly reachable.

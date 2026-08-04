@@ -4,9 +4,12 @@ Two invariants are scored here (invariant 3, PortSwigger blind-SQLi, is a
 separate scoring section — see ``PortswiggerResult`` — added once lab
 credentials exist, with no change to the Juice Shop logic below):
 
-  * **Invariant 1 — coverage ≥ 75%:** ``solved_in_scope / total_in_scope >= 0.75``.
+  * **Historical browser-capable target gate — coverage ≥ 75%:**
+    ``solved_in_scope / total_in_scope >= 0.75``. Current API-only Docker mode
+    has an evidence-backed 4/9 ceiling; this historical threshold is not met.
     A challenge counts as solved only when the Juice Shop challenge tracker
-    confirms it (``GET /api/Challenges``), never by report text.
+    confirms it (``GET /api/Challenges``), and only a matching typed claim from
+    detector can attribute that flip to ReachAgent.
   * **Invariant 2 — false-positive rate ≤ 10%:**
     ``false_positives / (true_positives + false_positives) <= 0.10``, where a
     false positive is a ReachAgent-confirmed finding on a challenge the tracker
@@ -31,10 +34,16 @@ from enum import StrEnum
 # tracker's category strings generically — no per-challenge logic.
 IN_SCOPE_CLASSES: tuple[str, ...] = ("injection", "xss", "file_upload", "path_traversal")
 
-# Gate thresholds (§14/§15).
+# Gate thresholds (§14/§15). Historical browser-capable target remains 75%;
+# current API-only mode cannot honestly claim that threshold.
 COVERAGE_FLOOR = 0.75
 FP_RATE_CEILING = 0.10
-DOCUMENTED_COVERAGE_CEILING = "9 verified tracker keys; broader category items remain out of scope"
+DOCUMENTED_COVERAGE_CEILING = (
+    "4/9 API-only deterministic ceiling (three SQLi auth-bypass keys + "
+    "nullByteChallenge input-validation key); unionSqlInjectionChallenge, "
+    "dbSchemaChallenge, uploadSizeChallenge, uploadTypeChallenge, and "
+    "localXssChallenge unsupported or uncreditable"
+)
 
 
 # ---------------------------------------------------------------------------
@@ -164,11 +173,6 @@ def vuln_class_to_scope_class(vuln_class: str) -> str | None:
     return _VULN_CLASS_TO_SCOPE.get(vuln_class)
 
 
-_CLAIM_SCOPE_OVERRIDES: dict[tuple[str, str], str] = {
-    ("path_traversal", "nullByteChallenge"): "file_upload",
-}
-
-
 def claim_scope_class(
     vuln_class: str,
     challenge_key: str,
@@ -179,8 +183,6 @@ def claim_scope_class(
     if explicit_scope is None:
         return mapped
     if explicit_scope == mapped:
-        return explicit_scope
-    if _CLAIM_SCOPE_OVERRIDES.get((vuln_class, challenge_key)) == explicit_scope:
         return explicit_scope
     return None
 

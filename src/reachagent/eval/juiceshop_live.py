@@ -490,23 +490,14 @@ def _confirm_structural_headers(
 
 
 def _detect_sqli(target: JuiceshopTarget, token: str | None) -> set[ChallengeClaim]:
-    """Injection: SQLi auth-bypass on the login POST + UNION/error-based search q=.
+    """Confirm only the three target-specific SQLi login auth-bypass claims.
 
-    Two technique families, each end-to-end through MCP and oracle-gated:
+    The product-search endpoint is deliberately not credited: generic response
+    divergence or a database error does not prove UNION extraction or schema
+    disclosure for a specific tracker challenge.
 
-    * **auth-bypass** — ``POST /rest/user/login``. Baseline is a benign wrong
-      credential (correctly refused); each probe is an operator SQLi tautology that
-      turns the refusal into a grant. Differential ``auth_bypass``. Login is a
-      state-changing auth POST — the read-only-first gate is cleared with a prior
-      read-only GET (§10), and ``state_changing=True`` is passed honestly. Only the
-      operator's own probe accounts are targeted; no other user's data is touched.
-    * **UNION search** — ``GET /rest/products/search?q=``. Baseline a benign term,
-      each probe a UNION-select that makes the response diverge. Differential
-      ``responses_invariant``.
-
-    Returns the set of ``vuln_class`` strings this run confirmed (``{"sqli"}`` or
-    empty) — the scoring seam keys on the real vuln_class, never a per-in-scope-class
-    bool.
+    Returns typed claims only after the differential auth-bypass oracle confirms
+    refused-to-granted behavior for each login probe.
     """
     shared = _SharedState()
     sess = _session_as(target, token, shared)
@@ -549,61 +540,25 @@ def _detect_sqli(target: JuiceshopTarget, token: str | None) -> set[ChallengeCla
             }[ref]
             confirmed.add(ChallengeClaim(claim_key, "sqli", ref))
 
-    # --- UNION/error-based injection on the product-search query ---
-    search_path = "/rest/products/search"
-    search_baseline = _fire_query(mcp, sess, "anon", search_path, "q", "apple")
-    error_probe = _fire_query(mcp, sess, "anon", search_path, "q", "apple'")
-    if _confirm_differential(
-        mcp,
-        vuln_class="sqli",
-        axis="cross_condition",
-        expectation="database_error",
-        baseline_ref=str(search_baseline["fire_ref"]),
-        probe_ref=str(error_probe["fire_ref"]),
-        evidence_ref="sqli/search-error",
-        error_signatures=("SQLITE_ERROR",),
-    ):
-        confirmed.add(ChallengeClaim("unionSqlInjectionChallenge", "sqli", "sqli/search-error"))
-    union_probes = (
-        (
-            "qwert')) UNION SELECT id,email,password,4,5,6,7,8,9 FROM Users--",
-            "sqli/search-union-users",
-        ),
-        (
-            "qwert')) UNION SELECT sql,2,3,4,5,6,7,8,9 FROM sqlite_master--",
-            "sqli/search-union-schema",
-        ),
-    )
-    for payload, ref in union_probes:
-        probe = _fire_query(mcp, sess, "anon", search_path, "q", payload)
-        if _confirm_differential(
-            mcp,
-            vuln_class="sqli",
-            axis="cross_condition",
-            expectation="responses_invariant",
-            baseline_ref=str(search_baseline["fire_ref"]),
-            probe_ref=str(probe["fire_ref"]),
-            evidence_ref=ref,
-        ):
-            confirmed.add(
-                ChallengeClaim(
-                    "unionSqlInjectionChallenge" if ref.endswith("users") else "dbSchemaChallenge",
-                    "sqli",
-                    ref,
-                )
-            )
-
+    # The search endpoint is intentionally not credited here.  A generic
+    # response-length/status divergence (including an empty search result) does
+    # not prove UNION extraction or schema disclosure, and the current
+    # error-based probe is not an exact challenge attribution.  Login
+    # auth-bypass claims above are the only target-specific SQLi claims this
+    # API-only runner can defend.
     return confirmed
 
 
-def _detect_path_traversal(target: JuiceshopTarget, token: str | None) -> set[ChallengeClaim | str]:
+def _detect_null_byte_input_validation(
+    target: JuiceshopTarget, token: str | None
+) -> set[ChallengeClaim | str]:
     """Probe Juice Shop's verified poison-null filename bypass.
 
-    The live image rejects slash traversal and exposes no Docker LFR route. The
-    only verified read is ``package.json.bak%00.md``: path encoding sends a
+    The only verified read is ``package.json.bak%00.md``: path encoding sends a
     double-encoded null byte, the server truncates at null, and returns the
-    package artifact. It maps to ``nullByteChallenge`` (Improper Input Validation),
-    not an arbitrary-file-read claim.
+    package artifact. This is an input-validation challenge claim, not an
+    arbitrary-file-read/path-traversal claim; the structural evidence remains
+    content-matched retrieval of the known artifact.
     """
     del token
     shared = _SharedState()
@@ -627,207 +582,38 @@ def _detect_path_traversal(target: JuiceshopTarget, token: str | None) -> set[Ch
     )
     if not verdict.get("is_violation"):
         return set()
-    _call(
-        mcp, "write_finding", verdict_ref=str(verdict["verdict_ref"]), vuln_class="path_traversal"
-    )
+    _call(mcp, "write_finding", verdict_ref=str(verdict["verdict_ref"]), vuln_class="file_upload")
     return {
         ChallengeClaim(
             "nullByteChallenge",
-            "path_traversal",
-            "path_traversal/ftp-nullbyte",
+            "file_upload",
+            "file_upload/ftp-nullbyte",
             scope_class="file_upload",
         )
     }
 
 
 def _detect_file_upload(target: JuiceshopTarget, token: str | None) -> set[ChallengeClaim | str]:
-    """Improper-input-validation class: upload-filter bypass + registration/feedback
-    validation bypass, all structural ``file_upload_bypass`` (illegitimate input the
-    server should reject was accepted with a 2xx).
+    """Probe upload route for evidence, without claiming generic bypass from 204.
 
-    * **upload** — ``POST /file-upload``: baseline a legitimate image (accepted),
-      probes a disallowed executable type and an oversized file.
-    * **registration** — ``POST /api/Users``: baseline a valid registration
-      (accepted), probes a mismatched password-repeat, an empty account, and a
-      self-assigned admin role.
-    * **feedback** — ``POST /api/Feedbacks``: baseline a normal rating, probe a
-      zero-star rating the UI forbids. Captchas are solved during setup (direct HTTP).
-
-    Every probe crosses ``mcp.call_tool`` with ``state_changing=True`` after the
-    endpoint's read-only-first gate is cleared. Non-destructive: only new throwaway
-    rows are created; nothing existing is deleted or altered.
+    Pinned Juice Shop `/file-upload` uses memory storage and returns empty 204 for
+    accepted inputs. It exposes no artifact URL or retrieval/execution signal, so
+    status-only responses cannot reach a generic `file_upload` finding.
     """
-    shared = _SharedState()
-    sess = _session_as(target, _setup_user_token(target), shared)
-    mcp = _mcp_for(sess)
-    confirmed: set[ChallengeClaim | str] = set()
-
-    # --- upload endpoint: disallowed type / oversized file ---
-    # One shared param, fired for the baseline and both probes; fingerprint it once
-    # (read-only GET canary) to satisfy §9 and clear read-only-first for the path.
-    upload_path = "/file-upload"
-    up_base_ep = sess.graph.add_endpoint(Endpoint(method="POST", path=upload_path))
-    up_base_param = sess.graph.add_parameter(up_base_ep, Parameter(name="file", location="body"))
-    _fingerprint(mcp, "user", up_base_ep, up_base_param, method="OPTIONS")
-    up_baseline = _call(
-        mcp,
-        "fire_request",
-        identity="user",
-        endpoint_node=up_base_ep,
-        param_node=up_base_param,
-        payload="ok.jpg",
-        method="POST",
-        state_changing=True,
-        upload={"filename": "ok.jpg", "content": "GIF89a", "content_type": "image/jpeg"},
-    )
-    upload_probes = (
-        (
-            {"filename": "evil.exe", "content": "MZ", "content_type": "application/octet-stream"},
-            "file_upload/type-exe",
-        ),
-        (
-            {"filename": "big.pdf", "content": "A" * 120_000, "content_type": "application/pdf"},
-            "file_upload/oversized",
-        ),
-    )
-    for spec, ref in upload_probes:
-        probe = _call(
-            mcp,
-            "fire_request",
-            identity="user",
-            endpoint_node=up_base_ep,
-            param_node=up_base_param,
-            payload=str(spec["filename"]),
-            method="POST",
-            state_changing=True,
-            upload=spec,
-        )
-        if _confirm_structural(
-            mcp,
-            vuln_class="file_upload",
-            check_type="file_upload_bypass",
-            baseline_status=int(str(up_baseline.get("status_code", 0))),
-            probe_status=int(str(probe.get("status_code", 0))),
-            sentinel="",
-            probe_fire_ref=str(probe["fire_ref"]),
-            evidence_ref=ref,
-        ):
-            confirmed.add("file_upload")
-
-    # --- registration validation bypass ---
-    users_path = "/api/Users"
-    reg_baseline = _fire_body(
-        mcp,
-        sess,
-        "anon",
-        users_path,
-        "email",
-        "valid.repeat@reachagent.invalid",
-        extra_fields={"password": "Passw0rd!", "passwordRepeat": "Passw0rd!"},
-    )
-    reg_probes = (
-        (
-            "mismatch@reachagent.invalid",
-            {"password": "aaaaaa", "passwordRepeat": "bbbbbb"},
-            "file_upload/register-mismatch",
-        ),
-        ("", {"password": ""}, "file_upload/register-empty"),
-        (
-            "admin.self@reachagent.invalid",
-            {"password": "Passw0rd!", "passwordRepeat": "Passw0rd!", "role": "admin"},
-            "file_upload/register-admin",
-        ),
-    )
-    for email, extra, ref in reg_probes:
-        probe = _fire_body(mcp, sess, "anon", users_path, "email", email, extra_fields=extra)
-        if _confirm_structural(
-            mcp,
-            vuln_class="file_upload",
-            check_type="file_upload_bypass",
-            baseline_status=int(str(reg_baseline.get("status_code", 0))),
-            probe_status=int(str(probe.get("status_code", 0))),
-            sentinel="",
-            probe_fire_ref=str(probe["fire_ref"]),
-            evidence_ref=ref,
-        ):
-            confirmed.add("file_upload")
-
-    # --- feedback rating-validation bypass (zero stars) ---
-    feedback_path = "/api/Feedbacks"
-    base_cid, base_ans = _fetch_captcha(target)
-    fb_baseline = _fire_body(
-        mcp,
-        sess,
-        "anon",
-        feedback_path,
-        "comment",
-        "reachagent baseline feedback",
-        extra_fields={"rating": 3, "captchaId": base_cid, "captcha": base_ans},
-    )
-    probe_cid, probe_ans = _fetch_captcha(target)
-    fb_probe = _fire_body(
-        mcp,
-        sess,
-        "anon",
-        feedback_path,
-        "comment",
-        "reachagent zero-star feedback",
-        extra_fields={"rating": 0, "captchaId": probe_cid, "captcha": probe_ans},
-    )
-    if _confirm_structural(
-        mcp,
-        vuln_class="file_upload",
-        check_type="file_upload_bypass",
-        baseline_status=int(str(fb_baseline.get("status_code", 0))),
-        probe_status=int(str(fb_probe.get("status_code", 0))),
-        sentinel="",
-        probe_fire_ref=str(fb_probe["fire_ref"]),
-        evidence_ref="file_upload/feedback-zero-star",
-    ):
-        confirmed.add("file_upload")
-
-    return confirmed
+    del target, token
+    return set()
 
 
 def _detect_xss_stored(target: JuiceshopTarget, token: str | None) -> set[ChallengeClaim | str]:
-    """XSS: API-reachable stored payload, execution_confirmation via the readback.
+    """Leave browser-dependent Juice Shop XSS attribution unscored in API mode.
 
-    Posts an iframe-javascript payload as a feedback comment and reads it back
-    through ``GET /api/Feedbacks``; the execution-confirmation oracle looks for the
-    tagged payload in the stored response. Most Juice Shop XSS challenges detect the
-    solve in the browser DOM (client-side render), which an API-only agent cannot
-    reach — that is an honest ceiling for this class (see the gate report).
+    Posting a tag and reading it back through ``/api/Feedbacks`` proves only
+    storage/reflection. It does not prove execution in the browser view that
+    completes the challenge, so this runner must not write an XSS finding or
+    claim ``localXssChallenge`` without ``fire_browser`` and tracker attribution.
     """
-    shared = _SharedState()
-    sess = _session_as(target, token, shared)
-    mcp = _mcp_for(sess)
-    tag = "XSSREACH42"
-    feedback_path = "/api/Feedbacks"
-    cid, ans = _fetch_captcha(target)
-    _fire_body(
-        mcp,
-        sess,
-        "anon",
-        feedback_path,
-        "comment",
-        f'<iframe src="javascript:{tag}">',
-        extra_fields={"rating": 1, "captchaId": cid, "captcha": ans},
-    )
-    readback = _fire_query(mcp, sess, "anon", feedback_path, "probe", "")
-    verdict = _call(
-        mcp,
-        "run_oracle",
-        mechanism="execution_confirmation",
-        evidence={
-            "payload_tag": tag,
-            "probe_fire_ref": str(readback["fire_ref"]),
-            "evidence_ref": "xss/feedback-stored",
-        },
-    )
-    if not verdict.get("is_violation"):
-        return set()
-    _call(mcp, "write_finding", verdict_ref=str(verdict["verdict_ref"]), vuln_class="xss")
-    return {"xss"}
+    del target, token
+    return set()
 
 
 def _detect_clickjacking(target: JuiceshopTarget, token: str | None) -> set[str]:
@@ -909,7 +695,11 @@ def run_juiceshop(
     token: str | None = None,
     before: dict[str, dict[str, object]] | None = None,
 ) -> JuiceshopRun:
-    """Drive all four in-scope detection classes through MCP; score per-challenge.
+    """Run API-supported Juice Shop detectors through MCP and score tracker flips.
+
+    API-only mode credits only exact typed claims backed by oracle-confirmed
+    evidence. Browser-dependent DOM XSS and status-only upload responses remain
+    uncredited rather than being inferred from tracker transitions.
 
     Scoring model (per-challenge, not class-to-all):
 
@@ -922,23 +712,12 @@ def run_juiceshop(
       without dedicated per-challenge exploit logic (deferred), and it removes the
       one-detection-marks-all-challenges inflation.
 
-    Each detection function runs entirely through ``mcp.call_tool`` (MCP boundary,
-    §14/§15) and returns the set of real ``vuln_class`` strings its oracles confirmed
-    this run. The scoring seam keys on that real ``vuln_class`` — never a lossy
-    per-in-scope-class bool — so a confirmation is attributed to the class it was
-    actually made under (e.g. ``jwt_forgery`` stays distinct from ``path_traversal``).
+    Each supported detection function runs entirely through ``mcp.call_tool``
+    (MCP boundary, §14/§15) and returns typed claims only after its oracle
+    confirms evidence. Browser-only and status-only paths return no claims.
 
-    False-positive scoring (invariant 2). The oracle verdict discarded by the old
-    ``_ = detections`` is now honest signal: for each **in-scope** class whose oracle
-    confirmed a finding but where **no** in-scope challenge of that class flipped
-    ``unsolved → solved`` this run, we record one *class-level* false positive
-    (:attr:`JuiceshopRun.class_false_positives`). An out-of-scope confirmation
-    (``jwt_forgery``, ``clickjacking``, ``cors_misconfig``, ``csrf_missing_protection``
-    — vuln classes whose tracker categories are not in the four Phase 3
-    ``IN_SCOPE_CLASSES``) is neither coverage nor an in-scope FP: it is simply out of
-    scope and books nothing. This keeps ``fp_rate`` meaningful instead of structurally
-    zero under delta attribution, and it is deliberately kept off the coverage
-    denominator.
+    False-positive scoring (invariant 2) records an in-scope class-level false
+    positive only when an oracle-confirmed claim has no matching tracker flip.
     """
     if before is None:
         try:
@@ -963,7 +742,7 @@ def run_juiceshop(
     confirmed_vuln_classes |= _detect_sqli(target, token)
     confirmed_vuln_classes |= {
         claim
-        for claim in _detect_path_traversal(target, token)
+        for claim in _detect_null_byte_input_validation(target, token)
         if isinstance(claim, ChallengeClaim)
     }
     confirmed_vuln_classes |= {
@@ -1028,7 +807,13 @@ def score_run(
     legacy_classes = {claim for claim in claims if isinstance(claim, str)}
     if strict_scope and typed_claims and legacy_classes:
         raise ValueError("strict scoring does not accept mixed claim modes")
+    # Tracker flips are ground truth for state, not evidence that ReachAgent
+    # confirmed the corresponding challenge.  Legacy class-only claims are
+    # retained for synthetic compatibility, but a live strict run must never
+    # infer a claim from an empty detector result.
     typed_mode = bool(typed_claims)
+    if strict_scope and not typed_mode:
+        legacy_classes = set()
     flipped_classes: set[str] = set()
     scope = VERIFIED_CHALLENGE_SCOPE if strict_scope else None
     for ch_key, ch_info in after.items():
@@ -1064,7 +849,9 @@ def score_run(
             ChallengeResult(
                 vuln_class=scope_class,
                 challenge_key=ch_key,
-                confirmed=(newly_solved and matched_claim) if typed_mode else newly_solved,
+                confirmed=(newly_solved and matched_claim)
+                if (typed_mode or strict_scope)
+                else newly_solved,
                 tracker_solved=solved_after,
                 reason=reason,
             )

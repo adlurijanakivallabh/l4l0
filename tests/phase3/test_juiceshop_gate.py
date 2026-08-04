@@ -266,6 +266,20 @@ def test_verified_missing_key_classifies_invalid() -> None:
     assert classify_baseline(snapshot).state is BaselineState.INVALID
 
 
+def test_report_documents_api_only_ceiling() -> None:
+    run = JuiceshopRun(
+        results=[
+            _cr(confirmed=True, solved=True),
+            _cr(confirmed=True, solved=True),
+            _cr(confirmed=True, solved=True),
+            _cr(confirmed=False, solved=True),
+        ]
+    )
+    report = Phase3GateResult(juiceshop=run).report()
+    assert "Coverage ceiling" in report
+    assert "4/9 API-only" in report
+
+
 def test_unmeasurable_gate_requires_environment_ok() -> None:
     run = JuiceshopRun.not_measurable(baseline=None, detail="dirty")
     gate = Phase3GateResult(juiceshop=run)
@@ -419,10 +433,42 @@ def test_claim_scope_override_cannot_reclassify_vulnerability() -> None:
         strict_scope=True,
     )
     assert run.true_positives == 0
+    assert run.coverage == pytest.approx(0.0)
     assert run.claim_false_positives == 1
+    assert run.false_positives == 1
 
 
-def test_score_run_jwt_forgery_only_is_not_a_path_traversal_fp() -> None:
+def test_score_run_strict_scope_never_credits_tracker_only_flip() -> None:
+    before = _verified_snapshot()
+    after = _verified_snapshot(solved="uploadSizeChallenge")
+    run = score_run(before, after, set(), strict_scope=True)
+    assert run.true_positives == 0
+    assert run.coverage == pytest.approx(0.0)
+    assert run.results[-3].challenge_key == "uploadSizeChallenge"
+    assert run.results[-3].confirmed is False
+
+
+def test_api_only_ceiling_does_not_pass_historical_gate() -> None:
+    results = [_cr(confirmed=True, solved=True) for _ in range(4)] + [
+        _cr(confirmed=False, solved=True) for _ in range(5)
+    ]
+    gate = Phase3GateResult(juiceshop=JuiceshopRun(results=results))
+    assert gate.juiceshop.coverage == pytest.approx(4 / 9)
+    assert not gate.juiceshop.coverage_passes
+    assert not gate.passed
+
+
+def test_api_only_unsupported_detectors_emit_no_claims() -> None:
+    from reachagent.eval.juiceshop_live import (
+        JuiceshopTarget,
+        _detect_file_upload,
+        _detect_xss_stored,
+    )
+
+    target = JuiceshopTarget("http://127.0.0.1:3000")
+    assert _detect_file_upload(target, None) == set()
+    assert _detect_xss_stored(target, None) == set()
+
     # jwt_forgery is out of scope; it must not book a path-traversal FP.
     before = _snap(("p1", "Vulnerable Components", False))
     after = _snap(("p1", "Vulnerable Components", False))
