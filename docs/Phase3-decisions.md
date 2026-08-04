@@ -99,6 +99,26 @@ investigation established the pre-UNION API-only class-correct ceiling as
 key, now labeled `file_upload`. The later UNION-sentinel decision below recovers
 two additional keys without weakening this upload conclusion.
 
+## Decision: PortSwigger blind-SQLi runner targets time-delay lab
+
+**Date:** 2026-08-04
+
+Task 9a targets PortSwigger's **Blind SQL injection with time delays** lab. Runner
+uses existing `TrackingId` cookie injection on `GET /filter?category=Gifts`,
+existing `timing_statistical` paired-trial oracle, and existing OOB-first
+discipline from `blind_detector.py`. Recommended provisioning is only:
+
+- `REACHAGENT_PORTSWIGGER_LAB_URL`
+- `REACHAGENT_PORTSWIGGER_SESSION_TOKEN`
+- `REACHAGENT_PORTSWIGGER_LIVE=1`
+
+No Collaborator/interact.sh infrastructure is needed for timing mode. OOB remains
+present-but-dormant; enabling it would additionally require the existing
+`REACHAGENT_OOB_BASE_DOMAIN` / `REACHAGENT_OOB_TOKEN`, self-hosted interact.sh
+server/DNS, and an OOB payload factory. No new collaborator environment variable
+or oracle family is introduced. Missing live credentials fail loudly with
+`IdentityConfigError`; unset live mode performs no network request.
+
 ## Decision: UNION extraction recovered by structural sentinels
 
 **Date:** 2026-08-04

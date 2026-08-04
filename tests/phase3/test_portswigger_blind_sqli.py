@@ -1,0 +1,143 @@
+"""Hermetic PortSwigger time-delay blind-SQLi runner tests (Task 9a)."""
+
+from __future__ import annotations
+
+import httpx
+import pytest
+
+from reachagent.eval.juiceshop_harness import PortswiggerResult
+from reachagent.eval.portswigger_blind_sqli import (
+    PortswiggerBlindSqliRunner,
+    PortswiggerLabConfig,
+    build_configured_runner,
+    run_vulnerable_and_clean,
+)
+from reachagent.execution.firer import FireResult
+from reachagent.graph.nodes import FindingStatus
+from reachagent.graph.store import ReachabilityGraph
+from reachagent.identity.store import IdentityConfigError
+from reachagent.tools import validator
+
+
+class _MockLabFirer:
+    """Mock GET execution layer: vulnerable variant delays only tagged payloads."""
+
+    def __init__(self, *, delayed: bool) -> None:
+        self.delayed = delayed
+        self.calls: list[tuple[str, str, str, str]] = []
+
+    def fire(self, identity: str, method: str, url: str, **kwargs: object) -> FireResult:
+        headers = kwargs.get("headers", {})
+        cookie = str(headers.get("Cookie", "")) if isinstance(headers, dict) else ""
+        assert identity == "portswigger"
+        assert method == "GET"
+        assert url == "https://lab.test/filter?category=Gifts"
+        assert cookie.startswith("TrackingId=")
+        assert "; session=session-token" in cookie
+        self.calls.append((identity, method, url, cookie))
+        delayed = self.delayed and "x'||pg_sleep(10)--" in cookie
+        return FireResult(
+            status_code=200,
+            elapsed_seconds=5.0 if delayed else 0.1,
+            body=b"mock lab response",
+            headers=httpx.Headers({"content-type": "text/html"}),
+        )
+
+
+def _runner(
+    *, delayed: bool, graph: ReachabilityGraph, firer: _MockLabFirer
+) -> PortswiggerBlindSqliRunner:
+    return PortswiggerBlindSqliRunner(
+        config=PortswiggerLabConfig(
+            base_url="https://lab.test",
+            session_token="session-token",
+            enabled=True,
+        ),
+        graph=graph,
+        oracle_runner=validator.run_oracle,
+        write_finding=lambda finding, verdict: validator.write_finding(graph, finding, verdict),
+        firer=firer,
+    )
+
+
+def test_time_delay_runner_confirms_vulnerable_and_clean_variants() -> None:
+    vulnerable_graph = ReachabilityGraph()
+    clean_graph = ReachabilityGraph()
+    vulnerable_firer = _MockLabFirer(delayed=True)
+    clean_firer = _MockLabFirer(delayed=False)
+
+    result = run_vulnerable_and_clean(
+        _runner(delayed=True, graph=vulnerable_graph, firer=vulnerable_firer),
+        _runner(delayed=False, graph=clean_graph, firer=clean_firer),
+    )
+
+    assert isinstance(result, PortswiggerResult)
+    assert result.available is True
+    assert result.vuln_lab_confirmed is True
+    assert result.clean_lab_fp_count == 0
+    assert result.clean_variant_tested is True
+    assert result.lab_type == "portswigger-time-delay"
+    assert result.mechanism == "timing_statistical"
+    assert result.evidence_ref == "portswigger/blind-sqli/time-delay"
+    assert len(vulnerable_firer.calls) == 20  # ten baseline + ten delay GETs
+    assert len(clean_firer.calls) == 20
+    assert all(method == "GET" for _, method, _, _ in vulnerable_firer.calls + clean_firer.calls)
+    assert ["pg_sleep(10)" in cookie for _, _, _, cookie in vulnerable_firer.calls] == [
+        False,
+        True,
+    ] * 10
+
+    vulnerable_findings = vulnerable_graph.findings()
+    clean_findings = clean_graph.findings()
+    assert len(vulnerable_findings) == 1
+    assert vulnerable_findings[0][1].vuln_class == "sqli_blind"
+    assert vulnerable_findings[0][1].status is FindingStatus.CONFIRMED_VIOLATION
+    assert vulnerable_findings[0][1].oracle_used == "timing_statistical"
+    assert clean_findings == []
+
+
+def test_time_delay_runner_clean_variant_stays_inconclusive() -> None:
+    graph = ReachabilityGraph()
+    firer = _MockLabFirer(delayed=False)
+    result = _runner(delayed=False, graph=graph, firer=firer).run()
+
+    assert result.available is True
+    assert result.vuln_lab_confirmed is False
+    assert graph.findings() == []
+    assert len(firer.calls) == 20
+
+
+def test_live_config_requires_only_three_values_when_enabled() -> None:
+    config = PortswiggerLabConfig.from_env(
+        {
+            "REACHAGENT_PORTSWIGGER_LIVE": "1",
+            "REACHAGENT_PORTSWIGGER_LAB_URL": "https://lab.test",
+            "REACHAGENT_PORTSWIGGER_SESSION_TOKEN": "token",
+        }
+    )
+    assert config.enabled is True
+    assert config.base_url == "https://lab.test"
+    assert config.session_token == "token"
+
+
+def test_live_config_fails_loudly_when_enabled_credentials_missing() -> None:
+    with pytest.raises(IdentityConfigError, match="REACHAGENT_PORTSWIGGER_LAB_URL"):
+        PortswiggerLabConfig.from_env(
+            {
+                "REACHAGENT_PORTSWIGGER_LIVE": "1",
+                "REACHAGENT_PORTSWIGGER_SESSION_TOKEN": "token",
+            }
+        )
+
+
+def test_live_builder_is_dormant_without_explicit_opt_in(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("REACHAGENT_PORTSWIGGER_LIVE", raising=False)
+    monkeypatch.delenv("REACHAGENT_PORTSWIGGER_LAB_URL", raising=False)
+    monkeypatch.delenv("REACHAGENT_PORTSWIGGER_SESSION_TOKEN", raising=False)
+
+    assert (
+        build_configured_runner(
+            ReachabilityGraph(), oracle_runner=validator.run_oracle, write_finding=lambda f, v: ""
+        )
+        is None
+    )

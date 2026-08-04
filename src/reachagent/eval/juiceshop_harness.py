@@ -297,27 +297,32 @@ class JuiceshopRun:
 
 @dataclass(frozen=True)
 class PortswiggerResult:
-    """Invariant 3 placeholder — populated once PortSwigger lab credentials exist.
+    """Invariant 3 result from the env-gated blind-SQLi lab runner.
 
-    Invariant 3 (§14): a confirmed ``sqli_blind`` finding exists in the graph for
-    the vulnerable lab, and zero ``sqli_blind`` findings exist for the non-vulnerable
-    variant. Both are asserted by querying the graph, not by report text.
-
-    Set ``available = True`` and populate the fields when lab credentials are
-    provisioned (``REACHAGENT_PORTSWIGGER_LAB_URL`` +
-    ``REACHAGENT_PORTSWIGGER_SESSION_TOKEN`` env vars). Until then the gate
-    reports this section as SKIPPED without blocking invariants 1 and 2.
+    Task 9a targets the time-delay lab by default. ``vuln_lab_confirmed`` and
+    ``clean_lab_fp_count`` are derived from graph findings written only after a
+    Validator oracle returns ``is_violation``. Until live credentials exist the
+    result remains unavailable and does not block the Phase 3 API-only metrics.
     """
 
     available: bool = False
     vuln_lab_confirmed: bool = False  # sqli_blind confirmed on vulnerable lab
     clean_lab_fp_count: int = 0  # sqli_blind findings on non-vulnerable variant
+    clean_variant_tested: bool = False
+    clean_variant_required: bool = False
+    lab_type: str = ""
+    mechanism: str = ""
+    evidence_ref: str = ""
 
     @property
     def passes(self) -> bool:
         if not self.available:
             return True  # not blocking until credentials exist
-        return self.vuln_lab_confirmed and self.clean_lab_fp_count == 0
+        return (
+            self.vuln_lab_confirmed
+            and (not self.clean_variant_required or self.clean_variant_tested)
+            and self.clean_lab_fp_count == 0
+        )
 
 
 @dataclass
@@ -393,6 +398,10 @@ class Phase3GateResult:
                 + ("✅" if ps.vuln_lab_confirmed else "❌"),
                 f"Clean lab FP count  : {ps.clean_lab_fp_count} "
                 + ("✅" if ps.clean_lab_fp_count == 0 else "❌"),
+                f"Clean variant tested: {ps.clean_variant_tested}",
+                f"Clean variant required: {ps.clean_variant_required}",
+                f"Lab type            : {ps.lab_type or 'unspecified'}",
+                f"Evidence ref        : {ps.evidence_ref or 'unspecified'}",
             ]
         verdict = "PASSED" if self.passed else "FAILED"
         if not self.environment_ok:

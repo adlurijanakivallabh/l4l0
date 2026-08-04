@@ -191,7 +191,11 @@ def test_portswigger_available_and_passing() -> None:
     gate = Phase3GateResult(
         juiceshop=JuiceshopRun(results=results),
         portswigger=PortswiggerResult(
-            available=True, vuln_lab_confirmed=True, clean_lab_fp_count=0
+            available=True,
+            vuln_lab_confirmed=True,
+            clean_lab_fp_count=0,
+            clean_variant_tested=True,
+            clean_variant_required=True,
         ),
     )
     assert gate.portswigger.passes
@@ -215,7 +219,10 @@ def test_portswigger_available_clean_lab_fp_fails() -> None:
     gate = Phase3GateResult(
         juiceshop=JuiceshopRun(results=results),
         portswigger=PortswiggerResult(
-            available=True, vuln_lab_confirmed=True, clean_lab_fp_count=1
+            available=True,
+            vuln_lab_confirmed=True,
+            clean_lab_fp_count=0,
+            clean_variant_required=True,
         ),
     )
     assert not gate.portswigger.passes
