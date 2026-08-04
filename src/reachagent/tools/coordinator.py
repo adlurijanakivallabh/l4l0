@@ -45,8 +45,10 @@ def query_graph(filter: object) -> list[_support.CoordinatorCandidate]:
             status = graph.can_call_status(identity_node, endpoint_node)
             if status is not None and status.value != "inconclusive":
                 continue
-            parameters = graph.parameters_of(endpoint_node) or [(None, None)]
-            for parameter_node, _ in parameters:
+            parameter_nodes: list[str | None] = [
+                node for node, _ in graph.parameters_of(endpoint_node)
+            ] or [None]
+            for parameter_node in parameter_nodes:
                 candidates.append(
                     _support.CoordinatorCandidate(
                         identity_node=identity_node,

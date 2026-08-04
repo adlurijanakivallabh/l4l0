@@ -138,6 +138,16 @@ def test_nuclei_parses_jsonl_into_class_tagged_candidates() -> None:
     assert by_class["cve_match"] is OracleMechanism.STRUCTURAL  # unmapped tech-detect → default
 
 
+def test_nuclei_null_info_field_defaults_to_unknown_severity() -> None:
+    runner = NucleiRunner(graph=_graph_with_tech_signal(), scope=_scope())
+    candidates = runner.parse(
+        _TARGET,
+        '{"template-id":"unknown-template","matched-at":"http://target.test","info":null}',
+    )
+    assert len(candidates) == 1
+    assert "severity=unknown" in candidates[0].notes[0]
+
+
 def test_nikto_parses_vulnerabilities_into_candidates() -> None:
     runner = NiktoRunner(graph=_graph_with_service_signal(), scope=_scope())
     result = runner.ingest(_TARGET, _fixture("nikto-results.json"))

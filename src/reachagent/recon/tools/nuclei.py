@@ -91,7 +91,8 @@ class NucleiRunner(SignalGatedToolRunner):
                 continue
             template_id = str(obj.get("template-id") or obj.get("templateID") or "").strip()
             matched_at = str(obj.get("matched-at") or obj.get("matched") or target).strip()
-            info = obj.get("info") if isinstance(obj.get("info"), dict) else {}
+            info_value = obj.get("info")
+            info = info_value if isinstance(info_value, dict) else {}
             severity = str(info.get("severity", "unknown"))
             vuln_class, oracle = _route_template(template_id)
             candidates.append(
