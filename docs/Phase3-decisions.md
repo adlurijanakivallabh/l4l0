@@ -72,8 +72,11 @@ remains available for exploratory runs, but is not a clean numeric gate unless
 tracker baseline is clean.
 
 Current strict denominator remains nine tracker keys; current API-only
-class-correct ceiling is 4/9. Broader Juice Shop category items remain outside
-strict detector-backed scoring and are not aspirational coverage.
+class-correct ceiling is 6/9 (66.7%). The three SQLi auth-bypass keys,
+`unionSqlInjectionChallenge`, `dbSchemaChallenge`, and the relabeled null-byte
+input-validation key are credited only after matching deterministic oracles
+confirm. Broader Juice Shop category items remain outside strict detector-backed
+scoring and are not aspirational coverage.
 
 ## Decision: API-only Juice Shop ceiling after upload investigation
 
@@ -90,22 +93,38 @@ found no uploaded files and no execution. Inputs over the limit returned Multer
 are evaluation ground truth, not generic upload vulnerability evidence. Existing
 `ok.jpg` baseline also solves `uploadTypeChallenge`, so it is not policy-valid.
 
-Current strict denominator remains nine tracker keys. API-only class-correct
-ceiling is **4/9 (44.4%)**: three SQLi auth-bypass keys plus the null-byte
-input-validation key, now labeled `file_upload`. `unionSqlInjectionChallenge`
-and `dbSchemaChallenge` are not credited until exact extraction attribution
-replaces generic response divergence. `uploadSizeChallenge` and
-`uploadTypeChallenge` lack persistence/retrieval/execution evidence.
-`localXssChallenge` requires browser-rendered DOM execution and tracker
-attribution unavailable in current API-only runner. Historical 75% requires
-7/9; current capability cannot pass it. Generic §5 support ratings remain
-unchanged and do not imply target-specific Juice Shop coverage.
+Current strict denominator remains nine tracker keys. This upload-focused
+investigation established the pre-UNION API-only class-correct ceiling as
+**4/9 (44.4%)**: three SQLi auth-bypass keys plus the null-byte input-validation
+key, now labeled `file_upload`. The later UNION-sentinel decision below recovers
+two additional keys without weakening this upload conclusion.
 
-## Decision: 0%→75% gap requires capability, not payload tuning
+## Decision: UNION extraction recovered by structural sentinels
+
+**Date:** 2026-08-04
+
+The product-search probes now use the existing STRUCTURAL oracle's
+`union_extraction` branch. `unionSqlInjectionChallenge` requires the seeded
+`admin@juice-sh.op` email in the successful response body; `dbSchemaChallenge`
+requires the exact SQLite artifact `CREATE TABLE \`Users\``. Product names and
+descriptions alone cannot satisfy either sentinel, and hermetic tests cover both
+benign no-confirm and sentinel-present confirm cases. No new `OracleMechanism` or
+`DiffExpectation` was added; the six-family registry and AST boundary test remain
+unchanged.
+
+The fresh-container gate was rerun after implementation. It measured 6/9
+coverage (66.7%), 0 false positives, and recorded exact evidence in its
+per-challenge report: `unionSqlInjectionChallenge` fired
+`admin@juice-sh.op`; `dbSchemaChallenge` fired `CREATE TABLE \`Users\``.
+The remaining three keys are genuine API-only ceilings: upload size/type lack
+retrieval or execution evidence, and `localXssChallenge` requires browser DOM
+execution and tracker attribution. Historical 75% (7/9) therefore still needs
+browser capability plus distinguishable upload evidence.
+
 
 Remaining gap is architectural: DOM-XSS needs browser navigation plus source/sink
 execution attribution; upload confirmation needs persistent artifact storage plus
 deterministic retrieval/execution evidence. Additional payload strings cannot
-manufacture either signal. Current relabeling makes the null-byte input-validation
-claim class-correct, yielding a 4/9 API-only ceiling. Do not claim 75% until at
-least 7/9 matching typed tracker claims are honestly reachable.
+manufacture either signal. UNION/schema claims now require extraction-only
+sentinels, and the null-byte input-validation claim is class-correct. Do not
+claim 75% until at least 7/9 matching typed tracker claims are honestly reachable.

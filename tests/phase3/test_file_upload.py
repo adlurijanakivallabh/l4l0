@@ -2,7 +2,8 @@
 
 Covers the Task 7 DoD:
   * STRUCTURAL oracle is now registered — all six §7 families built.
-  * Oracle unit tests: FILE_UPLOAD_BYPASS, PATH_TRAVERSAL, JWT_FORGERY decision paths.
+  * Oracle unit tests: FILE_UPLOAD_BYPASS, PATH_TRAVERSAL, UNION_EXTRACTION,
+    JWT_FORGERY decision paths.
   * Detector: bypass confirmed, correctly rejected, baseline-failed inconclusive.
   * Integration test: real local HTTP server enforcing an extension allowlist
     (only .jpg accepted); disguised .php file with .jpg extension bypasses it.
@@ -43,6 +44,11 @@ def test_all_six_families_now_registered() -> None:
     for mech in OracleMechanism:
         oracle = get_oracle(mech)
         assert oracle.mechanism is mech
+
+
+def test_structural_enum_adds_check_not_oracle_family() -> None:
+    assert len(tuple(OracleMechanism)) == 6
+    assert StructuralCheckType.UNION_EXTRACTION.value == "union_extraction"
 
 
 # === FILE_UPLOAD_BYPASS decision table ========================================
@@ -104,6 +110,84 @@ def test_traversal_inconclusive_when_no_sentinel() -> None:
         response_body="root:x:0:0",
     )
     assert decide(ev) is FindingStatus.INCONCLUSIVE
+
+
+# === UNION_EXTRACTION decision table ===========================================
+
+
+@pytest.mark.parametrize(
+    ("sentinel", "response_body"),
+    [
+        ("admin@juice-sh.op", '{"email":"admin@juice-sh.op"}'),
+        ("CREATE TABLE `Users`", "CREATE TABLE `Users` (`id` INTEGER PRIMARY KEY)"),
+    ],
+)
+def test_union_extraction_confirmed_only_with_class_specific_sentinel(
+    sentinel: str, response_body: str
+) -> None:
+    ev = StructuralEvidence(
+        check_type=StructuralCheckType.UNION_EXTRACTION,
+        probe_status=200,
+        union_sentinel=sentinel,
+        response_body=response_body,
+    )
+    assert decide(ev) is FindingStatus.CONFIRMED_VIOLATION
+
+
+@pytest.mark.parametrize(
+    ("sentinel", "response_body"),
+    [
+        ("admin@juice-sh.op", '{"name":"Admin product","description":"A product"}'),
+        ("CREATE TABLE `Users`", '{"name":"CREATE TABLE product","description":"A product"}'),
+    ],
+)
+def test_benign_product_search_never_confirms_union_extraction(
+    sentinel: str, response_body: str
+) -> None:
+    ev = StructuralEvidence(
+        check_type=StructuralCheckType.UNION_EXTRACTION,
+        probe_status=200,
+        union_sentinel=sentinel,
+        response_body=response_body.replace(sentinel, "product"),
+    )
+    assert decide(ev) is FindingStatus.INCONCLUSIVE
+
+
+@pytest.mark.parametrize("probe_status", [0, 199, 300, 500])
+def test_union_extraction_requires_successful_probe(probe_status: int) -> None:
+    ev = StructuralEvidence(
+        check_type=StructuralCheckType.UNION_EXTRACTION,
+        probe_status=probe_status,
+        union_sentinel="admin@juice-sh.op",
+        response_body='{"email":"admin@juice-sh.op"}',
+    )
+    assert decide(ev) is FindingStatus.INCONCLUSIVE
+
+
+def test_union_extraction_requires_nonempty_matching_sentinel() -> None:
+    body = '{"email":"admin@juice-sh.op"}'
+    assert (
+        decide(
+            StructuralEvidence(
+                check_type=StructuralCheckType.UNION_EXTRACTION,
+                probe_status=200,
+                union_sentinel="",
+                response_body=body,
+            )
+        )
+        is FindingStatus.INCONCLUSIVE
+    )
+    assert (
+        decide(
+            StructuralEvidence(
+                check_type=StructuralCheckType.UNION_EXTRACTION,
+                probe_status=200,
+                union_sentinel="admin@other.example",
+                response_body=body,
+            )
+        )
+        is FindingStatus.INCONCLUSIVE
+    )
 
 
 # === JWT_FORGERY decision table ===============================================

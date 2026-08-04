@@ -105,6 +105,24 @@ def test_mcp_run_oracle_dispatches_structural_path_traversal() -> None:
     assert verdict.is_violation is True  # type: ignore[attr-defined]
 
 
+def test_mcp_run_oracle_dispatches_structural_union_extraction() -> None:
+    mcp = _built()
+    verdict = _call(
+        mcp,
+        "run_oracle",
+        mechanism="structural",
+        evidence={
+            "check_type": "union_extraction",
+            "probe_status": 200,
+            "union_sentinel": "CREATE TABLE `Users`",
+            "response_body": "CREATE TABLE `Users` (`id` INTEGER)",
+            "evidence_ref": "sqli/schema",
+        },
+    )
+    assert verdict.mechanism == "structural"  # type: ignore[attr-defined]
+    assert verdict.is_violation is True  # type: ignore[attr-defined]
+
+
 def test_mcp_run_oracle_dispatches_structural_file_upload() -> None:
     mcp = _built()
     verdict = _call(

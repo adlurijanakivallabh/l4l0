@@ -277,7 +277,7 @@ def test_report_documents_api_only_ceiling() -> None:
     )
     report = Phase3GateResult(juiceshop=run).report()
     assert "Coverage ceiling" in report
-    assert "4/9 API-only" in report
+    assert "6/9 API-only" in report
 
 
 def test_unmeasurable_gate_requires_environment_ok() -> None:
@@ -405,6 +405,34 @@ def test_score_run_exact_claim_credits_only_matching_tracker_key() -> None:
     assert run.results[1].confirmed is False
 
 
+def test_score_run_union_claims_credit_only_matching_tracker_keys() -> None:
+    before = _verified_snapshot()
+    after = _verified_snapshot(solved="unionSqlInjectionChallenge")
+    run = score_run(
+        before,
+        after,
+        {
+            ChallengeClaim(
+                "unionSqlInjectionChallenge",
+                "sqli",
+                "sqli/search-union-users; sentinel=admin@juice-sh.op",
+            ),
+            ChallengeClaim(
+                "dbSchemaChallenge",
+                "sqli",
+                "sqli/search-union-schema; sentinel=CREATE TABLE `Users`",
+            ),
+        },
+        strict_scope=True,
+    )
+    assert run.true_positives == 1
+    assert run.results[3].challenge_key == "unionSqlInjectionChallenge"
+    assert run.results[3].confirmed is True
+    assert run.results[4].challenge_key == "dbSchemaChallenge"
+    assert run.results[4].confirmed is False
+    assert run.claim_false_positives == 1
+
+
 def test_score_run_unsolved_claim_is_a_false_positive() -> None:
     before = _snap(("sqli-one", "Injection", False))
     after = _snap(("sqli-one", "Injection", False))
@@ -449,13 +477,58 @@ def test_score_run_strict_scope_never_credits_tracker_only_flip() -> None:
 
 
 def test_api_only_ceiling_does_not_pass_historical_gate() -> None:
-    results = [_cr(confirmed=True, solved=True) for _ in range(4)] + [
-        _cr(confirmed=False, solved=True) for _ in range(5)
+    results = [_cr(confirmed=True, solved=True) for _ in range(6)] + [
+        _cr(confirmed=False, solved=True) for _ in range(3)
     ]
     gate = Phase3GateResult(juiceshop=JuiceshopRun(results=results))
-    assert gate.juiceshop.coverage == pytest.approx(4 / 9)
+    assert gate.juiceshop.coverage == pytest.approx(6 / 9)
     assert not gate.juiceshop.coverage_passes
     assert not gate.passed
+
+
+def test_detect_sqli_emits_union_claims_only_after_structural_sentinels(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import reachagent.eval.juiceshop_live as live
+
+    structural_calls: list[dict[str, object]] = []
+
+    monkeypatch.setattr(live, "_session_as", lambda *args: object())
+    monkeypatch.setattr(live, "_mcp_for", lambda sess: object())
+    monkeypatch.setattr(
+        live,
+        "_fire_body",
+        lambda *args, **kwargs: {"fire_ref": "login", "status_code": 401},
+    )
+    monkeypatch.setattr(live, "_confirm_differential", lambda *args, **kwargs: False)
+
+    def fake_fire_query(*args: object, **kwargs: object) -> dict[str, object]:
+        payload = str(args[-1])
+        if payload == "qwert":
+            return {"fire_ref": "search-baseline", "status_code": 200}
+        return {
+            "fire_ref": "search-schema" if "sqlite_master" in payload else "search-users",
+            "status_code": 200,
+        }
+
+    def fake_confirm_structural(*args: object, **kwargs: object) -> bool:
+        structural_calls.append(kwargs)
+        return kwargs.get("check_type") == "union_extraction" and bool(kwargs.get("union_sentinel"))
+
+    monkeypatch.setattr(live, "_fire_query", fake_fire_query)
+    monkeypatch.setattr(live, "_confirm_structural", fake_confirm_structural)
+
+    claims = live._detect_sqli(live.JuiceshopTarget("http://juice.test"), None)
+
+    assert {claim.challenge_key for claim in claims} == {
+        "unionSqlInjectionChallenge",
+        "dbSchemaChallenge",
+    }
+    assert [call["union_sentinel"] for call in structural_calls] == [
+        "admin@juice-sh.op",
+        "CREATE TABLE `Users`",
+    ]
+    assert all(call["check_type"] == "union_extraction" for call in structural_calls)
 
 
 def test_api_only_unsupported_detectors_emit_no_claims() -> None:

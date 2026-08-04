@@ -11,17 +11,17 @@ traversal challenge-tracker items, false-positive rate ≤10%, and confirmed
 blind-SQLi on PortSwigger vulnerable/non-vulnerable variants. Current API-only
 Docker mode must not present that historical target as achievable: strict
 runtime denominator is nine `VERIFIED_CHALLENGE_SCOPE` keys, with a current
-class-correct deterministic ceiling of 4/9 (three SQLi auth-bypass keys plus the
-null-byte input-validation key). The null-byte package-artifact result is now
-labeled `file_upload`; `unionSqlInjectionChallenge` and `dbSchemaChallenge` remain
-uncredited until exact extraction attribution replaces generic response
-divergence. Upload challenges lack persistence/retrieval/execution evidence, and
-DOM-XSS challenge attribution requires browser-rendered execution unavailable in
-current API-only runner. Phase 3 remains incomplete until at least 7/9 is honestly
-reachable, or scope is explicitly re-baselined.
+class-correct deterministic ceiling of 6/9 (three SQLi auth-bypass keys, the
+UNION user/schema extraction keys, and the null-byte input-validation key).
+The null-byte package-artifact result is labeled `file_upload`; the UNION keys
+require extraction-only sentinels in successful search responses. Upload
+challenges lack persistence/retrieval/execution evidence, and DOM-XSS challenge
+attribution requires browser-rendered execution unavailable in current API-only
+runner. Phase 3 remains incomplete until at least 7/9 is honestly reachable, or
+scope is explicitly re-baselined.
 Three load-bearing clauses remain for any browser-capable re-baselined run:
 
-- **≥75% Juice Shop coverage.** Scored against built-in challenge tracker (ground truth), not self-reported. Current API-only mode is capped at 4/9 class-correct keys; 75% requires at least 7/9 matching typed claims.
+- **≥75% Juice Shop coverage.** Scored against built-in challenge tracker (ground truth), not self-reported. Current API-only mode is capped at 6/9 class-correct keys: three SQLi auth-bypass keys, the two extraction-sentinel UNION keys, and the null-byte input-validation key; 75% requires at least 7/9 matching typed claims.
 - **≤10% false-positive rate.** Measured against confirmed challenge completions: a finding on a challenge the tracker has not confirmed is a false positive. The rate is `false_positives / (true_positives + false_positives)` over full run.
 - **Blind-SQLi on PortSwigger, zero false positives on non-vulnerable variants.** Juice Shop does not cleanly isolate blind case; PortSwigger labs remain dedicated ground truth for OOB-first/paired-timing oracle. A confirmed finding on vulnerable lab plus zero findings on non-vulnerable variant is pass condition.
 
@@ -246,7 +246,7 @@ Three load-bearing clauses remain for any browser-capable re-baselined run:
 - **PortSwigger blind-SQLi labs** are accessed via the Burp Suite MCP Server or
   Caido MCP integration (§13: "capture/replay only") for the OOB-first oracle
   specifically. The lab URL and session token are loaded from env, never hardcoded.
-- **Gate invariant 1 — historical ≥75% Juice Shop challenge coverage:** strict runtime scope is exactly the nine `VERIFIED_CHALLENGE_SCOPE` keys, not category-wide tracker rows. Current API-only Docker runner has class-correct ceiling 4/9: three SQLi auth-bypass keys plus the relabeled null-byte input-validation key. `unionSqlInjectionChallenge` and `dbSchemaChallenge` remain uncredited until exact extraction attribution; upload type/size lack persistence/retrieval/execution signal; DOM-XSS lacks browser attribution. Historical threshold requires ≥7/9 matching typed claims and is currently unattainable; gate must report measured failure, not imply unexplained target failure.
+- **Gate invariant 1 — historical ≥75% Juice Shop challenge coverage:** strict runtime scope is exactly the nine `VERIFIED_CHALLENGE_SCOPE` keys, not category-wide tracker rows. Current API-only Docker runner has class-correct ceiling 6/9: three SQLi auth-bypass keys, `unionSqlInjectionChallenge` and `dbSchemaChallenge` after extraction-only sentinel confirmation, plus the relabeled null-byte input-validation key. Upload type/size lack persistence/retrieval/execution signal; DOM-XSS lacks browser attribution. Historical threshold requires ≥7/9 matching typed claims and remains unattainable without browser capability plus distinguishable upload evidence; gate must report measured failure, not imply unexplained target failure.
 - **Gate invariant 2 — ≤10% false-positive rate:** `false_positives /
   (true_positives + false_positives) <= 0.10` over the full Juice Shop run, where a
   false positive is a confirmed finding on a challenge the tracker has not confirmed.

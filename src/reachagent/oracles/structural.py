@@ -13,6 +13,10 @@ violations deterministically:
     verbatim in the response body, proving the server read a file outside the
     intended directory.
 
+  * **UNION_EXTRACTION** — a known extraction-only sentinel (a seeded user email,
+    bcrypt prefix, or sqlite schema artifact) appears verbatim in a successful
+    response body. Product-search content alone cannot satisfy this check.
+
   * **JWT_FORGERY** — a forged token (none-algorithm, weak-secret, key-confusion)
     was accepted (2xx) when it should have been refused (401/403). Baseline: a
     valid token is accepted. Probe: the forged token.
@@ -64,6 +68,7 @@ class StructuralCheckType(StrEnum):
 
     FILE_UPLOAD_BYPASS = "file_upload_bypass"
     PATH_TRAVERSAL = "path_traversal"
+    UNION_EXTRACTION = "union_extraction"
     JWT_FORGERY = "jwt_forgery"
     CLICKJACKING = "clickjacking"
     CORS_MISCONFIG = "cors_misconfig"
@@ -86,6 +91,11 @@ class StructuralEvidence:
       ``sentinel``: known string that proves out-of-scope file access (e.g.
       ``root:x:0:0``). ``response_body``: the server's response. Sentinel present
       in a successful response → traversal confirmed.
+
+    UNION_EXTRACTION:
+      ``union_sentinel``: known user or schema artifact that cannot occur in a
+      benign product-search response. ``response_body``: the server's response.
+      Sentinel present in a successful response → extraction confirmed.
 
     JWT_FORGERY:
       ``baseline_status``: response to a valid token (must be 2xx).
@@ -123,6 +133,7 @@ class StructuralEvidence:
     baseline_status: int = 0
     probe_status: int = 0
     sentinel: str = ""
+    union_sentinel: str = ""
     response_body: str = ""
     x_frame_options: str = ""
     csp: str = ""
@@ -208,6 +219,15 @@ def decide(evidence: StructuralEvidence) -> FindingStatus:
             200 <= evidence.probe_status < 300
             and evidence.sentinel
             and evidence.sentinel in evidence.response_body
+        ):
+            return FindingStatus.CONFIRMED_VIOLATION
+        return FindingStatus.INCONCLUSIVE
+
+    if evidence.check_type is StructuralCheckType.UNION_EXTRACTION:
+        if (
+            200 <= evidence.probe_status < 300
+            and evidence.union_sentinel
+            and evidence.union_sentinel in evidence.response_body
         ):
             return FindingStatus.CONFIRMED_VIOLATION
         return FindingStatus.INCONCLUSIVE

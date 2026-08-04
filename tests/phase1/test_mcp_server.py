@@ -453,6 +453,37 @@ def test_run_oracle_structural_resolves_body_from_fire_ref() -> None:
     assert verdict.is_violation is True  # type: ignore[attr-defined]
 
 
+def test_run_oracle_structural_union_resolves_body_from_fire_ref() -> None:
+    session = _session_on(lambda r: httpx.Response(200, text='{"email":"admin@juice-sh.op"}'))
+    ep = session.graph.add_endpoint(Endpoint(method="GET", path="/rest/products/search"))
+    param = session.graph.add_parameter(ep, Parameter(name="q", location="query"))
+    mcp = _register_on_session(session)
+
+    _call(mcp, "fingerprint_parameter", identity="anon", endpoint_node=ep, param_node=param)
+    probe = _call(
+        mcp,
+        "fire_request",
+        identity="anon",
+        endpoint_node=ep,
+        param_node=param,
+        payload="union-payload",
+        method="GET",
+    )
+    verdict = _call(
+        mcp,
+        "run_oracle",
+        mechanism="structural",
+        evidence={
+            "check_type": "union_extraction",
+            "probe_status": probe.status_code,  # type: ignore[attr-defined]
+            "union_sentinel": "admin@juice-sh.op",
+            "probe_fire_ref": probe.fire_ref,  # type: ignore[attr-defined]
+            "evidence_ref": "sqli/search-union-users",
+        },
+    )
+    assert verdict.is_violation is True  # type: ignore[attr-defined]
+
+
 def test_run_oracle_execution_confirmation_resolves_body_from_fire_ref() -> None:
     # Fix C: the execution_confirmation oracle resolves response_body from a
     # probe_fire_ref for the stored-XSS read-back — the client passes only the

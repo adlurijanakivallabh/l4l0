@@ -599,9 +599,9 @@ def register_tools(mcp: FastMCP, session: _Session) -> None:
           ``baseline_fire_ref``, ``probe_fire_ref``, ``json_field``,
           ``baseline_select``, ``probe_select``, ``evidence_ref``.
         * **structural** — ``check_type`` (``file_upload_bypass`` /
-          ``path_traversal`` / ``jwt_forgery`` / ``clickjacking`` /
+          ``path_traversal`` / ``union_extraction`` / ``jwt_forgery`` / ``clickjacking`` /
           ``cors_misconfig`` / ``csrf_missing_protection``),
-          ``baseline_status``, ``probe_status``, ``sentinel``,
+          ``baseline_status``, ``probe_status``, ``sentinel``, ``union_sentinel``,
           ``response_body``, ``evidence_ref``; for ``clickjacking``:
           ``x_frame_options``, ``csp``; for ``cors_misconfig``: ``acao``,
           ``acac``, ``probe_origin``; for ``csrf_missing_protection``:
@@ -677,6 +677,7 @@ def register_tools(mcp: FastMCP, session: _Session) -> None:
                 baseline_status=int(ev.get("baseline_status", 0)),
                 probe_status=int(ev.get("probe_status", 0)),
                 sentinel=str(ev.get("sentinel", "")),
+                union_sentinel=str(ev.get("union_sentinel", "")),
                 response_body=response_body,
                 x_frame_options=_hdr("x_frame_options", "x-frame-options"),
                 csp=_hdr("csp", "content-security-policy"),

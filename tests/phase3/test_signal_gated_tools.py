@@ -453,6 +453,21 @@ def test_emitters_write_zero_findings_candidates_and_can_call() -> None:
     assert len(list(graph._g.nodes())) == node_count_before  # noqa: SLF001
 
 
+def test_juiceshop_eval_detector_imports_no_validator() -> None:
+    from pathlib import Path
+
+    path = Path(__file__).parents[2] / "src" / "reachagent" / "eval" / "juiceshop_live.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    imports = [node.module or "" for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)]
+    imports.extend(
+        alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Import)
+        for alias in node.names
+    )
+    assert not any("reachagent.tools.validator" in name for name in imports)
+
+
 def test_signal_gated_emitters_import_no_validator_or_finding_writer() -> None:
     # AST scan (like the recon test): no emitter module imports run_oracle /
     # write_finding / mark_inconclusive or the validator module. The only path to a

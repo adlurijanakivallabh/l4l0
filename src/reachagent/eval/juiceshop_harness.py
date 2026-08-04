@@ -6,7 +6,7 @@ credentials exist, with no change to the Juice Shop logic below):
 
   * **Historical browser-capable target gate — coverage ≥ 75%:**
     ``solved_in_scope / total_in_scope >= 0.75``. Current API-only Docker mode
-    has an evidence-backed 4/9 ceiling; this historical threshold is not met.
+    has an evidence-backed 6/9 ceiling; this historical threshold is not met.
     A challenge counts as solved only when the Juice Shop challenge tracker
     confirms it (``GET /api/Challenges``), and only a matching typed claim from
     detector can attribute that flip to ReachAgent.
@@ -39,9 +39,9 @@ IN_SCOPE_CLASSES: tuple[str, ...] = ("injection", "xss", "file_upload", "path_tr
 COVERAGE_FLOOR = 0.75
 FP_RATE_CEILING = 0.10
 DOCUMENTED_COVERAGE_CEILING = (
-    "4/9 API-only deterministic ceiling (three SQLi auth-bypass keys + "
-    "nullByteChallenge input-validation key); unionSqlInjectionChallenge, "
-    "dbSchemaChallenge, uploadSizeChallenge, uploadTypeChallenge, and "
+    "6/9 API-only deterministic ceiling (three SQLi auth-bypass keys, "
+    "unionSqlInjectionChallenge, dbSchemaChallenge, and nullByteChallenge "
+    "input-validation key); uploadSizeChallenge, uploadTypeChallenge, and "
     "localXssChallenge unsupported or uncreditable"
 )
 
