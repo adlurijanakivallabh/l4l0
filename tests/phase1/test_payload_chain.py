@@ -1,0 +1,352 @@
+"""Big Task 19 generic payload-library chain tests."""
+
+from __future__ import annotations
+
+import httpx
+import pytest
+from mcp.server.fastmcp.exceptions import ToolError
+
+from reachagent.execution import AuditLog, RequestFirer, ScopeGuard
+from reachagent.graph.nodes import AuthState, Endpoint, Identity, Parameter, Provenance, SinkType
+from reachagent.graph.store import ReachabilityGraph
+from reachagent.mcp import server
+from reachagent.oracles import OracleMechanism
+from reachagent.payloads import PayloadEntry, PayloadLibrary, build_library, resolve_entry
+from reachagent.tools.explorer_context import ExplorerContext
+from reachagent.tools.payload_chain import (
+    PayloadChainError,
+    audit_failure_callback,
+    call_tool_sync,
+    run_coordinator_payload_step,
+    run_payload_chain,
+)
+
+
+def _session(handler, *, library: PayloadLibrary | None = None) -> tuple[server._Session, object]:
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    audit = AuditLog()
+    firer = RequestFirer(client, ScopeGuard.from_hosts(["vampi.test"]), audit)
+    graph = ReachabilityGraph()
+    context = ExplorerContext(
+        graph=graph,
+        firer=firer,
+        library=library or PayloadLibrary.from_file(),
+        base_url="http://vampi.test",
+    )
+    session = server._Session(ctx=context)
+    from mcp.server.fastmcp import FastMCP
+
+    mcp = FastMCP("payload-chain-test")
+    server.register_tools(mcp, session)
+    return session, mcp
+
+
+def _surface(mcp: object) -> object:
+    return mcp
+
+
+def test_generic_chain_uses_real_library_payload_over_mcp() -> None:
+    seen: list[httpx.Request] = []
+
+    corpus_entry = next(
+        entry
+        for entry in build_library().get_payloads("sqli", SinkType.SQL)
+        if "#L" in entry.payload_ref
+    )
+    corpus_value = resolve_entry(corpus_entry)
+    assert corpus_value
+    assert corpus_entry.payload_ref.startswith("PayloadsAllTheThings/")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        value = request.url.params.get("q", "")
+        if value == "baseline":
+            return httpx.Response(200, text="safe")
+        if value == corpus_value or value.startswith("reachagent-canary-"):
+            return httpx.Response(500, text="You have an error in your SQL syntax")
+        return httpx.Response(200, text="safe")
+
+    session, mcp = _session(handler, library=PayloadLibrary([corpus_entry]))
+    endpoint = session.graph.add_endpoint(Endpoint("GET", "/users/v1/name"))
+    parameter = session.graph.add_parameter(endpoint, Parameter("q", "query"))
+    assert session.ctx.graph.parameter_sink(parameter) is None
+    assert session.ctx.is_fingerprinted(parameter) is False
+    audit_failure = audit_failure_callback(
+        session.ctx.firer.audit,
+        identity="anonymous",
+        base_url=session.ctx.base_url,
+        endpoint_path="/users/v1/name",
+    )
+
+    result = run_payload_chain(
+        lambda name, arguments: call_tool_sync(_surface(mcp), name, arguments),
+        identity="anonymous",
+        endpoint_node=endpoint,
+        param_node=parameter,
+        vuln_class="sqli",
+        baseline_payload="baseline",
+        audit_failure=audit_failure,
+    )
+
+    assert result.confirmed is True
+    assert result.attempted == 1
+    assert result.finding_node is not None
+    assert result.payload_ref == corpus_entry.payload_ref
+    assert session.graph.findings()
+    assert seen[0].url.params["q"]
+    assert seen[1].url.params["q"] == "baseline"
+    assert seen[2].url.params["q"] == corpus_value
+    expected_raw_path = httpx.URL(
+        "http://vampi.test/users/v1/name", params={"q": corpus_value}
+    ).raw_path
+    assert seen[2].url.raw_path == expected_raw_path
+    assert all(
+        entry.target == "http://vampi.test/users/v1/name"
+        for entry in session.ctx.firer.audit.entries
+    )
+    assert all("'" not in entry.target for entry in session.ctx.firer.audit.entries)
+    assert not any(
+        entry.outcome == "payload_chain_failure" for entry in session.ctx.firer.audit.entries
+    )
+
+
+def test_payload_exhaustion_is_audited() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.params.get("q", "").startswith("reachagent-canary-"):
+            return httpx.Response(500, text="You have an error in your SQL syntax")
+        return httpx.Response(200, text="safe")
+
+    session, mcp = _session(handler)
+    endpoint = session.graph.add_endpoint(Endpoint("GET", "/public"))
+    parameter = session.graph.add_parameter(endpoint, Parameter("q", "query"))
+    failures: list[str] = []
+    result = run_payload_chain(
+        lambda name, arguments: call_tool_sync(mcp, name, arguments),
+        identity="anonymous",
+        endpoint_node=endpoint,
+        param_node=parameter,
+        vuln_class="sqli",
+        baseline_payload="baseline",
+        max_attempts=1,
+        audit_failure=failures.append,
+    )
+    assert result.failure and "payloads exhausted" in result.failure
+    assert failures == [result.failure]
+
+
+def test_empty_sink_is_explicit_and_audited() -> None:
+    session, mcp = _session(lambda request: httpx.Response(200, text="safe"))
+    endpoint = session.graph.add_endpoint(Endpoint("GET", "/public"))
+    parameter = session.graph.add_parameter(endpoint, Parameter("q", "query"))
+    failures: list[str] = []
+
+    result = run_payload_chain(
+        lambda name, arguments: call_tool_sync(mcp, name, arguments),
+        identity="anonymous",
+        endpoint_node=endpoint,
+        param_node=parameter,
+        vuln_class="sqli",
+        baseline_payload="baseline",
+        audit_failure=failures.append,
+    )
+
+    assert result.confirmed is False
+    assert result.attempted == 0
+    assert result.failure and "no payloads matched" in result.failure
+    assert failures == [result.failure]
+    assert session.graph.findings() == []
+
+
+def test_missing_payload_slot_is_loud_and_audited() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.params.get("q", "").startswith("reachagent-canary-"):
+            return httpx.Response(500, text="You have an error in your SQL syntax")
+        return httpx.Response(200, text="safe")
+
+    session, mcp = _session(handler)
+    endpoint = session.graph.add_endpoint(Endpoint("GET", "/users/v1/name"))
+    parameter = session.graph.add_parameter(endpoint, Parameter("q", "query"))
+    failures: list[str] = []
+
+    with pytest.raises(ToolError):
+        run_payload_chain(
+            lambda name, arguments: call_tool_sync(mcp, name, arguments),
+            identity="anonymous",
+            endpoint_node=endpoint,
+            param_node=parameter,
+            vuln_class="sqli_blind",
+            baseline_payload="baseline",
+            audit_failure=failures.append,
+        )
+
+    assert failures == ["payload lookup failed: ToolError"]
+    assert session.graph.findings() == []
+
+
+def test_dead_payload_ref_is_loud_and_audited() -> None:
+    entry = PayloadEntry(
+        vuln_class="sqli",
+        context="dead ref test",
+        inferred_sink_type=SinkType.SQL,
+        oracle_type=OracleMechanism.DIFFERENTIAL,
+        payload_ref="SecLists/does-not-exist.txt#L999999",
+        graph_edge_on_success="enables",
+    )
+    session, mcp = _session(
+        lambda request: httpx.Response(500, text="You have an error in your SQL syntax"),
+        library=PayloadLibrary([entry]),
+    )
+    endpoint = session.graph.add_endpoint(Endpoint("GET", "/users/v1/name"))
+    parameter = session.graph.add_parameter(endpoint, Parameter("q", "query"))
+    failures: list[str] = []
+
+    with pytest.raises(ToolError):
+        run_payload_chain(
+            lambda name, arguments: call_tool_sync(mcp, name, arguments),
+            identity="anonymous",
+            endpoint_node=endpoint,
+            param_node=parameter,
+            vuln_class="sqli",
+            baseline_payload="baseline",
+            audit_failure=failures.append,
+        )
+
+    assert failures == ["payload lookup failed: ToolError"]
+    assert session.graph.findings() == []
+
+
+def test_unsupported_oracle_is_loud_and_audited() -> None:
+    entry = PayloadEntry(
+        vuln_class="sqli",
+        context="unsupported test",
+        inferred_sink_type=SinkType.SQL,
+        oracle_type=OracleMechanism.TIMING_STATISTICAL,
+        payload_ref="sqli/error-based/quote-break",
+        graph_edge_on_success="enables",
+    )
+    session, mcp = _session(
+        lambda request: httpx.Response(500, text="You have an error in your SQL syntax"),
+        library=PayloadLibrary([entry]),
+    )
+    endpoint = session.graph.add_endpoint(Endpoint("GET", "/users/v1/name"))
+    parameter = session.graph.add_parameter(endpoint, Parameter("q", "query"))
+    failures: list[str] = []
+    with pytest.raises(PayloadChainError):
+        run_payload_chain(
+            lambda name, arguments: call_tool_sync(mcp, name, arguments),
+            identity="anonymous",
+            endpoint_node=endpoint,
+            param_node=parameter,
+            vuln_class="sqli",
+            baseline_payload="baseline",
+            audit_failure=failures.append,
+        )
+    assert failures and "no safe evidence adapter" in failures[0]
+
+
+def test_success_mcp_sequence_includes_validator_calls() -> None:
+    seen: list[str] = []
+    corpus_entry = next(
+        entry
+        for entry in build_library().get_payloads("sqli", SinkType.SQL)
+        if "#L" in entry.payload_ref
+    )
+    corpus_value = resolve_entry(corpus_entry)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        value = request.url.params.get("q", "")
+        if value.startswith("reachagent-canary-") or value == corpus_value:
+            return httpx.Response(500, text="You have an error in your SQL syntax")
+        return httpx.Response(200, text="safe")
+
+    session, mcp = _session(handler, library=PayloadLibrary([corpus_entry]))
+    endpoint = session.graph.add_endpoint(Endpoint("GET", "/users/v1/name"))
+    parameter = session.graph.add_parameter(endpoint, Parameter("q", "query"))
+
+    def caller(name: str, arguments: dict[str, object]) -> object:
+        seen.append(name)
+        return call_tool_sync(mcp, name, arguments)
+
+    result = run_payload_chain(
+        caller,
+        identity="anonymous",
+        endpoint_node=endpoint,
+        param_node=parameter,
+        vuln_class="sqli",
+        baseline_payload="baseline",
+    )
+    assert result.confirmed is True
+    assert seen == [
+        "fingerprint_parameter",
+        "get_payloads",
+        "fire_request",
+        "fire_request",
+        "classify_response",
+        "run_oracle",
+        "write_finding",
+    ]
+
+
+def test_real_mcp_call_tool_boundary_is_used() -> None:
+    session, mcp = _session(lambda request: httpx.Response(200, text="safe"))
+    endpoint = session.graph.add_endpoint(Endpoint("GET", "/public"))
+    parameter = session.graph.add_parameter(endpoint, Parameter("q", "query"))
+    names: list[str] = []
+
+    def caller(name: str, arguments: dict[str, object]) -> object:
+        names.append(name)
+        return call_tool_sync(mcp, name, arguments)
+
+    run_payload_chain(
+        caller,
+        identity="anonymous",
+        endpoint_node=endpoint,
+        param_node=parameter,
+        vuln_class="sqli",
+        baseline_payload="baseline",
+    )
+    assert names[:2] == ["fingerprint_parameter", "get_payloads"]
+    assert "fire_request" not in names
+    assert session.ctx.firer.audit.entries
+
+
+def test_coordinator_selection_drives_generic_chain() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        value = request.url.params.get("q", "")
+        if value.startswith("reachagent-canary-") or value == "'":
+            return httpx.Response(500, text="You have an error in your SQL syntax")
+        return httpx.Response(200, text="safe")
+
+    session, mcp = _session(handler)
+    identity = session.graph.add_identity(
+        "anonymous",
+        Identity(role="user", auth_state=AuthState.UNAUTH, provenance=Provenance.SEEDED),
+    )
+    endpoint = session.graph.add_endpoint(Endpoint("GET", "/users/v1/name"))
+    session.graph.add_parameter(endpoint, Parameter("q", "query"))
+    from reachagent.graph.chain_solver import ChainSolver
+    from reachagent.tools.coordinator_support import CoordinatorContext
+
+    context = CoordinatorContext(session.graph, ChainSolver(session.graph), run_id="task19")
+    result = run_coordinator_payload_step(
+        lambda name, arguments: call_tool_sync(mcp, name, arguments),
+        {"context": context, "identity_node": identity, "endpoint_node": endpoint},
+        vuln_class="sqli",
+        baseline_payload="baseline",
+    )
+
+    assert result.confirmed is True
+    assert result.finding_node is not None
+    assert session.graph.findings()
+
+    audit = AuditLog()
+    callback = audit_failure_callback(
+        audit,
+        identity="anonymous",
+        base_url="http://vampi.test",
+        endpoint_path="/users?secret=payload",
+    )
+    callback("no payloads matched")
+    assert audit.entries[0].target == "http://vampi.test/users"
+    assert "secret" not in audit.entries[0].target
+    assert "payload" not in audit.entries[0].target
