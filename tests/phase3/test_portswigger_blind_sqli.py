@@ -22,8 +22,16 @@ from reachagent.tools import validator
 class _MockLabFirer:
     """Mock GET execution layer: vulnerable variant delays only tagged payloads."""
 
-    def __init__(self, *, delayed: bool) -> None:
+    def __init__(
+        self,
+        *,
+        delayed: bool,
+        baseline_status: int = 200,
+        probe_status: int = 200,
+    ) -> None:
         self.delayed = delayed
+        self.baseline_status = baseline_status
+        self.probe_status = probe_status
         self.calls: list[tuple[str, str, str, str]] = []
 
     def fire(self, identity: str, method: str, url: str, **kwargs: object) -> FireResult:
@@ -35,9 +43,10 @@ class _MockLabFirer:
         assert cookie.startswith("TrackingId=")
         assert "; session=session-token" in cookie
         self.calls.append((identity, method, url, cookie))
-        delayed = self.delayed and "x'||pg_sleep(10)--" in cookie
+        is_probe = "x'||pg_sleep(10)--" in cookie
+        delayed = self.delayed and is_probe
         return FireResult(
-            status_code=200,
+            status_code=self.probe_status if is_probe else self.baseline_status,
             elapsed_seconds=5.0 if delayed else 0.1,
             body=b"mock lab response",
             headers=httpx.Headers({"content-type": "text/html"}),
@@ -94,6 +103,24 @@ def test_time_delay_runner_confirms_vulnerable_and_clean_variants() -> None:
     assert vulnerable_findings[0][1].status is FindingStatus.CONFIRMED_VIOLATION
     assert vulnerable_findings[0][1].oracle_used == "timing_statistical"
     assert clean_findings == []
+
+
+def test_time_delay_runner_rejects_non_success_statuses() -> None:
+    for baseline_status, probe_status in ((403, 200), (200, 500), (200, 504), (200, 302)):
+        graph = ReachabilityGraph()
+        firer = _MockLabFirer(
+            delayed=True,
+            baseline_status=baseline_status,
+            probe_status=probe_status,
+        )
+        result = _runner(delayed=True, graph=graph, firer=firer).run()
+
+        assert result.available is True
+        assert result.vuln_lab_confirmed is False
+        assert result.mechanism == ""
+        assert result.passes is False
+        assert graph.findings() == []
+        assert len(firer.calls) == 20
 
 
 def test_time_delay_runner_clean_variant_stays_inconclusive() -> None:

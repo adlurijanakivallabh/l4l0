@@ -87,6 +87,10 @@ class LabFire(Protocol):
     ) -> FireResult: ...
 
 
+class _TimingProbeInconclusive(RuntimeError):
+    """Raised when timing arms include a non-success HTTP response."""
+
+
 @dataclass(frozen=True)
 class PortswiggerLabConfig:
     """Time-delay lab configuration loaded from environment, never hardcoded."""
@@ -182,9 +186,19 @@ class PortswiggerBlindSqliRunner:
     def _timing_probe(self) -> TimingProbe:
         baseline: list[float] = []
         probe: list[float] = []
+        invalid_statuses: list[int] = []
         for _ in range(10):
-            baseline.append(self._fire_payload(_BASELINE_PAYLOAD).elapsed_seconds * 1000)
-            probe.append(self._fire_payload(_DELAY_PAYLOAD).elapsed_seconds * 1000)
+            baseline_result = self._fire_payload(_BASELINE_PAYLOAD)
+            probe_result = self._fire_payload(_DELAY_PAYLOAD)
+            if not 200 <= baseline_result.status_code < 300:
+                invalid_statuses.append(baseline_result.status_code)
+            if not 200 <= probe_result.status_code < 300:
+                invalid_statuses.append(probe_result.status_code)
+            baseline.append(baseline_result.elapsed_seconds * 1000)
+            probe.append(probe_result.elapsed_seconds * 1000)
+        if invalid_statuses:
+            statuses = ", ".join(str(status) for status in sorted(set(invalid_statuses)))
+            raise _TimingProbeInconclusive(f"timing probe received non-2xx status: {statuses}")
         return TimingProbe(
             probe_latencies_ms=tuple(probe),
             baseline_latencies_ms=tuple(baseline),
@@ -204,7 +218,15 @@ class PortswiggerBlindSqliRunner:
             fire_timing=self._timing_probe,
             oracle_runner=self._validator,
         )
-        result = detect_blind_sqli(prober, evidence_ref=evidence_ref, try_boolean=False)
+        try:
+            result = detect_blind_sqli(prober, evidence_ref=evidence_ref, try_boolean=False)
+        except _TimingProbeInconclusive:
+            return PortswiggerResult(
+                available=True,
+                vuln_lab_confirmed=False,
+                lab_type=_LAB_TYPE,
+                evidence_ref=evidence_ref,
+            )
         if result.confirmed:
             verdict = self._validator.last_verdict
             if verdict is None or not getattr(verdict, "is_violation", False):
