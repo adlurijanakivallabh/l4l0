@@ -118,6 +118,83 @@ def test_fingerprint_may_infer_no_sink() -> None:
     assert ctx.is_fingerprinted(param_node) is True
 
 
+def test_sink_hint_template_applies_on_plain_text_reflection() -> None:
+    # A template sink is indistinguishable from "no sink" observationally: the
+    # canary reflects, but in plain text, so the HTML heuristic can't see it.
+    # The class-bound hint covers exactly this gap.
+    def handler(request: httpx.Request) -> httpx.Response:
+        canary = request.url.params.get("q", "")
+        return httpx.Response(200, text=f"echo {canary}", headers={"content-type": "text/plain"})
+
+    graph, endpoint_node, param_node = _graph_with_param()
+    ctx = _context(graph, handler)
+
+    report = explorer.fingerprint_parameter(
+        ctx,
+        "user_a",
+        endpoint_node,
+        param_node,
+        sink_hint=SinkType.TEMPLATE,
+        vuln_class="ssti",
+    )
+    assert report.inferred_sink_type is SinkType.TEMPLATE
+
+
+def test_sink_hint_never_overrides_observed_sql_error() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, text="You have an error in your SQL syntax")
+
+    graph, endpoint_node, param_node = _graph_with_param()
+    ctx = _context(graph, handler)
+
+    with pytest.raises(ValueError, match="not accepted"):
+        explorer.fingerprint_parameter(
+            ctx,
+            "user_a",
+            endpoint_node,
+            param_node,
+            sink_hint=SinkType.SQL,
+            vuln_class="sqli",
+        )
+
+
+def test_sink_hint_conflicting_with_class_is_refused() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        canary = request.url.params.get("q", "")
+        return httpx.Response(200, text=f"echo {canary}", headers={"content-type": "text/plain"})
+
+    graph, endpoint_node, param_node = _graph_with_param()
+    ctx = _context(graph, handler)
+
+    with pytest.raises(ValueError, match="not valid for vuln_class"):
+        explorer.fingerprint_parameter(
+            ctx,
+            "user_a",
+            endpoint_node,
+            param_node,
+            sink_hint=SinkType.FILE_PATH,
+            vuln_class="ssti",
+        )
+
+
+def test_sink_hint_template_requires_reflection() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text="no echo here", headers={"content-type": "text/plain"})
+
+    graph, endpoint_node, param_node = _graph_with_param()
+    ctx = _context(graph, handler)
+
+    with pytest.raises(ValueError, match="requires reflected benign canary"):
+        explorer.fingerprint_parameter(
+            ctx,
+            "user_a",
+            endpoint_node,
+            param_node,
+            sink_hint=SinkType.TEMPLATE,
+            vuln_class="ssti",
+        )
+
+
 def test_fire_request_refused_before_fingerprint() -> None:
     # Nothing downstream fires before fingerprint completes: fire_request on an
     # un-fingerprinted parameter raises before any I/O.

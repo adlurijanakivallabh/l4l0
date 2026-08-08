@@ -182,29 +182,58 @@ def _evidence_for(
     baseline_ref: str,
     probe_ref: str,
     evidence_ref: str,
+    payload: str = "",
+    payload_kit: Mapping[str, object] | None = None,
+    vuln_class: str = "",
 ) -> dict[str, object]:
-    """Build only existing §7 evidence shapes for generic differential payloads."""
-    if oracle_type != OracleMechanism.DIFFERENTIAL.value:
-        raise PayloadChainError(
-            f"generic payload chain has no safe evidence adapter for oracle {oracle_type!r}"
-        )
-    return {
-        "axis": "cross_condition",
-        "expectation": "database_error",
-        "baseline_fire_ref": baseline_ref,
-        "probe_fire_ref": probe_ref,
-        "error_signatures": [
-            "sql syntax",
-            "sqlite3.operationalerror",
-            "sqlite_error",
-            "psycopg2",
-            "you have an error in your sql",
-            "unclosed quotation mark",
-            "sqlalchemy",
-            'near "',
-        ],
-        "evidence_ref": evidence_ref,
-    }
+    """Build evidence for generic payloads using existing §7 mechanisms."""
+    if oracle_type == OracleMechanism.DIFFERENTIAL.value:
+        expectation = "database_error"
+        if vuln_class in {"nosqli", "ldap_injection"}:
+            expectation = "responses_invariant"
+        return {
+            "axis": "cross_condition",
+            "expectation": expectation,
+            "baseline_fire_ref": baseline_ref,
+            "probe_fire_ref": probe_ref,
+            "error_signatures": [
+                "sql syntax",
+                "sqlite3.operationalerror",
+                "sqlite_error",
+                "psycopg2",
+                "you have an error in your sql",
+                "unclosed quotation mark",
+                "sqlalchemy",
+                'near "',
+            ],
+            "evidence_ref": evidence_ref,
+        }
+    if oracle_type == OracleMechanism.STRUCTURAL.value and vuln_class == "path_traversal":
+        sentinel = "root:"
+        if payload and "win.ini" in payload.lower():
+            sentinel = "[extensions]"
+        return {
+            "check_type": "path_traversal",
+            "probe_fire_ref": probe_ref,
+            "sentinel": sentinel,
+            "evidence_ref": evidence_ref,
+        }
+    if oracle_type == OracleMechanism.EXECUTION_CONFIRMATION.value and vuln_class == "ssti":
+        from reachagent.payloads.payload_resolver import expected_execution_output as _expected_out
+
+        expected = _expected_out(payload)
+        if expected is None:
+            raise PayloadChainError(
+                f"SSTI payload {payload!r} has no deterministic rendered-output expectation"
+            )
+        return {
+            "probe_fire_ref": probe_ref,
+            "expected_output": expected,
+            "evidence_ref": evidence_ref,
+        }
+    raise PayloadChainError(
+        f"generic payload chain has no safe evidence adapter for oracle {oracle_type!r}"
+    )
 
 
 def run_payload_chain(
@@ -231,14 +260,20 @@ def run_payload_chain(
     iteration. Empty catalogs, unresolved refs, unsupported oracle adapters, and
     exhausted budgets return explicit failed results; they never become clean.
     """
-    fingerprint = _call_result(
-        call,
-        "fingerprint_parameter",
-        identity=identity,
-        endpoint_node=endpoint_node,
-        param_node=param_node,
-        method=method,
-    )
+    # Only file_path/template have no observational fingerprint path — for every
+    # other class the canary evidence decides the sink (a hint must never
+    # override observed signal; explorer enforces this too).
+    fingerprint_args: dict[str, object] = {
+        "identity": identity,
+        "endpoint_node": endpoint_node,
+        "param_node": param_node,
+        "method": method,
+    }
+    hint = {"path_traversal": "file_path", "ssti": "template"}.get(vuln_class)
+    if hint is not None:
+        fingerprint_args["sink_hint"] = hint
+        fingerprint_args["vuln_class"] = vuln_class
+    fingerprint = _call_result(call, "fingerprint_parameter", **fingerprint_args)
     sink_type = fingerprint.get("inferred_sink_type")
     try:
         entries = _as_entries(
@@ -288,6 +323,20 @@ def run_payload_chain(
             raise PayloadChainError(detail)
 
         try:
+            _evidence_for(
+                oracle_type,
+                baseline_ref="preflight-baseline",
+                probe_ref="preflight-probe",
+                evidence_ref=f"{evidence_prefix}/{payload_ref}",
+                payload=payload,
+                payload_kit=entry.get("slot_kit"),  # type: ignore[arg-type]
+                vuln_class=vuln_class,
+            )
+        except PayloadChainError as exc:
+            _record_failure(audit_failure, str(exc))
+            raise
+
+        try:
             baseline = _call_result(
                 call,
                 "fire_request",
@@ -333,6 +382,9 @@ def run_payload_chain(
                 baseline_ref=baseline_ref,
                 probe_ref=probe_ref,
                 evidence_ref=evidence_ref,
+                payload=payload,
+                payload_kit=entry.get("slot_kit"),  # type: ignore[arg-type]
+                vuln_class=vuln_class,
             )
             verdict = _call_result(
                 call,

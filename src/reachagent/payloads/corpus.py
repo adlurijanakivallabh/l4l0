@@ -47,6 +47,7 @@ from __future__ import annotations
 
 import logging
 import re
+from collections import Counter
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
@@ -80,7 +81,7 @@ _KNOWN_EDGES: frozenset[str] = frozenset(
 
 @dataclass(frozen=True)
 class _FolderClass:
-    """Folder token → the class/sink/oracle-default/success-edge it ingests as."""
+    """Folder token → class/sink/oracle default/success edge."""
 
     vuln_class: str
     sink: SinkType
@@ -88,14 +89,26 @@ class _FolderClass:
     success_edge: str
 
 
-# Folder path token → class mapping. A vendored file is ingested under the FIRST
-# (most specific) token that appears as a path component of its relpath, so both
-# ``SQL Injection`` (PayloadsAllTheThings) and ``Databases/SQLi`` (SecLists) map to
-# the sqli class. A file whose relpath matches no token is skipped and logged.
-#
-# auth-bypass-capable classes (sqli/nosqli) default their success edge to
-# ``derived_credential`` (a confirmed bypass yields a principal, §8); the others
-# to ``enables`` (a confirmed injection is a chainable finding).
+@dataclass(frozen=True)
+class CorpusIngestReport:
+    """Auditable full-corpus ledger, including rejected and reserved payloads."""
+
+    entries: tuple[PayloadEntry, ...]
+    counts: dict[tuple[str, str], int]
+    reserved_files: tuple[str, ...]
+    skipped_files: tuple[str, ...]
+    semantic_invalid_refs: tuple[str, ...]
+    skipped_lines: int
+
+    @property
+    def reserved_count(self) -> int:
+        """Number of files with payloads but no consuming oracle."""
+        return len(self.reserved_files)
+
+
+# Folder path token → class mapping. A vendored file is ingested under the most
+# specific token that appears as a path component. Only classes with a genuine
+# consuming §7 oracle are mapped. Everything else remains reserved, never guessed.
 _FOLDER_MAP: dict[str, _FolderClass] = {
     "SQLi": _FolderClass("sqli", SinkType.SQL, OracleMechanism.DIFFERENTIAL, "derived_credential"),
     "SQL Injection": _FolderClass(
@@ -108,16 +121,10 @@ _FOLDER_MAP: dict[str, _FolderClass] = {
         "nosqli", SinkType.NOSQL, OracleMechanism.DIFFERENTIAL, "derived_credential"
     ),
     "XSS": _FolderClass(
-        "xss_reflected",
-        SinkType.HTML_REFLECTION,
-        OracleMechanism.EXECUTION_CONFIRMATION,
-        "enables",
+        "xss_reflected", SinkType.HTML_REFLECTION, OracleMechanism.EXECUTION_CONFIRMATION, "enables"
     ),
     "XSS Injection": _FolderClass(
-        "xss_reflected",
-        SinkType.HTML_REFLECTION,
-        OracleMechanism.EXECUTION_CONFIRMATION,
-        "enables",
+        "xss_reflected", SinkType.HTML_REFLECTION, OracleMechanism.EXECUTION_CONFIRMATION, "enables"
     ),
     "Command-Injection": _FolderClass(
         "command_injection", SinkType.SHELL, OracleMechanism.OOB_CALLBACK, "enables"
@@ -131,10 +138,26 @@ _FOLDER_MAP: dict[str, _FolderClass] = {
     "File Inclusion": _FolderClass(
         "path_traversal", SinkType.FILE_PATH, OracleMechanism.STRUCTURAL, "enables"
     ),
+    "Directory Traversal": _FolderClass(
+        "path_traversal", SinkType.FILE_PATH, OracleMechanism.STRUCTURAL, "enables"
+    ),
+    "Server Side Template Injection": _FolderClass(
+        "ssti", SinkType.TEMPLATE, OracleMechanism.EXECUTION_CONFIRMATION, "enables"
+    ),
+    "LDAP Injection": _FolderClass(
+        "ldap_injection", SinkType.LDAP, OracleMechanism.DIFFERENTIAL, "derived_credential"
+    ),
 }
 
-# The SecLists command-injection list is a single top-level file, not under a
-# folder token; map it by filename substring so it still ingests as shell/cmdi.
+# No PATT machine-readable SSRF payload file exists at pinned commit. SSRF remains
+# reserved until a real line-oriented source and OOB adapter can consume it.
+_RESERVED_CLASS_TOKENS = {
+    "Server Side Request Forgery": "reserved: payloads available, no confirming oracle yet",
+    "JSON Web Token": "reserved: payloads available, no line-oriented payload file",
+    "CORS Misconfiguration": "reserved: payloads available, no line-oriented payload file",
+    "XXE Injection": "reserved: payloads available, no confirming structural/OOB adapter",
+}
+
 _FILENAME_MAP: dict[str, _FolderClass] = {
     "command-injection": _FOLDER_MAP["Command Injection"],
 }
@@ -181,13 +204,7 @@ def _classify_oracle(line: str, folder_default: OracleMechanism) -> OracleMechan
 
 
 def _folder_class_for(relpath: Path) -> _FolderClass | None:
-    """The class a vendored file ingests as, from its relpath tokens / filename.
-
-    Matches a ``_FOLDER_MAP`` token against the relpath's path components first
-    (longest, most specific token wins so ``SQL Injection`` beats a bare token),
-    then falls back to a filename-substring match (``_FILENAME_MAP``) for the
-    top-level SecLists command-injection list. ``None`` → unmapped (skip + log).
-    """
+    """Return mapped class for relpath; reserved folders return ``None``."""
     parts = set(relpath.parts)
     for token in sorted(_FOLDER_MAP, key=len, reverse=True):
         if token in parts:
@@ -197,6 +214,16 @@ def _folder_class_for(relpath: Path) -> _FolderClass | None:
         if needle in name:
             return folder_class
     return None
+
+
+def _is_reserved_path(relpath: Path) -> bool:
+    """Whether path belongs to payload-bearing class without consuming oracle."""
+    return any(token in relpath.parts for token in _RESERVED_CLASS_TOKENS)
+
+
+def _is_machine_readable(path: Path) -> bool:
+    """Accept one-per-line Intruder files and plain text payload files."""
+    return path.suffix.lower() == ".txt" or "Intruder" in path.parts or "Intruders" in path.parts
 
 
 def _is_acceptable_line(line: str, sink: SinkType) -> bool:
@@ -258,17 +285,58 @@ def _entries_from_file(
     return entries, skipped
 
 
-def load_corpus_entries(sources: Iterable[str] | None = None) -> list[PayloadEntry]:
-    """Ingest tagged entries from the vendored snapshots (default: all sources).
+def _semantic_valid(entry: PayloadEntry, value: str) -> bool:
+    """Reject mapped lines that cannot be stimuli for their declared sink."""
+    sink = entry.inferred_sink_type
+    if sink is SinkType.FILE_PATH:
+        return bool(
+            re.search(r"\.\./|\.\.\\|\.\.%2f|%2e%2e|/etc/|win\.ini|boot\.ini|^/", value, re.I)
+        ) and not re.search(r"https?://", value, re.I)
+    if sink is SinkType.SQL:
+        return bool(
+            re.search(
+                r"['\"]|union|select|sleep|benchmark|waitfor|randomblob|\bor\b|\band\b|--|#|;|=|\|\|",
+                value,
+                re.I,
+            )
+        )
+    if sink is SinkType.NOSQL:
+        return "$" in value or "{" in value or "sleep(" in value.lower()
+    if sink is SinkType.HTML_REFLECTION:
+        return "<" in value or bool(
+            re.search(r"alert|prompt|confirm|onerror|onload|javascript:", value, re.I)
+        )
+    if sink is SinkType.SHELL:
+        return bool(re.search(r"[;&|`]|\$\(|%0a|\\n|sleep|nslookup|ping|cat|\bid\b", value, re.I))
+    if sink is SinkType.LDAP:
+        return bool(re.search(r"[()|*&!/]|%[0-9a-f]{2}", value, re.I))
+    if sink is SinkType.TEMPLATE:
+        from reachagent.payloads.payload_resolver import expected_execution_output
 
-    Walks each source's snapshot dir, maps each ``.txt`` file to a class via its
-    folder tokens (unmapped → skipped + logged), and ingests each acceptable line
-    as a fully-tagged ``PayloadEntry`` with a ``source/relpath#Ln`` locator ref. An
-    unknown source name is an error (a typo must not silently ingest nothing); a
-    missing snapshot dir is warned and skipped (a dev who hasn't fetched it yet).
-    """
-    names = list(sources) if sources is not None else list(_SNAPSHOTS)
+        return expected_execution_output(value) is not None
+    return False
+
+
+def _semantic_invalid_refs(entries: Iterable[PayloadEntry]) -> tuple[str, ...]:
+    """Return all full-ingest refs failing deterministic sink validity checks."""
+    invalid: list[str] = []
+    for entry in entries:
+        from reachagent.payloads.payload_resolver import resolve_entry
+
+        value = resolve_entry(entry)
+        if not _semantic_valid(entry, value):
+            invalid.append(entry.payload_ref)
+    return tuple(invalid)
+
+
+def load_corpus_report(sources: Iterable[str] | None = None) -> CorpusIngestReport:
+    """Load mapped payloads and return counts plus reserved/skipped ledger."""
+    names = list(sources) if sources is not None else ["PayloadsAllTheThings"]
     all_entries: list[PayloadEntry] = []
+    counts: Counter[tuple[str, str]] = Counter()
+    reserved_files: list[str] = []
+    skipped_files: list[str] = []
+    semantic_invalid: list[str] = []
     total_skipped = 0
     for source in names:
         root = _SNAPSHOTS.get(source)
@@ -279,24 +347,66 @@ def load_corpus_entries(sources: Iterable[str] | None = None) -> list[PayloadEnt
         if not root.exists():
             _log.warning("corpus snapshot for %s missing at %s; skipping", source, root)
             continue
-        for txt in sorted(root.rglob("*.txt")):
-            if txt.name == "SOURCE.txt":
+        for path in sorted(root.rglob("*")):
+            if not path.is_file() or path.name == "SOURCE.txt":
                 continue
-            relpath = txt.relative_to(root)
+            relpath = path.relative_to(root)
+            if not _is_machine_readable(path):
+                continue
+            if _is_reserved_path(relpath):
+                detail = f"{source}/{relpath.as_posix()}"
+                reserved_files.append(detail)
+                _log.info("reserved: payloads available, no confirming oracle yet: %s", detail)
+                continue
             folder_class = _folder_class_for(relpath)
             if folder_class is None:
-                _log.info("skipping unmapped corpus file: %s/%s", source, relpath.as_posix())
+                detail = f"{source}/{relpath.as_posix()}"
+                skipped_files.append(detail)
+                _log.info("skipping unmapped corpus file: %s", detail)
                 continue
-            entries, skipped = _entries_from_file(source, txt, folder_class)
-            all_entries.extend(entries)
+            entries, skipped = _entries_from_file(source, path, folder_class)
+            valid_entries: list[PayloadEntry] = []
+            for entry in entries:
+                from reachagent.payloads.payload_resolver import resolve_entry
+
+                if _semantic_valid(entry, resolve_entry(entry)):
+                    valid_entries.append(entry)
+                else:
+                    semantic_invalid.append(entry.payload_ref)
+            all_entries.extend(valid_entries)
             total_skipped += skipped
+            for entry in valid_entries:
+                sink = entry.inferred_sink_type
+                counts[(entry.vuln_class, sink.value if sink is not None else "none")] += 1
+    semantic_invalid = list(dict.fromkeys(semantic_invalid))
+    if semantic_invalid:
+        _log.warning(
+            "semantic-validity guard flagged %d corpus entries: %s",
+            len(semantic_invalid),
+            semantic_invalid[:5],
+        )
     _log.info(
-        "corpus ingest: %d entries from %d source(s); %d lines skipped (blank/comment/junk)",
+        "corpus ingest: %d entries from %d source(s); %d lines skipped; "
+        "%d reserved files; %d unmapped files",
         len(all_entries),
         len(names),
         total_skipped,
+        len(reserved_files),
+        len(skipped_files),
     )
-    return all_entries
+    return CorpusIngestReport(
+        entries=tuple(all_entries),
+        counts=dict(counts),
+        reserved_files=tuple(reserved_files),
+        skipped_files=tuple(skipped_files),
+        semantic_invalid_refs=tuple(semantic_invalid),
+        skipped_lines=total_skipped,
+    )
+
+
+def load_corpus_entries(sources: Iterable[str] | None = None) -> list[PayloadEntry]:
+    """Load only oracle-backed entries; reserved and unmapped files never fire."""
+    return list(load_corpus_report(sources).entries)
 
 
 def build_library(

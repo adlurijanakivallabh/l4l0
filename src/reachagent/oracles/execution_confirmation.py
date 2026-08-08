@@ -39,6 +39,8 @@ class ExecutionConfirmationEvidence:
     flows: tuple[TaintFlow, ...] = ()
     payload_tag: str = ""
     response_body: str = ""
+    expected_output: str = ""
+    template_expression: str = ""
     evidence_ref: str = ""
 
 
@@ -50,6 +52,8 @@ def decide(evidence: ExecutionConfirmationEvidence) -> FindingStatus:
     Neither signal present → INCONCLUSIVE.
     """
     if evidence.flows:
+        return FindingStatus.CONFIRMED_VIOLATION
+    if evidence.expected_output and evidence.expected_output in evidence.response_body:
         return FindingStatus.CONFIRMED_VIOLATION
     if evidence.payload_tag and evidence.payload_tag in evidence.response_body:
         return FindingStatus.CONFIRMED_VIOLATION

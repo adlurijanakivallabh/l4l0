@@ -30,6 +30,7 @@ from reachagent.payloads import (
     PayloadLibraryError,
     build_library,
     load_corpus_entries,
+    load_corpus_report,
 )
 from reachagent.payloads.corpus import (
     _classify_oracle,
@@ -61,6 +62,17 @@ _KNOWN_EDGES = {*(e.value for e in StructuralEdge), *(e.value for e in FindingEd
         ("Fuzzing/command-injection-commix.txt", "command_injection", SinkType.SHELL),
         ("Fuzzing/LFI/LFI-Jhaddix.txt", "path_traversal", SinkType.FILE_PATH),
         ("File Inclusion/Intruders/Traversal.txt", "path_traversal", SinkType.FILE_PATH),
+        (
+            "Directory Traversal/Intruder/directory_traversal.txt",
+            "path_traversal",
+            SinkType.FILE_PATH,
+        ),
+        (
+            "Server Side Template Injection/Intruder/ssti.fuzz",
+            "ssti",
+            SinkType.TEMPLATE,
+        ),
+        ("LDAP Injection/Intruder/LDAP_FUZZ.txt", "ldap_injection", SinkType.LDAP),
     ],
 )
 def test_folder_token_maps_to_class_and_sink(relpath, vuln_class, sink) -> None:
@@ -213,13 +225,39 @@ def test_ingest_census_is_sizable_and_covers_all_classes() -> None:
     assert {"sqli", "nosqli", "xss_reflected", "command_injection", "path_traversal"} <= classes
 
 
-def test_named_source_selection_and_union() -> None:
+def test_named_source_selection_keeps_default_patt_only() -> None:
     patt = load_corpus_entries(["PayloadsAllTheThings"])
     seclists = load_corpus_entries(["SecLists"])
-    both = load_corpus_entries()
+    default = load_corpus_entries()
     assert len(patt) > 0
     assert len(seclists) > 0
-    assert len(both) == len(patt) + len(seclists)
+    assert default == patt
+
+
+def test_ingest_report_keeps_rejections_out_of_fireable_entries() -> None:
+    report = load_corpus_report()
+    refs = {entry.payload_ref for entry in report.entries}
+    assert report.semantic_invalid_refs
+    assert set(report.semantic_invalid_refs).isdisjoint(refs)
+    assert all(ref.startswith("PayloadsAllTheThings/") for ref in refs)
+    assert report.reserved_files
+    assert any("XXE Injection" in path for path in report.reserved_files)
+    assert all(entry.oracle_type in set(OracleMechanism) for entry in report.entries)
+    assert load_corpus_report().semantic_invalid_refs == report.semantic_invalid_refs
+
+
+def test_ingest_report_counts_match_entries() -> None:
+    report = load_corpus_report()
+    assert sum(report.counts.values()) == len(report.entries)
+    assert {entry.vuln_class for entry in report.entries} >= {
+        "sqli",
+        "nosqli",
+        "xss_reflected",
+        "command_injection",
+        "path_traversal",
+        "ssti",
+        "ldap_injection",
+    }
 
 
 def test_ingest_is_deterministic() -> None:

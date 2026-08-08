@@ -125,6 +125,37 @@ class MissingSlotError(PayloadLibraryError):
 # replacement; every OTHER catalog ref is a vendored line-locator resolved by
 # reading its snapshot line (``_read_source_line``). Bulk corpus payloads are
 # static text, so they need no template — only the parameterized base slice does.
+_SSTI_ARITHMETIC = re.compile(
+    r"^\s*(?:(?:\{\{\s*(?P<brace_left>\d+)\s*(?P<brace_op>[+*])\s*(?P<brace_right>\d+)\s*\}\})|"
+    r"(?:<%=\s*(?P<erb_left>\d+)\s*(?P<erb_op>[+*])\s*(?P<erb_right>\d+)\s*%>)|"
+    r"(?:\$\{\s*(?P<dollar_left>\d+)\s*(?P<dollar_op>[+*])\s*(?P<dollar_right>\d+)\s*\})|"
+    r"(?:@\(\s*(?P<at_left>\d+)\s*(?P<at_op>[+*])\s*(?P<at_right>\d+)\s*\))|"
+    r"(?:#\{\s*(?P<hash_left>\d+)\s*(?P<hash_op>[+*])\s*(?P<hash_right>\d+)\s*\}))\s*$"
+)
+
+
+def expected_execution_output(value: str) -> str | None:
+    """Return safe expected output for simple arithmetic template probes.
+
+    This is metadata extraction, not template evaluation. Only digit/operator
+    expressions from the vendored SSTI fuzz corpus are accepted; arbitrary
+    template syntax and command-oriented expressions return ``None``.
+    """
+    match = _SSTI_ARITHMETIC.fullmatch(value)
+    if match is None:
+        return None
+    groups = match.groupdict()
+    for prefix in ("brace", "erb", "dollar", "at", "hash"):
+        left = groups[f"{prefix}_left"]
+        if left is None:
+            continue
+        right = groups[f"{prefix}_right"]
+        operator = groups[f"{prefix}_op"]
+        result = int(left) + int(right) if operator == "+" else int(left) * int(right)
+        return str(result)
+    return None
+
+
 _TEMPLATES: dict[str, str] = {
     "bola/object-id-substitution": "{object_id}",
     "idor/direct-object-reference-swap": "{object_id}",
@@ -270,7 +301,12 @@ def _read_source_line(payload_ref: str) -> str | None:
         raise UnknownPayloadRefError(
             f"line-locator ref {payload_ref!r} names unknown source {source!r}"
         )
-    path = root / match.group("relpath")
+    path = (root / match.group("relpath")).resolve()
+    root = root.resolve()
+    if path != root and root not in path.parents:
+        raise UnknownPayloadRefError(
+            f"line-locator ref {payload_ref!r}: path escapes vendored snapshot"
+        )
     if not path.is_file():
         raise UnknownPayloadRefError(f"line-locator ref {payload_ref!r}: no vendored file {path}")
     line_no = int(match.group("line"))

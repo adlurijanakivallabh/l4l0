@@ -62,6 +62,18 @@ _SQL_ERROR_SIGNATURES = (
 # here means an HTML-reflection sink, not a data echo.
 _HTML_CONTENT_TYPES = ("text/html", "application/xhtml+xml")
 
+# Explicit sink contract for generic payload classes. A hint is accepted only when
+# it matches a known class family; callers cannot select an arbitrary sink.
+_CLASS_SINKS = {
+    "sqli": _nodes.SinkType.SQL,
+    "nosqli": _nodes.SinkType.NOSQL,
+    "command_injection": _nodes.SinkType.SHELL,
+    "path_traversal": _nodes.SinkType.FILE_PATH,
+    "ssti": _nodes.SinkType.TEMPLATE,
+    "ldap_injection": _nodes.SinkType.LDAP,
+    "xss_reflected": _nodes.SinkType.HTML_REFLECTION,
+}
+
 
 def _decode_body(body: bytes) -> str:
     """Best-effort text view of a response body for signature matching."""
@@ -163,6 +175,8 @@ def fingerprint_parameter(
     param_node: str,
     *,
     method: str = "GET",
+    sink_hint: SinkType | None = None,
+    vuln_class: str | None = None,
 ) -> _candidate.FingerprintReport:
     """Send a benign canary, infer the sink, and set it on the Parameter node (§9).
 
@@ -190,7 +204,36 @@ def fingerprint_parameter(
     reflected = ctx.canary in body_text
     sql_errors = _match_sql_errors(body_text.lower())
     content_type = result.headers.get("content-type")
-    sink = _infer_sink_type(reflected=reflected, sql_errors=sql_errors, content_type=content_type)
+    # Explicit sink contract for generic payload classes. A hint is allowed only
+    # for sinks with no observational fingerprint path (a path placeholder yields
+    # no reflection; a template sink reflects the canary in plain text, which the
+    # HTML heuristic cannot distinguish) — and only when it matches the class the
+    # caller named. It never overrides positive evidence: an observed SQL error
+    # or HTML reflection always wins.
+    _HINTABLE_SINKS = {_nodes.SinkType.FILE_PATH, _nodes.SinkType.TEMPLATE}
+
+    observed = _infer_sink_type(
+        reflected=reflected, sql_errors=sql_errors, content_type=content_type
+    )
+    if sink_hint is not None:
+        if sink_hint not in _HINTABLE_SINKS:
+            raise ValueError(
+                f"sink hint {sink_hint.value!r} is not accepted — only "
+                f"{sorted(s.value for s in _HINTABLE_SINKS)} have no observational "
+                "fingerprint path; all other sinks must be observed"
+            )
+        if vuln_class is not None and _CLASS_SINKS.get(vuln_class) is not sink_hint:
+            raise ValueError(
+                f"sink hint {sink_hint.value!r} is not valid for vuln_class {vuln_class!r}"
+            )
+        if observed is not None and observed is not sink_hint:
+            raise ValueError(
+                f"sink hint {sink_hint.value!r} conflicts with observed evidence "
+                f"({observed.value!r}) — observed signal wins"
+            )
+        if sink_hint is _nodes.SinkType.TEMPLATE and not reflected:
+            raise ValueError("template sink hint requires reflected benign canary")
+    sink = observed if observed is not None else sink_hint
 
     # The single graph mutation: record the inferred sink, then mark done.
     ctx.graph.set_parameter_sink_type(param_node, sink)

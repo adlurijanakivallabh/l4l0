@@ -28,6 +28,7 @@ from reachagent.payloads import (
     PayloadLibrary,
     UnknownPayloadRefError,
     build_library,
+    expected_execution_output,
     load_corpus_entries,
     required_slots,
     resolve,
@@ -57,7 +58,23 @@ def _catalog_entries() -> list:
     return list(PayloadLibrary.from_file().all_entries()) + load_corpus_entries()
 
 
-# -- 1. template override still slot-fills ------------------------------------
+def test_expected_execution_output_accepts_simple_arithmetic() -> None:
+    assert expected_execution_output("{{7*7}}") == "49"
+    assert expected_execution_output("<%= 7 * 7 %>") == "49"
+    assert expected_execution_output("@(1+2)") == "3"
+
+
+def test_expected_execution_output_rejects_reflection_and_commands() -> None:
+    assert expected_execution_output("{{7*'7'}}") is None
+    assert expected_execution_output("{{config.items()}}") is None
+    assert expected_execution_output("{{ self.__class__ }}") is None
+
+
+def test_line_locator_rejects_snapshot_escape() -> None:
+    with pytest.raises(UnknownPayloadRefError, match="escapes vendored snapshot"):
+        resolve("PayloadsAllTheThings/../seclists-snapshot/SOURCE.txt#L1")
+    with pytest.raises(UnknownPayloadRefError, match="escapes vendored snapshot"):
+        resolve("PayloadsAllTheThings//etc/passwd#L1")
 
 
 @pytest.mark.parametrize(
@@ -175,7 +192,7 @@ def test_ingested_payload_is_semantically_valid_for_its_sink() -> None:
             # a comparison/boolean operator counts alongside quotes/keywords/comments.
             ok = bool(
                 re.search(
-                    r"['\"]|union|select|sleep|benchmark|waitfor|\bor\b|\band\b|--|#|;|=|\|\|",
+                    r"['\"]|union|select|sleep|benchmark|waitfor|randomblob|\bor\b|\band\b|--|#|;|=|\|\|",
                     value,
                     re.I,
                 )

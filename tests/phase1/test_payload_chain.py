@@ -350,3 +350,104 @@ def test_coordinator_selection_drives_generic_chain() -> None:
     assert audit.entries[0].target == "http://vampi.test/users"
     assert "secret" not in audit.entries[0].target
     assert "payload" not in audit.entries[0].target
+
+
+def test_ssti_payload_fires_end_to_end_through_execution_confirmation_chain() -> None:
+    """Prove a NEW honest-mapped class (SSTI) resolves and fires, not just sitting."""
+    corpus_entry = next(
+        entry
+        for entry in build_library().get_payloads("ssti", SinkType.TEMPLATE)
+        if "#L" in entry.payload_ref
+    )
+    assert corpus_entry.vuln_class == "ssti"
+    assert corpus_entry.inferred_sink_type is SinkType.TEMPLATE
+    assert corpus_entry.oracle_type is OracleMechanism.EXECUTION_CONFIRMATION
+    corpus_value = resolve_entry(corpus_entry)
+    assert (
+        "{{" in corpus_value or "${" in corpus_value or "<%" in corpus_value or "#{" in corpus_value
+    )
+
+    from reachagent.payloads import expected_execution_output
+
+    expected = expected_execution_output(corpus_value)
+    assert expected is not None
+
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        # Plain-text reflection with the expected rendered value injected — proves
+        # execution confirmation fires over the real wire (not a faked status).
+        if request.url.params.get("_q") == corpus_value:
+            return httpx.Response(
+                200, text=f"rendered {expected}", headers={"content-type": "text/plain"}
+            )
+        if request.url.params.get("_q", "").startswith("reachagent-canary-"):
+            # Benign canary reflects in plain text — required for template hint gate.
+            return httpx.Response(
+                200, text=request.url.params.get("_q", ""), headers={"content-type": "text/plain"}
+            )
+        return httpx.Response(200, text="ok", headers={"content-type": "text/plain"})
+
+    session, mcp = _session(handler, library=PayloadLibrary([corpus_entry]))
+    endpoint = session.graph.add_endpoint(Endpoint("GET", "/users/v1/name"))
+    parameter = session.graph.add_parameter(endpoint, Parameter("_q", "query"))
+
+    result = run_payload_chain(
+        lambda name, arguments: call_tool_sync(_surface(mcp), name, arguments),
+        identity="anonymous",
+        endpoint_node=endpoint,
+        param_node=parameter,
+        vuln_class="ssti",
+        baseline_payload="baseline",
+    )
+
+    assert result.confirmed is True
+    assert result.payload_ref == corpus_entry.payload_ref
+    assert session.graph.findings()
+    # The attack payload actually crossed the wire as a value (not a status fake).
+    assert any(r.url.params.get("_q") == corpus_value for r in seen)
+
+
+def test_non_arithmetic_ssti_payload_is_rejected_before_any_attack_fire() -> None:
+    """Preflight: a non-arithmetic SSTI payload never fires an attack request."""
+    entry = PayloadEntry(
+        vuln_class="ssti",
+        context="non-arithmetic ssti test",
+        inferred_sink_type=SinkType.TEMPLATE,
+        oracle_type=OracleMechanism.EXECUTION_CONFIRMATION,
+        payload_ref="PayloadsAllTheThings/Server Side Template Injection/Intruder/ssti.fuzz#L12",
+        graph_edge_on_success="enables",
+    )
+    # Lines that aren't simple arithmetic survive the corpus semantic guard only when they
+    # actually have a sink match; the test uses one that won't resolve to an arithmetic value.
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        q = request.url.params.get("_q", "")
+        if q.startswith("reachagent-canary-"):
+            return httpx.Response(200, text=q, headers={"content-type": "text/plain"})
+        return httpx.Response(200, text="ok", headers={"content-type": "text/plain"})
+
+    session, mcp = _session(handler, library=PayloadLibrary([entry]))
+    endpoint = session.graph.add_endpoint(Endpoint("GET", "/users/v1/name"))
+    parameter = session.graph.add_parameter(endpoint, Parameter("_q", "query"))
+    failures: list[str] = []
+    with pytest.raises(PayloadChainError, match="no deterministic rendered"):
+        run_payload_chain(
+            lambda name, arguments: call_tool_sync(_surface(mcp), name, arguments),
+            identity="anonymous",
+            endpoint_node=endpoint,
+            param_node=parameter,
+            vuln_class="ssti",
+            baseline_payload="baseline",
+            audit_failure=failures.append,
+        )
+    assert failures and "no deterministic rendered" in failures[0]
+    # Only canary fired — no attack fire reached the wire.
+    assert not any(
+        r.url.params.get("_q")
+        for r in seen
+        if not r.url.params.get("_q", "").startswith("reachagent")
+    )

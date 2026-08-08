@@ -440,11 +440,28 @@ def register_tools(mcp: FastMCP, session: _Session) -> None:
 
     @mcp.tool()
     def fingerprint_parameter(
-        identity: str, endpoint_node: str, param_node: str, method: str = "GET"
+        identity: str,
+        endpoint_node: str,
+        param_node: str,
+        method: str = "GET",
+        sink_hint: str | None = None,
+        vuln_class: str | None = None,
     ) -> FingerprintReportOut:
-        """Send a benign canary and set the parameter's inferred sink (§9 step 1)."""
+        """Send a benign canary and set the parameter's inferred sink (§9 step 1).
+
+        ``sink_hint`` exists only for classes with no observational fingerprint
+        path (``file_path``/``template``); the Explorer validates it against the
+        class mapping and canary evidence — it never overrides an observed SQL
+        error or HTML-reflection signal.
+        """
         report = _explorer.fingerprint_parameter(
-            ctx, identity, endpoint_node, param_node, method=method
+            ctx,
+            identity,
+            endpoint_node,
+            param_node,
+            method=method,
+            sink_hint=_nodes.SinkType(sink_hint) if sink_hint is not None else None,
+            vuln_class=vuln_class,
         )
         sink = report.inferred_sink_type
         return FingerprintReportOut(
@@ -675,7 +692,14 @@ def register_tools(mcp: FastMCP, session: _Session) -> None:
             oracle_evidence = StructuralEvidence(
                 check_type=StructuralCheckType(ev.get("check_type", "")),
                 baseline_status=int(ev.get("baseline_status", 0)),
-                probe_status=int(ev.get("probe_status", 0)),
+                # Probe status resolves from the fire handle when not inlined — the
+                # same server-side rule as bodies/headers (§13), so a generic chain
+                # that passes only ``probe_fire_ref`` cannot silently degrade the
+                # 2xx gate into 0.
+                probe_status=int(
+                    ev.get("probe_status")
+                    or (probe_fire.status_code if probe_fire is not None else 0)
+                ),
                 sentinel=str(ev.get("sentinel", "")),
                 union_sentinel=str(ev.get("union_sentinel", "")),
                 response_body=response_body,
@@ -731,6 +755,7 @@ def register_tools(mcp: FastMCP, session: _Session) -> None:
                 flows=flows,
                 payload_tag=str(ev.get("payload_tag", "")),
                 response_body=exec_body,
+                expected_output=str(ev.get("expected_output", "")),
                 evidence_ref=str(ev.get("evidence_ref", "")),
             )
 
