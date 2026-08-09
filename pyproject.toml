@@ -21,6 +21,7 @@ dependencies = [
 [project.scripts]
 # MCP server entry point — human-in-the-loop driving via Claude Desktop/Code (§13)
 reachagent-mcp = "reachagent.mcp.server:main"
+reachagent-scan = "reachagent.scan.cli:main"
 
 [dependency-groups]
 dev = [

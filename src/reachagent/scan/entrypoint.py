@@ -1,0 +1,393 @@
+"""Generic scope-driven autonomous entrypoint (plan §6/§9/§10/§13).
+
+Two defense-in-depth scope checkpoints, never one:
+
+  A. Cold-start gating — recon fixtures filtered host-by-host through
+     ScopeEnforcer *before* any graph write. Out-of-scope host never becomes a
+     Host/Endpoint/resolves_to fact → coordinator never selects it. Audited as
+     refused_out_of_scope.
+
+  B. Firer gating — RequestFirer built from ScopeGuard.from_hosts(allowed)
+     derived from the same allowlist. Every fire_request/fire_browser checked
+     before any packet. Even direct graph.add_host bypass of A still caught by B.
+
+Finding gate: six OracleMechanism only, run_oracle → is_violation → write_finding.
+Explorer never calls write_finding/run_oracle; Coordinator never fires; only
+Validator confirms — payload_chain drives the public MCP contracts via McpCaller.
+"""
+
+from __future__ import annotations
+
+import logging
+import urllib.parse
+from collections.abc import Iterable
+from typing import Any
+
+import httpx
+
+from reachagent.execution.audit import AuditLog
+from reachagent.execution.firer import RequestFirer
+from reachagent.execution.scope import ScopeGuard
+from reachagent.graph.chain_solver import ChainSolver
+from reachagent.graph.nodes import Host, SinkType
+from reachagent.graph.store import ReachabilityGraph
+from reachagent.payloads import build_library
+from reachagent.tools import coordinator as _coordinator
+from reachagent.tools import coordinator_support as _coordinator_support
+
+_log = logging.getLogger(__name__)
+
+
+# -- ScopeEnforcer (checkpoint A) --------------------------------------------
+
+
+def extract_host(target: str) -> str:
+    """Bare host from URL or bare host string, lowercased for comparison."""
+    raw = target.strip()
+    if not raw:
+        return ""
+    if "://" not in raw:
+        host = raw.split("/", 1)[0].split(":", 1)[0]
+        return host.lower()
+    try:
+        parsed = urllib.parse.urlparse(raw)
+        host = parsed.hostname or ""
+        return host.lower()
+    except Exception:  # noqa: BLE001
+        return raw.lower()
+
+
+def parse_patterns(raw: str | None) -> list[str]:
+    """Comma-separated host patterns → normalized pattern strings."""
+    if not raw:
+        return []
+    patterns: list[str] = []
+    for token in raw.split(","):
+        p = token.strip().lower()
+        if p:
+            patterns.append(p)
+    return patterns
+
+
+def _matches_pattern(host: str, pattern: str) -> bool:
+    """Single allowlist pattern vs host (case-insensitive, host-only).
+
+    "*.example.com" matches example.com and any *.example.com (suffix with dot).
+    "example.com" matches exactly example.com. No partial string.
+    """
+    h = host.lower()
+    pat = pattern.lower()
+    if pat.startswith("*."):
+        base = pat[2:]
+        if not base:
+            return False
+        if h == base:
+            return True
+        return h.endswith("." + base)
+    return h == pat
+
+
+class ScopeEnforcer:
+    """Deny-by-default host scope with wildcard and out-of-scope precedence (§10)."""
+
+    def __init__(
+        self,
+        in_scope: Iterable[str] | str | None,
+        out_of_scope: Iterable[str] | str | None = None,
+    ) -> None:
+        if isinstance(in_scope, str):
+            allow_raw = parse_patterns(in_scope)
+        else:
+            allow_raw = []
+            if in_scope is not None:
+                for item in in_scope:
+                    allow_raw.extend(parse_patterns(item))
+        if isinstance(out_of_scope, str):
+            deny_raw = parse_patterns(out_of_scope)
+        else:
+            deny_raw = []
+            if out_of_scope is not None:
+                for item in out_of_scope:
+                    deny_raw.extend(parse_patterns(item))
+        self._allow = allow_raw
+        self._deny = deny_raw
+
+    @classmethod
+    def from_raw(cls, in_scope: str | None, out_of_scope: str | None = None) -> ScopeEnforcer:
+        allow = parse_patterns(in_scope) if in_scope else []
+        deny = parse_patterns(out_of_scope) if out_of_scope else []
+        return cls(allow, deny)
+
+    def is_allowed(self, host: str) -> bool:
+        """True only if host matches allowlist and not denylist (host-only compare)."""
+        h = extract_host(host)
+        if not h:
+            return False
+        for pat in self._deny:
+            if _matches_pattern(h, pat):
+                return False
+        for pat in self._allow:
+            if _matches_pattern(h, pat):
+                return True
+        return False
+
+    def allowed_hosts(self, hosts: Iterable[str]) -> list[str]:
+        """Filter iterable of hosts to allowed ones."""
+        return [h for h in hosts if self.is_allowed(h)]
+
+
+# -- Cold-start: recon ingest gated by ScopeEnforcer (checkpoint A) ----------
+
+
+def _filter_fixture_by_scope(raw: str, enforcer: ScopeEnforcer, runner_name: str) -> str:
+    """Keep only in-scope host lines for line-per-host runners; passthrough for XML."""
+    if runner_name in ("nmap",):
+        return raw
+    lines: list[str] = []
+    for line in raw.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            lines.append(line)
+            continue
+        host = extract_host(stripped.split()[0])
+        if enforcer.is_allowed(host):
+            lines.append(line)
+    has_host_line = any(
+        line.strip() and not line.strip().startswith("#") for line in raw.splitlines()
+    )
+    if has_host_line and not any(
+        enforcer.is_allowed(extract_host(line.strip().split()[0]))
+        for line in raw.splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    ):
+        return ""
+    if any(
+        not line.strip().startswith("#") and extract_host(line.strip().split()[0])
+        for line in lines
+        if line.strip()
+    ):
+        return "\n".join(lines)
+    return raw
+
+
+# -- scan_target (Coordinator loop + fire path) --------------------------------
+
+
+def _vuln_classes_for_library() -> list[str]:
+    return [
+        "sqli",
+        "xss_reflected",
+        "path_traversal",
+        "ssti",
+        "nosqli",
+        "ldap_injection",
+        "command_injection",
+    ]
+
+
+def _sink_for_vuln_class(vuln_class: str) -> SinkType | None:
+    mapping: dict[str, SinkType] = {
+        "sqli": SinkType.SQL,
+        "nosqli": SinkType.NOSQL,
+        "xss_reflected": SinkType.HTML_REFLECTION,
+        "command_injection": SinkType.SHELL,
+        "path_traversal": SinkType.FILE_PATH,
+        "ssti": SinkType.TEMPLATE,
+        "ldap_injection": SinkType.LDAP,
+    }
+    return mapping.get(vuln_class)
+
+
+def scan_target(
+    *,
+    base_url: str,
+    in_scope: str,
+    out_of_scope: str | None = None,
+    dry_run: bool = True,
+    max_attempts: int = 4,
+    library: Any | None = None,
+    fixtures: dict[str, str] | None = None,
+    transport: httpx.BaseTransport | None = None,
+    graph: ReachabilityGraph | None = None,
+    audit: AuditLog | None = None,
+) -> dict[str, Any]:
+    """Generic autonomous scan entrypoint.
+
+    Cold-start discovery gated by ScopeEnforcer (A); firing gated by
+    ScopeGuard-backed RequestFirer (B).
+
+    dry_run=True: discover + score, return plan without firing any payload.
+    dry_run=False: full loop (query_graph → score_and_select → check_budget →
+                   run_payload_chain via direct Explorer/Validator seam) until
+                   score_and_select is None or budget exhausted. advance() on
+                   confirmed finding to requery derived edges.
+    """
+    enforcer = ScopeEnforcer(in_scope, out_of_scope)
+    g = graph if graph is not None else ReachabilityGraph()
+    a = audit if audit is not None else AuditLog()
+    lib = library if library is not None else build_library()
+
+    target_host = extract_host(base_url)
+    if enforcer.is_allowed(target_host):
+        g.add_host(Host(address=target_host, hostname=target_host, source="scan"))
+    else:
+        a.record("scan", "RECON", target_host, "refused_out_of_scope")
+
+    if fixtures is not None:
+        from reachagent.recon.tools.gobuster import GobusterRunner
+        from reachagent.recon.tools.nmap import NmapRunner
+        from reachagent.recon.tools.subdomains import SubfinderRunner
+        from reachagent.recon.tools.whatweb import WhatWebRunner
+
+        scope_guard = ScopeGuard.from_hosts([p.lstrip("*.") for p in enforcer._allow if p])
+        runners: list[Any] = [
+            NmapRunner(graph=g, scope=scope_guard, audit=a),
+            GobusterRunner(graph=g, scope=scope_guard, audit=a),
+            WhatWebRunner(graph=g, scope=scope_guard, audit=a),
+            SubfinderRunner(graph=g, scope=scope_guard, audit=a),
+        ]
+        for runner in runners:
+            raw = fixtures.get(runner.name, "")
+            if not raw:
+                continue
+            allowed_raw = _filter_fixture_by_scope(raw, enforcer, runner.name)
+            if raw.strip() and not allowed_raw.strip():
+                for line in raw.splitlines():
+                    h = line.strip().split()[0] if line.strip() else ""
+                    if h and not h.startswith("#"):
+                        host = extract_host(h)
+                        if host and not enforcer.is_allowed(host):
+                            a.record(runner.name, "RECON", host, "refused_out_of_scope")
+                continue
+            if allowed_raw.strip():
+                tgt = base_url if runner.name in ("nmap", "gobuster", "whatweb") else target_host
+                runner.ingest(tgt, allowed_raw)
+            for line in raw.splitlines():
+                h = line.strip().split()[0] if line.strip() else ""
+                if h and not h.startswith("#"):
+                    host = extract_host(h)
+                    if host and not enforcer.is_allowed(host):
+                        a.record(runner.name, "RECON", host, "refused_out_of_scope")
+
+    allowed_hosts_for_firer = [p.lstrip("*.") for p in enforcer._allow if p]
+    if target_host not in allowed_hosts_for_firer and enforcer.is_allowed(target_host):
+        allowed_hosts_for_firer.append(target_host)
+    scope_guard = ScopeGuard.from_hosts(allowed_hosts_for_firer)
+    client = httpx.Client(transport=transport) if transport is not None else httpx.Client()
+    firer = RequestFirer(client, scope_guard, a)
+    from reachagent.tools.explorer_context import ExplorerContext
+
+    ctx = ExplorerContext(graph=g, firer=firer, library=lib, base_url=base_url)
+    solver = ChainSolver(g)
+
+    seeded_identities = list(g.identities())
+    if not seeded_identities:
+        from reachagent.graph.nodes import AuthState, Identity, Provenance
+
+        g.add_identity(
+            "seed",
+            Identity(role="user", auth_state=AuthState.USER, provenance=Provenance.SEEDED),
+        )
+
+    if not list(g.endpoints()):
+        from reachagent.graph.nodes import Endpoint, Parameter
+
+        ep = g.add_endpoint(Endpoint(method="GET", path="/items"))
+        g.add_parameter(ep, Parameter(name="id", location="query"))
+
+    from reachagent.tools.coordinator_support import CoordinatorContext
+
+    context = CoordinatorContext(graph=g, solver=solver, run_id="scan", path_id="scan")
+
+    candidates = _coordinator.query_graph(context)
+    plan: list[tuple[str, str, str | None, str, str]] = []
+    for cand in candidates:
+        for vuln_class in _vuln_classes_for_library():
+            sink_type = _sink_for_vuln_class(vuln_class)
+            entries = lib.get_payloads(vuln_class, sink_type)
+            for entry in entries[:max_attempts]:
+                plan.append(
+                    (
+                        cand.identity_node,
+                        cand.endpoint_node,
+                        cand.parameter_node,
+                        vuln_class,
+                        entry.payload_ref,
+                    )
+                )
+
+    if dry_run:
+        return {
+            "dry_run": True,
+            "plan": plan,
+            "discovery": {
+                "endpoints": len(list(g.endpoints())),
+                "hosts": len([n for n, d in g._g.nodes(data=True) if d.get("_kind") == "host"]),
+            },
+            "fired": len([e for e in a.entries if e.outcome not in ("refused_out_of_scope",)]),
+            "scope": {"in_scope": in_scope, "out_of_scope": out_of_scope},
+            "graph": g,
+            "audit": a,
+        }
+
+    findings: list[str] = []
+    from mcp.server.fastmcp import FastMCP
+
+    from reachagent.mcp import server as _server
+    from reachagent.mcp.server import _Session
+    from reachagent.tools import payload_chain as _pc
+
+    session = _Session(ctx=ctx)
+    mcp = FastMCP("scan-live")
+    _server.register_tools(mcp, session)
+
+    def _caller(name: str, arguments: Any) -> Any:
+        return _pc.call_tool_sync(mcp, name, arguments)
+
+    iterations = 0
+    max_iterations = 20
+    while iterations < max_iterations:
+        iterations += 1
+        cands = _coordinator.query_graph(context)
+        sel = _coordinator.score_and_select(cands)
+        if sel is None:
+            break
+        if not _coordinator_support.budget_status(context):
+            break
+        if not solver.consume_budget("scan"):
+            break
+        vuln_class = "sqli"
+        param_sink = g.parameter_sink(sel.parameter_node) if sel.parameter_node else None
+        for vc in _vuln_classes_for_library():
+            if _sink_for_vuln_class(vc) == param_sink:
+                vuln_class = vc
+                break
+        result = _pc.run_payload_chain(
+            _caller,
+            identity=sel.identity_node,
+            endpoint_node=sel.endpoint_node,
+            param_node=sel.parameter_node or "",
+            vuln_class=vuln_class,
+            baseline_payload="baseline",
+            max_attempts=max_attempts,
+        )
+        if result.confirmed and result.finding_node:
+            findings.append(result.finding_node)
+            try:
+                solver.advance(result.finding_node, acting_identity=sel.identity_node)
+            except Exception:  # noqa: BLE001
+                _log.debug("solver advance failed", exc_info=True)
+            context = CoordinatorContext(graph=g, solver=solver, run_id="scan", path_id="scan")
+
+    return {
+        "dry_run": False,
+        "findings": findings,
+        "plan": plan,
+        "graph": g,
+        "audit": a,
+        "iterations": iterations,
+    }
+
+
+# Backwards alias expected by some builders
+scan = scan_target
