@@ -45,7 +45,9 @@ from reachagent.recon.tools.signal_gated import (
 from reachagent.recon.tools.sqlmap import SqlmapRunner
 from reachagent.recon.tools.subdomains import AmassRunner, SubfinderRunner
 from reachagent.recon.tools.theharvester import TheHarvesterRunner
+from reachagent.recon.tools.tls_probe import SslscanRunner, SslyzeRunner, TestsslRunner
 from reachagent.recon.tools.whatweb import WhatWebRunner
+from reachagent.recon.tools.wpscan_passive import WpscanPassiveRunner
 
 __all__ = [
     "RECON_ENV_LIVE",
@@ -68,8 +70,12 @@ __all__ = [
     "SignalGatedResult",
     "SignalGatedToolRunner",
     "SqlmapRunner",
+    "SslscanRunner",
+    "SslyzeRunner",
     "SubfinderRunner",
+    "TestsslRunner",
     "TheHarvesterRunner",
     "WhatWebRunner",
+    "WpscanPassiveRunner",
     "reconfirm_candidate",
 ]
