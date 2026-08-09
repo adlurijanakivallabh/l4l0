@@ -5,11 +5,13 @@ Two defense-in-depth scope checkpoints, never one:
   A. Cold-start gating — recon fixtures filtered host-by-host through
      ScopeEnforcer *before* any graph write. Out-of-scope host never becomes a
      Host/Endpoint/resolves_to fact → coordinator never selects it. Audited as
-     refused_out_of_scope.
+     refused_out_of_scope. Endpoint fixtures (gobuster/nmap) are target-bound,
+     not host-filtered.
 
-  B. Firer gating — RequestFirer built from ScopeGuard.from_hosts(allowed)
-     derived from the same allowlist. Every fire_request/fire_browser checked
-     before any packet. Even direct graph.add_host bypass of A still caught by B.
+  B. Firer gating — RequestFirer built from enforcer-backed wrapper that
+     delegates to ScopeEnforcer.is_allowed (wildcard-aware). Every
+     fire_request/fire_browser checked before any packet. Even direct
+     graph.add_host bypass of A still caught by B.
 
 Finding gate: six OracleMechanism only, run_oracle → is_violation → write_finding.
 Explorer never calls write_finding/run_oracle; Coordinator never fires; only
@@ -27,7 +29,7 @@ import httpx
 
 from reachagent.execution.audit import AuditLog
 from reachagent.execution.firer import RequestFirer
-from reachagent.execution.scope import ScopeGuard
+from reachagent.execution.scope import OutOfScopeError, ScopeGuard
 from reachagent.graph.chain_solver import ChainSolver
 from reachagent.graph.nodes import Host, SinkType
 from reachagent.graph.store import ReachabilityGraph
@@ -136,38 +138,54 @@ class ScopeEnforcer:
         return [h for h in hosts if self.is_allowed(h)]
 
 
+class EnforcerScopeWrapper:
+    """ScopeGuard-compatible wrapper delegating to ScopeEnforcer (wildcard-aware).
+
+    Duck-typed for RequestFirer — only enforce()/is_in_scope() are used.
+    Host compare via ScopeEnforcer so "*.example.com" truly allows subdomains.
+    """
+
+    def __init__(self, enforcer: ScopeEnforcer) -> None:
+        self._enforcer = enforcer
+
+    def is_in_scope(self, url: str | httpx.URL) -> bool:
+        parsed = httpx.URL(url) if isinstance(url, str) else url
+        host = parsed.host
+        if not host:
+            return False
+        return self._enforcer.is_allowed(host)
+
+    def enforce(self, url: str | httpx.URL) -> None:
+        if not self.is_in_scope(url):
+            parsed = httpx.URL(url) if isinstance(url, str) else url
+            raise OutOfScopeError(f"target not in scope: {parsed.host}{parsed.path}")
+
+
 # -- Cold-start: recon ingest gated by ScopeEnforcer (checkpoint A) ----------
+
+_HOST_LINE_RUNNERS = frozenset({"subfinder", "amass", "theharvester", "theHarvester"})
+_PASSTHROUGH_RUNNERS = frozenset(
+    {"nmap", "gobuster", "whatweb", "feroxbuster", "ffuf", "dirb", "katana"}
+)
 
 
 def _filter_fixture_by_scope(raw: str, enforcer: ScopeEnforcer, runner_name: str) -> str:
-    """Keep only in-scope host lines for line-per-host runners; passthrough for XML."""
-    if runner_name in ("nmap",):
+    """Host-per-line runners: filter; endpoint/XML runners: passthrough."""
+    if runner_name in _PASSTHROUGH_RUNNERS:
         return raw
-    lines: list[str] = []
+    if runner_name not in _HOST_LINE_RUNNERS:
+        # Unknown runner — conservative: passthrough (scope still enforced at ingest)
+        return raw
+    kept: list[str] = []
     for line in raw.splitlines():
         stripped = line.strip()
         if not stripped or stripped.startswith("#"):
-            lines.append(line)
+            kept.append(line)
             continue
         host = extract_host(stripped.split()[0])
         if enforcer.is_allowed(host):
-            lines.append(line)
-    has_host_line = any(
-        line.strip() and not line.strip().startswith("#") for line in raw.splitlines()
-    )
-    if has_host_line and not any(
-        enforcer.is_allowed(extract_host(line.strip().split()[0]))
-        for line in raw.splitlines()
-        if line.strip() and not line.strip().startswith("#")
-    ):
-        return ""
-    if any(
-        not line.strip().startswith("#") and extract_host(line.strip().split()[0])
-        for line in lines
-        if line.strip()
-    ):
-        return "\n".join(lines)
-    return raw
+            kept.append(line)
+    return "\n".join(kept)
 
 
 # -- scan_target (Coordinator loop + fire path) --------------------------------
@@ -214,7 +232,7 @@ def scan_target(
     """Generic autonomous scan entrypoint.
 
     Cold-start discovery gated by ScopeEnforcer (A); firing gated by
-    ScopeGuard-backed RequestFirer (B).
+    enforcer-backed firer wrapper (B, wildcard-aware).
 
     dry_run=True: discover + score, return plan without firing any payload.
     dry_run=False: full loop (query_graph → score_and_select → check_budget →
@@ -251,30 +269,22 @@ def scan_target(
             if not raw:
                 continue
             allowed_raw = _filter_fixture_by_scope(raw, enforcer, runner.name)
-            if raw.strip() and not allowed_raw.strip():
-                for line in raw.splitlines():
-                    h = line.strip().split()[0] if line.strip() else ""
-                    if h and not h.startswith("#"):
-                        host = extract_host(h)
-                        if host and not enforcer.is_allowed(host):
-                            a.record(runner.name, "RECON", host, "refused_out_of_scope")
-                continue
-            if allowed_raw.strip():
-                tgt = base_url if runner.name in ("nmap", "gobuster", "whatweb") else target_host
-                runner.ingest(tgt, allowed_raw)
+            runner.ingest(
+                base_url if runner.name in ("nmap", "gobuster", "whatweb") else target_host,
+                allowed_raw,
+            )
+            # Audit any host lines that were dropped
             for line in raw.splitlines():
-                h = line.strip().split()[0] if line.strip() else ""
-                if h and not h.startswith("#"):
-                    host = extract_host(h)
-                    if host and not enforcer.is_allowed(host):
-                        a.record(runner.name, "RECON", host, "refused_out_of_scope")
+                stripped = line.strip()
+                if not stripped or stripped.startswith("#"):
+                    continue
+                host = extract_host(stripped.split()[0])
+                if host and not enforcer.is_allowed(host):
+                    a.record(runner.name, "RECON", host, "refused_out_of_scope")
 
-    allowed_hosts_for_firer = [p.lstrip("*.") for p in enforcer._allow if p]
-    if target_host not in allowed_hosts_for_firer and enforcer.is_allowed(target_host):
-        allowed_hosts_for_firer.append(target_host)
-    scope_guard = ScopeGuard.from_hosts(allowed_hosts_for_firer)
+    firer_scope = EnforcerScopeWrapper(enforcer)
     client = httpx.Client(transport=transport) if transport is not None else httpx.Client()
-    firer = RequestFirer(client, scope_guard, a)
+    firer = RequestFirer(client, firer_scope, a)  # type: ignore[arg-type]
     from reachagent.tools.explorer_context import ExplorerContext
 
     ctx = ExplorerContext(graph=g, firer=firer, library=lib, base_url=base_url)
@@ -324,7 +334,7 @@ def scan_target(
                 "endpoints": len(list(g.endpoints())),
                 "hosts": len([n for n, d in g._g.nodes(data=True) if d.get("_kind") == "host"]),
             },
-            "fired": len([e for e in a.entries if e.outcome not in ("refused_out_of_scope",)]),
+            "fired": len([e for e in a.entries if e.outcome.startswith("fired:")]),
             "scope": {"in_scope": in_scope, "out_of_scope": out_of_scope},
             "graph": g,
             "audit": a,
@@ -362,11 +372,17 @@ def scan_target(
             if _sink_for_vuln_class(vc) == param_sink:
                 vuln_class = vc
                 break
+        # Coordinator may select a candidate with no parameter (endpoint-level
+        # authz class). Payload chain needs a real parameter node — skip such
+        # candidates rather than firing with an empty param_node.
+        if not sel.parameter_node:
+            solver.consume_budget("scan")
+            continue
         result = _pc.run_payload_chain(
             _caller,
             identity=sel.identity_node,
             endpoint_node=sel.endpoint_node,
-            param_node=sel.parameter_node or "",
+            param_node=sel.parameter_node,
             vuln_class=vuln_class,
             baseline_payload="baseline",
             max_attempts=max_attempts,

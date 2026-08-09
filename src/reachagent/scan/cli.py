@@ -46,7 +46,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--dry-run",
         action=argparse.BooleanOptionalAction,
         default=True,
-        help="Dry-run (default true): plan without firing",
+        help="Dry-run toggle (default true); ignored unless paired with --live",
     )
     p.add_argument(
         "--live",
@@ -63,7 +63,7 @@ def main(argv: list[str] | None = None) -> int:
     in_scope = args.in_scope
     out_of_scope = args.out_of_scope
     target: str = args.target
-    dry_run = args.dry_run and not args.live
+    dry_run = not args.live
 
     print(f"target: {target}")
     print(f"in-scope: {in_scope}")
@@ -71,19 +71,14 @@ def main(argv: list[str] | None = None) -> int:
         print(f"out-of-scope: {out_of_scope}")
     print(f"mode: {'dry-run' if dry_run else 'live'}")
 
-    # Hermetic discovery count stub — real discovery is fixture-driven via
-    # scan_target(fixtures=...) in tests; CLI without fixtures still shows
-    # scope summary and exits dry-run cleanly.
     if dry_run:
         print("dry-run: no requests fired — pass --live to fire")
         return 0
 
-    # Live path: validate scope not empty (deny-by-default)
     if not in_scope.strip():
         print("error: --in-scope is required and must not be empty", file=sys.stderr)
         return 2
 
-    # Delegate to scan_target for live (network-gated; no fixtures in CLI path)
     from reachagent.scan.entrypoint import scan_target
 
     result = scan_target(
