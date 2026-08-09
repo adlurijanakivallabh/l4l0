@@ -25,10 +25,17 @@ from reachagent.recon.tools.base import (
     ReconResult,
     ReconToolRunner,
 )
+from reachagent.recon.tools.dirb import DirbRunner
+from reachagent.recon.tools.feroxbuster import FeroxbusterRunner
+from reachagent.recon.tools.ffuf import FfufRunner
 from reachagent.recon.tools.gobuster import GobusterRunner
+from reachagent.recon.tools.httpx_runner import HttpxRunner
+from reachagent.recon.tools.katana import KatanaRunner
+from reachagent.recon.tools.masscan import MasscanRunner
 from reachagent.recon.tools.nikto import NiktoRunner
 from reachagent.recon.tools.nmap import NmapRunner
 from reachagent.recon.tools.nuclei import NucleiRunner
+from reachagent.recon.tools.rustscan import RustscanRunner
 from reachagent.recon.tools.signal_gated import (
     SignalGatedOutcome,
     SignalGatedResult,
@@ -37,23 +44,32 @@ from reachagent.recon.tools.signal_gated import (
 )
 from reachagent.recon.tools.sqlmap import SqlmapRunner
 from reachagent.recon.tools.subdomains import AmassRunner, SubfinderRunner
+from reachagent.recon.tools.theharvester import TheHarvesterRunner
 from reachagent.recon.tools.whatweb import WhatWebRunner
 
 __all__ = [
     "RECON_ENV_LIVE",
     "AmassRunner",
+    "DirbRunner",
+    "FeroxbusterRunner",
+    "FfufRunner",
     "GobusterRunner",
+    "HttpxRunner",
+    "KatanaRunner",
+    "MasscanRunner",
     "NiktoRunner",
     "NmapRunner",
     "NucleiRunner",
     "ReconOutcome",
     "ReconResult",
     "ReconToolRunner",
+    "RustscanRunner",
     "SignalGatedOutcome",
     "SignalGatedResult",
     "SignalGatedToolRunner",
     "SqlmapRunner",
     "SubfinderRunner",
+    "TheHarvesterRunner",
     "WhatWebRunner",
     "reconfirm_candidate",
 ]
