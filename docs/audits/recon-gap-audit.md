@@ -130,3 +130,9 @@ claude-bug-bounty: `wordlists/raft-medium-dirs.txt` as recommended default + Sec
 
 ---
 No fix code this commit. Phase 2 fixes only (a) rows, in existing wrapper files, tier discipline held.
+
+## Deferred FP-filtering item (logged post-Phase-2, chore commit)
+
+Wildcard/size-based FP filtering — deferred, needs a calibration-baseline helper (fire a
+known-random path per target, measure response shape as the false-positive reference).
+Not started. Candidate for a future task.
