@@ -7,10 +7,10 @@ edge. Mirror gobuster.py. Facts only.
 
 from __future__ import annotations
 
-import os
 import re
 
 from reachagent.graph.nodes import Endpoint, Host
+from reachagent.recon.tools._wordlist import preferred_wordlist
 from reachagent.recon.tools.base import ReconToolRunner
 
 _RESULT = re.compile(r"^\+\s+https?://[^/]+(?P<path>/\S*)\s+\(CODE:(?P<code>\d+)")
@@ -39,9 +39,7 @@ class DirbRunner(ReconToolRunner):
 
     def command(self, target: str) -> list[str]:
         """dirb <target> <wordlist> -S — silent, results to stdout."""
-        wordlist = os.environ.get(
-            "REACHAGENT_DIRB_WORDLIST", "/usr/share/wordlists/dirb/common.txt"
-        )
+        wordlist = preferred_wordlist("REACHAGENT_DIRB_WORDLIST")
         return ["dirb", target, wordlist, "-S"]
 
     def parse(self, target: str, raw_output: str) -> tuple[str, ...]:

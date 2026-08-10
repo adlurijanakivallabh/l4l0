@@ -40,8 +40,20 @@ class HttpxRunner(ReconToolRunner):
     binary = "httpx"
 
     def command(self, target: str) -> list[str]:
-        """httpx -u <target> -json — probe single target, JSON to stdout."""
-        return ["httpx", "-u", target, "-json"]
+        """httpx -u <target> -json [+ -threads/-timeout/-rate-limit]."""
+        import os
+
+        argv: list[str] = ["httpx", "-u", target, "-json"]
+        threads = os.environ.get("REACHAGENT_HTTPX_THREADS")
+        if threads and threads.isdigit():
+            argv += ["-threads", threads]
+        timeout = os.environ.get("REACHAGENT_HTTPX_TIMEOUT")
+        if timeout and timeout.isdigit():
+            argv += ["-timeout", timeout]
+        rate = os.environ.get("REACHAGENT_HTTPX_RATE")
+        if rate and rate.isdigit():
+            argv += ["-rate-limit", rate]
+        return argv
 
     def parse(self, target: str, raw_output: str) -> tuple[str, ...]:
         """Parse httpx JSON lines into Host + Endpoint tech facts."""

@@ -44,12 +44,14 @@ class AmassRunner(_LineHostRunner):
     binary = "amass"
 
     def command(self, target: str) -> list[str]:
-        """``amass enum -d <target> -o -`` — passive/active enum, hostnames to stdout.
+        """``amass enum -d <target> -o -`` [+ ``-timeout``]."""
+        import os
 
-        Target is the final distinct list element (``shell=False`` in the base) —
-        never interpolated into a shell string.
-        """
-        return ["amass", "enum", "-d", target, "-o", "-"]
+        argv: list[str] = ["amass", "enum", "-d", target, "-o", "-"]
+        timeout = os.environ.get("REACHAGENT_AMASS_TIMEOUT")
+        if timeout and timeout.isdigit():
+            argv += ["-timeout", timeout]
+        return argv
 
 
 class SubfinderRunner(_LineHostRunner):
@@ -59,8 +61,14 @@ class SubfinderRunner(_LineHostRunner):
     binary = "subfinder"
 
     def command(self, target: str) -> list[str]:
-        """``subfinder -silent -d <target>`` — one hostname per line to stdout.
+        """``subfinder -silent -d <target>`` [+ ``-timeout``/``-rateLimit``]."""
+        import os
 
-        Target is a distinct list element; ``-silent`` keeps stdout to hostnames.
-        """
-        return ["subfinder", "-silent", "-d", target]
+        argv: list[str] = ["subfinder", "-silent", "-d", target]
+        timeout = os.environ.get("REACHAGENT_SUBFINDER_TIMEOUT")
+        if timeout and timeout.isdigit():
+            argv += ["-timeout", timeout]
+        rate = os.environ.get("REACHAGENT_SUBFINDER_RATE")
+        if rate and rate.isdigit():
+            argv += ["-rateLimit", rate]
+        return argv

@@ -11,6 +11,7 @@ import json
 import os
 
 from reachagent.graph.nodes import Endpoint, Host
+from reachagent.recon.tools._wordlist import preferred_wordlist
 from reachagent.recon.tools.base import ReconToolRunner
 
 
@@ -42,24 +43,28 @@ class FfufRunner(ReconToolRunner):
         import os as _os2
         import tempfile
 
-        wordlist = os.environ.get(
-            "REACHAGENT_FFUF_WORDLIST", "/usr/share/wordlists/dirb/common.txt"
-        )
+        wordlist = preferred_wordlist("REACHAGENT_FFUF_WORDLIST")
+        # 307 added; 401/403 left as audit TODO (ACL surface, not auto-match)
+        match_codes = os.environ.get("REACHAGENT_FFUF_MATCH_CODES", "200,204,301,302,307")
         fd, path = tempfile.mkstemp(suffix=".json", prefix="ffuf-")  # noqa: S108 — mkstemp safe temp
         _os2.close(fd)
-        return [
+        argv: list[str] = [
             "ffuf",
             "-u",
             target.rstrip("/") + "/FUZZ",
             "-w",
             wordlist,
             "-mc",
-            "200,204,301,302",
+            match_codes,
             "-o",
             path,
             "-of",
             "json",
         ]
+        threads = os.environ.get("REACHAGENT_FFUF_THREADS")
+        if threads and threads.isdigit():
+            argv += ["-t", threads]
+        return argv
 
     def parse(self, target: str, raw_output: str) -> tuple[str, ...]:
         """Parse ffuf JSON results into Endpoint nodes + resolves_to edges."""

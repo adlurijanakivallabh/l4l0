@@ -39,11 +39,21 @@ class KatanaRunner(ReconToolRunner):
     binary = "katana"
 
     def command(self, target: str) -> list[str]:
-        """katana -u <target> -jc -silent — crawl, URLs to stdout.
+        """katana -u <target> -jc -silent [+ -jsl -aff -d depth -ct timeout]."""
+        import os
 
-        Target is distinct list element (shell=False in base).
-        """
-        return ["katana", "-u", target, "-jc", "-silent"]
+        argv: list[str] = ["katana", "-u", target, "-jc", "-silent"]
+        # JS parsing behind env (default on): -jsl -aff
+        jsl = os.environ.get("REACHAGENT_KATANA_JS", "1")
+        if jsl not in ("0", "false", "False"):
+            argv += ["-jsl", "-aff"]
+        depth = os.environ.get("REACHAGENT_KATANA_DEPTH", "3")
+        if depth.isdigit():
+            argv += ["-d", depth]
+        ct = os.environ.get("REACHAGENT_KATANA_TIMEOUT")
+        if ct and ct.isdigit():
+            argv += ["-ct", ct]
+        return argv
 
     def parse(self, target: str, raw_output: str) -> tuple[str, ...]:
         """Parse katana URL lines into Host + Endpoint + resolves_to facts."""

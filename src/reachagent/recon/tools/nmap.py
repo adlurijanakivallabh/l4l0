@@ -30,13 +30,18 @@ class NmapRunner(ReconToolRunner):
     binary = "nmap"
 
     def command(self, target: str) -> list[str]:
-        """``nmap -oX - -sV <target>`` — XML to stdout, service/version detection.
+        """``nmap -oX - -sV <target>`` [+ ``-T``/``--top-ports``]."""
+        import os
 
-        The target is the final, distinct list element — never interpolated into a
-        shell string (``shell=False`` in the base), so a hostile target value can't
-        break out into a shell.
-        """
-        return ["nmap", "-oX", "-", "-sV", target]
+        argv: list[str] = ["nmap", "-oX", "-", "-sV"]
+        timing = os.environ.get("REACHAGENT_NMAP_TIMING")
+        if timing in ("0", "1", "2", "3", "4", "5"):
+            argv += ["-T", timing]
+        top = os.environ.get("REACHAGENT_NMAP_TOP_PORTS")
+        if top and top.isdigit():
+            argv += ["--top-ports", top]
+        argv.append(target)
+        return argv
 
     def parse(self, target: str, raw_output: str) -> tuple[str, ...]:
         """Parse ``-oX`` XML into ``Host`` + ``Service`` nodes and ``runs_service`` edges."""

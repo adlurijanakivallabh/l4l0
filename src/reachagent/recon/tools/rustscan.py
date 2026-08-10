@@ -30,11 +30,30 @@ class RustscanRunner(ReconToolRunner):
     binary = "rustscan"
 
     def command(self, target: str) -> list[str]:
-        """rustscan -a <target> --ulimit 5000 -- -sV — ports + version probe.
+        """rustscan -a <target> --ulimit N --batch-size B --timeout T -- -sV.
 
-        Target is distinct list element (shell=False in base).
+        Defaults 5000/4500/1500 match spec (ulimit = fd cap, batch = scan
+        throughput, timeout = ms before port assumed closed). Env overrides:
+        REACHAGENT_RUSTSCAN_ULIMIT/BATCH/TIMEOUT.
         """
-        return ["rustscan", "-a", target, "--ulimit", "5000", "--", "-sV"]
+        import os
+
+        ulimit = os.environ.get("REACHAGENT_RUSTSCAN_ULIMIT", "5000")
+        batch = os.environ.get("REACHAGENT_RUSTSCAN_BATCH", "4500")
+        timeout = os.environ.get("REACHAGENT_RUSTSCAN_TIMEOUT", "1500")
+        return [
+            "rustscan",
+            "-a",
+            target,
+            "--ulimit",
+            ulimit,
+            "--batch-size",
+            batch,
+            "--timeout",
+            timeout,
+            "--",
+            "-sV",
+        ]
 
     def parse(self, target: str, raw_output: str) -> tuple[str, ...]:
         """Parse rustscan open-port lines into Host/Service facts."""

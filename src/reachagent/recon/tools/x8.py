@@ -8,10 +8,10 @@ Mirrors gobuster/katana. Facts only.
 
 from __future__ import annotations
 
-import os
 import re
 
 from reachagent.graph.nodes import Endpoint, Host, Parameter
+from reachagent.recon.tools._wordlist import preferred_wordlist
 from reachagent.recon.tools.base import ReconToolRunner
 
 _REFLECT_RE = re.compile(
@@ -32,7 +32,7 @@ class X8Runner(ReconToolRunner):
 
     def command(self, target: str) -> list[str]:
         """x8 -u <target> -w <wordlist> — hidden param discovery, reflected check."""
-        wordlist = os.environ.get("REACHAGENT_X8_WORDLIST", "/usr/share/wordlists/dirb/common.txt")
+        wordlist = preferred_wordlist("REACHAGENT_X8_WORDLIST", x8=True)
         return ["x8", "-u", target, "-w", wordlist]
 
     def parse(self, target: str, raw_output: str) -> tuple[str, ...]:

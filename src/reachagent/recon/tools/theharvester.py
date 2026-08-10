@@ -19,11 +19,11 @@ class TheHarvesterRunner(ReconToolRunner):
     binary = "theHarvester"
 
     def command(self, target: str) -> list[str]:
-        """theHarvester -d <target> -b all — harvest hostnames to stdout.
+        """theHarvester -d <target> -b <source> — harvest hostnames."""
+        import os
 
-        Target is distinct list element (shell=False in base).
-        """
-        return ["theHarvester", "-d", target, "-b", "all"]
+        source = os.environ.get("REACHAGENT_THEHARVESTER_SOURCE", "all")
+        return ["theHarvester", "-d", target, "-b", source]
 
     def parse(self, target: str, raw_output: str) -> tuple[str, ...]:
         """Parse theHarvester hostname lines into Host facts (emails/hosts sep)."""

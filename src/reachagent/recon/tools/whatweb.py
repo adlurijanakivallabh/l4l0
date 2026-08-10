@@ -43,12 +43,14 @@ class WhatWebRunner(ReconToolRunner):
     binary = "whatweb"
 
     def command(self, target: str) -> list[str]:
-        """``whatweb --log-json=- <target>`` — JSON fingerprint to stdout.
+        """``whatweb --log-json=- <target>`` [+ ``-a level``]."""
+        import os
 
-        Target is the final distinct list element (``shell=False`` in the base) —
-        never interpolated into a shell string.
-        """
-        return ["whatweb", "--log-json=-", target]
+        argv: list[str] = ["whatweb", "--log-json=-", target]
+        agg = os.environ.get("REACHAGENT_WHATWEB_AGGRESSION", "1")
+        if agg in ("1", "2", "3", "4"):
+            argv += ["-a", agg]
+        return argv
 
     def parse(self, target: str, raw_output: str) -> tuple[str, ...]:
         """Parse whatweb JSON into ``Host`` tech attributes + a ``resolves_to`` endpoint."""

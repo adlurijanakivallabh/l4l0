@@ -15,9 +15,11 @@ Default gobuster stdout lines look like::
 
 from __future__ import annotations
 
+import os
 import re
 
 from reachagent.graph.nodes import Endpoint, Host
+from reachagent.recon.tools._wordlist import preferred_wordlist
 from reachagent.recon.tools.base import ReconToolRunner
 
 # A gobuster result line: a path token, then a "(Status: NNN)" marker. Anything
@@ -39,12 +41,16 @@ class GobusterRunner(ReconToolRunner):
         default; it is a fixed path element, never the target, so it is not an
         injection surface.
         """
-        import os
-
-        wordlist = os.environ.get(
-            "REACHAGENT_GOBUSTER_WORDLIST", "/usr/share/wordlists/dirb/common.txt"
-        )
-        return ["gobuster", "dir", "-q", "-u", target, "-w", wordlist]
+        wordlist = preferred_wordlist("REACHAGENT_GOBUSTER_WORDLIST")
+        argv: list[str] = ["gobuster", "dir", "-q", "-u", target, "-w", wordlist]
+        # ponytail: env-only tuning, no config file until env count >12
+        threads = os.environ.get("REACHAGENT_GOBUSTER_THREADS")
+        if threads and threads.isdigit():
+            argv += ["-t", threads]
+        timeout = os.environ.get("REACHAGENT_GOBUSTER_TIMEOUT")
+        if timeout and timeout.isdigit():
+            argv += ["--timeout", f"{timeout}s"]
+        return argv
 
     def parse(self, target: str, raw_output: str) -> tuple[str, ...]:
         """Parse gobuster result lines into ``Endpoint`` nodes + ``resolves_to`` edges."""

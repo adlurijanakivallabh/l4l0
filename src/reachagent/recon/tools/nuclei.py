@@ -63,12 +63,23 @@ class NucleiRunner(SignalGatedToolRunner):
         return host_sig or endpoint_sig or service_sig
 
     def command(self, target: str, output_path: str) -> list[str]:
-        """``nuclei -u <target> -jsonl -o <file>`` — template-matched claims, JSONL out.
+        """``nuclei -u <target> -jsonl -o <file>`` [+ env-gated flags]."""
+        import os
 
-        Target is a distinct argv element (``shell=False`` in the base), never a
-        shell string.
-        """
-        return ["nuclei", "-u", target, "-jsonl", "-o", output_path]
+        argv: list[str] = ["nuclei", "-u", target, "-jsonl", "-o", output_path]
+        sev = os.environ.get("REACHAGENT_NUCLEI_SEVERITY")
+        if sev:
+            argv += ["-severity", sev]
+        rl = os.environ.get("REACHAGENT_NUCLEI_RATE_LIMIT")
+        if rl and rl.isdigit():
+            argv += ["-rate-limit", rl]
+        to = os.environ.get("REACHAGENT_NUCLEI_TIMEOUT")
+        if to and to.isdigit():
+            argv += ["-timeout", to]
+        tags = os.environ.get("REACHAGENT_NUCLEI_TAGS")
+        if tags:
+            argv += ["-tags", tags]
+        return argv
 
     def parse(self, target: str, raw_output: str) -> tuple[Candidate, ...]:
         """Parse nuclei JSONL into inert candidates (never a finding).

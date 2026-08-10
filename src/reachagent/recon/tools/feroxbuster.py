@@ -8,8 +8,10 @@ gobuster.py. Facts only.
 from __future__ import annotations
 
 import json
+import os
 
 from reachagent.graph.nodes import Endpoint, Host
+from reachagent.recon.tools._wordlist import preferred_wordlist
 from reachagent.recon.tools.base import ReconToolRunner
 
 
@@ -35,12 +37,22 @@ class FeroxbusterRunner(ReconToolRunner):
 
     def command(self, target: str) -> list[str]:
         """feroxbuster --url <target> --silent --json -o <file> — JSON to file."""
-        import os
         import tempfile
 
         fd, path = tempfile.mkstemp(suffix=".json", prefix="ferox-")  # noqa: S108 — mkstemp safe temp
         os.close(fd)
-        return ["feroxbuster", "--url", target, "--silent", "--json", "-o", path]
+        argv: list[str] = ["feroxbuster", "--url", target, "--silent", "--json", "-o", path]
+        wordlist = preferred_wordlist("REACHAGENT_FEROX_WORDLIST")
+        # Forward -w when explicitly set or richer default found
+        if (
+            os.environ.get("REACHAGENT_FEROX_WORDLIST")
+            or wordlist != "/usr/share/wordlists/dirb/common.txt"
+        ):
+            argv += ["-w", wordlist]
+        threads = os.environ.get("REACHAGENT_FEROX_THREADS")
+        if threads and threads.isdigit():
+            argv += ["-t", threads]
+        return argv
 
     def parse(self, target: str, raw_output: str) -> tuple[str, ...]:
         """Parse feroxbuster JSON lines into Endpoint nodes + resolves_to edges."""

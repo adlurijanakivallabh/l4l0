@@ -32,8 +32,15 @@ class MasscanRunner(ReconToolRunner):
     binary = "masscan"
 
     def command(self, target: str) -> list[str]:
-        """masscan <target> -p1-65535 --rate 1000 -oX - — XML to stdout."""
-        return ["masscan", target, "-p1-65535", "--rate", "1000", "-oX", "-"]
+        """masscan <target> -p1-65535 --rate N -oX - — XML to stdout."""
+        import os
+
+        rate_raw = os.environ.get("REACHAGENT_MASSCAN_RATE", "1000")
+        try:
+            rate = max(100, min(10000, int(rate_raw)))
+        except ValueError:
+            rate = 1000
+        return ["masscan", target, "-p1-65535", "--rate", str(rate), "-oX", "-"]
 
     def parse(self, target: str, raw_output: str) -> tuple[str, ...]:
         """Parse masscan greppable or XML output into Host/Service facts."""
