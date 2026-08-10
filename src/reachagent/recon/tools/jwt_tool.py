@@ -34,15 +34,18 @@ class JwtToolRunner(SignalGatedToolRunner):
     """Emit inert jwt_forgery candidates from jwt_tool output — gated on JWT/auth (§9)."""
 
     name = "jwt-tool"
-    binary = "jwt_tool"
+    binary = "python3"
 
     def has_signal(self, target: str) -> bool:
         """True iff graph holds a JWT/auth-endpoint signal (§9 gate)."""
         return _has_jwt_signal(self.graph)
 
     def command(self, target: str, output_path: str) -> list[str]:
-        """python3 jwt_tool.py <target> — JWT analysis, claims to output."""
-        return ["python3", "jwt_tool.py", target]
+        """python3 /home/kali/jwt_tool/jwt_tool.py -t <target> — JWT analysis."""
+        import os
+
+        jwt_path = os.environ.get("REACHAGENT_JWT_TOOL_PATH", "/home/kali/jwt_tool/jwt_tool.py")
+        return ["python3", jwt_path, "-t", target]
 
     def parse(self, target: str, raw_output: str) -> tuple[Candidate, ...]:
         """Parse jwt_tool text/JSON into inert jwt_forgery candidates (never a finding)."""

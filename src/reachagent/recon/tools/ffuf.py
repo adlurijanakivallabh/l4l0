@@ -38,10 +38,15 @@ class FfufRunner(ReconToolRunner):
     binary = "ffuf"
 
     def command(self, target: str) -> list[str]:
-        """ffuf -u <target>/FUZZ -w <wordlist> -mc 200,204,301,302 -o - -of json."""
+        """ffuf -u <target>/FUZZ -w <wordlist> -mc 200,204,301,302 -o <file> -of json."""
+        import os as _os2
+        import tempfile
+
         wordlist = os.environ.get(
             "REACHAGENT_FFUF_WORDLIST", "/usr/share/wordlists/dirb/common.txt"
         )
+        fd, path = tempfile.mkstemp(suffix=".json", prefix="ffuf-")  # noqa: S108 — mkstemp safe temp
+        _os2.close(fd)
         return [
             "ffuf",
             "-u",
@@ -51,7 +56,7 @@ class FfufRunner(ReconToolRunner):
             "-mc",
             "200,204,301,302",
             "-o",
-            "-",
+            path,
             "-of",
             "json",
         ]

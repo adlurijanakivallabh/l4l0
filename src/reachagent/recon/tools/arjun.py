@@ -30,8 +30,13 @@ class ArjunRunner(ReconToolRunner):
     binary = "arjun"
 
     def command(self, target: str) -> list[str]:
-        """arjun -u <target> --get --json -o - — GET param discovery, JSON out."""
-        return ["arjun", "-u", target, "--get", "--json", "-o", "-"]
+        """arjun -u <target> -oJ <file> — JSON output to file (base reads file)."""
+        import os
+        import tempfile
+
+        fd, path = tempfile.mkstemp(suffix=".json", prefix="arjun-")  # noqa: S108 — mkstemp is safe temp, not hardcoded /tmp write
+        os.close(fd)
+        return ["arjun", "-u", target, "-oJ", path]
 
     def parse(self, target: str, raw_output: str) -> tuple[str, ...]:
         """Parse Arjun JSON into Parameter nodes.

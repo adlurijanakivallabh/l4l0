@@ -225,8 +225,13 @@ class SslyzeRunner(ReconToolRunner):
     binary = "sslyze"
 
     def command(self, target: str) -> list[str]:
-        """sslyze --json_file - <target> — JSON scan results to stdout."""
-        return ["sslyze", "--json_file", "-", target]
+        """sslyze --json_out <file> <target> — JSON scan results to file."""
+        import os
+        import tempfile
+
+        fd, path = tempfile.mkstemp(suffix=".json", prefix="sslyze-")  # noqa: S108 — mkstemp safe temp
+        os.close(fd)
+        return ["sslyze", "--json_out", path, target]
 
     def parse(self, target: str, raw_output: str) -> tuple[str, ...]:
         """Parse sslyze JSON server_scan_results into Host facts."""

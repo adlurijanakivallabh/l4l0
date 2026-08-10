@@ -34,8 +34,13 @@ class FeroxbusterRunner(ReconToolRunner):
     binary = "feroxbuster"
 
     def command(self, target: str) -> list[str]:
-        """feroxbuster --url <target> --silent --json — JSON lines to stdout."""
-        return ["feroxbuster", "--url", target, "--silent", "--json"]
+        """feroxbuster --url <target> --silent --json -o <file> — JSON to file."""
+        import os
+        import tempfile
+
+        fd, path = tempfile.mkstemp(suffix=".json", prefix="ferox-")  # noqa: S108 — mkstemp safe temp
+        os.close(fd)
+        return ["feroxbuster", "--url", target, "--silent", "--json", "-o", path]
 
     def parse(self, target: str, raw_output: str) -> tuple[str, ...]:
         """Parse feroxbuster JSON lines into Endpoint nodes + resolves_to edges."""
