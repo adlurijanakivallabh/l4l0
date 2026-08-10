@@ -30,6 +30,21 @@ from reachagent.execution.scope import OutOfScopeError, ScopeGuard
 # as state-changing and gated behind read-only-first (§10).
 _READ_ONLY_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 
+# Transient-retry policy (D5): read-only requests are retried up to _RETRY_LIMIT
+# times on a transient server error or a transport error, with this backoff
+# (seconds) between attempts. Only 502/503/504 (Bad Gateway / Service
+# Unavailable / Gateway Timeout — proxy/overload, transient by design) count as
+# retryable; a plain 500 is an application-level *response* that carries meaning
+# (e.g. the SQL-error fingerprint canary or an oracle baseline), so it is
+# returned immediately — retrying it would triple probe traffic and distort
+# fingerprint/oracle semantics. A state-changing request is NEVER retried — a
+# retried mutation could double-apply a side effect (§10). Total retry budget is
+# bounded (~1.5s sleep + bounded request time), so a flapping gateway cannot
+# stall the firer.
+_RETRY_LIMIT = 2
+_RETRY_BACKOFF: tuple[float, ...] = (0.5, 1.0)
+_RETRY_STATUSES = frozenset({502, 503, 504})
+
 
 class ReadOnlyFirstError(RuntimeError):
     """Raised when a state-changing request is attempted before the read-only
@@ -107,6 +122,77 @@ class RequestFirer:
         """
         return 200 <= status_code < 300
 
+    def _send_once(
+        self,
+        method: str,
+        parsed: httpx.URL,
+        kwargs: dict[str, object],
+    ) -> FireResult:
+        """Send one request and time it — a single transport attempt (§12).
+
+        The timeout is monotonic and load-bearing for the §7 timing-statistical
+        oracle, so it is measured here (not via httpx's internal elapsed state).
+        """
+        started = time.monotonic()
+        # Redirects are returned to the caller rather than followed. A client
+        # redirect hop would bypass this execution-layer scope check.
+        kwargs.pop("follow_redirects", None)
+        response = self._client.request(
+            method,
+            parsed,
+            follow_redirects=False,
+            **kwargs,  # type: ignore[arg-type]
+        )
+        return FireResult(
+            status_code=response.status_code,
+            elapsed_seconds=time.monotonic() - started,
+            body=response.content,
+            headers=response.headers,
+        )
+
+    def _send_with_retry(
+        self,
+        identity: str,
+        method: str,
+        target: str,
+        parsed: httpx.URL,
+        kwargs: dict[str, object],
+    ) -> tuple[FireResult, bool]:
+        """Send a read-only request with bounded transient retry (D5).
+
+        Returns ``(result, recovered)``. ``recovered`` is True when the final
+        response arrived after at least one retry — so a downstream reader sees
+        honest recovery, not a false clean success. Each intermediate attempt is
+        audited as ``fired:<status>`` (a real 5xx response) or
+        ``error:<Type>`` (a transport error). Final outcomes:
+        ``fired:<status>`` clean, ``fired:<status>:recovered`` after a retry,
+        ``error:<Type>:unrecoverable`` after retries exhausted.
+        """
+        for attempt in range(_RETRY_LIMIT + 1):
+            try:
+                result = self._send_once(method, parsed, kwargs)
+            except Exception as exc:  # noqa: BLE001 — transport failure, audited per attempt
+                if attempt < _RETRY_LIMIT:
+                    self._audit.record(identity, method, target, f"error:{type(exc).__name__}")
+                    time.sleep(_RETRY_BACKOFF[attempt])
+                    continue
+                self._audit.record(
+                    identity, method, target, f"error:{type(exc).__name__}:unrecoverable"
+                )
+                raise
+            if result.status_code not in _RETRY_STATUSES:
+                # A non-transient response (2xx/3xx/4xx, or a meaningful 500) is
+                # final — retried only 502/503/504 gateway errors are retried.
+                return result, attempt > 0
+            if attempt < _RETRY_LIMIT:
+                # Transient gateway error — retry; audit the real response.
+                self._audit.record(identity, method, target, f"fired:{result.status_code}")
+                time.sleep(_RETRY_BACKOFF[attempt])
+                continue
+            # Last attempt still a transient gateway error — that IS the answer.
+            return result, False
+        raise RuntimeError("unreachable")  # pragma: no cover — loop always returns/raises
+
     def fire(
         self,
         identity: str,
@@ -148,30 +234,27 @@ class RequestFirer:
                 f"read-only case not yet confirmed for {target}; fire a read-only request first"
             )
 
-        # Gate passed — send the packet. Time it ourselves with a monotonic
-        # clock: timing is load-bearing for the §7 timing-statistical oracle, and
-        # we don't want it depending on httpx's internal ``.elapsed`` state.
-        started = time.monotonic()
-        try:
-            # Redirects are returned to the caller rather than followed. A client
-            # redirect hop would bypass this execution-layer scope check.
-            kwargs.pop("follow_redirects", None)
-            response = self._client.request(method, parsed, follow_redirects=False, **kwargs)  # type: ignore[arg-type]
-            elapsed_seconds = time.monotonic() - started
-            result = FireResult(
-                status_code=response.status_code,
-                elapsed_seconds=elapsed_seconds,
-                body=response.content,
-                headers=response.headers,
-            )
-        except Exception as exc:  # noqa: BLE001 — every failed attempt must be audited
-            self._audit.record(identity, method, target, f"error:{type(exc).__name__}")
-            raise
+        # Gate passed — send the packet. A state-changing request is NEVER
+        # retried (a retried mutation could double-apply a side effect); a
+        # read-only request gets bounded transient retry on 5xx/transport error
+        # (§10 D5). Scope and read-only-first gates ran once, above, before any
+        # attempt — retries do not re-run them.
+        if not read_only:
+            try:
+                result = self._send_once(method, parsed, kwargs)
+            except Exception as exc:  # noqa: BLE001 — every failed attempt must be audited
+                self._audit.record(identity, method, target, f"error:{type(exc).__name__}")
+                raise
+            self._audit.record(identity, method, target, f"fired:{result.status_code}")
+            return result
+
+        result, recovered = self._send_with_retry(identity, method, target, parsed, kwargs)
 
         # A successful read-only request clears this endpoint for later mutation.
-        if read_only and self._read_only_clears(method, result.status_code):
+        if self._read_only_clears(method, result.status_code):
             with self._clearance_lock:
                 self._read_only_cleared.add(key)
 
-        self._audit.record(identity, method, target, f"fired:{result.status_code}")
+        suffix = ":recovered" if recovered else ""
+        self._audit.record(identity, method, target, f"fired:{result.status_code}{suffix}")
         return result

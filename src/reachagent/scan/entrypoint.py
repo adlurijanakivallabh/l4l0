@@ -169,6 +169,48 @@ _PASSTHROUGH_RUNNERS = frozenset(
 )
 
 
+def detect_target_type(target: str) -> str:
+    """Classify a scan target for recon dispatch (D2): domain | url | ip | cidr | host_port.
+
+    Recon shape is selected by target *type* before any ingest — a bare-IP scan
+    should not waste budget on subdomain enumeration, and a host:port target goes
+    straight to TLS probes:
+
+      * ``domain``  — bare FQDN: subdomain enum + tech fingerprint + crawl.
+      * ``url``     — scheme://host[/path]: same domain-shaped recon as ``domain``.
+      * ``ip``      — bare IPv4/IPv6 address: port/network probes (nmap/masscan/rustscan).
+      * ``cidr``    — ``a.b.c.d/n`` network block: same port/network probes.
+      * ``host_port`` — ``host:port`` with no scheme/path: TLS probes (sslscan/sslyze).
+    """
+    import ipaddress
+    import re as _re
+
+    raw = target.strip()
+    if "://" in raw:
+        raw = raw.split("://", 1)[1]
+    # CIDR netblock — the "/" is a netmask, not a URL path. Checked on the full
+    # authority (before any path split) so "10.0.0.0/24" classifies as cidr.
+    if "/" in raw:
+        try:
+            ipaddress.ip_network(raw, strict=False)
+            return "cidr"
+        except ValueError:
+            pass
+    authority = raw.split("/", 1)[0]
+    has_path = "/" in raw
+    # host:port — authority carries a numeric port and no path.
+    if ":" in authority and _re.fullmatch(r"[^:]+:\d+", authority):
+        return "host_port"
+    try:
+        ipaddress.ip_address(authority)
+        return "ip"
+    except ValueError:
+        pass
+    if has_path:
+        return "url"
+    return "domain"
+
+
 def _filter_fixture_by_scope(raw: str, enforcer: ScopeEnforcer, runner_name: str) -> str:
     """Host-per-line runners: filter; endpoint/XML runners: passthrough."""
     if runner_name in _PASSTHROUGH_RUNNERS:
@@ -252,27 +294,48 @@ def scan_target(
         a.record("scan", "RECON", target_host, "refused_out_of_scope")
 
     if fixtures is not None:
-        from reachagent.recon.tools.gobuster import GobusterRunner
-        from reachagent.recon.tools.nmap import NmapRunner
-        from reachagent.recon.tools.subdomains import SubfinderRunner
-        from reachagent.recon.tools.whatweb import WhatWebRunner
+        # Recon dispatch by target type (D2): host-shaped targets skip subdomain
+        # enumeration; domain/url targets crawl + fingerprint; host:port targets
+        # go straight to TLS probes. Scope gates still run before every ingest.
+        target_type = detect_target_type(base_url)
+        if target_type in ("ip", "cidr"):
+            from reachagent.recon.tools.masscan import MasscanRunner
+            from reachagent.recon.tools.nmap import NmapRunner
+            from reachagent.recon.tools.rustscan import RustscanRunner
 
+            runner_types: list[type[Any]] = [NmapRunner, MasscanRunner, RustscanRunner]
+        elif target_type == "host_port":
+            from reachagent.recon.tools.tls_probe import SslscanRunner, SslyzeRunner
+
+            runner_types = [SslscanRunner, SslyzeRunner]
+        else:  # domain / url
+            from reachagent.recon.tools.gobuster import GobusterRunner
+            from reachagent.recon.tools.katana import KatanaRunner
+            from reachagent.recon.tools.subdomains import AmassRunner, SubfinderRunner
+            from reachagent.recon.tools.theharvester import TheHarvesterRunner
+            from reachagent.recon.tools.whatweb import WhatWebRunner
+
+            runner_types = [
+                SubfinderRunner,
+                AmassRunner,
+                TheHarvesterRunner,
+                WhatWebRunner,
+                KatanaRunner,
+                GobusterRunner,
+            ]
+
+        # URL-shaped tools need the full base_url; host-line and port/TLS tools
+        # take the bare host (or host:port) target.
+        _URL_TOOLS = frozenset({"gobuster", "whatweb", "katana"})
         scope_guard = ScopeGuard.from_hosts([p.lstrip("*.") for p in enforcer._allow if p])
-        runners: list[Any] = [
-            NmapRunner(graph=g, scope=scope_guard, audit=a),
-            GobusterRunner(graph=g, scope=scope_guard, audit=a),
-            WhatWebRunner(graph=g, scope=scope_guard, audit=a),
-            SubfinderRunner(graph=g, scope=scope_guard, audit=a),
-        ]
+        runners: list[Any] = [rt(graph=g, scope=scope_guard, audit=a) for rt in runner_types]
         for runner in runners:
             raw = fixtures.get(runner.name, "")
             if not raw:
                 continue
             allowed_raw = _filter_fixture_by_scope(raw, enforcer, runner.name)
-            runner.ingest(
-                base_url if runner.name in ("nmap", "gobuster", "whatweb") else target_host,
-                allowed_raw,
-            )
+            target_arg = base_url if runner.name in _URL_TOOLS else target_host
+            runner.ingest(target_arg, allowed_raw)
             # Audit any host lines that were dropped
             for line in raw.splitlines():
                 stripped = line.strip()

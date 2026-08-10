@@ -140,7 +140,11 @@ def test_audit_target_excludes_query_string(
     assert "secret123" not in firer.audit.entries[-1].target
 
 
-def test_transport_error_is_audited_and_reraised() -> None:
+def test_transport_error_is_audited_and_reraised(monkeypatch) -> None:
+    import reachagent.execution.firer as _firer_mod
+
+    monkeypatch.setattr(_firer_mod, "_RETRY_BACKOFF", (0.0, 0.0))
+
     def handler(request: httpx.Request) -> httpx.Response:
         raise httpx.ConnectError("boom")
 
@@ -148,4 +152,5 @@ def test_transport_error_is_audited_and_reraised() -> None:
     firer = RequestFirer(client, ScopeGuard.from_hosts(["target.test"]))
     with pytest.raises(httpx.ConnectError):
         firer.fire("user_a", "GET", f"{IN_SCOPE}/orders")
-    assert firer.audit.entries[-1].outcome == "error:ConnectError"
+    # Read-only transport errors are retried, then marked unrecoverable honestly.
+    assert firer.audit.entries[-1].outcome == "error:ConnectError:unrecoverable"

