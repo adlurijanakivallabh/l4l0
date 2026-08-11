@@ -11,6 +11,7 @@ import json
 import os
 
 from reachagent.graph.nodes import Endpoint, Host
+from reachagent.recon.calibration import CalibrationResult
 from reachagent.recon.tools._wordlist import preferred_wordlist
 from reachagent.recon.tools.base import ReconToolRunner
 
@@ -54,11 +55,24 @@ class FeroxbusterRunner(ReconToolRunner):
             argv += ["-t", threads]
         return argv
 
-    def parse(self, target: str, raw_output: str) -> tuple[str, ...]:
-        """Parse feroxbuster JSON lines into Endpoint nodes + resolves_to edges."""
+    # Set by the scan entrypoint before ingest (D3 pass-through).
+    calibration: CalibrationResult | None = None
+
+    def parse(
+        self, target: str, raw_output: str, calibration: CalibrationResult | None = None
+    ) -> tuple[str, ...]:
+        """Parse feroxbuster JSON lines into Endpoint nodes + resolves_to edges.
+
+        Wildcard catch-all (D2): discovered paths are untrustworthy — each result
+        is audited ``refused_wildcard_catchall``, no Endpoint is asserted.
+        """
+        cal = calibration if calibration is not None else self.calibration
+        technology = f"wildcard_shape:{cal.shape_label}" if cal is not None else None
         written: list[str] = []
         host_addr = _host_of(target)
-        host_node = self.graph.add_host(Host(address=host_addr, source=self.name))
+        host_node = self.graph.add_host(
+            Host(address=host_addr, source=self.name, technology=technology)
+        )
         written.append(host_node)
         seen_paths: set[str] = set()
         for line in raw_output.splitlines():
@@ -73,6 +87,9 @@ class FeroxbusterRunner(ReconToolRunner):
                 continue
             url = str(obj.get("url", ""))
             if not url:
+                continue
+            if cal is not None and cal.wildcard:
+                self.audit.record(self.name, "RECON", target, "refused_wildcard_catchall")
                 continue
             path = _path_of(url)
             if path in seen_paths:

@@ -293,6 +293,12 @@ def scan_target(
     else:
         a.record("scan", "RECON", target_host, "refused_out_of_scope")
 
+    # The firer is built once and shared by wildcard calibration (below) and the
+    # main loop — scope + read-only-first + audit hold on both (§10).
+    firer_scope = EnforcerScopeWrapper(enforcer)
+    client = httpx.Client(transport=transport) if transport is not None else httpx.Client()
+    firer = RequestFirer(client, firer_scope, a)  # type: ignore[arg-type]
+
     if fixtures is not None:
         # Recon dispatch by target type (D2): host-shaped targets skip subdomain
         # enumeration; domain/url targets crawl + fingerprint; host:port targets
@@ -309,6 +315,9 @@ def scan_target(
 
             runner_types = [SslscanRunner, SslyzeRunner]
         else:  # domain / url
+            from reachagent.recon.tools.dirb import DirbRunner
+            from reachagent.recon.tools.feroxbuster import FeroxbusterRunner
+            from reachagent.recon.tools.ffuf import FfufRunner
             from reachagent.recon.tools.gobuster import GobusterRunner
             from reachagent.recon.tools.katana import KatanaRunner
             from reachagent.recon.tools.subdomains import AmassRunner, SubfinderRunner
@@ -322,6 +331,9 @@ def scan_target(
                 WhatWebRunner,
                 KatanaRunner,
                 GobusterRunner,
+                FfufRunner,
+                FeroxbusterRunner,
+                DirbRunner,
             ]
 
         # URL-shaped tools need the full base_url; host-line and port/TLS tools
@@ -329,7 +341,20 @@ def scan_target(
         _URL_TOOLS = frozenset({"gobuster", "whatweb", "katana"})
         scope_guard = ScopeGuard.from_hosts([p.lstrip("*.") for p in enforcer._allow if p])
         runners: list[Any] = [rt(graph=g, scope=scope_guard, audit=a) for rt in runner_types]
+
+        # Wildcard calibration (D5, live only — it *fires* probes, so dry-run
+        # stays zero-fired). A catch-all makes content-discovery path facts
+        # untrustworthy; the four content wrappers suppress them (D2).
+        content_discovery = frozenset({"gobuster", "ffuf", "feroxbuster", "dirb"})
+        cal_result = None
+        if not dry_run and any(r.name in content_discovery for r in runners):
+            from reachagent.recon.calibration import CalibrationRunner
+
+            cal_result = CalibrationRunner(firer, base_url).run()
+
         for runner in runners:
+            if runner.name in content_discovery:
+                runner.calibration = cal_result
             raw = fixtures.get(runner.name, "")
             if not raw:
                 continue
@@ -345,9 +370,6 @@ def scan_target(
                 if host and not enforcer.is_allowed(host):
                     a.record(runner.name, "RECON", host, "refused_out_of_scope")
 
-    firer_scope = EnforcerScopeWrapper(enforcer)
-    client = httpx.Client(transport=transport) if transport is not None else httpx.Client()
-    firer = RequestFirer(client, firer_scope, a)  # type: ignore[arg-type]
     from reachagent.tools.explorer_context import ExplorerContext
 
     ctx = ExplorerContext(graph=g, firer=firer, library=lib, base_url=base_url)

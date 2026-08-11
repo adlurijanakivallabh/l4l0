@@ -19,6 +19,7 @@ import os
 import re
 
 from reachagent.graph.nodes import Endpoint, Host
+from reachagent.recon.calibration import CalibrationResult
 from reachagent.recon.tools._wordlist import preferred_wordlist
 from reachagent.recon.tools.base import ReconToolRunner
 
@@ -32,6 +33,11 @@ class GobusterRunner(ReconToolRunner):
 
     name = "gobuster"
     binary = "gobuster"
+
+    # Set by the scan entrypoint before ingest (D3 pass-through — base.py's
+    # parse contract is overridden by ~20 wrappers, so the calibration result is
+    # handed over per-instance, not through base).
+    calibration: CalibrationResult | None = None
 
     def command(self, target: str) -> list[str]:
         """``gobuster dir -q -u <target> -w <wordlist>`` — quiet, results to stdout.
@@ -52,11 +58,28 @@ class GobusterRunner(ReconToolRunner):
             argv += ["--timeout", f"{timeout}s"]
         return argv
 
-    def parse(self, target: str, raw_output: str) -> tuple[str, ...]:
-        """Parse gobuster result lines into ``Endpoint`` nodes + ``resolves_to`` edges."""
+    def parse(
+        self, target: str, raw_output: str, calibration: CalibrationResult | None = None
+    ) -> tuple[str, ...]:
+        """Parse gobuster result lines into ``Endpoint`` nodes + ``resolves_to`` edges.
+
+        When a calibration result marks the target as a wildcard catch-all
+        (D2), discovered paths are untrustworthy facts — no Endpoint is asserted,
+        each result line is audited ``refused_wildcard_catchall``, and only the
+        Host (carrying the ``wildcard_shape`` fact) is returned.
+        """
+        cal = calibration if calibration is not None else self.calibration
+        technology = f"wildcard_shape:{cal.shape_label}" if cal is not None else None
         written: list[str] = []
-        host_node = self.graph.add_host(Host(address=_host_of(target), source=self.name))
+        host_node = self.graph.add_host(
+            Host(address=_host_of(target), source=self.name, technology=technology)
+        )
         written.append(host_node)
+        if cal is not None and cal.wildcard:
+            for line in raw_output.splitlines():
+                if _RESULT.match(line.strip()):
+                    self.audit.record(self.name, "RECON", target, "refused_wildcard_catchall")
+            return tuple(written)
         for line in raw_output.splitlines():
             match = _RESULT.match(line.strip())
             if match is None:
