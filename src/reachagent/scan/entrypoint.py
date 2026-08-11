@@ -270,6 +270,7 @@ def scan_target(
     transport: httpx.BaseTransport | None = None,
     graph: ReachabilityGraph | None = None,
     audit: AuditLog | None = None,
+    dns_resolve: Any | None = None,
 ) -> dict[str, Any]:
     """Generic autonomous scan entrypoint.
 
@@ -346,15 +347,43 @@ def scan_target(
         # stays zero-fired). A catch-all makes content-discovery path facts
         # untrustworthy; the four content wrappers suppress them (D2).
         content_discovery = frozenset({"gobuster", "ffuf", "feroxbuster", "dirb"})
+        subdomain_enum = frozenset({"subfinder", "amass", "theharvester", "theHarvester"})
         cal_result = None
-        if not dry_run and any(r.name in content_discovery for r in runners):
-            from reachagent.recon.calibration import CalibrationRunner
+        dns_result = None
+        if not dry_run:
+            if any(r.name in content_discovery for r in runners):
+                from reachagent.recon.calibration import CalibrationRunner
 
-            cal_result = CalibrationRunner(firer, base_url).run()
+                cal_result = CalibrationRunner(firer, base_url).run()
+            # DNS wildcard pre-check (D2, live only — DNS probes fire). A zone
+            # with a wildcard A record answers any random label with one IP; the
+            # three subdomain wrappers suppress hostnames that resolve to it.
+            if target_type in ("domain", "url") and any(r.name in subdomain_enum for r in runners):
+                from reachagent.recon.calibration import DnsWildcardProber
+
+                prober = (
+                    DnsWildcardProber(target_host, resolve=dns_resolve)
+                    if dns_resolve is not None
+                    else DnsWildcardProber(target_host)
+                )
+                dns_result = prober.run()
+                # The wildcard fact IS recorded on the root target Host (D2).
+                g.add_host(
+                    Host(
+                        address=target_host,
+                        hostname=target_host,
+                        source="scan",
+                        technology=dns_result.shape_label,
+                    )
+                )
 
         for runner in runners:
             if runner.name in content_discovery:
                 runner.calibration = cal_result
+            if runner.name in subdomain_enum and dns_result is not None:
+                runner.dns_wildcard_ip = dns_result.wildcard_ip
+                if dns_resolve is not None:
+                    runner.resolve = dns_resolve
             raw = fixtures.get(runner.name, "")
             if not raw:
                 continue

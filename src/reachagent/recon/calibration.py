@@ -57,7 +57,9 @@ corpus semantic-validity guard).
 from __future__ import annotations
 
 import hashlib
+import socket
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from reachagent.execution.firer import RequestFirer
@@ -147,4 +149,133 @@ class CalibrationRunner:
             body_hashes=tuple(body_hashes),
             content_types=tuple(content_types),
             wildcard=wildcard,
+        )
+
+
+# ---------------------------------------------------------------------------
+# DNS wildcard pre-check — the subdomain analog of the HTTP calibration above.
+#
+# Same catch-all FP class, but for subdomain enumeration: a zone with a wildcard
+# A record answers ANY random label with the same IP, so a discovered
+# "subdomain" may be the catch-all, not a real host. Technique inspiration from
+# claude-bug-bounty's recon_engine.sh DNS wildcard pre-check (MIT, paraphrased).
+#
+# # DECISION BLOCK (D1-D4) — DNS analog, mirroring the HTTP block above
+#
+# D1. Probe shape.
+#     :class:`DnsWildcardProber` resolves N=3 random distinct labels
+#     ``<uuid4-hex>.<host>`` at the target's host via an INJECTED resolver
+#     callable (default stdlib ``socket.gethostbyname`` — ponytail: no dnspython;
+#     tests inject a fake resolver, so hermetic). Deterministic wildcard = >=2 of
+#     3 labels resolve AND all resolved to the SAME IP (the wildcard IP). Any
+#     label NXDOMAIN / socket error, or differing IPs → wildcard False.
+#     Conservative on resolver failure: any error → that label is not resolved;
+#     fewer than 2 resolved → no wildcard. Probes the given host directly —
+#     multi-level registrable-domain extraction (public-suffix list) is deferred,
+#     documented here, not this commit: a target that IS a subdomain checks
+#     wildcard at its own level, still a useful honest fact.
+#
+# D2. Flag + suppress, honestly recorded.
+#     When dns_wildcard=True, a subdomain-enumeration hostname (subfinder/amass/
+#     theHarvester output) that RESOLVES to the wildcard IP is untrustworthy —
+#     the domain answers every random label with that IP, so the "subdomain" may
+#     be the catch-all, not a real host. So: wrappers suppress Host facts whose
+#     resolved IP == wildcard IP, each audited ``refused_wildcard_dns``; the
+#     wildcard fact IS recorded as a Host ``technology`` attribute
+#     ``dns_wildcard:<ip>`` on the root target Host (or ``dns_wildcard:none``
+#     when checked clean). Resolving each discovered hostname to compare costs
+#     one read-only DNS query per hostname — bounded by tool output, acceptable.
+#     A hostname that FAILS to resolve is KEPT (conservative — don't over-suppress
+#     on uncertainty); only an exact wildcard-IP match suppresses. A real host
+#     behind the catch-all IP is the accepted tradeoff, recorded here, not silent.
+#
+# D3. Wiring — minimal, mirror the HTTP calibration helper exactly.
+#     subfinder/amass/theHarvester gain an optional ``dns_wildcard_ip`` field
+#     (per-instance, set by ``scan_target`` before ingest — base.py untouched,
+#     same mypy-strict reason as the HTTP block). Each wrapper resolves a
+#     discovered hostname via an injected ``resolve`` callable (defaulting to
+#     ``socket.gethostbyname``) and suppresses on an exact wildcard-IP match.
+#     ``scan_target`` runs :class:`DnsWildcardProber` once per domain-shaped
+#     target, live mode only (DNS probes fire — dry-run stays zero-probe), hands
+#     the wildcard IP to the three subdomain wrappers, and records the
+#     ``dns_wildcard`` fact on the root target Host. When None or no wildcard →
+#     behavior unchanged.
+#
+# D4. No oracle, no Finding, no new node/edge type.
+#     DNS wildcard is a recon-tier fact (Host ``technology`` attribute + audit
+#     entries). Six oracle families held; nothing writes a ``can_call``, a
+#     candidate, or a ``Finding``.
+# ---------------------------------------------------------------------------
+
+
+def _default_dns_resolve(hostname: str) -> str | None:
+    """Resolve a hostname to one IPv4 address via stdlib, or ``None`` on failure.
+
+    ``socket.gethostbyname`` raises ``socket.gaierror`` on NXDOMAIN and
+    ``OSError`` on transient network trouble — both map to ``None`` (treated as
+    "not resolved"), which is the conservative, non-suppressing answer (D2).
+    """
+    try:
+        return socket.gethostbyname(hostname)
+    except (socket.gaierror, OSError):
+        return None
+
+
+@dataclass(frozen=True)
+class DnsWildcardResult:
+    """What the DNS probes observed plus the catch-all verdict.
+
+    ``ips`` is one entry per probe label (``None`` = that label did not resolve).
+    ``wildcard`` is True only when >=2 labels resolved to the SAME IP.
+    """
+
+    wildcard: bool
+    wildcard_ip: str | None = None
+    ips: tuple[str | None, ...] = ()
+
+    @property
+    def shape_label(self) -> str:
+        """The Host ``dns_wildcard`` attribute value: ``dns_wildcard:<ip>`` or ``none`` (D2)."""
+        if self.wildcard and self.wildcard_ip:
+            return f"dns_wildcard:{self.wildcard_ip}"
+        return "dns_wildcard:none"
+
+
+class DnsWildcardProber:
+    """Resolve random labels under a host and judge whether the zone is a wildcard.
+
+    Purely a prober: injected resolver in, :class:`DnsWildcardResult` out. It
+    never touches the graph — the Host ``dns_wildcard`` fact is recorded by the
+    scan entrypoint on the root target Host (D2).
+    """
+
+    def __init__(
+        self,
+        host: str,
+        resolve: Callable[[str], str | None] = _default_dns_resolve,
+    ) -> None:
+        self._host = host.rstrip(".")
+        self._resolve = resolve
+
+    def run(self, probe_count: int = 3) -> DnsWildcardResult:
+        """Resolve ``probe_count`` distinct random labels and judge wildcard.
+
+        Each label is a fresh random label so no two probes collide and a caching
+        resolver cannot serve a cached answer for a "known" label. A label whose
+        resolver call raises (or returns ``None``) counts as not resolved —
+        conservative, never a wildcard.
+        """
+        ips: list[str | None] = []
+        for _ in range(probe_count):
+            label = f"{uuid.uuid4().hex}.{self._host}"
+            try:
+                ips.append(self._resolve(label))
+            except Exception:  # noqa: BLE001 — resolver hiccup is a conservative non-wildcard
+                ips.append(None)
+        resolved = [ip for ip in ips if ip is not None]
+        wildcard = len(resolved) >= 2 and len(set(resolved)) == 1
+        return DnsWildcardResult(
+            wildcard=wildcard,
+            wildcard_ip=resolved[0] if wildcard else None,
+            ips=tuple(ips),
         )

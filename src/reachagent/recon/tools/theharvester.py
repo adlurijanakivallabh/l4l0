@@ -8,7 +8,10 @@ Facts only — emails ignored, no candidate/Finding/can_call.
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from reachagent.graph.nodes import Host
+from reachagent.recon.calibration import _default_dns_resolve
 from reachagent.recon.tools.base import ReconToolRunner
 
 
@@ -18,6 +21,10 @@ class TheHarvesterRunner(ReconToolRunner):
     name = "theHarvester"
     binary = "theHarvester"
 
+    # Set by the scan entrypoint before ingest (D3 DNS-wildcard pass-through).
+    dns_wildcard_ip: str | None = None
+    resolve: Callable[[str], str | None] = _default_dns_resolve
+
     def command(self, target: str) -> list[str]:
         """theHarvester -d <target> -b <source> — harvest hostnames."""
         import os
@@ -26,7 +33,13 @@ class TheHarvesterRunner(ReconToolRunner):
         return ["theHarvester", "-d", target, "-b", source]
 
     def parse(self, target: str, raw_output: str) -> tuple[str, ...]:
-        """Parse theHarvester hostname lines into Host facts (emails/hosts sep)."""
+        """Parse theHarvester hostname lines into Host facts (emails/hosts sep).
+
+        DNS wildcard suppression (D2): a hostname resolving to exactly
+        ``dns_wildcard_ip`` is the zone's catch-all, not a real host — its Host
+        fact is suppressed and audited ``refused_wildcard_dns``. A hostname that
+        fails to resolve is kept (conservative).
+        """
         written: list[str] = []
         seen: set[str] = set()
         for line in raw_output.splitlines():
@@ -46,6 +59,14 @@ class TheHarvesterRunner(ReconToolRunner):
             if hostname in seen:
                 continue
             seen.add(hostname)
+            if self.dns_wildcard_ip is not None:
+                try:
+                    ip = self.resolve(hostname)
+                except Exception:  # noqa: BLE001 — resolver hiccup is conservative (keep)
+                    ip = None
+                if ip is not None and ip == self.dns_wildcard_ip:
+                    self.audit.record(self.name, "RECON", hostname, "refused_wildcard_dns")
+                    continue
             node = self.graph.add_host(Host(address=hostname, hostname=hostname, source=self.name))
             written.append(node)
         return tuple(written)
