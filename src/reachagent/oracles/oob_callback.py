@@ -34,11 +34,17 @@ class OOBCallbackEvidence:
     callback subdomain (e.g. ``<nonce>.oob.example.net``).
     ``observed_nonces``: the set of nonces the collaborator received during the
     probe window — read from the self-hosted interact.sh instance, never guessed.
+    ``observed_channels``: ADDITIVE enrichment only — ``(nonce, channel)`` pairs
+    the collaborator observed (D1 multi-channel, parsing-only). The oracle's
+    :func:`decide` reads ONLY ``observed_nonces``; this field surfaces in
+    audit/report so a callback is attributable to its channel (blind-XXE → http,
+    Log4Shell → ldap). A hit on ANY channel confirms exactly as today.
     ``evidence_ref``: short, secret-free provenance handle (§13).
     """
 
     probe_nonce: str
     observed_nonces: frozenset[str] = field(default_factory=frozenset)
+    observed_channels: frozenset[tuple[str, str]] = frozenset()
     evidence_ref: str = ""
 
 

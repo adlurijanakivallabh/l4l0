@@ -729,6 +729,9 @@ def register_tools(mcp: FastMCP, session: _Session) -> None:
             oracle_evidence = OOBCallbackEvidence(
                 probe_nonce=str(ev.get("probe_nonce", "")),
                 observed_nonces=frozenset(ev.get("observed_nonces", [])),
+                observed_channels=frozenset(
+                    (str(a), str(b)) for a, b in ev.get("observed_channels", [])
+                ),
                 evidence_ref=str(ev.get("evidence_ref", "")),
             )
 
