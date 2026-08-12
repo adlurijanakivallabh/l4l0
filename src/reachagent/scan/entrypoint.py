@@ -31,7 +31,7 @@ from reachagent.execution.audit import AuditLog
 from reachagent.execution.firer import RequestFirer
 from reachagent.execution.scope import OutOfScopeError, ScopeGuard
 from reachagent.graph.chain_solver import ChainSolver
-from reachagent.graph.nodes import Host, SinkType
+from reachagent.graph.nodes import FindingStatus, Host, SinkType
 from reachagent.graph.store import ReachabilityGraph
 from reachagent.payloads import build_library
 from reachagent.tools import coordinator as _coordinator
@@ -271,6 +271,8 @@ def scan_target(
     graph: ReachabilityGraph | None = None,
     audit: AuditLog | None = None,
     dns_resolve: Any | None = None,
+    resume_path: str | None = None,
+    state_path: str | None = None,
 ) -> dict[str, Any]:
     """Generic autonomous scan entrypoint.
 
@@ -282,17 +284,34 @@ def scan_target(
                    run_payload_chain via direct Explorer/Validator seam) until
                    score_and_select is None or budget exhausted. advance() on
                    confirmed finding to requery derived edges.
+
+    Durable resume (D6/D2): ``resume_path`` loads a persisted graph + solver +
+    audit and CONTINUES the loop (continue-not-replay — confirmed findings are
+    loaded as facts, never re-confirmed; unexplored pairs are picked up by the
+    normal loop; a RECOVER pass re-surfaces derived-credential pairs whose spawn
+    was interrupted). ``state_path`` persists the run state at the end of a live
+    run (atomic JSON). On resume, cold-start fixtures are NOT re-ingested — the
+    loaded graph already carries them.
     """
     enforcer = ScopeEnforcer(in_scope, out_of_scope)
-    g = graph if graph is not None else ReachabilityGraph()
-    a = audit if audit is not None else AuditLog()
+
+    resumed = resume_path is not None
+    if resumed:
+        from reachagent.graph.persistence import load_graph
+
+        g, solver, a = load_graph(resume_path)  # type: ignore[arg-type]
+    else:
+        g = graph if graph is not None else ReachabilityGraph()
+        a = audit if audit is not None else AuditLog()
+        solver = ChainSolver(g)
     lib = library if library is not None else build_library()
 
     target_host = extract_host(base_url)
-    if enforcer.is_allowed(target_host):
-        g.add_host(Host(address=target_host, hostname=target_host, source="scan"))
-    else:
-        a.record("scan", "RECON", target_host, "refused_out_of_scope")
+    if not resumed:
+        if enforcer.is_allowed(target_host):
+            g.add_host(Host(address=target_host, hostname=target_host, source="scan"))
+        else:
+            a.record("scan", "RECON", target_host, "refused_out_of_scope")
 
     # The firer is built once and shared by wildcard calibration (below) and the
     # main loop — scope + read-only-first + audit hold on both (§10).
@@ -300,10 +319,11 @@ def scan_target(
     client = httpx.Client(transport=transport) if transport is not None else httpx.Client()
     firer = RequestFirer(client, firer_scope, a)  # type: ignore[arg-type]
 
-    if fixtures is not None:
+    if fixtures is not None and not resumed:
         # Recon dispatch by target type (D2): host-shaped targets skip subdomain
         # enumeration; domain/url targets crawl + fingerprint; host:port targets
         # go straight to TLS probes. Scope gates still run before every ingest.
+        # Skipped entirely on resume — the loaded graph already carries the facts.
         target_type = detect_target_type(base_url)
         if target_type in ("ip", "cidr"):
             from reachagent.recon.tools.masscan import MasscanRunner
@@ -402,7 +422,29 @@ def scan_target(
     from reachagent.tools.explorer_context import ExplorerContext
 
     ctx = ExplorerContext(graph=g, firer=firer, library=lib, base_url=base_url)
-    solver = ChainSolver(g)
+
+    if resumed and not dry_run:
+        # RECOVER pass (D3): re-surface unexplored pairs for persisted derived
+        # credentials whose spawn/requery was interrupted by the crash. A finding
+        # whose spawned identity is already in _spawned_by_path was advanced —
+        # skip (no replay). Errored edges need no pass: an errored fire writes no
+        # can_call verdict, so the normal loop retries them; inconclusive edges
+        # carry a verdict and stay skipped.
+        from reachagent.graph.nodes import Session as _SessionNode
+        from reachagent.graph.store import identity_id as _identity_id
+
+        for _f_node, f_data in g.findings():
+            if f_data.status is not FindingStatus.CONFIRMED_VIOLATION:
+                continue
+            for from_finding, spawned in g.derived_credential_edges():
+                if from_finding != _f_node:
+                    continue
+                data = g._g.nodes[spawned].get("data")
+                if isinstance(data, _SessionNode):
+                    target = _identity_id(data.identity_ref)
+                else:
+                    target = spawned
+                solver.recover_derived(target, path_id="scan")
 
     seeded_identities = list(g.identities())
     if not seeded_identities:
@@ -473,6 +515,18 @@ def scan_target(
     while iterations < max_iterations:
         iterations += 1
         cands = _coordinator.query_graph(context)
+        if resumed:
+            # Resume honors "don't replay what was decided": an INCONCLUSIVE
+            # verdict from the prior run is a real negative result and is
+            # skipped. (A fresh run's Coordinator re-assesses inconclusive by
+            # design — query_graph keeps them eligible; resume deliberately
+            # does not.) Errored edges carry no verdict, so they stay eligible
+            # and are re-queried — exactly the RECOVER rule (D3).
+            cands = [
+                c
+                for c in cands
+                if g.can_call_status(c.identity_node, c.endpoint_node) != FindingStatus.INCONCLUSIVE
+            ]
         sel = _coordinator.score_and_select(cands)
         if sel is None:
             break
@@ -508,6 +562,13 @@ def scan_target(
             except Exception:  # noqa: BLE001
                 _log.debug("solver advance failed", exc_info=True)
             context = CoordinatorContext(graph=g, solver=solver, run_id="scan", path_id="scan")
+
+    if state_path is not None:
+        # Persist run state at the end of a live run (D6) — atomic JSON, so the
+        # next resume continues from here.
+        from reachagent.graph.persistence import dump_graph
+
+        dump_graph(g, solver, a, state_path)
 
     return {
         "dry_run": False,

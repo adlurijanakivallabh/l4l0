@@ -53,6 +53,18 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Actually fire (requires --target + --live)",
     )
+    p.add_argument(
+        "--state",
+        default=None,
+        metavar="FILE",
+        help="Persist run state (graph + solver + audit) to FILE at the end of a live run",
+    )
+    p.add_argument(
+        "--resume",
+        default=None,
+        metavar="FILE",
+        help="Resume from a persisted state FILE (continue-not-replay)",
+    )
     return p
 
 
@@ -69,6 +81,8 @@ def main(argv: list[str] | None = None) -> int:
     print(f"in-scope: {in_scope}")
     if out_of_scope:
         print(f"out-of-scope: {out_of_scope}")
+    if args.resume:
+        print(f"resume: {args.resume}")
     print(f"mode: {'dry-run' if dry_run else 'live'}")
 
     if dry_run:
@@ -86,6 +100,8 @@ def main(argv: list[str] | None = None) -> int:
         in_scope=in_scope,
         out_of_scope=out_of_scope,
         dry_run=False,
+        resume_path=args.resume,
+        state_path=args.state,
     )
     findings = result.get("findings", [])
     print(f"findings: {len(findings)}")
