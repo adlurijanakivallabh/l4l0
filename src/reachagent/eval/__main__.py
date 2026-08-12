@@ -1,35 +1,48 @@
-"""Run the VAmPI Phase 1 gate from the CLI: ``python -m reachagent.eval``.
+"""Consolidated Phase 7 gate runner — ``python -m reachagent.eval``.
 
-Points at two running VAmPI instances — one with ``vulnerable=1`` (ON) and one
-with ``vulnerable=0`` (OFF) — drives the identical MCP-tool pipeline against both,
-prints the measured report, and exits non-zero if the §14/§15 gate fails so CI
-can consume it. URLs come from the environment so the same command works against
-local containers or a remote lab:
+Runs ALL target gates (VAmPI, crAPI, Juice Shop, PortSwigger, DVGA) and prints
+one composite report + verdict + exit code. Each gate is env-gated: a target that
+is not provisioned reports SKIPPED and never blocks the composite. Exit codes:
+0 = all ran gates passed, 1 = any ran gate failed, 2 = not measurable / nothing
+ran.
 
     REACHAGENT_VAMPI_ON=http://127.0.0.1:5000 \\
     REACHAGENT_VAMPI_OFF=http://127.0.0.1:5002 \\
-    python -m reachagent.eval
+    REACHAGENT_JUICESHOP_EPHEMERAL=1 \\
+    python -m reachagent.eval                 # all gates
+    python -m reachagent.eval --target vamp    # just VAmPI
+    python -m reachagent.eval --target portswigger dvga
+
+The existing ``harness.evaluate`` VAmPI-only path stays importable for direct use.
 """
 
 from __future__ import annotations
 
-import os
+import argparse
 import sys
 
-from reachagent.eval.harness import evaluate
-
-_ENV_ON = "REACHAGENT_VAMPI_ON"
-_ENV_OFF = "REACHAGENT_VAMPI_OFF"
-_DEFAULT_ON = "http://127.0.0.1:5000"
-_DEFAULT_OFF = "http://127.0.0.1:5002"
+from reachagent.eval.consolidated import run_consolidated
 
 
-def main() -> int:
-    on_url = os.environ.get(_ENV_ON, _DEFAULT_ON)
-    off_url = os.environ.get(_ENV_OFF, _DEFAULT_OFF)
-    result = evaluate(on_base_url=on_url, off_base_url=off_url)
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(
+        prog="reachagent-eval",
+        description="Consolidated Phase 7 gate runner (all targets, composite verdict).",
+    )
+    p.add_argument(
+        "--target",
+        nargs="*",
+        default=None,
+        help="Gate(s) to run; default runs all (vamp, crapi, juiceshop, portswigger, dvga)",
+    )
+    return p
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    result = run_consolidated(targets=args.target)
     print(result.report())
-    return 0 if result.passed else 1
+    return result.exit_code
 
 
 if __name__ == "__main__":
