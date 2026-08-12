@@ -13,6 +13,7 @@ from reachagent.graph.nodes import Endpoint, Host
 from reachagent.recon.calibration import CalibrationResult
 from reachagent.recon.tools._wordlist import preferred_wordlist
 from reachagent.recon.tools.base import ReconToolRunner
+from reachagent.recon.tools.gobuster import _restricted_status
 
 _RESULT = re.compile(r"^\+\s+https?://[^/]+(?P<path>/\S*)\s+\(CODE:(?P<code>\d+)")
 _ALT_RESULT = re.compile(r"^\+\s+(?P<url>https?://\S+)\s+\(CODE:(?P<code>\d+)")
@@ -82,7 +83,14 @@ class DirbRunner(ReconToolRunner):
             if path in seen_paths:
                 continue
             seen_paths.add(path)
-            endpoint_node = self.graph.add_endpoint(Endpoint(method="GET", path=path))
+            code_raw = match.group("code")
+            access = None
+            if code_raw and _restricted_status(int(code_raw)):
+                access = code_raw
+                self.audit.record(self.name, "RECON", target, f"discovered_restricted:{code_raw}")
+            endpoint_node = self.graph.add_endpoint(
+                Endpoint(method="GET", path=path, access_restricted=access)
+            )
             self.graph.add_resolves_to(host_node, endpoint_node)
             written.append(endpoint_node)
         return tuple(written)

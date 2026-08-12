@@ -14,6 +14,7 @@ from reachagent.graph.nodes import Endpoint, Host
 from reachagent.recon.calibration import CalibrationResult
 from reachagent.recon.tools._wordlist import preferred_wordlist
 from reachagent.recon.tools.base import ReconToolRunner
+from reachagent.recon.tools.gobuster import _restricted_status
 
 
 def _host_of(target: str) -> str:
@@ -95,7 +96,14 @@ class FeroxbusterRunner(ReconToolRunner):
             if path in seen_paths:
                 continue
             seen_paths.add(path)
-            endpoint_node = self.graph.add_endpoint(Endpoint(method="GET", path=path))
+            status_raw = obj.get("status")
+            access = None
+            if isinstance(status_raw, int) and _restricted_status(status_raw):
+                access = str(status_raw)
+                self.audit.record(self.name, "RECON", target, f"discovered_restricted:{status_raw}")
+            endpoint_node = self.graph.add_endpoint(
+                Endpoint(method="GET", path=path, access_restricted=access)
+            )
             self.graph.add_resolves_to(host_node, endpoint_node)
             written.append(endpoint_node)
         return tuple(written)
