@@ -180,14 +180,22 @@ def detect_target_type(target: str) -> str:
       * ``url``     — scheme://host[/path]: same domain-shaped recon as ``domain``.
       * ``ip``      — bare IPv4/IPv6 address: port/network probes (nmap/masscan/rustscan).
       * ``cidr``    — ``a.b.c.d/n`` network block: same port/network probes.
-      * ``host_port`` — ``host:port`` with no scheme/path: TLS probes (sslscan/sslyze).
+      * ``host_port`` — ``host:port`` with NO scheme: TLS probes (sslscan/sslyze).
+
+    Scheme decides the protocol family; a port alone NEVER selects TLS. A
+    scheme-bearing ``http(s)://host:port`` is an HTTP/URL target (content
+    discovery + fingerprint) even on a non-default port — the discovery runners
+    already take the full ``base_url`` and the firer scopes by host with the port
+    distinct. Only a BARE ``host:port`` (no scheme) is a TLS-probe target.
     """
     import ipaddress
     import re as _re
 
     raw = target.strip()
     if "://" in raw:
-        raw = raw.split("://", 1)[1]
+        # Scheme present → URL target regardless of port (live-run defect: an
+        # HTTP server on a non-default port was misrouted to TLS probes).
+        return "url"
     # CIDR netblock — the "/" is a netmask, not a URL path. Checked on the full
     # authority (before any path split) so "10.0.0.0/24" classifies as cidr.
     if "/" in raw:
@@ -198,7 +206,7 @@ def detect_target_type(target: str) -> str:
             pass
     authority = raw.split("/", 1)[0]
     has_path = "/" in raw
-    # host:port — authority carries a numeric port and no path.
+    # host:port — authority carries a numeric port and no path (no scheme → TLS).
     if ":" in authority and _re.fullmatch(r"[^:]+:\d+", authority):
         return "host_port"
     try:

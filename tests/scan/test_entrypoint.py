@@ -346,3 +346,37 @@ def test_fixtures_path_never_invokes_live_run(monkeypatch) -> None:  # noqa: ANN
     )
     paths = {ep.path for _, ep in result["graph"].endpoints()}
     assert "/items" in paths
+
+
+# -- Scheme-aware dispatch (live-run defect fix) --------------------------------
+
+
+def test_scheme_bearing_host_port_is_url_not_tls() -> None:
+    from reachagent.scan.entrypoint import detect_target_type
+
+    assert detect_target_type("http://localhost:5000") == "url"  # regression
+    assert detect_target_type("https://example.com:8443/path") == "url"
+    # Bare host:port without a scheme stays TLS-probe territory.
+    assert detect_target_type("localhost:5000") == "host_port"
+    assert detect_target_type("10.0.0.5:8080") == "host_port"
+
+
+def test_http_port_target_dispatches_http_discovery_not_tls() -> None:
+    # http://localhost:5000 must select the domain/url runner set (subfinder etc),
+    # NOT the TLS probes (sslscan/sslyze) — the live-run defect.
+    g = ReachabilityGraph()
+    a = AuditLog()
+    scan_target(
+        base_url="http://localhost:5000",
+        in_scope="*.localhost",
+        dry_run=True,
+        graph=g,
+        audit=a,
+        fixtures={
+            "subfinder": "api.localhost\n",
+            "sslscan": "<ssltest><cipher status='enabled'/></ssltest>\n",
+        },
+    )
+    assert any(h.hostname == "api.localhost" for _, h in g.hosts())
+    # sslscan is NOT in the url runner set — its fixture is never ingested.
+    assert not any(h.address == "localhost" and "sslscan" in (h.source or "") for _, h in g.hosts())

@@ -211,12 +211,15 @@ def test_state_changing_refused_before_read_only_never_sent(monkeypatch) -> None
 
 
 def test_detect_target_type() -> None:
+    # Scheme decides the protocol family: scheme-bearing targets are URL-shaped
+    # (content discovery), never TLS — a port alone never selects TLS.
     assert detect_target_type("example.com") == "domain"
-    assert detect_target_type("https://example.com") == "domain"
+    assert detect_target_type("https://example.com") == "url"
     assert detect_target_type("https://example.com/admin?q=1") == "url"
     assert detect_target_type("93.184.216.34") == "ip"
-    assert detect_target_type("http://93.184.216.34") == "ip"
+    assert detect_target_type("http://93.184.216.34") == "url"
     assert detect_target_type("10.0.0.0/24") == "cidr"
+    # Bare host:port (no scheme) is the only TLS-probe target.
     assert detect_target_type("example.com:8443") == "host_port"
 
 
