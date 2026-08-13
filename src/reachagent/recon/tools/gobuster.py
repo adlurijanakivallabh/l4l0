@@ -24,8 +24,11 @@ from reachagent.recon.tools._wordlist import preferred_wordlist
 from reachagent.recon.tools.base import ReconToolRunner
 
 # A gobuster result line: a path token, then a "(Status: NNN)" marker. Anything
-# without both is banner/progress noise and is skipped.
-_RESULT = re.compile(r"^(?P<path>/\S*)\s+\(Status:\s*(?P<status>\d{3})\)")
+# without both is banner/progress noise and is skipped. The path token may lack a
+# leading "/" (real `-q` output emits "console              (Status: 200)" with no
+# slash); the optional-slash capture accepts both, and parse normalizes to a
+# leading "/" so endpoint ids stay endpoint-shaped (live-run divergence #2).
+_RESULT = re.compile(r"^(?P<path>/?\S*)\s+\(Status:\s*(?P<status>\d{3})\)")
 
 
 # ---------------------------------------------------------------------------
@@ -136,6 +139,10 @@ class GobusterRunner(ReconToolRunner):
             if match is None:
                 continue
             path = match.group("path")
+            # Normalize to a leading "/" so a slashless `-q` token keeps the
+            # endpoint-shaped node id (live-run divergence #2).
+            if not path.startswith("/"):
+                path = "/" + path
             status = match.group("status")
             # A discovered path is an ordinary GET Endpoint (recon asserts it
             # exists; it never assigns a can_call or a method beyond the probe verb).

@@ -8,11 +8,18 @@ Facts only — emails ignored, no candidate/Finding/can_call.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 
 from reachagent.graph.nodes import Host
 from reachagent.recon.calibration import _default_dns_resolve
 from reachagent.recon.tools.base import ReconToolRunner
+
+# A REAL theHarvester hostname is a bare hostname — no whitespace, no leading
+# !/*/[ banner prefix, at least one dot, no path/query/colon. Real output mixes
+# this with banner noise ("!] Missing API key …", "*] Searching …", "* theHarvester
+# 4.10.1") that the old "has a dot" heuristic admitted (live-run divergence #1).
+_HOSTNAME = re.compile(r"^[a-z0-9._-]+\.[a-z0-9._-]+$", re.IGNORECASE)
 
 
 class TheHarvesterRunner(ReconToolRunner):
@@ -42,19 +49,20 @@ class TheHarvesterRunner(ReconToolRunner):
         """
         written: list[str] = []
         seen: set[str] = set()
+        noise = 0
         for line in raw_output.splitlines():
             hostname = line.strip()
             if not hostname or hostname.startswith("#"):
                 continue
-            # Skip email lines — they contain "@"; harvest emails not graph nodes
+            # Email lines are a legitimately-distinct section, not banner noise —
+            # silently skipped (never graph nodes), never counted.
             if "@" in hostname:
                 continue
-            # Skip banner/progress noise (no dot, or known noise prefixes)
-            if "." not in hostname:
-                continue
-            # Strip trailing punctuation that banner lines carry
-            hostname = hostname.strip("[](),:;")
-            if not hostname or "@" in hostname or "." not in hostname:
+            # A real hostname is a bare hostname — no whitespace, no banner prefix,
+            # no path. Banner/noise lines ("!] …", "*] …", "* …") fail the strict
+            # match and are counted (one summary audit), not audited per line.
+            if not _HOSTNAME.fullmatch(hostname):
+                noise += 1
                 continue
             if hostname in seen:
                 continue
@@ -69,4 +77,6 @@ class TheHarvesterRunner(ReconToolRunner):
                     continue
             node = self.graph.add_host(Host(address=hostname, hostname=hostname, source=self.name))
             written.append(node)
+        if noise:
+            self.audit.record(self.name, "RECON", target, f"skipped_banner_noise:{noise}")
         return tuple(written)

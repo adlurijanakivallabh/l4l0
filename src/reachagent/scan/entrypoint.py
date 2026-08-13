@@ -527,6 +527,7 @@ def scan_target(
 
     iterations = 0
     max_iterations = 20
+    attempted_edges: set[tuple[str, str]] = set()
     while iterations < max_iterations:
         iterations += 1
         cands = _coordinator.query_graph(context)
@@ -542,9 +543,15 @@ def scan_target(
                 for c in cands
                 if g.can_call_status(c.identity_node, c.endpoint_node) != FindingStatus.INCONCLUSIVE
             ]
+        # No-reselect (live-run divergence #4): skip edges already attempted THIS
+        # run — mark_edge_inconclusive writes a durable verdict, but query_graph
+        # re-assesses inconclusive edges by design, so without this per-run filter
+        # a dead/no-sink candidate is reselected for all 20 iterations.
+        cands = [c for c in cands if (c.identity_node, c.endpoint_node) not in attempted_edges]
         sel = _coordinator.score_and_select(cands)
         if sel is None:
             break
+        attempted_edges.add((sel.identity_node, sel.endpoint_node))
         if not _coordinator_support.budget_status(context):
             break
         if not solver.consume_budget("scan"):
@@ -556,16 +563,27 @@ def scan_target(
                 vuln_class = vc
                 break
         # Coordinator may select a candidate with no parameter (endpoint-level
-        # authz class). Payload chain needs a real parameter node — skip such
-        # candidates rather than firing with an empty param_node.
-        if not sel.parameter_node:
-            solver.consume_budget("scan")
-            continue
+        # authz class, or a discovery that surfaced only a bare endpoint — the
+        # live-run VAmPI case). Seed a benign probe parameter on the endpoint so
+        # the payload chain can fingerprint + fire instead of skipping (live-run
+        # divergence #3). Only skip when the endpoint itself is gone.
+        param_node = sel.parameter_node
+        if param_node is None:
+            try:
+                _ = g.endpoint(sel.endpoint_node)  # endpoint must exist to seed on it
+            except Exception:  # noqa: BLE001 — a missing endpoint cannot be seeded
+                solver.consume_budget("scan")
+                continue
+            from reachagent.graph.nodes import Parameter as _ProbeParam
+
+            param_node = g.add_parameter(
+                sel.endpoint_node, _ProbeParam(name="probe", location="query")
+            )
         result = _pc.run_payload_chain(
             _caller,
             identity=sel.identity_node,
             endpoint_node=sel.endpoint_node,
-            param_node=sel.parameter_node,
+            param_node=param_node,
             vuln_class=vuln_class,
             baseline_payload="baseline",
             max_attempts=max_attempts,
@@ -577,6 +595,12 @@ def scan_target(
             except Exception:  # noqa: BLE001
                 _log.debug("solver advance failed", exc_info=True)
             context = CoordinatorContext(graph=g, solver=solver, run_id="scan", path_id="scan")
+        # Non-confirmed chains are handled by attempted_edges (added above): the
+        # candidate is never re-selected this run. No graph verdict is written —
+        # query_graph re-assesses INCONCLUSIVE edges by design (multi-hop), so a
+        # durable inconclusive verdict would NOT stop the reselect anyway, and it
+        # would violate the recon-facts-only invariant (a dead endpoint is not a
+        # negative finding; retrying it on a later resume is acceptable).
 
     if state_path is not None:
         # Persist run state at the end of a live run (D6) — atomic JSON, so the
