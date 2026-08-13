@@ -150,3 +150,212 @@ payloads:
     oracle_type: oob_callback
     payload_ref: command_injection/log4shell-oob
     graph_edge_on_success: enables
+
+  # -- SSRF (Task 24): blind (OOB) / non-blind (structural SSRF_RESPONSE) --------
+  # Hand-tagged set closing the SSRF payload gap — §5 SSRF was already Full via
+  # the oracles; this supplies the payload breadth. inferred_sink_type: url
+  # (SinkType.URL exists). Blind → OOB_CALLBACK with reaches; non-blind →
+  # STRUCTURAL SSRF_RESPONSE (sentinel-in-body) with reaches; cloud-metadata
+  # token entries → derived_credential (the fetched response yields a credential).
+  - vuln_class: ssrf
+    context: >-
+      Blind SSRF — server fetches a callback URL carrying the per-probe nonce
+      (http://<nonce>.<collab>/ssrf); a DNS/HTTP callback correlated back to the
+      nonce confirms. OOB_CALLBACK.
+    inferred_sink_type: url
+    oracle_type: oob_callback
+    payload_ref: ssrf/blind/http-callback
+    graph_edge_on_success: reaches
+
+  - vuln_class: ssrf
+    context: >-
+      Blind SSRF — bare callback root fetch. OOB_CALLBACK.
+    inferred_sink_type: url
+    oracle_type: oob_callback
+    payload_ref: ssrf/blind/http-callback-bare
+    graph_edge_on_success: reaches
+
+  - vuln_class: ssrf
+    context: >-
+      Blind SSRF — HTTPS scheme callback. OOB_CALLBACK.
+    inferred_sink_type: url
+    oracle_type: oob_callback
+    payload_ref: ssrf/blind/https-callback
+    graph_edge_on_success: reaches
+
+  - vuln_class: ssrf
+    context: >-
+      Blind SSRF — DNS-only callback probe. OOB_CALLBACK.
+    inferred_sink_type: url
+    oracle_type: oob_callback
+    payload_ref: ssrf/blind/dns-only-callback
+    graph_edge_on_success: reaches
+
+  - vuln_class: ssrf
+    context: >-
+      Blind SSRF — file:// scheme variant carrying the nonce host. OOB_CALLBACK.
+    inferred_sink_type: url
+    oracle_type: oob_callback
+    payload_ref: ssrf/blind/file-scheme
+    graph_edge_on_success: reaches
+
+  - vuln_class: ssrf
+    context: >-
+      Blind SSRF — gopher:// scheme variant carrying the nonce. OOB_CALLBACK.
+    inferred_sink_type: url
+    oracle_type: oob_callback
+    payload_ref: ssrf/blind/gopher-callback
+    graph_edge_on_success: reaches
+
+  - vuln_class: ssrf
+    context: >-
+      Blind SSRF — redirect-chain payload: the nonce host first, then a redirect
+      to AWS IMDS. A callback on the nonce confirms the fetch chain ran.
+      OOB_CALLBACK.
+    inferred_sink_type: url
+    oracle_type: oob_callback
+    payload_ref: ssrf/blind/redirect-chain-callback
+    graph_edge_on_success: reaches
+
+  - vuln_class: ssrf
+    context: >-
+      Blind SSRF — internal-proxy shaped callback. OOB_CALLBACK.
+    inferred_sink_type: url
+    oracle_type: oob_callback
+    payload_ref: ssrf/blind/internal-proxy-callback
+    graph_edge_on_success: reaches
+
+  - vuln_class: ssrf
+    context: >-
+      Non-blind SSRF — AWS EC2 IMDS metadata root. A response carrying a
+      metadata marker (ami-id / instance-id / meta-data) confirms the server
+      fetched it. STRUCTURAL SSRF_RESPONSE.
+    inferred_sink_type: url
+    oracle_type: structural
+    payload_ref: ssrf/nonblind/aws-imds-meta
+    graph_edge_on_success: reaches
+
+  - vuln_class: ssrf
+    context: >-
+      Non-blind SSRF — AWS user-data endpoint. STRUCTURAL SSRF_RESPONSE.
+    inferred_sink_type: url
+    oracle_type: structural
+    payload_ref: ssrf/nonblind/aws-imds-user-data
+    graph_edge_on_success: reaches
+
+  - vuln_class: ssrf
+    context: >-
+      Non-blind SSRF — AWS instance-id leaf. STRUCTURAL SSRF_RESPONSE.
+    inferred_sink_type: url
+    oracle_type: structural
+    payload_ref: ssrf/nonblind/aws-imds-instance-id
+    graph_edge_on_success: reaches
+
+  - vuln_class: ssrf
+    context: >-
+      Non-blind SSRF — AWS IAM roles list. STRUCTURAL SSRF_RESPONSE.
+    inferred_sink_type: url
+    oracle_type: structural
+    payload_ref: ssrf/nonblind/aws-imds-iam-roles
+    graph_edge_on_success: reaches
+
+  - vuln_class: ssrf
+    context: >-
+      Non-blind SSRF — GCP metadata. STRUCTURAL SSRF_RESPONSE.
+    inferred_sink_type: url
+    oracle_type: structural
+    payload_ref: ssrf/nonblind/gcp-metadata
+    graph_edge_on_success: reaches
+
+  - vuln_class: ssrf
+    context: >-
+      Non-blind SSRF — Azure IMDS. STRUCTURAL SSRF_RESPONSE.
+    inferred_sink_type: url
+    oracle_type: structural
+    payload_ref: ssrf/nonblind/azure-imds
+    graph_edge_on_success: reaches
+
+  - vuln_class: ssrf
+    context: >-
+      Non-blind SSRF — Alibaba ECS metadata. STRUCTURAL SSRF_RESPONSE.
+    inferred_sink_type: url
+    oracle_type: structural
+    payload_ref: ssrf/nonblind/alibaba-ecs-meta
+    graph_edge_on_success: reaches
+
+  - vuln_class: ssrf
+    context: >-
+      Non-blind SSRF — DigitalOcean metadata. STRUCTURAL SSRF_RESPONSE.
+    inferred_sink_type: url
+    oracle_type: structural
+    payload_ref: ssrf/nonblind/digitalocean-meta
+    graph_edge_on_success: reaches
+
+  - vuln_class: ssrf
+    context: >-
+      Non-blind SSRF — OpenStack metadata. STRUCTURAL SSRF_RESPONSE.
+    inferred_sink_type: url
+    oracle_type: structural
+    payload_ref: ssrf/nonblind/openstack-meta
+    graph_edge_on_success: reaches
+
+  - vuln_class: ssrf
+    context: >-
+      Non-blind SSRF — Kubernetes API server. STRUCTURAL SSRF_RESPONSE.
+    inferred_sink_type: url
+    oracle_type: structural
+    payload_ref: ssrf/nonblind/kubernetes-api
+    graph_edge_on_success: reaches
+
+  - vuln_class: ssrf
+    context: >-
+      Non-blind SSRF — Docker socket. STRUCTURAL SSRF_RESPONSE.
+    inferred_sink_type: url
+    oracle_type: structural
+    payload_ref: ssrf/nonblind/docker-socket
+    graph_edge_on_success: reaches
+
+  - vuln_class: ssrf
+    context: >-
+      Non-blind SSRF — internal admin surface. STRUCTURAL SSRF_RESPONSE.
+    inferred_sink_type: url
+    oracle_type: structural
+    payload_ref: ssrf/nonblind/internal-admin
+    graph_edge_on_success: reaches
+
+  - vuln_class: ssrf
+    context: >-
+      Cloud-metadata token SSRF — AWS IAM role credentials. The fetched response
+      yields a credential, so graph_edge_on_success is derived_credential (§8).
+      STRUCTURAL SSRF_RESPONSE.
+    inferred_sink_type: url
+    oracle_type: structural
+    payload_ref: ssrf/token/aws-imds-iam-role
+    graph_edge_on_success: derived_credential
+
+  - vuln_class: ssrf
+    context: >-
+      Cloud-metadata token SSRF — GCP service-account token. Yields a credential;
+      derived_credential edge. STRUCTURAL SSRF_RESPONSE.
+    inferred_sink_type: url
+    oracle_type: structural
+    payload_ref: ssrf/token/gcp-service-account-token
+    graph_edge_on_success: derived_credential
+
+  - vuln_class: ssrf
+    context: >-
+      Cloud-metadata token SSRF — Azure managed-identity token. Yields a
+      credential; derived_credential edge. STRUCTURAL SSRF_RESPONSE.
+    inferred_sink_type: url
+    oracle_type: structural
+    payload_ref: ssrf/token/azure-managed-identity-token
+    graph_edge_on_success: derived_credential
+
+  - vuln_class: ssrf
+    context: >-
+      Cloud-metadata token SSRF — blind exfil of credentials to the callback.
+      OOB_CALLBACK; derived_credential edge.
+    inferred_sink_type: url
+    oracle_type: oob_callback
+    payload_ref: ssrf/token/oob-aws-creds-callback
+    graph_edge_on_success: derived_credential

@@ -73,6 +73,12 @@ class StructuralCheckType(StrEnum):
     CLICKJACKING = "clickjacking"
     CORS_MISCONFIG = "cors_misconfig"
     CSRF_MISSING_PROTECTION = "csrf_missing_protection"
+    # SSRF_RESPONSE (Task 24) — non-blind SSRF: a cloud-metadata / internal
+    # endpoint the server fetched, confirmed by a known metadata response marker
+    # (sentinel) in the body. Same sentinel-in-body shape as UNION_EXTRACTION —
+    # one new check type inside the existing STRUCTURAL family (§7-authorized
+    # "new evidence type inside an existing family" pattern; six families held).
+    SSRF_RESPONSE = "ssrf_response"
 
 
 @dataclass(frozen=True)
@@ -228,6 +234,21 @@ def decide(evidence: StructuralEvidence) -> FindingStatus:
             200 <= evidence.probe_status < 300
             and evidence.union_sentinel
             and evidence.union_sentinel in evidence.response_body
+        ):
+            return FindingStatus.CONFIRMED_VIOLATION
+        return FindingStatus.INCONCLUSIVE
+
+    if evidence.check_type is StructuralCheckType.SSRF_RESPONSE:
+        # Non-blind SSRF: the server fetched a cloud-metadata / internal endpoint
+        # and echoed a known metadata response marker. Sentinel-in-body, same
+        # shape as UNION_EXTRACTION: 2xx + sentinel present → confirmed; anything
+        # else (no marker, non-2xx) → inconclusive. A 4xx/5xx is not "safe" here —
+        # the endpoint may be reachable but error, or the SSRF may land on a
+        # non-metadata host — so only the sentinel confirms.
+        if (
+            200 <= evidence.probe_status < 300
+            and evidence.sentinel
+            and evidence.sentinel in evidence.response_body
         ):
             return FindingStatus.CONFIRMED_VIOLATION
         return FindingStatus.INCONCLUSIVE

