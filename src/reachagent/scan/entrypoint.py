@@ -319,7 +319,7 @@ def scan_target(
     client = httpx.Client(transport=transport) if transport is not None else httpx.Client()
     firer = RequestFirer(client, firer_scope, a)  # type: ignore[arg-type]
 
-    if fixtures is not None and not resumed:
+    if not resumed:
         # Recon dispatch by target type (D2): host-shaped targets skip subdomain
         # enumeration; domain/url targets crawl + fingerprint; host:port targets
         # go straight to TLS probes. Scope gates still run before every ingest.
@@ -404,20 +404,27 @@ def scan_target(
                 runner.dns_wildcard_ip = dns_result.wildcard_ip
                 if dns_resolve is not None:
                     runner.resolve = dns_resolve
-            raw = fixtures.get(runner.name, "")
-            if not raw:
-                continue
-            allowed_raw = _filter_fixture_by_scope(raw, enforcer, runner.name)
             target_arg = base_url if runner.name in _URL_TOOLS else target_host
-            runner.ingest(target_arg, allowed_raw)
-            # Audit any host lines that were dropped
-            for line in raw.splitlines():
-                stripped = line.strip()
-                if not stripped or stripped.startswith("#"):
+            if fixtures is not None:
+                raw = fixtures.get(runner.name, "")
+                if not raw:
                     continue
-                host = extract_host(stripped.split()[0])
-                if host and not enforcer.is_allowed(host):
-                    a.record(runner.name, "RECON", host, "refused_out_of_scope")
+                allowed_raw = _filter_fixture_by_scope(raw, enforcer, runner.name)
+                runner.ingest(target_arg, allowed_raw)
+                # Audit any host lines that were dropped
+                for line in raw.splitlines():
+                    stripped = line.strip()
+                    if not stripped or stripped.startswith("#"):
+                        continue
+                    host = extract_host(stripped.split()[0])
+                    if host and not enforcer.is_allowed(host):
+                        a.record(runner.name, "RECON", host, "refused_out_of_scope")
+            elif not dry_run:
+                # Live cold-start: no fixtures → spawn the real recon binary.
+                # runner.run() is the live path — REACHAGENT_RECON_LIVE-gated
+                # (unset → SKIPPED_NOT_LIVE), scope-gated before spawn, array
+                # args shell=False, missing-binary graceful skip.
+                runner.run(target_arg)
 
     from reachagent.tools.explorer_context import ExplorerContext
 

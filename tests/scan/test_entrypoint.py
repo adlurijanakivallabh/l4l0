@@ -268,3 +268,81 @@ def test_scan_imports_no_external_scanner_dep() -> None:
     cli_src = Path("src/reachagent/scan/cli.py").read_text().lower()
     for dep in ("sqlmap", "nuclei", "zap", "burp", "caido"):
         assert dep not in cli_src
+
+
+# -- Live cold-start recon (prereq commit) --------------------------------------
+
+
+def _ok_transport() -> httpx.MockTransport:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=b"ok")
+
+    return httpx.MockTransport(handler)
+
+
+def test_live_cold_start_invokes_runner_run(monkeypatch) -> None:  # noqa: ANN001
+    """fixtures=None + live → dispatched runners spawn via runner.run()."""
+    import reachagent.recon.tools.base as base
+
+    calls: list[tuple[str, str]] = []
+    original_run = base.ReconToolRunner.run
+
+    def spy_run(self, target: str, *, environ: dict[str, str] | None = None):
+        calls.append((self.name, target))
+        return original_run(self, target, environ=environ)
+
+    monkeypatch.setattr(base.ReconToolRunner, "run", spy_run)
+    scan_target(
+        base_url="https://example.com",
+        in_scope="*.example.com",
+        dry_run=False,
+        transport=_ok_transport(),
+    )
+    # Domain target dispatches to content-discovery runners and they are run live.
+    assert any(name == "gobuster" for name, _t in calls)
+    assert any(name == "subfinder" for name, _t in calls)
+
+
+def test_live_recon_unset_env_skips_not_live(monkeypatch) -> None:  # noqa: ANN001
+    """Without REACHAGENT_RECON_LIVE the live run() is a clean SKIPPED_NOT_LIVE."""
+    import reachagent.recon.tools.base as base
+
+    calls: list[tuple[str, str]] = []
+    original_run = base.ReconToolRunner.run
+
+    def spy_run(self, target: str, *, environ: dict[str, str] | None = None):
+        calls.append((self.name, target))
+        return original_run(self, target, environ=environ)
+
+    monkeypatch.setattr(base.ReconToolRunner, "run", spy_run)
+    g = ReachabilityGraph()
+    a = AuditLog()
+    scan_target(
+        base_url="https://example.com",
+        in_scope="*.example.com",
+        dry_run=False,
+        transport=_ok_transport(),
+        graph=g,
+        audit=a,
+    )
+    assert calls
+    outcomes = [e.outcome for e in a.entries if e.identity in ("gobuster", "subfinder")]
+    assert any(o == "skipped_not_live" for o in outcomes)
+
+
+def test_fixtures_path_never_invokes_live_run(monkeypatch) -> None:  # noqa: ANN001
+    """Fixtures present → ingest only; runner.run() must never be called."""
+    import reachagent.recon.tools.base as base
+
+    def boom(self, target: str, *, environ: dict[str, str] | None = None):
+        raise AssertionError("live run must not be invoked on the fixtures path")
+
+    monkeypatch.setattr(base.ReconToolRunner, "run", boom)
+    result = scan_target(
+        base_url="https://example.com",
+        in_scope="*.example.com",
+        dry_run=True,
+        fixtures={"gobuster": "/items (Status: 200)\n"},
+    )
+    paths = {ep.path for _, ep in result["graph"].endpoints()}
+    assert "/items" in paths
