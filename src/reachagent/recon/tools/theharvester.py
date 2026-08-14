@@ -8,6 +8,7 @@ Facts only — emails ignored, no candidate/Finding/can_call.
 
 from __future__ import annotations
 
+import ipaddress
 import re
 from collections.abc import Callable
 
@@ -46,6 +47,13 @@ class TheHarvesterRunner(ReconToolRunner):
         ``dns_wildcard_ip`` is the zone's catch-all, not a real host — its Host
         fact is suppressed and audited ``refused_wildcard_dns``. A hostname that
         fails to resolve is kept (conservative).
+
+        Bare-IP filter (live-run divergence): theHarvester against a loopback/IP
+        target does internet OSINT and returns off-target third-party IPs. A bare
+        IPv4/IPv6 line is never a Host fact here — nmap/masscan/rustscan own IP
+        facts; theHarvester's job is names. Bare IPs are counted as noise. A
+        ``*.localhost`` dictionary name is still a name and is KEPT (only bare IPs
+        are rejected). Callers targeting loopback should expect such noise.
         """
         written: list[str] = []
         seen: set[str] = set()
@@ -58,6 +66,13 @@ class TheHarvesterRunner(ReconToolRunner):
             # silently skipped (never graph nodes), never counted.
             if "@" in hostname:
                 continue
+            # Bare IP → OSINT junk from off-target lookups; counted, never a Host.
+            try:
+                ipaddress.ip_address(hostname)
+                noise += 1
+                continue
+            except ValueError:
+                pass
             # A real hostname is a bare hostname — no whitespace, no banner prefix,
             # no path. Banner/noise lines ("!] …", "*] …", "* …") fail the strict
             # match and are counted (one summary audit), not audited per line.

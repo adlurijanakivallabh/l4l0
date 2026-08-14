@@ -281,6 +281,7 @@ def scan_target(
     dns_resolve: Any | None = None,
     resume_path: str | None = None,
     state_path: str | None = None,
+    surface_path: str | None = None,
 ) -> dict[str, Any]:
     """Generic autonomous scan entrypoint.
 
@@ -326,6 +327,19 @@ def scan_target(
     firer_scope = EnforcerScopeWrapper(enforcer)
     client = httpx.Client(transport=transport) if transport is not None else httpx.Client()
     firer = RequestFirer(client, firer_scope, a)  # type: ignore[arg-type]
+
+    if not resumed and surface_path is not None:
+        # Optional --surface seeding (Task 27): materialize a declared surface
+        # (endpoints/parameters/objects) BEFORE cold-start recon, so recon then
+        # enriches. The mapper's read-only can_call probes seed real verdicts;
+        # state-changing endpoints are materialized but never fired (read-only-
+        # first holds). This is an OPTIONAL input — pure cold-start is unchanged.
+        from reachagent.identity.store import IdentityStore
+        from reachagent.recon.mapper import SurfaceMapper, SurfaceSpec
+
+        SurfaceMapper(g, firer, IdentityStore(), base_url).map_structure(
+            SurfaceSpec.from_file(surface_path)
+        )
 
     if not resumed:
         # Recon dispatch by target type (D2): host-shaped targets skip subdomain
@@ -433,6 +447,15 @@ def scan_target(
                 # (unset → SKIPPED_NOT_LIVE), scope-gated before spawn, array
                 # args shell=False, missing-binary graceful skip.
                 runner.run(target_arg)
+
+        # Spec-first API discovery (Task 27, live only — it fires read-only GET
+        # probes). After --surface seeding and cold-start recon, before the
+        # Coordinator loop: probe for OpenAPI/GraphQL specs, parse into
+        # Endpoint/Parameter facts, else a bounded combinatorial fallback.
+        if not dry_run:
+            from reachagent.recon.api_discovery import discover_api
+
+            discover_api(g, firer, base_url)
 
     from reachagent.tools.explorer_context import ExplorerContext
 

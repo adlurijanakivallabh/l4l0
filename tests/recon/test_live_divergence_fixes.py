@@ -123,12 +123,15 @@ def test_no_reselect_dead_candidate_moves_on() -> None:
     fired_paths: list[str] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if "reachagent-cal" in request.url.path:
-            return httpx.Response(404, text="missing")  # no wildcard — fixtures survive
-        fired_paths.append(request.url.path)
+        if request.url.path in ("/dead", "/alive"):
+            fired_paths.append(request.url.path)
         if request.url.path == "/dead":
             return httpx.Response(404, text="not found")
-        return httpx.Response(200, text="ok")
+        if request.url.path == "/alive":
+            return httpx.Response(200, text="ok")
+        # Spec probes, fallback, and calibration all 404 — api_discovery finds
+        # nothing, so the loop only sees the gobuster-discovered /dead and /alive.
+        return httpx.Response(404, text="missing")
 
     result = scan_target(
         base_url=f"https://{_TARGET}",
@@ -144,3 +147,29 @@ def test_no_reselect_dead_candidate_moves_on() -> None:
     assert fired_paths.count("/dead") == 1
     assert "/alive" in fired_paths
     assert result["iterations"] < 20  # loop terminated before burning all iterations
+
+
+# -- Component 1 (Task 27): theHarvester bare-IP / OSINT filter -----------------
+
+
+def test_theharvester_bare_ips_filtered_not_hosts() -> None:
+    raw = "\n".join(
+        [
+            "!] Missing API key for Bitbucket.",
+            "api.target.test",
+            "103.178.166.178",
+            "172.66.44.206",
+            "2001:db8::1",
+            "admin.localhost",
+            "mail.target.test",
+        ]
+    )
+    g = ReachabilityGraph()
+    a = AuditLog()
+    TheHarvesterRunner(graph=g, scope=_scope(), audit=a).ingest("target.test", raw)
+    hosts = {h.hostname for _, h in g.hosts()}
+    assert hosts == {"api.target.test", "mail.target.test", "admin.localhost"}
+    # Bare IPs counted as noise (not Hosts); localhost dictionary names kept.
+    noise = [e for e in a.entries if e.outcome.startswith("skipped_banner_noise")]
+    assert len(noise) == 1
+    assert noise[0].outcome == "skipped_banner_noise:4"  # banner + 2 IPs + IPv6

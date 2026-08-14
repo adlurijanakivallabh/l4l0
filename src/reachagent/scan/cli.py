@@ -65,6 +65,12 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="FILE",
         help="Resume from a persisted state FILE (continue-not-replay)",
     )
+    p.add_argument(
+        "--surface",
+        default=None,
+        metavar="FILE",
+        help="Optional declared-surface YAML to seed endpoints/parameters before cold-start recon",
+    )
     return p
 
 
@@ -102,6 +108,7 @@ def main(argv: list[str] | None = None) -> int:
         dry_run=False,
         resume_path=args.resume,
         state_path=args.state,
+        surface_path=args.surface,
     )
     findings = result.get("findings", [])
     print(f"findings: {len(findings)}")
