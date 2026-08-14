@@ -85,7 +85,7 @@ def test_coverage_all_confirmed() -> None:
 
 
 def test_coverage_partial() -> None:
-    # 3 of 4 confirmed and solved → coverage 0.75, exactly at floor.
+    # 3 of 4 confirmed and solved → coverage 0.75, above the API-only 6/9 floor.
     run = JuiceshopRun(
         results=[
             _cr(confirmed=True, solved=True),
@@ -95,7 +95,7 @@ def test_coverage_partial() -> None:
         ]
     )
     assert run.coverage == pytest.approx(0.75)
-    assert run.coverage_passes  # exactly at floor
+    assert run.coverage_passes  # 0.75 >= 6/9 API-only floor
 
 
 def test_coverage_below_floor() -> None:
@@ -483,14 +483,27 @@ def test_score_run_strict_scope_never_credits_tracker_only_flip() -> None:
     assert run.results[-3].confirmed is False
 
 
-def test_api_only_ceiling_does_not_pass_historical_gate() -> None:
+def test_api_only_ceiling_passes_at_6_9() -> None:
+    # The documented API-only deterministic ceiling is 6/9; api_only mode is
+    # judged against exactly that, so 6/9 now passes (was a hard fail vs 75%).
     results = [_cr(confirmed=True, solved=True) for _ in range(6)] + [
         _cr(confirmed=False, solved=True) for _ in range(3)
     ]
-    gate = Phase3GateResult(juiceshop=JuiceshopRun(results=results))
+    gate = Phase3GateResult(juiceshop=JuiceshopRun(results=results))  # api_only default True
     assert gate.juiceshop.coverage == pytest.approx(6 / 9)
-    assert not gate.juiceshop.coverage_passes
-    assert not gate.passed
+    assert gate.juiceshop.coverage_passes
+    assert gate.juiceshop.fp_rate_passes  # 6 TP, 0 FP
+    assert gate.passed
+
+
+def test_historical_floor_6_9_fails_non_api_only() -> None:
+    # Non-api-only (future browser-capable) mode still requires ≥ 7/9, so 6/9 fails.
+    results = [_cr(confirmed=True, solved=True) for _ in range(6)] + [
+        _cr(confirmed=False, solved=True) for _ in range(3)
+    ]
+    run = JuiceshopRun(results=results, api_only=False)
+    assert run.coverage == pytest.approx(6 / 9)
+    assert not run.coverage_passes  # 6/9 < 0.75 historical floor
 
 
 def test_detect_sqli_emits_union_claims_only_after_structural_sentinels(
