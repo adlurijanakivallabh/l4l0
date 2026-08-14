@@ -380,3 +380,58 @@ def test_http_port_target_dispatches_http_discovery_not_tls() -> None:
     assert any(h.hostname == "api.localhost" for _, h in g.hosts())
     # sslscan is NOT in the url runner set — its fixture is never ingested.
     assert not any(h.address == "localhost" and "sslscan" in (h.source or "") for _, h in g.hosts())
+
+
+# -- Findings-list dedup (cosmetic alignment with graph node count) ---------------
+
+
+_DUP_SURFACE = """\
+endpoints:
+  - method: GET
+    path: /users/v1
+  - method: GET
+    path: /users/v1/{username}
+    parameters:
+      - name: username
+        location: path
+  - method: GET
+    path: /products/v1
+  - method: GET
+    path: /products/v1/{product}
+    parameters:
+      - name: product
+        location: path
+"""
+
+
+def _dup_handler(request: httpx.Request) -> httpx.Response:
+    path = request.url.path
+    if path == "/users/v1":
+        return httpx.Response(200, json={"users": [{"username": "name1"}]})
+    if path == "/products/v1":
+        return httpx.Response(200, json={"products": [{"name": "prod1"}]})
+    if path in ("/users/v1/name1", "/products/v1/prod1"):
+        return httpx.Response(200, json={"username": "name1"})
+    if path.endswith("reachagent-canary-7f3a2b"):
+        return httpx.Response(404, text="User not found")
+    if path.endswith("'"):
+        return httpx.Response(500, text="sqlalchemy.exc.OperationalError: unrecognized token")
+    return httpx.Response(404, text="not found")
+
+
+def test_findings_list_dedups_same_evidence(tmp_path) -> None:  # noqa: ANN001
+    from pathlib import Path as _Path
+
+    surface = _Path(tmp_path) / "surface.yaml"
+    surface.write_text(_DUP_SURFACE)
+    result = scan_target(
+        base_url="https://example.com",
+        in_scope="*.example.com",
+        dry_run=False,
+        transport=httpx.MockTransport(_dup_handler),
+        surface_path=str(surface),
+    )
+    # Both SQLi endpoints confirm the same evidence_ref → same finding node id.
+    # The returned list must dedup to match the graph's node count.
+    assert len(result["findings"]) == 1
+    assert len(result["graph"].findings()) == 1

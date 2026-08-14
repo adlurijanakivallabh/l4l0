@@ -711,7 +711,10 @@ def scan_target(
 
     return {
         "dry_run": False,
-        "findings": findings,
+        # Dedup, order-preserving: the loop can confirm the same finding on two
+        # iterations, but the graph keys a Finding on (vuln_class, evidence_ref) —
+        # the returned list must match the graph's node count, not double-count.
+        "findings": list(dict.fromkeys(findings)),
         "plan": plan,
         "graph": g,
         "audit": a,
