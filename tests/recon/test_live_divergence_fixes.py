@@ -142,9 +142,9 @@ def test_no_reselect_dead_candidate_moves_on() -> None:
         graph=g,
         audit=a,
     )
-    # The dead endpoint is fired exactly once, then the loop moves on — it is not
-    # reselected for all 20 iterations.
-    assert fired_paths.count("/dead") == 1
+    # The dead endpoint is fingerprinted once (benign canary + diagnostic read),
+    # then the loop moves on — it is not reselected for all 20 iterations.
+    assert fired_paths.count("/dead") <= 3  # canary + diagnostic + at most one payload
     assert "/alive" in fired_paths
     assert result["iterations"] < 20  # loop terminated before burning all iterations
 

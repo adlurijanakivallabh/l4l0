@@ -221,8 +221,9 @@ def test_fire_request_allowed_after_fingerprint() -> None:
     explorer.fingerprint_parameter(ctx, "user_a", endpoint_node, param_node)
     result = explorer.fire_request(ctx, "user_a", endpoint_node, param_node, "' OR 1=1--")
     assert result.status_code == 200
-    # Two requests fired: the canary, then the payload.
-    assert len(calls) == 2
+    # Three requests fired: the benign canary, the diagnostic error-read probe
+    # (observed sink None → one quote-appended read), then the payload.
+    assert len(calls) == 3
 
 
 # -- Invariant 2: get_payloads routes sink-matched entries ----------------

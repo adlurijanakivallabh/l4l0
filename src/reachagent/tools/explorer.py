@@ -189,6 +189,19 @@ def fingerprint_parameter(
 
     The canary request goes through Task 1's firer, so it is still scope- and
     read-only-first-gated like any other request.
+
+    Diagnostic error-triggering probe (§9 step 1 exists to read error behaviour):
+    a benign canary that sits *safely inside* SQL quotes (``WHERE username =
+    '<canary>'``) returns a clean 404 — no SQL error — so the error-based sink is
+    invisible to it. The canary alone cannot surface quoted-param error-based
+    SQLi. When the canary inferred NO sink and no ``sink_hint`` was supplied, one
+    additional read-only probe fires with the quote-appended value
+    ``"<canary>'"`` — a *fingerprinting primitive*, the same class as the canary,
+    NOT a corpus payload — and its body is matched against the SQL error
+    signatures. A match infers ``SQL``; no match leaves the sink ``None``
+    (conservative — an HTML/NoSQL/template param that merely reflects the quote
+    never becomes sql; no false sink). The benign canary still precedes it, so the
+    §9 ordering invariant holds.
     """
     endpoint = ctx.graph.endpoint(endpoint_node)
     param = ctx.graph.parameter(param_node)
@@ -233,6 +246,21 @@ def fingerprint_parameter(
             )
         if sink_hint is _nodes.SinkType.TEMPLATE and not reflected:
             raise ValueError("template sink hint requires reflected benign canary")
+
+    # Diagnostic error-triggering probe: only when the benign canary inferred no
+    # sink AND no hint was supplied. One quote-appended read-only probe reads the
+    # error behaviour a quoted-param SQLi sink hides from the benign canary. A SQL
+    # error match infers SQL; no match leaves the sink None (conservative).
+    if observed is None and sink_hint is None:
+        diag_value = f"{ctx.canary}'"
+        diag_result = _fire_with_value(
+            ctx, identity, method, url, param.location, param.name, diag_value, state_changing=False
+        )
+        diag_errors = _match_sql_errors(_decode_body(diag_result.body).lower())
+        if diag_errors:
+            sql_errors = diag_errors
+            observed = _nodes.SinkType.SQL
+
     sink = observed if observed is not None else sink_hint
 
     # The single graph mutation: record the inferred sink, then mark done.
