@@ -77,6 +77,29 @@ def test_sibling_json_without_field_falls_back_none() -> None:
     )
 
 
+def test_sibling_plural_key_wrapper_harvests_first_item() -> None:
+    # The exact live VAmPI shape: {"users": [...]} — a dict wrapping the list
+    # under a plural key, not a bare array.
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"users": [{"username": "name1"}, {"username": "name2"}]})
+
+    g = _sibling_graph()
+    firer = _firer(handler)
+    value = _harvest_baseline_value(g, firer, "u", BASE_URL, "/users/v1/{username}", "username")
+    assert value == "name1"
+
+
+def test_sibling_items_key_wrapper_harvests_first_item() -> None:
+    # Generic plural-key shape under a different key ("items").
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"items": [{"name": "book1"}]})
+
+    g = _sibling_graph()
+    firer = _firer(handler)
+    value = _harvest_baseline_value(g, firer, "u", BASE_URL, "/users/v1/{username}", "username")
+    assert value == "book1"
+
+
 # -- Fix 2: template-first ordering ----------------------------------------------
 
 

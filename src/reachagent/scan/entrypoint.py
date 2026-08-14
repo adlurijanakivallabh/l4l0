@@ -311,10 +311,21 @@ def _harvest_baseline_value(
                     if value not in (None, ""):
                         return str(value)
     elif isinstance(body, dict):
+        # Direct-field first, then the plural-key wrapper — a dict wrapping the
+        # list under a key ({"users": [...]}, {"items": [...]}, {"books": [...]}),
+        # the generic REST list shape mapper._reveal_items already unwraps.
         for field in fields:
             value = body.get(field)
             if value not in (None, ""):
                 return str(value)
+        for value in body.values():
+            if isinstance(value, list):
+                for item in value:
+                    if isinstance(item, dict):
+                        for field in fields:
+                            v = item.get(field)
+                            if v not in (None, ""):
+                                return str(v)
     return None
 
 
