@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import os
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from itertools import count
@@ -655,6 +656,49 @@ def _detect_xss_stored(target: JuiceshopTarget, token: str | None) -> set[Challe
     return set()
 
 
+def _detect_xss_dom(target: JuiceshopTarget, token: str | None) -> set[ChallengeClaim | str]:
+    """Browser-attributed ``localXssChallenge`` via fire_browser + EXECUTION_CONFIRMATION.
+
+    DOM XSS completes only when the browser view executes injected script — API
+    reflection (storage) proves nothing. ``fire_browser`` installs the taint shim
+    and navigates the documented ``/#/search?q=`` surface (config/juiceshop-surface
+    declares it: param ``q``, injection_classes [xss_dom, xss_reflected]); a
+    recorded source→sink flow is execution evidence, confirmed by the
+    EXECUTION_CONFIRMATION oracle (flows → violation), then written as an ``xss``
+    finding. Honest-browser: when ``fire_browser`` raises (browser unavailable),
+    catch + audit + return empty — never fabricate attribution. Env
+    ``REACHAGENT_JUICESHOP_BROWSER=1`` enables this path (default off; API-only
+    runs stay deterministic).
+    """
+    del token
+    if os.environ.get("REACHAGENT_JUICESHOP_BROWSER") != "1":
+        return set()
+    shared = _SharedState()
+    sess = _session_as(target, None, shared)
+    mcp = _mcp_for(sess)
+    url = f"{target.api}/#/search?q=reachagent-dom-canary"
+    try:
+        browser = _call(mcp, "fire_browser", identity="anon", url=url)
+    except Exception as exc:  # noqa: BLE001 — browser unavailable is honest, not a finding
+        sess.ctx.firer.audit.record(
+            "juiceshop-xss-dom", "BROWSER", target.api, f"error:{type(exc).__name__}"
+        )
+        return set()
+    flows = browser.get("flows", []) if isinstance(browser, dict) else []
+    if not flows:
+        return set()
+    verdict = _call(
+        mcp,
+        "run_oracle",
+        mechanism="execution_confirmation",
+        evidence={"flows": flows, "evidence_ref": "xss/dom-search"},
+    )
+    if not verdict.get("is_violation"):
+        return set()
+    _call(mcp, "write_finding", verdict_ref=str(verdict["verdict_ref"]), vuln_class="xss")
+    return {ChallengeClaim("localXssChallenge", "xss", "xss/dom-search")}
+
+
 def _detect_clickjacking(target: JuiceshopTarget, token: str | None) -> set[str]:
     """Clickjacking: GET the app root, confirm no effective framing defense.
 
@@ -789,6 +833,9 @@ def run_juiceshop(
     }
     confirmed_vuln_classes |= {
         claim for claim in _detect_xss_stored(target, token) if isinstance(claim, ChallengeClaim)
+    }
+    confirmed_vuln_classes |= {
+        claim for claim in _detect_xss_dom(target, token) if isinstance(claim, ChallengeClaim)
     }
     # Structural client-side classes remain out of scope for this gate. Their
     # detectors still execute and write only oracle-confirmed findings, but their
