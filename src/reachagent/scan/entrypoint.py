@@ -266,13 +266,65 @@ def _sink_for_vuln_class(vuln_class: str) -> SinkType | None:
     return mapping.get(vuln_class)
 
 
+def _harvest_baseline_value(
+    graph: ReachabilityGraph,
+    firer: RequestFirer,
+    identity: str,
+    base_url: str,
+    endpoint_path: str,
+    param_name: str,
+) -> str | None:
+    """Sibling-list harvest: a 2xx sample value for a path-param endpoint's sibling.
+
+    Generic REST shape — ``/users`` + ``/users/{id}``, not VAmPI-specific logic.
+    For an injection endpoint ``/users/v1/{username}``, the sibling ``/users/v1``
+    (the placeholder segment removed) is the list that yields a valid sample
+    value, so the differential DATABASE_ERROR baseline is 2xx-served rather than a
+    literal that 404s (the live-VAmPI gap). Read-only GET through the gated firer;
+    never a payload, never a can_call. Returns ``None`` when there is no sibling,
+    the sibling is non-2xx, or its JSON has no matching field — the caller falls
+    back to a literal baseline.
+    """
+    import json
+
+    sibling = endpoint_path.replace(f"/{{{param_name}}}", "")
+    if sibling == endpoint_path:
+        return None
+    if not any(e.path == sibling for _, e in graph.endpoints()):
+        return None
+    try:
+        result = firer.fire(identity, "GET", base_url.rstrip("/") + sibling, state_changing=False)
+    except Exception:  # noqa: BLE001, S112 — a refused/errored sibling is no baseline
+        return None
+    if not (200 <= result.status_code < 300):
+        return None
+    try:
+        body = json.loads(result.body.decode("utf-8", errors="replace"))
+    except Exception:  # noqa: BLE001 — a non-JSON sibling body is no baseline
+        return None
+    fields = (param_name, "username", "name")
+    if isinstance(body, list):
+        for item in body:
+            if isinstance(item, dict):
+                for field in fields:
+                    value = item.get(field)
+                    if value not in (None, ""):
+                        return str(value)
+    elif isinstance(body, dict):
+        for field in fields:
+            value = body.get(field)
+            if value not in (None, ""):
+                return str(value)
+    return None
+
+
 def scan_target(
     *,
     base_url: str,
     in_scope: str,
     out_of_scope: str | None = None,
     dry_run: bool = True,
-    max_attempts: int = 4,
+    max_attempts: int = 20,
     library: Any | None = None,
     fixtures: dict[str, str] | None = None,
     transport: httpx.BaseTransport | None = None,
@@ -602,13 +654,27 @@ def scan_target(
             param_node = g.add_parameter(
                 sel.endpoint_node, _ProbeParam(name="probe", location="query")
             )
+        baseline_payload = "baseline"
+        if param_node is not None:
+            param = g.parameter(param_node)
+            if param.location == "path":
+                harvested = _harvest_baseline_value(
+                    g,
+                    firer,
+                    sel.identity_node,
+                    base_url,
+                    g.endpoint(sel.endpoint_node).path,
+                    param.name,
+                )
+                if harvested is not None:
+                    baseline_payload = harvested
         result = _pc.run_payload_chain(
             _caller,
             identity=sel.identity_node,
             endpoint_node=sel.endpoint_node,
             param_node=param_node,
             vuln_class=vuln_class,
-            baseline_payload="baseline",
+            baseline_payload=baseline_payload,
             max_attempts=max_attempts,
         )
         if result.confirmed and result.finding_node:
