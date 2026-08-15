@@ -170,3 +170,25 @@ historical browser-capable target, documented as not-yet-met. FP-rate ceiling
 stays ≤10%; the revert restores 0%. The 6/9 ceiling remains honest — three
 challenges (`uploadSize`, `uploadType`, `localXss`) are still uncredited for lack
 of per-challenge exploit logic, which stays deferred.
+
+## Decision: autonomous scan E2E is live-closed; consolidated gate passes at the 6/9 ceiling
+
+**Date:** 2026-08-14
+
+The autonomous scan loop (`reachagent-scan`) now runs cold-start → discovery →
+fingerprint → payload → oracle → write_finding with no fixtures and no human
+intervention, and produced its **first fully-autonomous confirmed finding** live
+against VAmPI (`sqli`, oracle `differential`, evidence
+`generic/payload-chain/sqli/error-based/quote-break`). The chain that made it work:
+`--surface` seeding for the two-segment API route, an error-triggering fingerprint
+diagnostic for the quoted-param SQLi sink, sibling-list baseline discovery (the
+`/users/v1` list yields a 2xx baseline so the DATABASE_ERROR oracle's
+baseline-GRANTED guard holds), and template-first payload ordering so the
+quote-break fires at attempt 1.
+
+The consolidated gate (`python -m reachagent.eval`) now reports **PASSED (exit 0)**
+for the locally-provisionable gates: VAmPI at 100% precision / 100% recall /
+toggle-off zero; Juice Shop at its documented 6/9 (66.7%) coverage with 0% FP;
+crapi / PortSwigger / DVGA SKIPPED (credential-gated, never block). This is the
+Phase 7 "all locally-provisionable gates re-passed in one run" criterion, met under
+the honest 6/9 floor — not the browser-capable 7/9, which remains deferred.

@@ -1,6 +1,8 @@
 # ReachAgent — Web/API Exploitation Agent
 ### Final Project Plan (July 2026)
 
+**Status: Locked — v1.11.** Changes from v1.10: the autonomous scan loop is **live-closed end to end** — cold-start recon → surface seeding → spec-first API discovery → fingerprint (incl. an error-triggering diagnostic probe for quoted error-based SQLi) → sibling-list baseline discovery → template-first payload ordering → fire → oracle confirm → write_finding, producing the first fully-autonomous confirmed finding (VAmPI SQLi) with no fixtures or human intervention. New: a generic scope-driven scan entrypoint (`reachagent-scan`, §13) with `--surface` seeding, spec-first OpenAPI/GraphQL discovery (`api_discovery.py`, §9), durable run state + resume (`persistence.py`, §12), and a consolidated Phase 7 gate runner (`python -m reachagent.eval`, §14). SSRF payload gap closed (hand-tagged blind/non-blind/token sets + one `SSRF_RESPONSE` check type inside STRUCTURAL); JWT corpus added (none-alg / key-confusion / weak-secret). The consolidated Juice Shop gate now judges the documented 6/9 API-only ceiling (not the unreachable 75% browser floor); the browser-attributed `localXssChallenge` path was attempted and reverted (flow ≠ executed, inflated FP) — per-challenge browser exploit logic stays deferred. No new oracle family, no §5 rating change (SSRF/JWT moved from oracle-backed to also payload-backed, level unchanged).
+
 **Status: Locked — v1.10.** Changes from v1.9: Phase 3 Juice Shop UNION and schema challenge claims now require exact extraction-only sentinels through the existing STRUCTURAL oracle. Fresh-container validation recovered two over-corrected claims, establishing a measured API-only ceiling of 6/9 (66.7%). Upload size/type still lack distinguishable retrieval or execution evidence, and local XSS still requires browser DOM attribution; 75% (7/9) remains outside API-only reach. No new oracle family, no §5 rating change.
 
 **Status: Locked — v1.7.** Changes from v1.6: the recon and signal-gated tool lists in §9 expand from a handful of named examples to a comprehensive, categorized set covering network/service recon, subdomain/content discovery, CMS/framework fingerprinting, and exploitation-assist tooling. HexStrike AI (and similar all-in-one autonomous pentest-agent frameworks) evaluated and explicitly excluded as an orchestrator — its own autonomous decision-making and exploit-generation duplicate what run_oracle exists to do; the individual underlying tools it wraps (nmap, amass, gobuster, nuclei, etc.) remain available through ReachAgent's own tiers directly. No new oracle family, no tier-rule change.
@@ -112,11 +114,11 @@ Ratings are calibrated against published results and documented technique limita
 | XSS — Reflected | **Full** | Headless browser execution confirmation | Confirms the script *ran*, not just reflected — works regardless of cookie flags |
 | XSS — Stored | **Full** | Headless execution confirmation on a triggering second view | |
 | XSS — DOM-based | **Partial** | Execution confirmation, fed by Playwright taint-tracking shim (hooks common sinks/sources) | Systematic discovery now, but bounded by a hand-maintained sink/source hook list |
-| SSRF (non-blind) | **Full** | Response content confirms internal reachability | |
-| SSRF (blind) | **Full** | OOB collaborator callback | |
+| SSRF (non-blind) | **Full** | Response content confirms internal reachability | Payload-backed since v1.11: hand-tagged cloud-metadata / internal URL set confirmed by the existing STRUCTURAL `SSRF_RESPONSE` check type (sentinel-in-body, same shape as UNION_EXTRACTION) |
+| SSRF (blind) | **Full** | OOB collaborator callback | Payload-backed since v1.11: hand-tagged callback set (http/https/file/gopher/redirect-chain) carrying `{nonce}.{collab}` |
 | SSTI / Template Injection | **Full** | Differential math-expression evaluation | Deterministic, low-noise |
 | Mass Assignment | **Full** | Schema diff + independent re-read confirming the effect | |
-| Auth & JWT issues (alg confusion, `none`, weak secret, `kid` injection) | **Full** | Structural — forged token grants access or it doesn't | |
+| Auth & JWT issues (alg confusion, `none`, weak secret, `kid` injection) | **Full** | Structural — forged token grants access or it doesn't | Payload-backed since v1.11: none-alg / HS256-key-confusion / weak-secret precomputed tokens feed the existing `jwt_forgery` STRUCTURAL branch (`kid` injection still not payload-backed) |
 | File Upload (type/extension bypass) | **Full** | Retrieval/execution confirmation | |
 | Path Traversal | **Full** | Retrieval of known out-of-scope file, content-matched | |
 | Race Conditions | **Partial** | Sequential-replay-first, escalating to single-packet concurrent delivery; reuses the business-logic anomaly-check oracle | No fuzzable signature exists for this class — ceiling doesn't move with better engineering, only efficiency does |
@@ -228,7 +230,7 @@ This uniform spawn-and-requery mechanism is the actual differentiator versus eve
 
 Fingerprinting, sink matching, selection, mutation, and verification aren't abstract steps — each is a named tool call from the §13 manifest, which is what makes the pipeline auditable end to end rather than a description of LLM vibes:
 
-1. **Fingerprint** — `fingerprint_parameter(endpoint, param)`. The Explorer sends a benign canary first and reads reflection behavior, error signatures, and response content-type. This sets `inferred_sink_type` on the `Parameter` node (`sql`, `nosql`, `shell`, `ldap`, `template`, `file_path`, `deserialize_target`, `html_reflection`, `url`, ...). Nothing downstream fires before this completes.
+1. **Fingerprint** — `fingerprint_parameter(endpoint, param)`. The Explorer sends a benign canary first and reads reflection behavior, error signatures, and response content-type. This sets `inferred_sink_type` on the `Parameter` node (`sql`, `nosql`, `shell`, `ldap`, `template`, `file_path`, `deserialize_target`, `html_reflection`, `url`, ...). Nothing downstream fires before this completes. Since v1.11, when the benign canary infers **no** sink and no `sink_hint` was supplied, a single **error-triggering diagnostic probe** fires with the quote-appended value `"<canary>'"` — a fingerprinting primitive, not a corpus payload — matched against the SQL error signatures to surface quoted-param error-based SQLi (the live-VAmPI gap: a canary that sits *inside* SQL quotes returns a clean 404, hiding the sink).
 2. **Sink-matched selection** — `get_payloads(vuln_class, sink_type)`. Returns only the tagged entries relevant to the inferred sink, ordered by oracle confidence (§7) — OOB-capable entries before pure-timing ones for injection classes, cheap sequential-replay before expensive concurrent delivery for business-logic/race classes. A parameter fingerprinted as `html_reflection` is never handed a SQLi payload, and vice versa.
 3. **Light, context-aware mutation** — inside the `get_payloads` → `fire_request(identity, endpoint, payload)` cycle. If a base entry is blocked (a WAF signature match, an unexpected sanitization pattern surfaced during fingerprinting), the Explorer may generate a small variant — always a transformation of a library-anchored entry, never invented from scratch — carrying its parent's `vuln_class`/`sink_type`/`oracle_type` tags forward so it still routes to the correct oracle.
 4. **Deterministic verification** — `run_oracle(mechanism, evidence)`, called by the Validator, never the Explorer. Only a `confirmed` result from one of the six families in §7 unlocks `write_finding`, the only tool that commits a `Finding` node.
@@ -242,6 +244,12 @@ Payload library schema:
 Sourced and restructured from PayloadsAllTheThings, OWASP WSTG, and PortSwigger Academy. The system's value is in the tagging, sink-matching, and oracle wiring — not in reinventing payload strings.
 
 **Not every class is payload-library-driven.** Business-logic templates and race conditions are request-*sequencing* and *timing-delivery* tests — they skip `get_payloads` entirely. Blind SQLi, NoSQLi, and LDAP extraction share one paired-trial mechanism (a real payload plus a negative control, repeated N times) rather than separate per-class logic.
+
+**v1.11 payload-strategy additions (no new family):**
+
+- **Template-first ordering** — `get_payloads` sorts by `(confidence_rank, is-template-ref, payload_ref)`: hand-authored oracle-proven templates fire before bulk corpus line-locators, so the definitive payload (e.g. the SQLi quote-break `'`) fires at attempt 1 rather than after N MySQL-oriented corpus variants.
+- **Sibling-list baseline discovery** — for a path-param endpoint (`/users/v1/{username}`), the differential `DATABASE_ERROR` baseline is harvested from the sibling list endpoint (`/users/v1`, placeholder segment removed): a read-only GET, unwrap any plural-key list wrapper (`{"users": [...]}`), and take the first matching field value. The baseline is then genuinely 2xx-served rather than a literal that 404s — fixing the baseline VALUE, never weakening the oracle's baseline-GRANTED guard.
+- **Spec-first API discovery** (`recon/api_discovery.py`) — before any combinatorial guessing, read-only probes for machine-readable specs (`/openapi.json`, `/swagger.json`, `/v3/api-docs`, …) and GraphQL introspection (reusing `graphql.module.discover_schema`); a found spec materializes `Endpoint`/`Parameter` facts exactly. Only when no spec answers does a bounded combinatorial fallback (`{api,rest,v1,v2…} × {users,books,…}`, ≤ ~50 GETs) run. Found-nothing is a valid honest result; two-segment API routes are otherwise not flat-wordlist-discoverable.
 
 ### External scanners: explicitly not a core dependency
 
@@ -367,6 +375,10 @@ Infrastructure ReachAgent consumes to *implement* the tools above — not a repl
 
 Build the manifest above as actual MCP tools starting in Phase 1, not only as internal functions the Coordinator calls once it exists. Before the §4 scoring rule is built, the same tools can be driven by hand from Claude Desktop or Claude Code — a faster debug loop — and nothing changes when the autonomous Coordinator takes over in Phase 5, since it calls the identical tool contracts a human was using.
 
+### Autonomous scan entrypoint + durable state (v1.11)
+
+The §4/§13 Coordinator loop is wrapped in a generic, scope-driven CLI — `reachagent-scan --target URL --in-scope PATTERNS [--out-of-scope …] [--surface FILE] [--state FILE] [--resume FILE] [--live]` (`scan/entrypoint.py`, `scan/cli.py`). Dry-run is the default (zero fired); `--live` runs cold-start recon (env-gated `REACHAGENT_RECON_LIVE`), spec-first API discovery, then the `query_graph → score_and_select → check_budget → run_payload_chain` loop until budget exhaustion. `--surface FILE` seeds a declared surface through the existing `SurfaceMapper` (optional — no per-target YAML required). `--state`/`--resume` persist and restore the graph + ChainSolver ledgers + audit tail (`graph/persistence.py`, deterministic atomic JSON, token VALUES never serialized) so a crashed run resumes continue-not-replay, with a RECOVER pass that re-surfaces interrupted derived-credential pairs and re-queries errored (never inconclusive) edges. Scope allowlist + read-only-first hold on every probe through the same gated `RequestFirer`.
+
 ### Other integrations — scoped honestly
 
 - **Notification webhook** on any `confirmed_violation` above a severity threshold — optional, fits once the Coordinator exists in Phase 5
@@ -390,6 +402,8 @@ Build the manifest above as actual MCP tools starting in Phase 1, not only as in
 | **DVGA** | Dedicated GraphQL ground truth — introspection, batching, resolver BOLA, depth/complexity |
 | **PortSwigger Web Security Academy race-condition labs** | Purpose-built ground truth for the single-packet module specifically |
 | **Authorized real-world target** | Only after documented precision/recall on all five above, with written scope |
+
+**Consolidated Phase 7 gate (v1.11):** `python -m reachagent.eval` drives every env-gated target gate in one run — VAmPI, crAPI, Juice Shop fresh-container, PortSwigger blind-SQLi, DVGA GraphQL — and emits one composite report + verdict + exit code (`eval/consolidated.py`, `eval/__main__.py`). Each target gate is env-gated: an unprovisioned target reports SKIPPED (never blocks); a provisioned-but-errored target reports NOT MEASURABLE (exit 2); a verdict is PASSED/FAILED. Composite = all RAN gates passed → 0; any ran gate failed → 1; any ran gate not-measurable → 2; all-skip → not-measurable. The Juice Shop gate judges the documented **6/9 API-only coverage floor** (not the 75% browser-capable floor — see `docs/Phase3-decisions.md`); fp-rate ceiling stays ≤10%.
 
 ---
 

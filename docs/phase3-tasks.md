@@ -4,6 +4,14 @@ Derived from `reachagent-final-plan.md` §7 (oracle families), §9 (payload libr
 §14/§15 (the gate). Each task's definition of done is a checkable invariant from the
 plan, not "implement X." Ordered by dependency.
 
+> **Superseded by plan v1.11 (2026-08-14).** The historical ≥75% coverage floor is
+> re-baselined: the consolidated gate now judges the documented **6/9 API-only
+> deterministic ceiling** (`API_ONLY_COVERAGE_FLOOR`), not 75%. The browser-attributed
+> `localXssChallenge` path was attempted and reverted (a taint-shim flow ≠ executed,
+> inflated FP), so 7/9 remains browser-capable and deferred. See
+> `docs/Phase3-decisions.md` for the decision block. The "≥75%" clauses below are the
+> historical target, retained for a future browser-capable mode, not the active gate.
+
 ## Phase-level numeric gate
 
 Historical target gate: ≥75% of Juice Shop's injection/XSS/file-upload/path-
