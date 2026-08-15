@@ -33,10 +33,18 @@ class ExecutionConfirmationEvidence:
     (reflected/stored XSS path). Both may be supplied; the oracle confirms on
     either signal. Neither yields INCONCLUSIVE.
 
+    ``executed`` (additive, default False) is True when the browser actually
+    *executed* injected JS — the taint shim's ``onerror`` marker fired
+    (``window.__reachagent_exec = 1``), observable proof beyond a mere sink-
+    reached flow. A flow alone is a *candidate* (tainted value reached a sink,
+    possibly inert); a flow + marker is *executed*. The marker never replaces
+    flows — it strengthens them.
+
     ``evidence_ref``: short, secret-free provenance handle (§13).
     """
 
     flows: tuple[TaintFlow, ...] = ()
+    executed: bool = False
     payload_tag: str = ""
     response_body: str = ""
     expected_output: str = ""
@@ -47,11 +55,23 @@ class ExecutionConfirmationEvidence:
 def decide(evidence: ExecutionConfirmationEvidence) -> FindingStatus:
     """Map execution-confirmation evidence to one verdict — the whole decision (§7).
 
-    DOM path: ≥1 taint flow → CONFIRMED_VIOLATION.
+    Three DOM states, honestly distinguished:
+
+    * **candidate** — ``flows`` non-empty, ``executed`` False: a tainted value
+      reached a hooked sink (innerHTML/…), but nothing proves a script ran. Still
+      a CONFIRMED_VIOLATION (the existing flows-are-execution contract holds — the
+      marker is a strengthening, never a replacement).
+    * **executed** — ``flows`` non-empty AND ``executed`` True: the injected
+      payload's ``onerror`` marker fired, proving real execution. CONFIRMED_VIOLATION.
+    * **no signal** — empty ``flows`` and ``executed`` False: INCONCLUSIVE.
+
+    ``executed`` alone (no flows) also confirms — the marker firing is itself
+    observable execution, even if no sink hook happened to record the flow.
+
     HTTP path: payload_tag non-empty and present verbatim in response_body → CONFIRMED_VIOLATION.
     Neither signal present → INCONCLUSIVE.
     """
-    if evidence.flows:
+    if evidence.flows or evidence.executed:
         return FindingStatus.CONFIRMED_VIOLATION
     if evidence.expected_output and evidence.expected_output in evidence.response_body:
         return FindingStatus.CONFIRMED_VIOLATION

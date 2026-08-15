@@ -756,6 +756,7 @@ def register_tools(mcp: FastMCP, session: _Session) -> None:
 
             oracle_evidence = ExecutionConfirmationEvidence(
                 flows=flows,
+                executed=bool(ev.get("executed", False)),
                 payload_tag=str(ev.get("payload_tag", "")),
                 response_body=exec_body,
                 expected_output=str(ev.get("expected_output", "")),
@@ -876,6 +877,7 @@ def register_tools(mcp: FastMCP, session: _Session) -> None:
             "url": result.url,
             "identity": result.identity,
             "shim_installed": result.shim_installed,
+            "executed": result.executed,
             "flows": [
                 {"source": f.source, "sink": f.sink, "value_snippet": f.value_snippet}
                 for f in result.flows
