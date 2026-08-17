@@ -401,41 +401,42 @@ _call = _call  # noqa: F811
 _read_only_fire = _read_only_fire  # noqa: F811
 
 
-def _confirm(
+def _generic_confirm(
     mcp: object,
     *,
     vuln_class: str,
-    axis: str,
-    expectation: str,
     baseline_ref: str,
     probe_ref: str,
     evidence_ref: str,
-    json_field: str | None = None,
-    baseline_select: str | None = None,
-    probe_select: str | None = None,
+    kit: dict[str, object] | None = None,
 ) -> bool:
-    """Run the oracle by fire_ref and, on a violation, commit the finding — all via MCP.
+    """Generic oracle confirmation — routes via payload_chain._evidence_for.
 
-    Returns ``True`` iff the oracle reached ``confirmed_violation`` and the finding
-    was written. The oracle diffs bodies server-side (secrets never cross the
-    wire), and only a genuine ``confirmed_violation`` verdict lets ``write_finding``
-    commit (the Task 6/7 gate). ``axis`` is provenance only — the ``expectation``
-    drives the verdict (§7) — but it is recorded faithfully per class.
+    No per-class switch here: the oracle mechanism comes from the caller's
+    vuln_class (bola/idor/mass → DIFFERENTIAL, etc.) and _evidence_for builds
+    the right axis/expectation/json_field/select so the harness never re-hardcodes
+    them. ``kit`` pins them explicitly when the harness already knows them (BOLA
+    secret, mass admin, IDOR password), so the default fallback in _evidence_for
+    is only the circuit breaker — the corpus/graph-derived kit is the truth.
     """
-    verdict = _call(
-        mcp,
-        "run_oracle",
-        evidence={
-            "axis": axis,
-            "expectation": expectation,
-            "baseline_fire_ref": baseline_ref,
-            "probe_fire_ref": probe_ref,
-            "json_field": json_field,
-            "baseline_select": baseline_select,
-            "probe_select": probe_select,
-            "evidence_ref": evidence_ref,
-        },
+    from reachagent.tools.payload_chain import _evidence_for as _generic_evidence
+
+    # Resolve oracle_type from the harness's known vuln_class → differential for
+    # the three VAmPI toggle classes. Mass assignment is cross_request but still
+    # differential (the family is the mechanism, not the axis).
+    oracle_type = "differential"
+    slot_kit: dict[str, object] = dict(kit or {})
+    # Harness already knows the precise axis/expectation per class — pin them so
+    # the generic path honors them instead of re-deriving from vuln_class.
+    evidence = _generic_evidence(
+        oracle_type,
+        baseline_ref=baseline_ref,
+        probe_ref=probe_ref,
+        evidence_ref=evidence_ref,
+        payload_kit=slot_kit,
+        vuln_class=vuln_class,
     )
+    verdict = _call(mcp, "run_oracle", evidence=evidence)
     if not verdict.get("is_violation"):
         return False
     _call(mcp, "write_finding", verdict_ref=str(verdict["verdict_ref"]), vuln_class=vuln_class)
@@ -485,15 +486,17 @@ def _detect_bola(
     baseline = _read_only_fire(_mcp_for(victim_sess), victim_sess, _VICTIM[0], path)
     probe = _read_only_fire(_mcp_for(owner_sess), owner_sess, _OWNER[0], path)
 
-    confirmed = _confirm(
+    confirmed = _generic_confirm(
         _mcp_for(owner_sess),
         vuln_class="bola",
-        axis="cross_identity",
-        expectation="probe_unauthorized",
         baseline_ref=baseline,
         probe_ref=probe,
-        json_field="secret",
         evidence_ref=f"bola/{path}",
+        kit={
+            "axis": "cross_identity",
+            "expectation": "probe_unauthorized",
+            "json_field": "secret",
+        },
     )
     return ScenarioResult("bola", _detected(confirmed), expected, f"cross-read of {path}")
 
@@ -521,17 +524,19 @@ def _detect_mass_assignment(
     mcp = _mcp_for(sess)
     ref = _read_only_fire(mcp, sess, _OWNER[0], "/users/v1/_debug")
 
-    confirmed = _confirm(
+    confirmed = _generic_confirm(
         mcp,
         vuln_class="mass_assignment",
-        axis="cross_request",
-        expectation="responses_invariant",
         baseline_ref=ref,
         probe_ref=ref,
-        json_field="admin",
-        baseline_select=f"username:{_OWNER[0]}",
-        probe_select="username:evilma",
         evidence_ref="mass_assignment/register",
+        kit={
+            "axis": "cross_request",
+            "expectation": "responses_invariant",
+            "json_field": "admin",
+            "baseline_select": f"username:{_OWNER[0]}",
+            "probe_select": "username:evilma",
+        },
     )
     return ScenarioResult(
         "mass_assignment", _detected(confirmed), expected, "admin flag on register"
@@ -560,17 +565,19 @@ def _detect_idor(
     _change_password(target, owner_token, _VICTIM[0], "hijacked_by_reachagent")
     after = _read_only_fire(mcp, sess, _OWNER[0], "/users/v1/_debug")
 
-    confirmed = _confirm(
+    confirmed = _generic_confirm(
         mcp,
         vuln_class="idor",
-        axis="cross_request",
-        expectation="responses_invariant",
         baseline_ref=before,
         probe_ref=after,
-        json_field="password",
-        baseline_select=f"username:{_VICTIM[0]}",
-        probe_select=f"username:{_VICTIM[0]}",
         evidence_ref="idor/password-change",
+        kit={
+            "axis": "cross_request",
+            "expectation": "responses_invariant",
+            "json_field": "password",
+            "baseline_select": f"username:{_VICTIM[0]}",
+            "probe_select": f"username:{_VICTIM[0]}",
+        },
     )
     return ScenarioResult("idor", _detected(confirmed), expected, "cross-user password change")
 
