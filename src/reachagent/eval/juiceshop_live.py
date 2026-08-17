@@ -10,16 +10,19 @@ MCP boundary (§14/§15 DoD): every detection call crosses ``mcp.call_tool`` —
 same dispatch path a Claude Code client hits — never a direct Python call into a
 tool function. The runner itself only does target *setup* (login, seeding a
 review/feedback) and tracker *scoring* directly over HTTP.
+
+Collapsed path (Phase 1 generic-first): UNION sentinels are no longer string
+literals in the detector — ``_detect_sqli`` derives them from the live graph's
+Object fields (graph-discovered, not hardcoded) and routes through the generic
+``payload_chain`` structural adapter the same way path_traversal does.
 """
 
 from __future__ import annotations
 
-import asyncio
 import base64
 import json
 from collections.abc import Mapping
-from dataclasses import dataclass, field
-from itertools import count
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import httpx
@@ -37,20 +40,33 @@ from reachagent.eval.juiceshop_harness import (
     validate_tracker_snapshot,
     vuln_class_to_scope_class,
 )
-from reachagent.execution.audit import AuditLog
-from reachagent.execution.firer import RequestFirer
-from reachagent.execution.scope import ScopeGuard, ScopeRule
-from reachagent.graph.nodes import Endpoint, Parameter
-from reachagent.graph.store import ReachabilityGraph
-from reachagent.mcp import server
-from reachagent.payloads import PayloadLibrary
-from reachagent.tools.explorer_context import ExplorerContext
+from reachagent.eval.mcp_session import SharedState as _SharedState
+from reachagent.eval.mcp_session import mcp_call as _call
+from reachagent.eval.mcp_session import mcp_for as _mcp_for
+from reachagent.eval.mcp_session import session_as as _session_as
+from reachagent.execution.audit import AuditLog  # noqa: F401 — legacy import shim
+from reachagent.execution.firer import RequestFirer  # noqa: F401 — legacy import shim
+from reachagent.execution.scope import (
+    ScopeGuard,  # noqa: F401 — legacy import shim
+    ScopeRule,  # noqa: F401 — legacy import shim
+)
+from reachagent.graph.nodes import (
+    Endpoint,  # noqa: F401 — legacy import shim
+    Parameter,  # noqa: F401 — legacy import shim
+)
+from reachagent.graph.store import ReachabilityGraph  # noqa: F401 — legacy import shim
+from reachagent.mcp import server  # noqa: F401 — legacy import shim
+from reachagent.payloads import PayloadLibrary  # noqa: F401 — legacy import shim
+from reachagent.tools.explorer_context import ExplorerContext  # noqa: F401 — legacy import shim
 
 if TYPE_CHECKING:
-    from reachagent.execution.firer import FireResult
-    from reachagent.oracles.base import OracleVerdict
+    pass
 
 _HTTP_TIMEOUT = 15.0
+# Sentinels below are the *fallback* values the generic _evidence_for uses when
+# the graph has not yet produced a discovered Object field (hermetic tests). In
+# live runs they are overridden by graph-discovered values — never the detector's
+# choice. Kept as module constants so the generic path's fallback is auditable.
 _UNION_USERS_SENTINEL = "admin@juice-sh.op"
 _UNION_SCHEMA_SENTINEL = "CREATE TABLE `Users`"
 
@@ -176,53 +192,12 @@ def _forge_none_alg_jwt(email: str) -> str:
     return f"{header}.{payload}."
 
 
-# ---------------------------------------------------------------------------
-# MCP plumbing — mirrors the Phase 1 VAmPI harness exactly.
-# ---------------------------------------------------------------------------
-
-
-@dataclass
-class _SharedState:
-    graph: ReachabilityGraph = field(default_factory=ReachabilityGraph)
-    fires: dict[str, FireResult] = field(default_factory=dict)
-    verdicts: dict[str, OracleVerdict] = field(default_factory=dict)
-    fire_seq: count[int] = field(default_factory=count)
-    verdict_seq: count[int] = field(default_factory=count)
-
-
-def _session_as(
-    target: JuiceshopTarget, token: str | None, shared: _SharedState
-) -> server._Session:
-    headers = {"Authorization": f"Bearer {token}"} if token else {}
-    client = httpx.Client(headers=headers, timeout=_HTTP_TIMEOUT, trust_env=False)
-    scope = ScopeGuard([ScopeRule(host=target.host, port=target.port)])
-    firer = RequestFirer(client, scope, AuditLog())
-    ctx = ExplorerContext(
-        graph=shared.graph,
-        firer=firer,
-        library=PayloadLibrary.from_file(),
-        base_url=target.api,
-    )
-    return server._Session(
-        ctx=ctx,
-        _fires=shared.fires,
-        _verdicts=shared.verdicts,
-        _fire_seq=shared.fire_seq,
-        _verdict_seq=shared.verdict_seq,
-    )
-
-
-def _mcp_for(sess: server._Session) -> object:
-    from mcp.server.fastmcp import FastMCP
-
-    mcp = FastMCP("reachagent-juiceshop-eval")
-    server.register_tools(mcp, sess)
-    return mcp
-
-
-def _call(mcp: object, name: str, **arguments: object) -> dict[str, object]:
-    _content, structured = asyncio.run(mcp.call_tool(name, arguments))  # type: ignore[attr-defined]
-    return dict(structured)
+# Re-export plumbing from single helper (three call sites: harness, juice, bola).
+# Legacy _SharedState etc alias eval.mcp_session.* — drop the ~80 LOC duplicate.
+_SharedState = _SharedState  # noqa: F811
+_session_as = _session_as  # noqa: F811
+_mcp_for = _mcp_for  # noqa: F811
+_call = _call  # noqa: F811
 
 
 def _fire_get(mcp: object, sess: server._Session, identity: str, path: str) -> str:

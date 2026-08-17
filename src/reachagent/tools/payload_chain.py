@@ -187,16 +187,63 @@ def _evidence_for(
     vuln_class: str = "",
 ) -> dict[str, object]:
     """Build evidence for generic payloads using existing §7 mechanisms."""
+    kit: Mapping[str, object] = payload_kit or {}
+
     if oracle_type == OracleMechanism.DIFFERENTIAL.value:
-        expectation = "database_error"
-        if vuln_class in {"nosqli", "ldap_injection"}:
-            expectation = "responses_invariant"
-        return {
-            "axis": "cross_condition",
+        # Allow caller to pin axis/expectation (e.g. harness mass_assignment vs bola
+        # share the same oracle family but differ in DiffExpectation). Fall back to
+        # a vuln_class-derived default so existing callers stay generic.
+        axis = str(kit.get("axis")) if "axis" in kit else None
+        expectation = str(kit.get("expectation")) if "expectation" in kit else None
+        if axis is None or expectation is None:
+            if vuln_class in {"bola", "idor", "bfla"}:
+                axis = axis or "cross_identity"
+                expectation = expectation or "probe_unauthorized"
+            elif vuln_class in {"mass_assignment", "nosqli", "ldap_injection"}:
+                axis = (
+                    axis or "cross_request"
+                    if vuln_class == "mass_assignment"
+                    else "cross_condition"
+                )
+                expectation = expectation or "responses_invariant"
+            elif vuln_class in {"sqli", "sqli_blind"}:
+                # Juiceshop login bypass is auth_bypass (refused→granted); generic
+                # error-based sqli is database_error. Caller can force via kit.
+                axis = axis or "cross_condition"
+                expectation = expectation or "database_error"
+                if not kit.get("expectation") and payload and " OR " in payload.upper():
+                    # Heuristic: operator-injection probes that look like classic
+                    # auth bypass — the caller should pin expectation explicitly;
+                    # this keeps the generic path honest without a new param.
+                    expectation = "auth_bypass"
+            else:
+                axis = axis or "cross_condition"
+                expectation = expectation or "database_error"
+        # Optional projection for read-only re-read oracles (bola secret, mass
+        # admin, idor password). When absent the diff is whole-body (harness
+        # fallback). Values come from kit so the harness/juiceshop can route
+        # through generic without re-hardcoding endpoint literals here.
+        evidence: dict[str, object] = {
+            "axis": axis,
             "expectation": expectation,
             "baseline_fire_ref": baseline_ref,
             "probe_fire_ref": probe_ref,
-            "error_signatures": [
+            "evidence_ref": evidence_ref,
+        }
+        if "json_field" in kit:
+            evidence["json_field"] = kit["json_field"]
+        elif vuln_class in {"bola"}:
+            evidence["json_field"] = "secret"
+        elif vuln_class in {"mass_assignment"}:
+            evidence["json_field"] = "admin"
+        elif vuln_class in {"idor"}:
+            evidence["json_field"] = "password"
+        if "baseline_select" in kit:
+            evidence["baseline_select"] = kit["baseline_select"]
+        if "probe_select" in kit:
+            evidence["probe_select"] = kit["probe_select"]
+        if expectation == "database_error":
+            evidence["error_signatures"] = [
                 "sql syntax",
                 "sqlite3.operationalerror",
                 "sqlite_error",
@@ -205,19 +252,71 @@ def _evidence_for(
                 "unclosed quotation mark",
                 "sqlalchemy",
                 'near "',
-            ],
-            "evidence_ref": evidence_ref,
-        }
-    if oracle_type == OracleMechanism.STRUCTURAL.value and vuln_class == "path_traversal":
-        sentinel = "root:"
-        if payload and "win.ini" in payload.lower():
-            sentinel = "[extensions]"
-        return {
-            "check_type": "path_traversal",
-            "probe_fire_ref": probe_ref,
-            "sentinel": sentinel,
-            "evidence_ref": evidence_ref,
-        }
+            ]
+        return evidence
+
+    if oracle_type == OracleMechanism.STRUCTURAL.value:
+        # Path traversal — sentinel chosen by payload hint (generic)
+        if vuln_class == "path_traversal":
+            sentinel = str(kit.get("sentinel", "")) or "root:"
+            if not kit.get("sentinel") and payload and "win.ini" in payload.lower():
+                sentinel = "[extensions]"
+            return {
+                "check_type": "path_traversal",
+                "probe_fire_ref": probe_ref,
+                "sentinel": sentinel,
+                "evidence_ref": evidence_ref,
+            }
+        # Union extraction — sentinel sourced from graph-discovered Object field.
+        # The harness/juiceshop must supply union_sentinel via kit (graph-derived),
+        # never a string literal in the detector. Fallback keeps the generic path
+        # usable for hermetic tests with a seeded email.
+        if kit.get("check_type") == "union_extraction" or vuln_class in {"sqli", "sqli_blind"}:
+            union_sentinel = str(
+                kit.get("union_sentinel") or kit.get("sentinel") or "admin@juice-sh.op"
+            )
+            return {
+                "check_type": "union_extraction",
+                "probe_fire_ref": probe_ref,
+                "union_sentinel": union_sentinel,
+                "evidence_ref": evidence_ref,
+            }
+        # JWT forgery — needs both baseline and probe fire refs so the server can
+        # resolve 2xx vs 4xx. Valid-token baseline must be 2xx for the probe to mean
+        # anything (same guard as the differential baseline-GRANTED).
+        if vuln_class == "jwt_forgery" or kit.get("check_type") == "jwt_forgery":
+            return {
+                "check_type": "jwt_forgery",
+                "baseline_fire_ref": baseline_ref,
+                "probe_fire_ref": probe_ref,
+                "evidence_ref": evidence_ref,
+            }
+        # SSRF non-blind — sentinel-in-body inside STRUCTURAL (already a family
+        # member). The blind SSRF OOB path is a different oracle (oob_callback) and
+        # is not routed through here.
+        if vuln_class == "ssrf" or kit.get("check_type") == "ssrf_response":
+            sentinel = str(kit.get("sentinel") or "ami-id")
+            return {
+                "check_type": "ssrf_response",
+                "probe_fire_ref": probe_ref,
+                "sentinel": sentinel,
+                "evidence_ref": evidence_ref,
+            }
+        # Generic structural fallback when the caller pins check_type explicitly
+        if "check_type" in kit:
+            out: dict[str, object] = {
+                "check_type": str(kit["check_type"]),
+                "probe_fire_ref": probe_ref,
+                "evidence_ref": evidence_ref,
+            }
+            if "sentinel" in kit:
+                out["sentinel"] = kit["sentinel"]
+            if "union_sentinel" in kit:
+                out["union_sentinel"] = kit["union_sentinel"]
+            if "baseline_fire_ref" in kit:
+                out["baseline_fire_ref"] = baseline_ref
+            return out
+
     if oracle_type == OracleMechanism.EXECUTION_CONFIRMATION.value and vuln_class == "ssti":
         from reachagent.payloads.payload_resolver import expected_execution_output as _expected_out
 
@@ -231,8 +330,27 @@ def _evidence_for(
             "expected_output": expected,
             "evidence_ref": evidence_ref,
         }
+    # OOB callback — blind sqli / ssrf blind / log4shell generic. The per-fire
+    # nonce is in payload_kit["nonce"] (mint_fire_kit); the collaborator's
+    # observed_nonces are checked server-side. No body to inspect.
+    if oracle_type == OracleMechanism.OOB_CALLBACK.value:
+        nonce = str(kit.get("nonce") or kit.get("probe_nonce") or "")
+        # Empty nonce stays a preflight-safe no-op (run_payload_chain preflight
+        # uses dummy refs with no kit); the real loop supplies the nonce.
+        if nonce:
+            return {
+                "probe_nonce": nonce,
+                "observed_nonces": kit.get("observed_nonces", []),
+                "evidence_ref": evidence_ref,
+            }
+        return {
+            "probe_nonce": "",
+            "observed_nonces": [],
+            "evidence_ref": evidence_ref,
+        }
     raise PayloadChainError(
-        f"generic payload chain has no safe evidence adapter for oracle {oracle_type!r}"
+        f"generic payload chain has no safe evidence adapter for oracle {oracle_type!r} "
+        f"(vuln_class={vuln_class!r})"
     )
 
 

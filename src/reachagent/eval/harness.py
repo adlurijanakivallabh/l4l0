@@ -42,30 +42,45 @@ Ground truth (from VAmPI source, gated on its ``vuln`` flag):
     read-only re-read: the victim's ``password`` in ``/users/v1/_debug`` diverges
     before vs. after the cross-user write.
 Under the secure toggle each is fixed, so the correct confirmed count is zero.
+
+Collapsed path (Phase 1 generic-first): the three ``_detect_*`` bodies no longer
+hardcode endpoint literals outside target config — enumeration is graph-derived
+(SurfaceSpec / api_discovery), payloads come from PayloadLibrary (PATT corpus)
+routed through the generic ``payload_chain`` driver (fingerprint → get_payloads
+sink-matched → fire baseline/probe → run_oracle(entry.oracle_type) →
+write_finding) via McpCaller + handle indirection fire_ref/verdict_ref. SsOT
+for that loop is ``tools/payload_chain.py``; harness setup (seed/login/
+register/PW PUT) stays direct HTTP because fire_request deliberately handles
+one param only.
 """
 
 from __future__ import annotations
 
-import asyncio
 from dataclasses import dataclass, field
 from enum import StrEnum
-from itertools import count
 from typing import TYPE_CHECKING
 
 import httpx
 
-from reachagent.execution.audit import AuditLog
-from reachagent.execution.firer import RequestFirer
-from reachagent.execution.scope import ScopeGuard
-from reachagent.graph.nodes import Endpoint, Parameter
-from reachagent.graph.store import ReachabilityGraph
-from reachagent.mcp import server
-from reachagent.payloads import PayloadLibrary
-from reachagent.tools.explorer_context import ExplorerContext
+from reachagent.eval.mcp_session import SharedState as _SharedState
+from reachagent.eval.mcp_session import mcp_call as _call
+from reachagent.eval.mcp_session import mcp_for as _mcp_for
+from reachagent.eval.mcp_session import read_only_fire as _read_only_fire
+from reachagent.eval.mcp_session import session_as as _session_as
+from reachagent.execution.audit import AuditLog  # noqa: F401 — re-export surface
+from reachagent.execution.firer import RequestFirer  # noqa: F401 — legacy import shim
+from reachagent.execution.scope import ScopeGuard  # noqa: F401 — legacy import shim
+from reachagent.graph.nodes import (
+    Endpoint,  # noqa: F401 — legacy import shim
+    Parameter,  # noqa: F401 — legacy import shim
+)
+from reachagent.graph.store import ReachabilityGraph  # noqa: F401 — legacy import shim
+from reachagent.mcp import server  # noqa: F401 — legacy import shim
+from reachagent.payloads import PayloadLibrary  # noqa: F401 — legacy import shim
+from reachagent.tools.explorer_context import ExplorerContext  # noqa: F401 — legacy import shim
 
 if TYPE_CHECKING:
-    from reachagent.execution.firer import FireResult
-    from reachagent.oracles.base import OracleVerdict
+    pass
 
 # The three classes the Phase 1 gate scores (JWT deferred, see module docstring).
 GROUND_TRUTH_CLASSES: tuple[str, ...] = ("bola", "mass_assignment", "idor")
@@ -373,91 +388,17 @@ def _discover_book(target: VampiTarget, token: str, owner: str) -> str | None:
     return None
 
 
-# ---------------------------------------------------------------------------
-# MCP plumbing — sessions share one graph + handle registries so the
-# cross-identity oracle can resolve fire_refs minted under different identities.
-# ---------------------------------------------------------------------------
-
-
-@dataclass
-class _SharedState:
-    """One graph + handle registries shared across every per-identity session.
-
-    Each identity fires through its own token-authenticated firer (the §10
-    isolated-session model), but all fires/verdicts land in one registry and one
-    graph, so ``run_oracle`` can diff two responses obtained under *different*
-    identities (the whole point of the cross-identity differential oracle) and
-    every confirmed finding aggregates in a single reachability graph.
-    """
-
-    graph: ReachabilityGraph = field(default_factory=ReachabilityGraph)
-    fires: dict[str, FireResult] = field(default_factory=dict)
-    verdicts: dict[str, OracleVerdict] = field(default_factory=dict)
-    fire_seq: count[int] = field(default_factory=count)
-    verdict_seq: count[int] = field(default_factory=count)
-
-
-def _session_as(target: VampiTarget, token: str | None, shared: _SharedState) -> server._Session:
-    """A bound MCP session whose firer authenticates as one identity (§10, §13)."""
-    headers = {"Authorization": f"Bearer {token}"} if token else {}
-    client = httpx.Client(headers=headers, timeout=_HTTP_TIMEOUT)
-    firer = RequestFirer(client, ScopeGuard.from_hosts([target.host]), AuditLog())
-    ctx = ExplorerContext(
-        graph=shared.graph,
-        firer=firer,
-        library=PayloadLibrary.from_file(),
-        base_url=target.api,
-    )
-    return server._Session(
-        ctx=ctx,
-        _fires=shared.fires,
-        _verdicts=shared.verdicts,
-        _fire_seq=shared.fire_seq,
-        _verdict_seq=shared.verdict_seq,
-    )
-
-
-def _mcp_for(session: server._Session) -> object:
-    """Register the role-bounded tools on a fresh FastMCP bound to ``session``."""
-    from mcp.server.fastmcp import FastMCP
-
-    mcp = FastMCP("reachagent-eval")
-    server.register_tools(mcp, session)
-    return mcp
-
-
-def _call(mcp: object, name: str, **arguments: object) -> dict[str, object]:
-    """Invoke a tool through the real MCP dispatch boundary; return the structured result.
-
-    Uses ``mcp.call_tool`` — the same path a Claude Code client hits — not the
-    underlying function, so the harness exercises the actual MCP layer end to end
-    (Task 9 DoD). ``call_tool`` returns ``(content, structured)``; we take the
-    structured dict.
-    """
-    _content, structured = asyncio.run(mcp.call_tool(name, arguments))  # type: ignore[attr-defined]
-    return dict(structured)
-
-
-def _read_only_fire(mcp: object, session: server._Session, identity: str, path: str) -> str:
-    """Fingerprint (canary-first) then fire one read-only GET via MCP; return the fire_ref.
-
-    Seeds the endpoint/parameter into the shared graph, then runs the §9 pipeline
-    prefix (``fingerprint_parameter`` → ``fire_request``) through ``call_tool``.
-    Everything except the graph seeding crosses the MCP boundary.
-    """
-    ep = session.graph.add_endpoint(Endpoint(method="GET", path=path))
-    param = session.graph.add_parameter(ep, Parameter(name="probe", location="query"))
-    _call(mcp, "fingerprint_parameter", identity=identity, endpoint_node=ep, param_node=param)
-    fired = _call(
-        mcp,
-        "fire_request",
-        identity=identity,
-        endpoint_node=ep,
-        param_node=param,
-        payload="",
-        method="GET",
-    )
-    return str(fired["fire_ref"])
+# Re-export plumbing from single helper (three call sites: harness, juice, bola).
+# Legacy names kept so external imports of _SharedState etc still resolve if
+# any external harness imports them — they now alias eval.mcp_session.* rather
+# than duplicate ~80 LOC per file. The 5 re-assigns below are intentionally
+# aliasing the imported mcp_session symbols to the harness-private names for
+# drop-in call-site compatibility; type-checker noise suppressed locally.
+_SharedState = _SharedState  # noqa: F811
+_session_as = _session_as  # noqa: F811
+_mcp_for = _mcp_for  # noqa: F811
+_call = _call  # noqa: F811
+_read_only_fire = _read_only_fire  # noqa: F811
 
 
 def _confirm(
