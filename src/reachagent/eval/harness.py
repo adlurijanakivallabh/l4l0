@@ -43,15 +43,14 @@ Ground truth (from VAmPI source, gated on its ``vuln`` flag):
     before vs. after the cross-user write.
 Under the secure toggle each is fixed, so the correct confirmed count is zero.
 
-Collapsed path (Phase 1 generic-first): the three ``_detect_*`` bodies no longer
-hardcode endpoint literals outside target config — enumeration is graph-derived
-(SurfaceSpec / api_discovery), payloads come from PayloadLibrary (PATT corpus)
-routed through the generic ``payload_chain`` driver (fingerprint → get_payloads
-sink-matched → fire baseline/probe → run_oracle(entry.oracle_type) →
-write_finding) via McpCaller + handle indirection fire_ref/verdict_ref. SsOT
-for that loop is ``tools/payload_chain.py``; harness setup (seed/login/
-register/PW PUT) stays direct HTTP because fire_request deliberately handles
-one param only.
+Collapsed path (Phase 1 generic-first): the three ``_detect_*`` bodies delegate to
+the generic ``payload_chain`` driver — fingerprint, payload library corpus
+(PATT), ``McpCaller`` handle indirection ``fire_ref``/``verdict_ref``,
+``_generic_confirm`` is single oracle wiring (axis/expectation/json_field in kit).
+``VampiTarget`` is the only per-target config (``base_url``/``toggle_on``);
+enumeration is still via the harness's shared-state graph but payloads/oracle
+types come from generic not detector literals. Setup (seed/login/register/PW
+PUT) stays direct HTTP only where fire_request 1-param constraint forces it.
 """
 
 from __future__ import annotations

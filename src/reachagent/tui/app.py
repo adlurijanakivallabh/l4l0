@@ -1,11 +1,15 @@
-"""Textual observer — three panes over ReachabilityGraph + AuditLog.
+"""Textual observer — three panes over ReachabilityGraph + AuditLog (§14, Phase 2).
 
-Pane 1  Targets/Graph — Host/Service/Endpoint tree + scope + wildcard_shape.
+Pane 1  Targets/Graph — Host/Service/Endpoint tree + scope + wildcard_shape +
+        per-Endpoint params + access_restricted 401/403 third state.
 Pane 2  Findings      — Finding vuln_class / severity / oracle_used / evidence_ref
-        + enables / derived_credential chain via chain_paths.
-Pane 3  Live log      — AuditLog tail + firer outcomes (fired: / refused_*).
-No oracle/firer import beyond reading AuditLog.entries and ReachabilityGraph.
-No ScopeGuard bypass: scan_target owns firing, TUI only observes its graph.
+        + enables / derived_credential chain via chain_paths(start).
+Pane 3  Live log      — AuditLog tail + firer outcomes (fired: / refused_* /
+        payload_chain_failure). No oracle/firer import beyond reading entries.
+No ScopeGuard bypass: scan_target owns firing, TUI only observes its graph via
+0.5 s set_interval poll — same ReachabilityGraph + AuditLog instance the scan
+writes, that is all. Shares scan/entrypoint:scan_target with headless
+reachagent-scan so TUI adds no new confirmed path.
 """
 
 from __future__ import annotations
