@@ -192,3 +192,55 @@ toggle-off zero; Juice Shop at its documented 6/9 (66.7%) coverage with 0% FP;
 crapi / PortSwigger / DVGA SKIPPED (credential-gated, never block). This is the
 Phase 7 "all locally-provisionable gates re-passed in one run" criterion, met under
 the honest 6/9 floor — not the browser-capable 7/9, which remains deferred.
+
+## Decision: the 6/9 floor is D1-D4 locked (v1.12) — generic-first closure
+
+**Date:** 2026-08-17 — plan v1.11 → v1.12 (this commit, `fb9ad02` on `1552929`).
+
+**D1-D4 floor block (refresh, no threshold change):** **`COVERAGE_FLOOR = 0.75`**
+is the *browser-future* floor (needs `fire_browser` taint `flows+executed` +
+upload `retrieval/execution` artifact — `Header`/`Footer` `j/k Tab /` filter
+`0.5 s` `tui/app.py` stays observer, browser exploit logic still deferred).
+**`API_ONLY_COVERAGE_FLOOR = 6/9`** is the *documented deterministic ceiling*:
+three `sqli` `auth_bypass` keys (`loginAdminChallenge`, `loginBenderChallenge`,
+`loginJimChallenge`), `unionSqlInjectionChallenge` + `dbSchemaChallenge` only
+when their exact `UNION` extraction sentinels (`admin@juice-sh.op` /
+`CREATE TABLE \`Users\``) appear in the successful search response, and the
+relabeled `nullByteChallenge` (`"name": "juice-shop"` poison-null package
+artifact) — now graph-derived `graph.objects()` field with `fallback` literal
+when sparse. `uploadSizeChallenge` / `uploadTypeChallenge` stay `204` no
+artifact / `500 File too large` / no retrieval URL; `localXssChallenge` needs
+browser isolate + tracker attribution. `fp-rate ≤10%` holds (`0%` measured).
+
+**Verification 2026-08-17 live (this commit, `vamp` + `juiceshop` ephemeral):**
+`python -m reachagent.eval --target vamp` → **passed** `100%/100% OFF 0`;
+`REACHAGENT_JUICESHOP_EPHEMERAL=1 python -m reachagent.eval --target juiceshop`
+→ **passed 66.7% `floor 67%` 0% FP** (`6` confirmed `loginAdmin/Bender/Jim` +
+`unionSqlInjection` `admin@juice-sh.op` + `dbSchema` `CREATE TABLE` +
+`nullByte` file_upload, `uploadSize/uploadType` + `localXss` uncredited);
+`REACHAGENT_JUICESHOP_EPHEMERAL=1 python -m reachagent.eval --target vamp
+--target juiceshop` **PASSED (exit 0)**; `python -m reachagent.eval` **composite
+PASSED when only provisionable gates run (`vamp+juice PASS`,
+`crapi/portswigger/dvga SKIPPED`; full composite with `portswigger` not
+provisioned reports `failed` per-gate — composite `vamp+juice` is the
+locally-provisionable criterion).
+
+**Generic-first collapse (`1552929` → `71bb535` → `80002e6` → `fb9ad02`) is
+`enumerate → identify endpoints → find vulns` — no per-target script: `1552929`
+`generic-gap-audit` whole-code gap, `71bb535` single `eval/mcp_session` helper
+deduping `~80×3`, `payload_chain._evidence_for` generic branch for
+`AUTH_BYPASS/RESPONSES_INVARIANT/union_extraction/jwt_forgery/ssrf_response/OOB`
+(no seventh family), `tui/app.py` textual `3 panes` `Footer` observer;
+`80002e6` wiring `_generic_confirm(..., kit={axis,expectation,json_field,select})`
++ `graph.objects()` sentinel fallback; `fb9ad02` `Footer` bindings/doc. The
+`7-step VAmPI` chain, `17 wrappers`, `random-uuid/SHA256` `CalibrationRunner`,
+`DnsWildcardProber`, `spec-first api_discovery`, `multi-channel OOB additive`,
+`401/403 restricted-surface`, `durable dump/load+resume RECOVER`, `SSRF 21,130`
+payload-backed — all preserved `v1.11` commitments. **Re-asking `Why 7/9
+reverted`:** `flow ≠ executed` inflated `FP 0 → 14.3%` (`a6eada8` browser claim
+without `tracker_solved` flip is claim FP; `score_run` typed-claim strict mode
+requires `claim_false_positives` match), `execution-marker` `flows+executed`
+additive stays honest. Honest `Full/Partial/Weak` unchanged, six
+`OracleMechanism` only, role bounds (`Explorer` never `write_finding`/`run_oracle`,
+`Coordinator` never `fire`/`run_oracle`, only `Validator` `run_oracle`/`write_finding`
+AST pin `4/3/3`) held.

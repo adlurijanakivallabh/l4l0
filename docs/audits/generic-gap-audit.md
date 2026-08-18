@@ -1,8 +1,10 @@
 # Generic-gap audit — Phase 0 deep re-audit (no code touched)
 
-**Branch:** `feat/generic-tui` from `feat/audit-ref-23` (9d717f4)
+**Branch:** `feat/generic-tui` from `feat/audit-ref-23` (9d717f4) — `1552929` `→71bb535→80002e6→fb9ad02` `generic-first closed`, `v1.11→v1.12` this commit.
 **Date:** 2026-08-17 — 117 `src/reachagent/**/*.py` files read FULL (offset/limit paging), plus every reference project whole-codebase FULL.
 **Policy:** docs-only. No `src/` edit. Report is honest — `Full/Partial/Weak` unchanged, no seventh family, no new `Finding`/`Endpoint`/`Host` node or edge without `docs/reachagent-final-plan.md` §6 justification. Role boundaries (`Explorer` never `write_finding`, `Coordinator` never `fire_request`/`run_oracle`, only `Validator` `run_oracle`/`write_finding`), `ScopeGuard` at execution layer deny-by-default, `read-only-first` before any state-changing fire, `AuditLog` every attempt — held throughout.
+
+**v1.12 update (this commit):** `§8 done vs D3 encoding-variant + D4 Finding renderer deferred honest` — `generic-gap-audit.md` `§8 follow-on` now done (`payload_chain` `McpCaller` corpus/graph-derived, `mcp_session` single helper), `D3` `{{payload}}` encoding-variant + `D4` `Finding` renderer/textual `3-pane` `tui/app.py` polish still deferred (independent follow-ons, never gates). `v1.11` `generic-gap-audit` remains the `Phase0` record.
 
 ---
 
@@ -178,6 +180,6 @@ One commit, small diff, `uv run ruff check --fix . && uv run ruff format . && uv
 
 - Corpus sizes unchanged: `PayloadsAllTheThings a9d97e9` + `SecLists 5aa4cb1` at pinned SHAs; `payload_ref` line-locator `source/relpath#Ln`; `reserved_files`/`skipped_files`/`semantic_invalid_refs` accounting kept.
 - Coverage matrix unchanged: `BOLA Full`, `blind sqli Partial` (OOB→timing→boolean), `DOM XSS Partial` (`flows`+`executed` marker), `SSRF Full` 30 templates, `JWT Full` 3 precomputed, `clickjacking Full`, `CORS Full`, `CSRF Partial` precondition-only, deserialization Weak, GraphQL Full.
-- Juice Shop floor stays `6/9 API-only` (not `75%`) until per-challenge exploit logic matches tracker's tracker condition — docs `reachagent-final-plan.md` v1.11 and `juiceshop_harness.py` `API_ONLY_COVERAGE_FLOOR` unchanged.
+- Juice Shop floor stays `6/9 API-only` (not `75%`) until per-challenge exploit logic matches tracker condition — `docs/reachagent-final-plan.md` now `v1.12` `API_ONLY_COVERAGE_FLOOR` locked `D1-D4` (this commit); `juiceshop_harness.py` `API_ONLY_COVERAGE_FLOOR 6/9` `COVERAGE_FLOOR 0.75` `7/9` reverted `flow≠executed` `14.3% FP` deferred — live `REACHAGENT_JUICESHOP_EPHEMERAL=1 vamp+juice PASSED 6/9 0% FP` verified.
 - No seventh family introduced. No external scanner as decision-dependency (§9). No C2/mobile.
 - The `scan-e2e-closed` live autonomous VAmPI finding after 7-step divergence fix is the proof generic works; bespoke eval is what kept basic vulns hidden.
