@@ -4,7 +4,7 @@
 **Date:** 2026-08-17 — 117 `src/reachagent/**/*.py` files read FULL (offset/limit paging), plus every reference project whole-codebase FULL.
 **Policy:** docs-only. No `src/` edit. Report is honest — `Full/Partial/Weak` unchanged, no seventh family, no new `Finding`/`Endpoint`/`Host` node or edge without `docs/reachagent-final-plan.md` §6 justification. Role boundaries (`Explorer` never `write_finding`, `Coordinator` never `fire_request`/`run_oracle`, only `Validator` `run_oracle`/`write_finding`), `ScopeGuard` at execution layer deny-by-default, `read-only-first` before any state-changing fire, `AuditLog` every attempt — held throughout.
 
-**v1.12 update (this commit):** `§8 done vs D3 encoding-variant + D4 Finding renderer deferred honest` — `generic-gap-audit.md` `§8 follow-on` now done (`payload_chain` `McpCaller` corpus/graph-derived, `mcp_session` single helper), `D3` `{{payload}}` encoding-variant + `D4` `Finding` renderer/textual `3-pane` `tui/app.py` polish still deferred (independent follow-ons, never gates). `v1.11` `generic-gap-audit` remains the `Phase0` record.
+**v1.13 update (this commit):** `§8 done, D3 encoding-variant bounded (2/variant) + D4 Finding renderer JSON/markdown/HTML + TUI live Header stats + fallback warning — all closed, honest done.` `payloads/encoding.py` url/double-url variants tag-preserving, `payload_resolver` variant cache, `corpus _dedup_canonical`. `report/renderer.py` deterministic sorted. `tui/app.py` live Finding fields + `--help` + Header stats. Fallback literal now warned. `v1.12` `1552929→71bb535→80002e6→fb9ad02` generic-first remains the Phase0 record base.
 
 ---
 

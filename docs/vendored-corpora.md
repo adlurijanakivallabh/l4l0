@@ -63,3 +63,5 @@ payloads that sort *before* bulk corpus line-locators (template-first ordering,
 
 These are stimulus only — every one still routes through `run_oracle`; none is a
 confirmation on its own, and the hand-tagged sets never change a §5 rating level.
+
+**v1.13:** `payloads/encoding.py` bounded encoding variants (url/double-url, 2/variant) tag-preserving via `_VARIANT_CACHE`; `corpus _dedup_canonical` dedups url-decoded families.

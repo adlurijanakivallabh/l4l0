@@ -548,10 +548,13 @@ def _detect_sqli(target: JuiceshopTarget, token: str | None) -> set[ChallengeCla
     def _graph_union_sentinel(kind: str) -> str:
         for _, obj in sess.graph.objects():
             if obj.type == kind or kind in obj.type:
-                # Use a graph-derived attribute when present; for the harness this
-                # will be an email string, for Juice Shop a seeded user email.
                 if obj.instance_key and "@" in obj.instance_key:
                     return obj.instance_key
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "union sentinel fallback %s — graph empty, fixture recommended", kind
+        )
         return _UNION_USERS_SENTINEL if kind == "Users" else _UNION_SCHEMA_SENTINEL
 
     union_probes = (

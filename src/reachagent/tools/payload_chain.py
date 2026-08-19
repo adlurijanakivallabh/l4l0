@@ -275,6 +275,12 @@ def _evidence_for(
         # never a string literal in the detector. Fallback keeps the generic path
         # usable for hermetic tests with a seeded email.
         if kit.get("check_type") == "union_extraction" or vuln_class in {"sqli", "sqli_blind"}:
+            if not kit.get("union_sentinel") and not kit.get("sentinel"):
+                import logging
+
+                logging.getLogger(__name__).warning(
+                    "union sentinel fallback used — graph empty, fixture recommended"
+                )
             union_sentinel = str(
                 kit.get("union_sentinel") or kit.get("sentinel") or "admin@juice-sh.op"
             )

@@ -1,0 +1,24 @@
+name: CI
+on: [push, pull_request]
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: uv sync
+      - run: uv run ruff check --fix .
+      - run: uv run ruff format --check .
+      - run: uv run ty check src || uv run mypy src
+      - run: uv run pytest -q
+      - run: docker compose up -d
+      - run: sleep 8 && uv run python -m reachagent.eval --target vamp
+      - run: REACHAGENT_JUICESHOP_EPHEMERAL=1 uv run python -m reachagent.eval --target juiceshop
+      - run: uv run python -m reachagent.eval
+        if: always()
+      - run: docker compose down
+        if: always()

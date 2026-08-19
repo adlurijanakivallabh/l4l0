@@ -280,6 +280,13 @@ def resolves(payload_ref: str) -> bool:
     if payload_ref in _TEMPLATES:
         return True
     try:
+        from reachagent.payloads.encoding import variant_value as _variant_value
+
+        if _variant_value(payload_ref) is not None:
+            return True
+    except Exception:  # noqa: BLE001, S110 — encoding cache unavailable
+        pass
+    try:
         return _read_source_line(payload_ref) is not None
     except UnknownPayloadRefError:
         return False
@@ -305,6 +312,14 @@ def resolve(payload_ref: str, **slots: object) -> str:
     :class:`MissingSlotError` for a required (default-less) template slot omitted.
     Deterministic: same inputs → same output.
     """
+    try:
+        from reachagent.payloads.encoding import variant_value as _variant_value2
+
+        vval = _variant_value2(payload_ref)
+        if vval is not None:
+            return vval
+    except Exception:  # noqa: BLE001, S110 — encoding cache unavailable
+        pass
     template = _TEMPLATES.get(payload_ref)
     if template is not None:
         return _fill_template(payload_ref, template, slots)

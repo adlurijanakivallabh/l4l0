@@ -409,6 +409,23 @@ def load_corpus_entries(sources: Iterable[str] | None = None) -> list[PayloadEnt
     return list(load_corpus_report(sources).entries)
 
 
+def _dedup_canonical(entries: list[PayloadEntry]) -> list[PayloadEntry]:
+    """Dedup by url-decoded canonical — keeps first of each encoding family."""
+    import urllib.parse
+
+    seen: dict[str, PayloadEntry] = {}
+    for e in entries:
+        try:
+            from reachagent.payloads.payload_resolver import resolve_entry
+
+            canon = urllib.parse.unquote(resolve_entry(e))
+        except Exception:  # noqa: BLE001 — broken entry keeps original key
+            canon = e.payload_ref
+        if canon not in seen:
+            seen[canon] = e
+    return list(seen.values())
+
+
 def build_library(
     base_path: str | Path | None = None,
     *,

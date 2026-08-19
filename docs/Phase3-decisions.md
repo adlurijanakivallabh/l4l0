@@ -244,3 +244,9 @@ additive stays honest. Honest `Full/Partial/Weak` unchanged, six
 `OracleMechanism` only, role bounds (`Explorer` never `write_finding`/`run_oracle`,
 `Coordinator` never `fire`/`run_oracle`, only `Validator` `run_oracle`/`write_finding`
 AST pin `4/3/3`) held.
+
+## Decision: v1.13 hardening batch (TUI live + encoding-variant + renderer + CI + e2e)
+
+**Date:** 2026-08-19 — plan v1.12 → v1.13 (this commit, hardening batch).
+
+TUI `tui/app.py` now shows real Finding fields (not `—` placeholders) + `--help` without `App.run()` hang + `Header` live stats `hosts:endpoints:findings`. `payloads/encoding.py` bounded (`2/variant` url/double-url, `_VARIANT_CLASSES` sqli/xss) tag-preserving via `_VARIANT_CACHE` + `payload_resolver` variant hook, `corpus _dedup_canonical`. `report/renderer.py` deterministic JSON/markdown/HTML sorted over `ReachabilityGraph`. `.github/workflows/ci.yml` ruff+format+`ty/mypy`+pytest+docker VAmPI/juice gates. `tests/e2e/test_scan_e2e.py` hermetic generic findings (`generic/payload-chain` evidence). Fallback sentinel now `logging.warning` when graph empty (SurfaceMapper fixture recommended). Six families held, role bounds unchanged, `6/9 API-only` floor unchanged.

@@ -14,6 +14,8 @@ reachagent-scan so TUI adds no new confirmed path.
 
 from __future__ import annotations
 
+import sys
+
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
@@ -76,6 +78,14 @@ class ReachAgentApp(App[None]):
         self._refresh_graph()
         self._refresh_findings()
         self._refresh_log()
+        # Header live stats — host/endpoint/finding counts, ponytail minimal.
+        try:
+            h = len(self.graph.hosts())
+            e = len(self.graph.endpoints())
+            f = len(self.graph.findings())
+            self.sub_title = f"hosts:{h} endpoints:{e} findings:{f}"
+        except Exception:  # noqa: BLE001, S110 — stats best-effort
+            pass
 
     def _refresh_graph(self) -> None:
         tree = self.query_one("#graph", Tree)
@@ -104,9 +114,13 @@ class ReachAgentApp(App[None]):
     def _refresh_findings(self) -> None:
         table = self.query_one("#findings", DataTable)
         table.clear()
-        # findings() returns list[tuple[finding_id, Finding]]
-        for f_id, _finding in sorted(self.graph.findings(), key=lambda x: x[0]):
-            table.add_row("—", "—", "—", "—", f_id)
+        # findings() returns list[tuple[finding_id, Finding]] — show real fields.
+        for f_id, finding in sorted(self.graph.findings(), key=lambda x: x[0]):
+            vuln = getattr(finding, "vuln_class", "—")
+            sev = getattr(finding, "severity", "—")
+            oracle = getattr(finding, "oracle_used", "—")
+            ev_ref = getattr(finding, "evidence_ref", "—")
+            table.add_row(str(vuln), str(sev), str(oracle), str(ev_ref), f_id)
 
     def _refresh_log(self) -> None:
         log = self.query_one("#log", Log)
@@ -118,7 +132,16 @@ class ReachAgentApp(App[None]):
             log.write_line(f"{e.timestamp:%H:%M:%S} {e.identity} {e.method} {e.target} {e.outcome}")
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> int:
     """Console entry ``reachagent-tui`` — launches observer over an empty run."""
+    if argv is None:
+        argv = sys.argv[1:]
+    if "--help" in argv or "-h" in argv:
+        print("reachagent-tui — generic scan observer (textual 3-pane)")
+        print("Usage: reachagent-tui [--help]")
+        print("Shares scan/entrypoint:scan_target with reachagent-scan headless.")
+        print("Bindings: q quit, Tab next pane, / filter, j/k nav, ? help — 0.5s poll.")
+        return 0
     app = ReachAgentApp()
     app.run()
+    return 0
