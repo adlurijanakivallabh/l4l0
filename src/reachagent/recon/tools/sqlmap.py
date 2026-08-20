@@ -60,12 +60,17 @@ class SqlmapRunner(SignalGatedToolRunner):
         )
 
     def command(self, target: str, output_path: str) -> list[str]:
-        """``sqlmap -u <target> --batch --output-dir=<dir>`` — non-interactive, CSV out.
+        """``sqlmap -u <target> --batch --output-dir=<dir>`` [+ --level/--risk]."""
+        import os
 
-        Target is a distinct argv element (``shell=False`` in the base) — never
-        interpolated into a shell string, so a hostile target can't break out.
-        """
-        return ["sqlmap", "-u", target, "--batch", "--output-dir", output_path]
+        argv: list[str] = ["sqlmap", "-u", target, "--batch", "--output-dir", output_path]
+        level = os.environ.get("REACHAGENT_SQLMAP_LEVEL", "1")
+        risk = os.environ.get("REACHAGENT_SQLMAP_RISK", "1")
+        if level in ("1", "2", "3", "4", "5"):
+            argv += ["--level", level]
+        if risk in ("1", "2", "3"):
+            argv += ["--risk", risk]
+        return argv
 
     def parse(self, target: str, raw_output: str) -> tuple[Candidate, ...]:
         """Parse the sqlmap results CSV into inert SQLi candidates (never a finding).

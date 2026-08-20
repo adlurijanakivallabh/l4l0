@@ -50,6 +50,7 @@ if TYPE_CHECKING:
 _SQL_ERROR_SIGNATURES = (
     "sql syntax",
     "sqlite3.operationalerror",
+    "sqlite_error",
     "psycopg2",
     "you have an error in your sql",
     "unclosed quotation mark",
@@ -60,6 +61,18 @@ _SQL_ERROR_SIGNATURES = (
 # Content types whose responses render the canary as markup — a reflected canary
 # here means an HTML-reflection sink, not a data echo.
 _HTML_CONTENT_TYPES = ("text/html", "application/xhtml+xml")
+
+# Explicit sink contract for generic payload classes. A hint is accepted only when
+# it matches a known class family; callers cannot select an arbitrary sink.
+_CLASS_SINKS = {
+    "sqli": _nodes.SinkType.SQL,
+    "nosqli": _nodes.SinkType.NOSQL,
+    "command_injection": _nodes.SinkType.SHELL,
+    "path_traversal": _nodes.SinkType.FILE_PATH,
+    "ssti": _nodes.SinkType.TEMPLATE,
+    "ldap_injection": _nodes.SinkType.LDAP,
+    "xss_reflected": _nodes.SinkType.HTML_REFLECTION,
+}
 
 
 def _decode_body(body: bytes) -> str:
@@ -162,6 +175,8 @@ def fingerprint_parameter(
     param_node: str,
     *,
     method: str = "GET",
+    sink_hint: SinkType | None = None,
+    vuln_class: str | None = None,
 ) -> _candidate.FingerprintReport:
     """Send a benign canary, infer the sink, and set it on the Parameter node (§9).
 
@@ -174,6 +189,19 @@ def fingerprint_parameter(
 
     The canary request goes through Task 1's firer, so it is still scope- and
     read-only-first-gated like any other request.
+
+    Diagnostic error-triggering probe (§9 step 1 exists to read error behaviour):
+    a benign canary that sits *safely inside* SQL quotes (``WHERE username =
+    '<canary>'``) returns a clean 404 — no SQL error — so the error-based sink is
+    invisible to it. The canary alone cannot surface quoted-param error-based
+    SQLi. When the canary inferred NO sink and no ``sink_hint`` was supplied, one
+    additional read-only probe fires with the quote-appended value
+    ``"<canary>'"`` — a *fingerprinting primitive*, the same class as the canary,
+    NOT a corpus payload — and its body is matched against the SQL error
+    signatures. A match infers ``SQL``; no match leaves the sink ``None``
+    (conservative — an HTML/NoSQL/template param that merely reflects the quote
+    never becomes sql; no false sink). The benign canary still precedes it, so the
+    §9 ordering invariant holds.
     """
     endpoint = ctx.graph.endpoint(endpoint_node)
     param = ctx.graph.parameter(param_node)
@@ -189,7 +217,51 @@ def fingerprint_parameter(
     reflected = ctx.canary in body_text
     sql_errors = _match_sql_errors(body_text.lower())
     content_type = result.headers.get("content-type")
-    sink = _infer_sink_type(reflected=reflected, sql_errors=sql_errors, content_type=content_type)
+    # Explicit sink contract for generic payload classes. A hint is allowed only
+    # for sinks with no observational fingerprint path (a path placeholder yields
+    # no reflection; a template sink reflects the canary in plain text, which the
+    # HTML heuristic cannot distinguish) — and only when it matches the class the
+    # caller named. It never overrides positive evidence: an observed SQL error
+    # or HTML reflection always wins.
+    _HINTABLE_SINKS = {_nodes.SinkType.FILE_PATH, _nodes.SinkType.TEMPLATE}
+
+    observed = _infer_sink_type(
+        reflected=reflected, sql_errors=sql_errors, content_type=content_type
+    )
+    if sink_hint is not None:
+        if sink_hint not in _HINTABLE_SINKS:
+            raise ValueError(
+                f"sink hint {sink_hint.value!r} is not accepted — only "
+                f"{sorted(s.value for s in _HINTABLE_SINKS)} have no observational "
+                "fingerprint path; all other sinks must be observed"
+            )
+        if vuln_class is not None and _CLASS_SINKS.get(vuln_class) is not sink_hint:
+            raise ValueError(
+                f"sink hint {sink_hint.value!r} is not valid for vuln_class {vuln_class!r}"
+            )
+        if observed is not None and observed is not sink_hint:
+            raise ValueError(
+                f"sink hint {sink_hint.value!r} conflicts with observed evidence "
+                f"({observed.value!r}) — observed signal wins"
+            )
+        if sink_hint is _nodes.SinkType.TEMPLATE and not reflected:
+            raise ValueError("template sink hint requires reflected benign canary")
+
+    # Diagnostic error-triggering probe: only when the benign canary inferred no
+    # sink AND no hint was supplied. One quote-appended read-only probe reads the
+    # error behaviour a quoted-param SQLi sink hides from the benign canary. A SQL
+    # error match infers SQL; no match leaves the sink None (conservative).
+    if observed is None and sink_hint is None:
+        diag_value = f"{ctx.canary}'"
+        diag_result = _fire_with_value(
+            ctx, identity, method, url, param.location, param.name, diag_value, state_changing=False
+        )
+        diag_errors = _match_sql_errors(_decode_body(diag_result.body).lower())
+        if diag_errors:
+            sql_errors = diag_errors
+            observed = _nodes.SinkType.SQL
+
+    sink = observed if observed is not None else sink_hint
 
     # The single graph mutation: record the inferred sink, then mark done.
     ctx.graph.set_parameter_sink_type(param_node, sink)

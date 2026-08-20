@@ -138,6 +138,16 @@ def test_nuclei_parses_jsonl_into_class_tagged_candidates() -> None:
     assert by_class["cve_match"] is OracleMechanism.STRUCTURAL  # unmapped tech-detect → default
 
 
+def test_nuclei_null_info_field_defaults_to_unknown_severity() -> None:
+    runner = NucleiRunner(graph=_graph_with_tech_signal(), scope=_scope())
+    candidates = runner.parse(
+        _TARGET,
+        '{"template-id":"unknown-template","matched-at":"http://target.test","info":null}',
+    )
+    assert len(candidates) == 1
+    assert "severity=unknown" in candidates[0].notes[0]
+
+
 def test_nikto_parses_vulnerabilities_into_candidates() -> None:
     runner = NiktoRunner(graph=_graph_with_service_signal(), scope=_scope())
     result = runner.ingest(_TARGET, _fixture("nikto-results.json"))
@@ -451,6 +461,21 @@ def test_emitters_write_zero_findings_candidates_and_can_call() -> None:
     assert graph.can_call_edges() == []
     # The emitters added no nodes at all — candidates are inert return values.
     assert len(list(graph._g.nodes())) == node_count_before  # noqa: SLF001
+
+
+def test_juiceshop_eval_detector_imports_no_validator() -> None:
+    from pathlib import Path
+
+    path = Path(__file__).parents[2] / "src" / "reachagent" / "eval" / "juiceshop_live.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    imports = [node.module or "" for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)]
+    imports.extend(
+        alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Import)
+        for alias in node.names
+    )
+    assert not any("reachagent.tools.validator" in name for name in imports)
 
 
 def test_signal_gated_emitters_import_no_validator_or_finding_writer() -> None:

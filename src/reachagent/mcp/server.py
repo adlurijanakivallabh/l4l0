@@ -229,6 +229,7 @@ class DifferentialEvidenceInput:
     # ``admin`` vs. the injected user's) without ever indexing by position.
     baseline_select: str | None = None
     probe_select: str | None = None
+    error_signatures: tuple[str, ...] = ()
 
     def to_evidence(self) -> object:
         """Rebuild the oracle's own evidence dataclass from this flat MCP input.
@@ -250,6 +251,7 @@ class DifferentialEvidenceInput:
             baseline=Observation(self.baseline_label, self.baseline_status, self.baseline_body),
             probe=Observation(self.probe_label, self.probe_status, self.probe_body),
             evidence_ref=self.evidence_ref,
+            error_signatures=self.error_signatures,
         )
 
 
@@ -438,11 +440,28 @@ def register_tools(mcp: FastMCP, session: _Session) -> None:
 
     @mcp.tool()
     def fingerprint_parameter(
-        identity: str, endpoint_node: str, param_node: str, method: str = "GET"
+        identity: str,
+        endpoint_node: str,
+        param_node: str,
+        method: str = "GET",
+        sink_hint: str | None = None,
+        vuln_class: str | None = None,
     ) -> FingerprintReportOut:
-        """Send a benign canary and set the parameter's inferred sink (§9 step 1)."""
+        """Send a benign canary and set the parameter's inferred sink (§9 step 1).
+
+        ``sink_hint`` exists only for classes with no observational fingerprint
+        path (``file_path``/``template``); the Explorer validates it against the
+        class mapping and canary evidence — it never overrides an observed SQL
+        error or HTML-reflection signal.
+        """
         report = _explorer.fingerprint_parameter(
-            ctx, identity, endpoint_node, param_node, method=method
+            ctx,
+            identity,
+            endpoint_node,
+            param_node,
+            method=method,
+            sink_hint=_nodes.SinkType(sink_hint) if sink_hint is not None else None,
+            vuln_class=vuln_class,
         )
         sink = report.inferred_sink_type
         return FingerprintReportOut(
@@ -597,9 +616,9 @@ def register_tools(mcp: FastMCP, session: _Session) -> None:
           ``baseline_fire_ref``, ``probe_fire_ref``, ``json_field``,
           ``baseline_select``, ``probe_select``, ``evidence_ref``.
         * **structural** — ``check_type`` (``file_upload_bypass`` /
-          ``path_traversal`` / ``jwt_forgery`` / ``clickjacking`` /
+          ``path_traversal`` / ``union_extraction`` / ``jwt_forgery`` / ``clickjacking`` /
           ``cors_misconfig`` / ``csrf_missing_protection``),
-          ``baseline_status``, ``probe_status``, ``sentinel``,
+          ``baseline_status``, ``probe_status``, ``sentinel``, ``union_sentinel``,
           ``response_body``, ``evidence_ref``; for ``clickjacking``:
           ``x_frame_options``, ``csp``; for ``cors_misconfig``: ``acao``,
           ``acac``, ``probe_origin``; for ``csrf_missing_protection``:
@@ -673,8 +692,16 @@ def register_tools(mcp: FastMCP, session: _Session) -> None:
             oracle_evidence = StructuralEvidence(
                 check_type=StructuralCheckType(ev.get("check_type", "")),
                 baseline_status=int(ev.get("baseline_status", 0)),
-                probe_status=int(ev.get("probe_status", 0)),
+                # Probe status resolves from the fire handle when not inlined — the
+                # same server-side rule as bodies/headers (§13), so a generic chain
+                # that passes only ``probe_fire_ref`` cannot silently degrade the
+                # 2xx gate into 0.
+                probe_status=int(
+                    ev.get("probe_status")
+                    or (probe_fire.status_code if probe_fire is not None else 0)
+                ),
                 sentinel=str(ev.get("sentinel", "")),
+                union_sentinel=str(ev.get("union_sentinel", "")),
                 response_body=response_body,
                 x_frame_options=_hdr("x_frame_options", "x-frame-options"),
                 csp=_hdr("csp", "content-security-policy"),
@@ -702,6 +729,9 @@ def register_tools(mcp: FastMCP, session: _Session) -> None:
             oracle_evidence = OOBCallbackEvidence(
                 probe_nonce=str(ev.get("probe_nonce", "")),
                 observed_nonces=frozenset(ev.get("observed_nonces", [])),
+                observed_channels=frozenset(
+                    (str(a), str(b)) for a, b in ev.get("observed_channels", [])
+                ),
                 evidence_ref=str(ev.get("evidence_ref", "")),
             )
 
@@ -726,8 +756,10 @@ def register_tools(mcp: FastMCP, session: _Session) -> None:
 
             oracle_evidence = ExecutionConfirmationEvidence(
                 flows=flows,
+                executed=bool(ev.get("executed", False)),
                 payload_tag=str(ev.get("payload_tag", "")),
                 response_body=exec_body,
+                expected_output=str(ev.get("expected_output", "")),
                 evidence_ref=str(ev.get("evidence_ref", "")),
             )
 
@@ -812,7 +844,7 @@ def register_tools(mcp: FastMCP, session: _Session) -> None:
     # -- fire_browser: Explorer-owned browser transport for DOM XSS (§13, Task 5) --
 
     @mcp.tool()
-    def fire_browser(identity: str, url: str, inject_shim: bool = True) -> dict[str, object]:
+    async def fire_browser(identity: str, url: str, inject_shim: bool = True) -> dict[str, object]:
         """Install the taint-tracking shim and navigate to ``url`` (§13, Phase 3 Task 6).
 
         Explorer-owned. Returns discovered source→sink flows as a JSON-safe dict.
@@ -820,26 +852,32 @@ def register_tools(mcp: FastMCP, session: _Session) -> None:
         PlaywrightDriver is built server-side; it never crosses the JSON boundary,
         matching the same handle-indirection discipline as fire_request.
         """
-        from playwright.sync_api import sync_playwright
 
-        from reachagent.browser.playwright_driver import PlaywrightDriver
-        from reachagent.browser.shim import BrowserFireResult, run_taint_shim
+        ctx.firer.scope.enforce(url)
 
-        with sync_playwright() as pw:
-            browser = pw.chromium.launch(headless=True)
-            try:
-                page = browser.new_page()
-                driver = PlaywrightDriver(page)
-                result: BrowserFireResult = run_taint_shim(
-                    driver, identity, url, inject_shim=inject_shim
-                )
-            finally:
-                browser.close()
+        from playwright.async_api import async_playwright
 
+        from reachagent.browser.playwright_driver import AsyncPlaywrightDriver
+        from reachagent.browser.shim import BrowserFireResult, run_taint_shim_async
+
+        async def _run() -> BrowserFireResult:
+            async with async_playwright() as pw:
+                browser = await pw.chromium.launch(headless=True)
+                try:
+                    page = await browser.new_page()
+                    driver = AsyncPlaywrightDriver(page)
+                    return await run_taint_shim_async(
+                        driver, identity, url, inject_shim=inject_shim
+                    )
+                finally:
+                    await browser.close()
+
+        result = await _run()
         return {
             "url": result.url,
             "identity": result.identity,
             "shim_installed": result.shim_installed,
+            "executed": result.executed,
             "flows": [
                 {"source": f.source, "sink": f.sink, "value_snippet": f.value_snippet}
                 for f in result.flows

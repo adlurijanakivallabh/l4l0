@@ -26,9 +26,10 @@ from reachagent.oracles.structural import StructuralCheckType, StructuralEvidenc
 
 @dataclass(frozen=True)
 class TraversalProbeResult:
-    """Response body from one traversal probe."""
+    """Response body and status from one traversal probe."""
 
     body: str
+    status_code: int = 200
 
 
 @dataclass
@@ -67,6 +68,7 @@ def detect_path_traversal(
     evidence = StructuralEvidence(
         check_type=StructuralCheckType.PATH_TRAVERSAL,
         sentinel=prober.sentinel,
+        probe_status=probe.status_code,
         response_body=probe.body,
         evidence_ref=evidence_ref,
     )

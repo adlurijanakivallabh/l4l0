@@ -12,8 +12,10 @@ lookups need indexing (§12).
 from __future__ import annotations
 
 from reachagent.payloads.corpus import (
+    CorpusIngestReport,
     build_library,
     load_corpus_entries,
+    load_corpus_report,
 )
 from reachagent.payloads.library import (
     PayloadEntry,
@@ -23,6 +25,7 @@ from reachagent.payloads.library import (
 from reachagent.payloads.payload_resolver import (
     MissingSlotError,
     UnknownPayloadRefError,
+    expected_execution_output,
     mint_fire_kit,
     required_slots,
     resolve,
@@ -32,13 +35,16 @@ from reachagent.payloads.payload_resolver import (
 )
 
 __all__ = [
+    "CorpusIngestReport",
     "MissingSlotError",
     "PayloadEntry",
     "PayloadLibrary",
     "PayloadLibraryError",
     "UnknownPayloadRefError",
     "build_library",
+    "expected_execution_output",
     "load_corpus_entries",
+    "load_corpus_report",
     "mint_fire_kit",
     "required_slots",
     "resolve",

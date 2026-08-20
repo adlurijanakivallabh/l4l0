@@ -74,6 +74,24 @@ def test_state_changing_request_allowed_after_read_only_confirmed(
     assert [r.method for r in calls] == ["GET", "POST"]
 
 
+def test_options_not_successful_does_not_clear_method_specific_route(
+    calls: list[httpx.Request],
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        return httpx.Response(405)
+
+    firer = RequestFirer(
+        httpx.Client(transport=httpx.MockTransport(handler)),
+        ScopeGuard.from_hosts(["target.test"]),
+    )
+    result = firer.fire("user_a", "OPTIONS", f"{IN_SCOPE}/login")
+    assert result.status_code == 405
+    with pytest.raises(ReadOnlyFirstError):
+        firer.fire("user_a", "POST", f"{IN_SCOPE}/login")
+    assert [request.method for request in calls] == ["OPTIONS"]
+
+
 def test_read_only_clearance_is_per_endpoint(
     firer: RequestFirer, calls: list[httpx.Request]
 ) -> None:
@@ -81,6 +99,15 @@ def test_read_only_clearance_is_per_endpoint(
     firer.fire("user_a", "GET", f"{IN_SCOPE}/orders")
     with pytest.raises(ReadOnlyFirstError):
         firer.fire("user_a", "DELETE", f"{IN_SCOPE}/users/1")
+    assert [r.method for r in calls] == ["GET"]
+
+
+def test_read_only_clearance_is_identity_scoped(
+    firer: RequestFirer, calls: list[httpx.Request]
+) -> None:
+    firer.fire("user_a", "GET", f"{IN_SCOPE}/orders")
+    with pytest.raises(ReadOnlyFirstError):
+        firer.fire("user_b", "POST", f"{IN_SCOPE}/orders")
     assert [r.method for r in calls] == ["GET"]
 
 
@@ -113,7 +140,11 @@ def test_audit_target_excludes_query_string(
     assert "secret123" not in firer.audit.entries[-1].target
 
 
-def test_transport_error_is_audited_and_reraised() -> None:
+def test_transport_error_is_audited_and_reraised(monkeypatch) -> None:
+    import reachagent.execution.firer as _firer_mod
+
+    monkeypatch.setattr(_firer_mod, "_RETRY_BACKOFF", (0.0, 0.0))
+
     def handler(request: httpx.Request) -> httpx.Response:
         raise httpx.ConnectError("boom")
 
@@ -121,4 +152,5 @@ def test_transport_error_is_audited_and_reraised() -> None:
     firer = RequestFirer(client, ScopeGuard.from_hosts(["target.test"]))
     with pytest.raises(httpx.ConnectError):
         firer.fire("user_a", "GET", f"{IN_SCOPE}/orders")
-    assert firer.audit.entries[-1].outcome == "error:ConnectError"
+    # Read-only transport errors are retried, then marked unrecoverable honestly.
+    assert firer.audit.entries[-1].outcome == "error:ConnectError:unrecoverable"

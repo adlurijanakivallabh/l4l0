@@ -89,7 +89,10 @@ def test_real_browser_detects_dom_xss_flow(local_server: str) -> None:
 
     url = f"{local_server}/xss#<img src=x onerror=alert(1)>"
     with sync_playwright() as pw:
-        browser = pw.chromium.launch(headless=True)
+        try:
+            browser = pw.chromium.launch(headless=True)
+        except Exception as exc:  # noqa: BLE001 — browser not installed → skip, not fail
+            pytest.skip(f"Chromium not available: {exc}")
         try:
             page = browser.new_page()
             driver = PlaywrightDriver(page)
@@ -113,7 +116,10 @@ def test_real_browser_clean_page_finds_no_flows(local_server: str) -> None:
 
     url = f"{local_server}/clean"
     with sync_playwright() as pw:
-        browser = pw.chromium.launch(headless=True)
+        try:
+            browser = pw.chromium.launch(headless=True)
+        except Exception as exc:  # noqa: BLE001 — browser not installed → skip, not fail
+            pytest.skip(f"Chromium not available: {exc}")
         try:
             page = browser.new_page()
             driver = PlaywrightDriver(page)

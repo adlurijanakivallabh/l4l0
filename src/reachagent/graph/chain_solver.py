@@ -152,6 +152,62 @@ class ChainSolver:
 
     # -- internals --------------------------------------------------------
 
+    # -- run persistence (D6 durable resume) ---------------------------------
+
+    def snapshot(self) -> dict[str, object]:
+        """The solver's two mutable ledgers — budgets + spawned-by-path sets.
+
+        The ONLY solver state that crosses a restart boundary. Everything else is
+        re-derived from the graph on load (the graph carries the findings, edges,
+        and attributes). ``spawned_by_path`` values are sorted for determinism so
+        a dump → load → dump round-trips byte-identically.
+        """
+        return {
+            "budgets": dict(self._budgets),
+            "spawned_by_path": {k: sorted(v) for k, v in self._spawned_by_path.items()},
+        }
+
+    def restore(self, state: object) -> None:
+        """Restore the persisted ledgers onto a fresh solver (resume, D6).
+
+        ``budgets`` are restored verbatim so a path continues from its remaining
+        count; ``spawned_by_path`` is restored so §4 scoring keeps weighting the
+        chain hops already spawned in the prior run.
+        """
+        if not isinstance(state, dict):
+            return
+        budgets = state.get("budgets", {})
+        spawned = state.get("spawned_by_path", {})
+        if isinstance(budgets, dict):
+            self._budgets = {str(k): int(v) for k, v in budgets.items()}
+        if isinstance(spawned, dict):
+            self._spawned_by_path = {str(k): set(str(x) for x in v) for k, v in spawned.items()}
+
+    def recover_derived(
+        self,
+        target_identity: str,
+        *,
+        path_id: str = _DEFAULT_PATH,
+    ) -> list[tuple[str, str]]:
+        """RECOVER pass: re-surface unexplored pairs for a persisted derived identity.
+
+        Continue-not-replay (D3): a derived credential whose spawn/edge writes
+        are already persisted in the loaded graph gets its unexplored ``(identity,
+        endpoint)`` pairs re-queried and is marked spawned for §4 scoring — but the
+        persisted Session/Identity node and ``derived_credential`` edge are NOT
+        re-written, and an already-marked identity is skipped. ``advance`` is the
+        fresh-run path; this is the resume path (advance-lite by design). Returns
+        ``[]`` when the identity was already advanced or the budget is exhausted.
+        """
+        if self.budget_remaining(path_id) <= 0:
+            return []
+        if target_identity in self._spawned_by_path.get(path_id, ()):
+            return []  # already advanced in this (resumed) run — no replay
+        self._spawned_by_path.setdefault(path_id, set()).add(target_identity)
+        candidates = self._unexplored(target_identity)
+        self._consume(path_id, 1)
+        return candidates
+
     def _unexplored(self, identity_node: str) -> list[tuple[str, str]]:
         """All (identity_node, endpoint_node) pairs with no can_call verdict yet."""
         explored = {ep for id_, ep, _ in self._graph.can_call_edges() if id_ == identity_node}

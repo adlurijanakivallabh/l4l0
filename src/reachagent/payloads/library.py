@@ -165,13 +165,31 @@ class PayloadLibrary:
         ``sink_type=None`` matches the sink-less authorization classes
         (BOLA/IDOR/mass-assignment), whose entries carry no injection sink; it
         does *not* mean "any sink". Results are ordered by oracle confidence,
-        highest first (OOB before pure timing), with ``payload_ref`` as a stable
+        highest first (OOB before pure timing), then hand-authored templates
+        before bulk corpus line-locators, then ``payload_ref`` as a stable
         tie-breaker so ordering is deterministic run to run.
+
+        Template-first ordering matters: the hand-authored base-slice payloads
+        (e.g. the SQLi quote-break ``'``) are oracle-proven and curated, while
+        bulk corpus line-locators are static vendored lines of mixed quality —
+        firing the template first means the definitive payload fires at attempt 1
+        within a tight budget, not after N corpus variants (the live-VAmPI gap).
         """
         matched = [
             e
             for e in self._entries
             if e.vuln_class == vuln_class and e.inferred_sink_type == sink_type
         ]
-        matched.sort(key=lambda e: (e.confidence_rank, e.payload_ref))
+        # Lazy import: payload_resolver imports library, so a module-top import
+        # here would be circular.
+        from reachagent.payloads.payload_resolver import template_refs
+
+        templates = template_refs()
+        matched.sort(
+            key=lambda e: (
+                e.confidence_rank,
+                0 if e.payload_ref in templates else 1,
+                e.payload_ref,
+            )
+        )
         return matched

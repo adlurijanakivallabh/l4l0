@@ -54,6 +54,17 @@ class OOBCollaborator(Protocol):
         """Return the set of nonces the collaborator has received so far."""
         ...
 
+    def observed_channels(self) -> frozenset[tuple[str, str]]:
+        """Return ``(nonce, channel)`` pairs the collaborator observed (D1).
+
+        Channel is the source protocol the self-hosted interact.sh instance
+        tagged the interaction with (``dns``/``http``/``smtp``/``ldap``).
+        Enrichment ONLY — the OOB oracle confirms on ``observed_nonces`` alone;
+        this surface exists so downstream audit/report can attribute a callback
+        to its channel (blind-XXE → http, Log4Shell → ldap).
+        """
+        ...
+
 
 class InteractshCollaborator:
     """Real collaborator over a self-hosted interact.sh instance (§13).
@@ -82,6 +93,7 @@ class InteractshCollaborator:
         self._base_domain = resolved.lstrip(".")
         self._token = token if token is not None else env.get(_ENV_TOKEN)
         self._observed: set[str] = set()
+        self._channel_pairs: set[tuple[str, str]] = set()
 
     def callback_domain(self, nonce: str) -> str:
         """Return ``<nonce>.<base-domain>`` — the per-probe callback subdomain."""
@@ -89,14 +101,24 @@ class InteractshCollaborator:
             raise ValueError("nonce must be non-empty to attribute a callback")
         return f"{nonce}.{self._base_domain}"
 
-    def record_interaction(self, nonce: str) -> None:
+    def record_interaction(self, nonce: str, channel: str = "dns") -> None:
         """Register that the collaborator observed a callback for ``nonce``.
 
-        The real poller calls this as it drains interactions from the interact.sh
-        instance; a test calls it to simulate a received callback.
+        ``channel`` is the source protocol the drain path tagged the interaction
+        with (``dns`` default keeps every existing caller working; the real
+        interact.sh poller passes the protocol it read). The nonce lands in
+        ``observed_nonces`` exactly as before; the channel is recorded alongside
+        so downstream audit/report can attribute it (D1 — parsing-only, no new
+        listener infrastructure; a self-hosted interact.sh already listens on
+        DNS+HTTP+SMTP+LDAP).
         """
         self._observed.add(nonce)
+        self._channel_pairs.add((nonce, channel))
 
     def observed_nonces(self) -> frozenset[str]:
         """Snapshot the nonces observed so far (immutable copy)."""
         return frozenset(self._observed)
+
+    def observed_channels(self) -> frozenset[tuple[str, str]]:
+        """Snapshot the ``(nonce, channel)`` pairs observed so far (immutable copy)."""
+        return frozenset(self._channel_pairs)

@@ -22,76 +22,34 @@ target whose recon has populated ``owns`` edges.
 
 from __future__ import annotations
 
-import asyncio
 import re
 from dataclasses import dataclass, field
-from itertools import count
 from typing import TYPE_CHECKING
 
 import httpx
 
-from reachagent.execution.audit import AuditLog
-from reachagent.execution.firer import RequestFirer
-from reachagent.execution.scope import ScopeGuard
+from reachagent.eval.mcp_session import SharedState as _Shared
+from reachagent.eval.mcp_session import mcp_call as _call
+from reachagent.eval.mcp_session import mcp_for as _mcp
+from reachagent.eval.mcp_session import session_as as _session
+from reachagent.execution.audit import AuditLog  # noqa: F401 — legacy import shim
+from reachagent.execution.firer import RequestFirer  # noqa: F401 — legacy import shim
+from reachagent.execution.scope import ScopeGuard  # noqa: F401 — legacy import shim
 from reachagent.graph.chain_solver import ChainSolver
 from reachagent.graph.nodes import Endpoint, Parameter
 from reachagent.graph.store import ReachabilityGraph, finding_id
-from reachagent.mcp import server
-from reachagent.payloads import PayloadLibrary
-from reachagent.tools.explorer_context import ExplorerContext
+from reachagent.mcp import server  # noqa: F401 — legacy import shim
+from reachagent.payloads import PayloadLibrary  # noqa: F401 — legacy import shim
+from reachagent.tools.explorer_context import ExplorerContext  # noqa: F401 — legacy import shim
 
 if TYPE_CHECKING:
-    from reachagent.execution.firer import FireResult
-    from reachagent.oracles.base import OracleVerdict
+    from reachagent.execution.firer import FireResult  # noqa: F401 — TYPE_CHECKING shim
+    from reachagent.oracles.base import OracleVerdict  # noqa: F401 — TYPE_CHECKING shim
 
-
-@dataclass
-class _Shared:
-    """Graph + handle registries shared across per-identity MCP sessions."""
-
-    graph: ReachabilityGraph
-    fires: dict[str, FireResult] = field(default_factory=dict)
-    verdicts: dict[str, OracleVerdict] = field(default_factory=dict)
-    fire_seq: count[int] = field(default_factory=count)
-    verdict_seq: count[int] = field(default_factory=count)
-
-
-def _session(
-    base_url: str,
-    host: str,
-    token: str | None,
-    shared: _Shared,
-    transport: httpx.BaseTransport | None = None,
-) -> server._Session:
-    headers = {"Authorization": f"Bearer {token}"} if token else {}
-    client = httpx.Client(headers=headers, timeout=10.0, transport=transport)
-    firer = RequestFirer(client, ScopeGuard.from_hosts([host]), AuditLog())
-    ctx = ExplorerContext(
-        graph=shared.graph,
-        firer=firer,
-        library=PayloadLibrary.from_file(),
-        base_url=base_url,
-    )
-    return server._Session(
-        ctx=ctx,
-        _fires=shared.fires,
-        _verdicts=shared.verdicts,
-        _fire_seq=shared.fire_seq,
-        _verdict_seq=shared.verdict_seq,
-    )
-
-
-def _mcp(sess: server._Session) -> object:
-    from mcp.server.fastmcp import FastMCP
-
-    mcp = FastMCP("reachagent-bola")
-    server.register_tools(mcp, sess)
-    return mcp
-
-
-def _call(mcp: object, name: str, **arguments: object) -> dict[str, object]:
-    _content, structured = asyncio.run(mcp.call_tool(name, arguments))  # type: ignore[attr-defined]
-    return dict(structured)
+# _Shared / _session / _mcp / _call above now alias eval.mcp_session.* —
+# legacy names kept so any external import of bola.detector._Shared still
+# resolves, but ~45 LOC no longer duplicated per file. Single helper verified
+# at three call sites (harness, juiceshop_live, bola).
 
 
 def _fire_get(

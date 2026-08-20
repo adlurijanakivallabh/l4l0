@@ -201,9 +201,23 @@ class ReconToolRunner:
             return ReconResult(self.name, target, ReconOutcome.SKIPPED_MISSING_BINARY)
 
         # Gate 3: spawn via an argument ARRAY, shell=False (command-injection guard).
+        argv = self.command(target)
+        # File-backed tools (arjun -oJ, ffuf -o file, etc.) write JSON to a file
+        # path embedded in argv rather than stdout. Detect such file paths and
+        # read them after spawn; otherwise fall back to stdout.
+        file_output_arg: str | None = None
+        for flag in ("-oJ", "-o", "--json_out", "--jsonfile"):
+            if flag in argv:
+                idx = argv.index(flag)
+                if idx + 1 < len(argv):
+                    cand = argv[idx + 1]
+                    # Heuristic: looks like a file path (not "-" which means stdout)
+                    if cand != "-" and cand.endswith(".json"):  # noqa: S108 — temp file path from mkstemp, not hardcoded /tmp use
+                        file_output_arg = cand
+                        break
         try:
             completed = subprocess.run(  # noqa: S603 — array args, shell=False, no interpolation
-                self.command(target),
+                argv,
                 capture_output=True,
                 text=True,
                 timeout=_LIVE_TIMEOUT,
@@ -220,8 +234,23 @@ class ReconToolRunner:
             )
             return ReconResult(self.name, target, ReconOutcome.ERRORED, detail=type(exc).__name__)
 
-        # Gate 4: parse stdout into transport-tier facts (re-checks scope).
-        return self.ingest(target, completed.stdout)
+        # Gate 4: parse output into transport-tier facts (re-checks scope).
+        raw = completed.stdout
+        if file_output_arg is not None:
+            try:
+                with open(file_output_arg, encoding="utf-8", errors="replace") as fh:
+                    file_content = fh.read()
+                if file_content.strip():
+                    raw = file_content
+            except OSError:
+                pass
+            try:
+                import os as _os2
+
+                _os2.unlink(file_output_arg)
+            except OSError:
+                pass
+        return self.ingest(target, raw)
 
 
 def _scope_url(target: str) -> httpx.URL:

@@ -36,3 +36,32 @@ CI and tests run entirely against the checked-in snapshot.
 3. Update the `Commit:` line in `SOURCE.txt`.
 4. Run `uv run pytest tests/phase3/test_corpus_ingest.py` — the ingest census,
    sink-isolation, and semantic-validity guards will flag any drift.
+
+## Hand-tagged base-slice payloads (not vendored — in-tree, `data/library.yaml` + `payload_resolver._TEMPLATES`)
+
+Alongside the vendored corpus snapshots, a small hand-authored base slice is
+checked into `src/reachagent/payloads/data/library.yaml` with its parameterized
+templates in `payload_resolver._TEMPLATES`. These are the oracle-proven, curated
+payloads that sort *before* bulk corpus line-locators (template-first ordering,
+§9 v1.11) — the definitive probe for a class fires first. Added over v1.11:
+
+- **JWT forgery** (STRUCTURAL, sink null) — three precomputed tokens:
+  `jwt_forgery/none-alg`, `jwt_forgery/hs256-key-confusion` (HS256 signed with a
+  placeholder public key), `jwt_forgery/weak-secret` (HS256 signed with `secret`).
+  Precomputed (not slot-filled) because JWT segments are base64url — a `{slot}`
+  inside an encoded segment would corrupt the token.
+- **Blind OOB shapes** (OOB_CALLBACK, `{nonce}.{collab}`) —
+  `sqli_blind/oob-xxe-exfil` (external-entity `SYSTEM` fetch) and
+  `command_injection/log4shell-oob` (`${jndi:ldap://…}`).
+- **SSRF** (three families, `inferred_sink_type: url`) — 9 blind callback URLs
+  (http/https/file/gopher/redirect-chain/internal-proxy + oob creds exfil,
+  OOB_CALLBACK, `reaches`/`derived_credential`); 15 non-blind cloud-metadata /
+  internal URLs (AWS IMDS / GCP / Azure / Alibaba / DigitalOcean / OpenStack /
+  K8s / docker socket / internal admin, STRUCTURAL `SSRF_RESPONSE` sentinel-in-body,
+  `reaches`); 4 cloud-metadata *token* entries (`derived_credential` edge). See the
+  library.yaml rows for the per-entry oracle + edge tagging.
+
+These are stimulus only — every one still routes through `run_oracle`; none is a
+confirmation on its own, and the hand-tagged sets never change a §5 rating level.
+
+**v1.13:** `payloads/encoding.py` bounded encoding variants (url/double-url, 2/variant) tag-preserving via `_VARIANT_CACHE`; `corpus _dedup_canonical` dedups url-decoded families.

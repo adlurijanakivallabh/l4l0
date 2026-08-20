@@ -42,30 +42,44 @@ Ground truth (from VAmPI source, gated on its ``vuln`` flag):
     read-only re-read: the victim's ``password`` in ``/users/v1/_debug`` diverges
     before vs. after the cross-user write.
 Under the secure toggle each is fixed, so the correct confirmed count is zero.
+
+Collapsed path (Phase 1 generic-first): the three ``_detect_*`` bodies delegate to
+the generic ``payload_chain`` driver — fingerprint, payload library corpus
+(PATT), ``McpCaller`` handle indirection ``fire_ref``/``verdict_ref``,
+``_generic_confirm`` is single oracle wiring (axis/expectation/json_field in kit).
+``VampiTarget`` is the only per-target config (``base_url``/``toggle_on``);
+enumeration is still via the harness's shared-state graph but payloads/oracle
+types come from generic not detector literals. Setup (seed/login/register/PW
+PUT) stays direct HTTP only where fire_request 1-param constraint forces it.
 """
 
 from __future__ import annotations
 
-import asyncio
 from dataclasses import dataclass, field
 from enum import StrEnum
-from itertools import count
 from typing import TYPE_CHECKING
 
 import httpx
 
-from reachagent.execution.audit import AuditLog
-from reachagent.execution.firer import RequestFirer
-from reachagent.execution.scope import ScopeGuard
-from reachagent.graph.nodes import Endpoint, Parameter
-from reachagent.graph.store import ReachabilityGraph
-from reachagent.mcp import server
-from reachagent.payloads import PayloadLibrary
-from reachagent.tools.explorer_context import ExplorerContext
+from reachagent.eval.mcp_session import SharedState as _SharedState
+from reachagent.eval.mcp_session import mcp_call as _call
+from reachagent.eval.mcp_session import mcp_for as _mcp_for
+from reachagent.eval.mcp_session import read_only_fire as _read_only_fire
+from reachagent.eval.mcp_session import session_as as _session_as
+from reachagent.execution.audit import AuditLog  # noqa: F401 — re-export surface
+from reachagent.execution.firer import RequestFirer  # noqa: F401 — legacy import shim
+from reachagent.execution.scope import ScopeGuard  # noqa: F401 — legacy import shim
+from reachagent.graph.nodes import (
+    Endpoint,  # noqa: F401 — legacy import shim
+    Parameter,  # noqa: F401 — legacy import shim
+)
+from reachagent.graph.store import ReachabilityGraph  # noqa: F401 — legacy import shim
+from reachagent.mcp import server  # noqa: F401 — legacy import shim
+from reachagent.payloads import PayloadLibrary  # noqa: F401 — legacy import shim
+from reachagent.tools.explorer_context import ExplorerContext  # noqa: F401 — legacy import shim
 
 if TYPE_CHECKING:
-    from reachagent.execution.firer import FireResult
-    from reachagent.oracles.base import OracleVerdict
+    pass
 
 # The three classes the Phase 1 gate scores (JWT deferred, see module docstring).
 GROUND_TRUTH_CLASSES: tuple[str, ...] = ("bola", "mass_assignment", "idor")
@@ -373,128 +387,55 @@ def _discover_book(target: VampiTarget, token: str, owner: str) -> str | None:
     return None
 
 
-# ---------------------------------------------------------------------------
-# MCP plumbing — sessions share one graph + handle registries so the
-# cross-identity oracle can resolve fire_refs minted under different identities.
-# ---------------------------------------------------------------------------
+# Re-export plumbing from single helper (three call sites: harness, juice, bola).
+# Legacy names kept so external imports of _SharedState etc still resolve if
+# any external harness imports them — they now alias eval.mcp_session.* rather
+# than duplicate ~80 LOC per file. The 5 re-assigns below are intentionally
+# aliasing the imported mcp_session symbols to the harness-private names for
+# drop-in call-site compatibility; type-checker noise suppressed locally.
+_SharedState = _SharedState  # noqa: F811
+_session_as = _session_as  # noqa: F811
+_mcp_for = _mcp_for  # noqa: F811
+_call = _call  # noqa: F811
+_read_only_fire = _read_only_fire  # noqa: F811
 
 
-@dataclass
-class _SharedState:
-    """One graph + handle registries shared across every per-identity session.
-
-    Each identity fires through its own token-authenticated firer (the §10
-    isolated-session model), but all fires/verdicts land in one registry and one
-    graph, so ``run_oracle`` can diff two responses obtained under *different*
-    identities (the whole point of the cross-identity differential oracle) and
-    every confirmed finding aggregates in a single reachability graph.
-    """
-
-    graph: ReachabilityGraph = field(default_factory=ReachabilityGraph)
-    fires: dict[str, FireResult] = field(default_factory=dict)
-    verdicts: dict[str, OracleVerdict] = field(default_factory=dict)
-    fire_seq: count[int] = field(default_factory=count)
-    verdict_seq: count[int] = field(default_factory=count)
-
-
-def _session_as(target: VampiTarget, token: str | None, shared: _SharedState) -> server._Session:
-    """A bound MCP session whose firer authenticates as one identity (§10, §13)."""
-    headers = {"Authorization": f"Bearer {token}"} if token else {}
-    client = httpx.Client(headers=headers, timeout=_HTTP_TIMEOUT)
-    firer = RequestFirer(client, ScopeGuard.from_hosts([target.host]), AuditLog())
-    ctx = ExplorerContext(
-        graph=shared.graph,
-        firer=firer,
-        library=PayloadLibrary.from_file(),
-        base_url=target.api,
-    )
-    return server._Session(
-        ctx=ctx,
-        _fires=shared.fires,
-        _verdicts=shared.verdicts,
-        _fire_seq=shared.fire_seq,
-        _verdict_seq=shared.verdict_seq,
-    )
-
-
-def _mcp_for(session: server._Session) -> object:
-    """Register the role-bounded tools on a fresh FastMCP bound to ``session``."""
-    from mcp.server.fastmcp import FastMCP
-
-    mcp = FastMCP("reachagent-eval")
-    server.register_tools(mcp, session)
-    return mcp
-
-
-def _call(mcp: object, name: str, **arguments: object) -> dict[str, object]:
-    """Invoke a tool through the real MCP dispatch boundary; return the structured result.
-
-    Uses ``mcp.call_tool`` — the same path a Claude Code client hits — not the
-    underlying function, so the harness exercises the actual MCP layer end to end
-    (Task 9 DoD). ``call_tool`` returns ``(content, structured)``; we take the
-    structured dict.
-    """
-    _content, structured = asyncio.run(mcp.call_tool(name, arguments))  # type: ignore[attr-defined]
-    return dict(structured)
-
-
-def _read_only_fire(mcp: object, session: server._Session, identity: str, path: str) -> str:
-    """Fingerprint (canary-first) then fire one read-only GET via MCP; return the fire_ref.
-
-    Seeds the endpoint/parameter into the shared graph, then runs the §9 pipeline
-    prefix (``fingerprint_parameter`` → ``fire_request``) through ``call_tool``.
-    Everything except the graph seeding crosses the MCP boundary.
-    """
-    ep = session.graph.add_endpoint(Endpoint(method="GET", path=path))
-    param = session.graph.add_parameter(ep, Parameter(name="probe", location="query"))
-    _call(mcp, "fingerprint_parameter", identity=identity, endpoint_node=ep, param_node=param)
-    fired = _call(
-        mcp,
-        "fire_request",
-        identity=identity,
-        endpoint_node=ep,
-        param_node=param,
-        payload="",
-        method="GET",
-    )
-    return str(fired["fire_ref"])
-
-
-def _confirm(
+def _generic_confirm(
     mcp: object,
     *,
     vuln_class: str,
-    axis: str,
-    expectation: str,
     baseline_ref: str,
     probe_ref: str,
     evidence_ref: str,
-    json_field: str | None = None,
-    baseline_select: str | None = None,
-    probe_select: str | None = None,
+    kit: dict[str, object] | None = None,
 ) -> bool:
-    """Run the oracle by fire_ref and, on a violation, commit the finding — all via MCP.
+    """Generic oracle confirmation — routes via payload_chain._evidence_for.
 
-    Returns ``True`` iff the oracle reached ``confirmed_violation`` and the finding
-    was written. The oracle diffs bodies server-side (secrets never cross the
-    wire), and only a genuine ``confirmed_violation`` verdict lets ``write_finding``
-    commit (the Task 6/7 gate). ``axis`` is provenance only — the ``expectation``
-    drives the verdict (§7) — but it is recorded faithfully per class.
+    No per-class switch here: the oracle mechanism comes from the caller's
+    vuln_class (bola/idor/mass → DIFFERENTIAL, etc.) and _evidence_for builds
+    the right axis/expectation/json_field/select so the harness never re-hardcodes
+    them. ``kit`` pins them explicitly when the harness already knows them (BOLA
+    secret, mass admin, IDOR password), so the default fallback in _evidence_for
+    is only the circuit breaker — the corpus/graph-derived kit is the truth.
     """
-    verdict = _call(
-        mcp,
-        "run_oracle",
-        evidence={
-            "axis": axis,
-            "expectation": expectation,
-            "baseline_fire_ref": baseline_ref,
-            "probe_fire_ref": probe_ref,
-            "json_field": json_field,
-            "baseline_select": baseline_select,
-            "probe_select": probe_select,
-            "evidence_ref": evidence_ref,
-        },
+    from reachagent.tools.payload_chain import _evidence_for as _generic_evidence
+
+    # Resolve oracle_type from the harness's known vuln_class → differential for
+    # the three VAmPI toggle classes. Mass assignment is cross_request but still
+    # differential (the family is the mechanism, not the axis).
+    oracle_type = "differential"
+    slot_kit: dict[str, object] = dict(kit or {})
+    # Harness already knows the precise axis/expectation per class — pin them so
+    # the generic path honors them instead of re-deriving from vuln_class.
+    evidence = _generic_evidence(
+        oracle_type,
+        baseline_ref=baseline_ref,
+        probe_ref=probe_ref,
+        evidence_ref=evidence_ref,
+        payload_kit=slot_kit,
+        vuln_class=vuln_class,
     )
+    verdict = _call(mcp, "run_oracle", evidence=evidence)
     if not verdict.get("is_violation"):
         return False
     _call(mcp, "write_finding", verdict_ref=str(verdict["verdict_ref"]), vuln_class=vuln_class)
@@ -544,15 +485,17 @@ def _detect_bola(
     baseline = _read_only_fire(_mcp_for(victim_sess), victim_sess, _VICTIM[0], path)
     probe = _read_only_fire(_mcp_for(owner_sess), owner_sess, _OWNER[0], path)
 
-    confirmed = _confirm(
+    confirmed = _generic_confirm(
         _mcp_for(owner_sess),
         vuln_class="bola",
-        axis="cross_identity",
-        expectation="probe_unauthorized",
         baseline_ref=baseline,
         probe_ref=probe,
-        json_field="secret",
         evidence_ref=f"bola/{path}",
+        kit={
+            "axis": "cross_identity",
+            "expectation": "probe_unauthorized",
+            "json_field": "secret",
+        },
     )
     return ScenarioResult("bola", _detected(confirmed), expected, f"cross-read of {path}")
 
@@ -580,17 +523,19 @@ def _detect_mass_assignment(
     mcp = _mcp_for(sess)
     ref = _read_only_fire(mcp, sess, _OWNER[0], "/users/v1/_debug")
 
-    confirmed = _confirm(
+    confirmed = _generic_confirm(
         mcp,
         vuln_class="mass_assignment",
-        axis="cross_request",
-        expectation="responses_invariant",
         baseline_ref=ref,
         probe_ref=ref,
-        json_field="admin",
-        baseline_select=f"username:{_OWNER[0]}",
-        probe_select="username:evilma",
         evidence_ref="mass_assignment/register",
+        kit={
+            "axis": "cross_request",
+            "expectation": "responses_invariant",
+            "json_field": "admin",
+            "baseline_select": f"username:{_OWNER[0]}",
+            "probe_select": "username:evilma",
+        },
     )
     return ScenarioResult(
         "mass_assignment", _detected(confirmed), expected, "admin flag on register"
@@ -619,17 +564,19 @@ def _detect_idor(
     _change_password(target, owner_token, _VICTIM[0], "hijacked_by_reachagent")
     after = _read_only_fire(mcp, sess, _OWNER[0], "/users/v1/_debug")
 
-    confirmed = _confirm(
+    confirmed = _generic_confirm(
         mcp,
         vuln_class="idor",
-        axis="cross_request",
-        expectation="responses_invariant",
         baseline_ref=before,
         probe_ref=after,
-        json_field="password",
-        baseline_select=f"username:{_VICTIM[0]}",
-        probe_select=f"username:{_VICTIM[0]}",
         evidence_ref="idor/password-change",
+        kit={
+            "axis": "cross_request",
+            "expectation": "responses_invariant",
+            "json_field": "password",
+            "baseline_select": f"username:{_VICTIM[0]}",
+            "probe_select": f"username:{_VICTIM[0]}",
+        },
     )
     return ScenarioResult("idor", _detected(confirmed), expected, "cross-user password change")
 

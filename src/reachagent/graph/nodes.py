@@ -96,6 +96,12 @@ class Endpoint:
     # sprawl). Facts only; they never carry a finding status.
     technology: str | None = None
     detected_version: str | None = None
+    # ACL-surface fact from content discovery (§9, phase2a): when a discovered
+    # path responded 401/403, the path EXISTS but is access-restricted — a real
+    # third state (exists-served / exists-restricted / missing). Carries the
+    # status string ("401"/"403"), None when unclassified. Never a finding, never
+    # a bypass — recon-tier fact only.
+    access_restricted: str | None = None
 
 
 @dataclass
