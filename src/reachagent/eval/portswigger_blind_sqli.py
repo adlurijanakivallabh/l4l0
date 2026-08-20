@@ -292,6 +292,8 @@ def run_vulnerable_and_clean(
     evidence_ref: str = "portswigger/blind-sqli/time-delay",
 ) -> PortswiggerResult:
     """Run isolated vulnerable/clean variants and derive result from both graphs."""
+    # Allow callers on master 5a66722 schema (LAB_URL+TOKEN env-gated) to drive
+    # portswigger blind via generic payload_chain handle chain without per-lab script.
     vulnerable_result = vulnerable.run(evidence_ref=evidence_ref)
     clean_result = clean.run(evidence_ref=f"{evidence_ref}/clean")
     return PortswiggerResult(

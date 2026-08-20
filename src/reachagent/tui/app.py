@@ -30,7 +30,8 @@ class ReachAgentApp(App[None]):
 
     CSS = """
     #graph, #findings, #log { border: solid $primary; }
-    #log { height: 12; }
+    #log { height: 14; }
+    #graph { scrollbar-gutter: stable; }
     """
 
     BINDINGS = [

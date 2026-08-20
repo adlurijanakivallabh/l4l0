@@ -250,3 +250,9 @@ AST pin `4/3/3`) held.
 **Date:** 2026-08-19 — plan v1.12 → v1.13 (this commit, hardening batch).
 
 TUI `tui/app.py` now shows real Finding fields (not `—` placeholders) + `--help` without `App.run()` hang + `Header` live stats `hosts:endpoints:findings`. `payloads/encoding.py` bounded (`2/variant` url/double-url, `_VARIANT_CLASSES` sqli/xss) tag-preserving via `_VARIANT_CACHE` + `payload_resolver` variant hook, `corpus _dedup_canonical`. `report/renderer.py` deterministic JSON/markdown/HTML sorted over `ReachabilityGraph`. `.github/workflows/ci.yml` ruff+format+`ty/mypy`+pytest+docker VAmPI/juice gates. `tests/e2e/test_scan_e2e.py` hermetic generic findings (`generic/payload-chain` evidence). Fallback sentinel now `logging.warning` when graph empty (SurfaceMapper fixture recommended). Six families held, role bounds unchanged, `6/9 API-only` floor unchanged.
+
+## Decision: v1.14 visual live loop (TUI + PortSwigger helper)
+
+**Date:** 2026-08-20 — plan v1.13 → v1.14 (visual loop).
+
+`TUI` `CSS scrollbar-gutter stable` + `Header` `hosts:endpoints:findings` live, `src/reachagent/eval/portswigger_blind_sqli.py` generic `LAB_URL` env-gated comment, `scripts/portswigger_academy_login.py` staged `16.7K` Auth0 `playwright` `eval $(login)` same-shell `LAB_URL/TOKEN`. `VAmPI` `v1.13` gates held `100% OFF 0`, `6/9` honest visual bar `v1.14`.
