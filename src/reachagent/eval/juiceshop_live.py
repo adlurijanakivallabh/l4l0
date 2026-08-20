@@ -546,7 +546,8 @@ def _detect_sqli(target: JuiceshopTarget, token: str | None) -> set[ChallengeCla
     # (re-con or prior fires seeding Endpoint/Parameter/Object). Fallbacks below
     # keep hermetic tests green when the graph is still sparse.
     def _graph_union_sentinel(kind: str) -> str:
-        for _, obj in sess.graph.objects():
+        graph = getattr(sess, "graph", None) or shared.graph  # hermetic fakes have no .graph
+        for _, obj in graph.objects():
             if obj.type == kind or kind in obj.type:
                 if obj.instance_key and "@" in obj.instance_key:
                     return obj.instance_key
