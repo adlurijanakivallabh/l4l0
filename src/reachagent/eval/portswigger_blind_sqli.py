@@ -267,8 +267,9 @@ def build_configured_runner(
     if not config.enabled:
         return None
     parsed = httpx.URL(config.base_url)
-    # pg_sleep(10) lab needs >10s per probe + 10 trials; 30s timeout.
-    http_client = client or httpx.Client(timeout=30.0, trust_env=False)
+    # pg_sleep(10) lab needs >10s per probe + 10 trials; 60s timeout for
+    # full composite under Academy load (juice ephemeral + vamp before portswigger).
+    http_client = client or httpx.Client(timeout=60.0, trust_env=False)
     firer = RequestFirer(
         http_client,
         ScopeGuard([ScopeRule(host=parsed.host or "", port=parsed.port)]),
