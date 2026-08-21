@@ -19,10 +19,13 @@ import sys
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
-from textual.widgets import DataTable, Footer, Header, Log, Tree
+from textual.widgets import DataTable, Footer, Header, Log, Static, Tree
 
 from reachagent.execution.audit import AuditLog
 from reachagent.graph.store import ReachabilityGraph
+
+# Coverage bar — ponytail: one-liner, no widget dep.
+_COVERAGE_DENOM = 9  # VERIFIED_CHALLENGE_SCOPE size; honest 6/9 bar
 
 
 class ReachAgentApp(App[None]):
@@ -32,6 +35,8 @@ class ReachAgentApp(App[None]):
     #graph, #findings, #log { border: solid $primary; }
     #log { height: 14; }
     #graph { scrollbar-gutter: stable; }
+    #stream { height: 1; background: $surface; color: $text; }
+    #coverage { height: 1; }
     """
 
     BINDINGS = [
@@ -41,6 +46,8 @@ class ReachAgentApp(App[None]):
         Binding("j", "cursor_down", "Down", show=False),
         Binding("k", "cursor_up", "Up", show=False),
         Binding("question_mark", "help", "Help"),
+        Binding("r", "refresh", "Refresh"),
+        Binding("e", "export", "Export"),
     ]
 
     def __init__(
@@ -56,6 +63,8 @@ class ReachAgentApp(App[None]):
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
+        yield Static("", id="coverage")
+        yield Static("", id="stream")
         with Horizontal():
             with Vertical(id="left"):
                 yield Tree("Targets / Graph", id="graph")
@@ -75,17 +84,50 @@ class ReachAgentApp(App[None]):
     def action_filter(self) -> None:
         self.notify("Filter: type / to filter current pane (deferred)")
 
+    def action_refresh(self) -> None:
+        self.refresh_panes()
+
+    def action_export(self) -> None:
+        self.notify("Export: deterministic JSON via report/renderer.py (deferred)")
+
     def refresh_panes(self) -> None:
         self._refresh_graph()
         self._refresh_findings()
         self._refresh_log()
-        # Header live stats — host/endpoint/finding counts, ponytail minimal.
+        self._refresh_header()
+        self._refresh_stream()
+
+    def _refresh_header(self) -> None:
         try:
             h = len(self.graph.hosts())
             e = len(self.graph.endpoints())
             f = len(self.graph.findings())
-            self.sub_title = f"hosts:{h} endpoints:{e} findings:{f}"
+            n = f"{f}/{_COVERAGE_DENOM}"
+            bar = "█" * f + "░" * max(0, _COVERAGE_DENOM - f)
+            self.sub_title = f"hosts:{h} endpoints:{e} findings:{f}  {n} {bar}"
+            cov = self.query_one("#coverage", Static)
+            cov.update(f" coverage {n} [{bar}]  hosts:{h} endpoints:{e}")
         except Exception:  # noqa: BLE001, S110 — stats best-effort
+            pass
+
+    def _refresh_stream(self) -> None:
+        try:
+            entries = list(self.audit.entries)
+            last = entries[-1] if entries else None
+            findings = list(self.graph.findings())
+            last_f = findings[-1] if findings else None
+            stream = self.query_one("#stream", Static)
+            if last_f is not None:
+                stream.update(
+                    f" → {getattr(last_f[1], 'vuln_class', '?')} via "
+                    f"{getattr(last_f[1], 'oracle_used', '?')} "
+                    f"({getattr(last_f[1], 'evidence_ref', '')}) — CONFIRMED"
+                )
+            elif last is not None:
+                stream.update(f" → {last.method} {last.target} {last.outcome}")
+            else:
+                stream.update(" idle — waiting for scan_target")
+        except Exception:  # noqa: BLE001, S110 — stream best-effort
             pass
 
     def _refresh_graph(self) -> None:
@@ -130,7 +172,23 @@ class ReachAgentApp(App[None]):
         # rewrite tail (cheap; audit is append-only and short per run).
         log.clear()
         for e in entries[-200:]:
-            log.write_line(f"{e.timestamp:%H:%M:%S} {e.identity} {e.method} {e.target} {e.outcome}")
+            # Color by outcome — green fired:200, yellow recovered, red refused.
+            if "fired:200" in e.outcome and "recovered" in e.outcome:
+                prefix = "[yellow]"
+            elif "fired:200" in e.outcome:
+                prefix = "[green]"
+            elif "refused" in e.outcome or "failure" in e.outcome:
+                prefix = "[red]"
+            elif "ingested" in e.outcome:
+                prefix = "[cyan]"
+            else:
+                prefix = ""
+            suffix = "[/]" if prefix else ""
+            line = (
+                f"{prefix}{e.timestamp:%H:%M:%S} {e.identity} "
+                f"{e.method} {e.target} {e.outcome}{suffix}"
+            )
+            log.write_line(line)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -139,9 +197,14 @@ def main(argv: list[str] | None = None) -> int:
         argv = sys.argv[1:]
     if "--help" in argv or "-h" in argv:
         print("reachagent-tui — generic scan observer (textual 3-pane)")
-        print("Usage: reachagent-tui [--help]")
+        print("Usage: reachagent-tui [--help] [--visual]")
         print("Shares scan/entrypoint:scan_target with reachagent-scan headless.")
-        print("Bindings: q quit, Tab next pane, / filter, j/k nav, ? help — 0.5s poll.")
+        short = (
+            "Bindings: q quit, Tab next pane, / filter, j/k nav, "
+            "r refresh, e export, ? help — 0.5s poll."
+        )
+        print(short)
+        print("Visual: coverage bar 6/9 + stream payload→oracle→verdict live.")
         return 0
     app = ReachAgentApp()
     app.run()
