@@ -15,6 +15,7 @@ Default gobuster stdout lines look like::
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 
@@ -22,6 +23,8 @@ from reachagent.graph.nodes import Endpoint, Host
 from reachagent.recon.calibration import CalibrationResult
 from reachagent.recon.tools._wordlist import preferred_wordlist
 from reachagent.recon.tools.base import ReconToolRunner
+
+_log = logging.getLogger(__name__)
 
 # A gobuster result line: a path token, then a "(Status: NNN)" marker. Anything
 # without both is banner/progress noise and is skipped. The path token may lack a
@@ -82,6 +85,34 @@ def _restricted_status(status: int) -> bool:
     return status in (401, 403)
 
 
+def _collect_signals(target: str) -> dict[str, str]:
+    """Lightweight target signals for live tuning — headers + body hint.
+
+    Never crashes the runner; best-effort. Env ``REACHAGENT_GOBUSTER_TECH_HINT``
+    overrides the live probe so hermetic tests stay deterministic.
+    """
+    signals: dict[str, str] = {"target": target}
+    hint = os.environ.get("REACHAGENT_GOBUSTER_TECH_HINT")
+    if hint:
+        signals["tech"] = hint
+        return signals
+    try:
+        import httpx
+
+        url = target if target.startswith("http") else f"http://{target}"
+        resp = httpx.get(url, timeout=5.0, follow_redirects=False)
+        signals["server"] = (resp.headers.get("server") or "")[:80]
+        signals["x_powered_by"] = (resp.headers.get("x-powered-by") or "")[:80]
+        body = resp.text[:2000].lower()
+        if "wp-content" in body or "wordpress" in body:
+            signals["tech"] = "wordpress"
+        elif "api" in target.lower() or "swagger" in body or "openapi" in body:
+            signals["tech"] = "api"
+    except Exception as exc:  # noqa: BLE001 — live probe best-effort
+        _log.debug("gobuster live signal collect skipped: %s", exc)
+    return signals
+
+
 class GobusterRunner(ReconToolRunner):
     """Emit an ``Endpoint`` per gobuster-discovered path + ``resolves_to`` edge (§9)."""
 
@@ -101,8 +132,43 @@ class GobusterRunner(ReconToolRunner):
         default; it is a fixed path element, never the target, so it is not an
         injection surface.
         """
+        # Live-reasoning tuning — default OFF so nothing existing breaks.
+        # When REACHAGENT_GOBUSTER_LIVE_TUNING=1, Claude proposes a choice
+        # FROM the allowlist (wordlist/flags/status) given target signals;
+        # proposal is validated twice (inside live_tuning + here) before use.
+        if (
+            os.environ.get("REACHAGENT_GOBUSTER_LIVE_TUNING") == "1"
+            or os.environ.get("REACHAGENT_RECON_LIVE_TUNING") == "1"
+        ):
+            try:
+                from reachagent.recon.live_tuning import RECON_ALLOWLIST, propose_recon_tuning
+
+                signals = _collect_signals(target)
+                choice = propose_recon_tuning(signals)
+                # Defense in depth: second allowlist check even after propose validates.
+                allowed_wl = set(RECON_ALLOWLIST["wordlists"])
+                allowed_flags = {tuple(p) for p in RECON_ALLOWLIST["flag_presets"]}
+                allowed_codes = set(RECON_ALLOWLIST["status_codes"])
+                if (
+                    choice.wordlist_path in allowed_wl
+                    and choice.flags in allowed_flags
+                    and choice.filter_codes in allowed_codes
+                ):
+                    argv: list[str] = [
+                        "gobuster",
+                        "dir",
+                        "-q",
+                        "-u",
+                        target,
+                        "-w",
+                        choice.wordlist_path,
+                    ]
+                    argv += list(choice.flags)
+                    return argv
+            except Exception as exc:  # noqa: BLE001 — live tuning fallback
+                _log.debug("gobuster live tuning fallback: %s", exc)
         wordlist = preferred_wordlist("REACHAGENT_GOBUSTER_WORDLIST")
-        argv: list[str] = ["gobuster", "dir", "-q", "-u", target, "-w", wordlist]
+        argv = ["gobuster", "dir", "-q", "-u", target, "-w", wordlist]
         # ponytail: env-only tuning, no config file until env count >12
         threads = os.environ.get("REACHAGENT_GOBUSTER_THREADS")
         if threads and threads.isdigit():
