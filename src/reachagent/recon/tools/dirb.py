@@ -33,17 +33,9 @@ class DirbRunner(ReconToolRunner):
 
     def command(self, target: str) -> list[str]:
         """dirb <target> <wordlist> -S — silent, results to stdout."""
-        import logging as _logging
+        from reachagent.recon.live_tuning import profile_argv  # ponytail: 5× copy → 1
 
-        _log = _logging.getLogger(__name__)
-        profile = None
-        try:
-            from reachagent.recon.live_tuning import get_profile_for_target
-
-            profile = get_profile_for_target(target)
-        except Exception as exc:  # noqa: BLE001
-            _log.debug("dirb profile picker fallback: %s", exc)
-        if profile is not None:
+        if (profile := profile_argv(target, [])) is not None:
             return ["dirb", target, profile.wordlist, "-S"]
         wordlist = preferred_wordlist("REACHAGENT_DIRB_WORDLIST")
         return ["dirb", target, wordlist, "-S"]

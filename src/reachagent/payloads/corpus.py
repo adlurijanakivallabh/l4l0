@@ -317,18 +317,6 @@ def _semantic_valid(entry: PayloadEntry, value: str) -> bool:
     return False
 
 
-def _semantic_invalid_refs(entries: Iterable[PayloadEntry]) -> tuple[str, ...]:
-    """Return all full-ingest refs failing deterministic sink validity checks."""
-    invalid: list[str] = []
-    for entry in entries:
-        from reachagent.payloads.payload_resolver import resolve_entry
-
-        value = resolve_entry(entry)
-        if not _semantic_valid(entry, value):
-            invalid.append(entry.payload_ref)
-    return tuple(invalid)
-
-
 def load_corpus_report(sources: Iterable[str] | None = None) -> CorpusIngestReport:
     """Load mapped payloads and return counts plus reserved/skipped ledger."""
     names = list(sources) if sources is not None else ["PayloadsAllTheThings"]
@@ -407,23 +395,6 @@ def load_corpus_report(sources: Iterable[str] | None = None) -> CorpusIngestRepo
 def load_corpus_entries(sources: Iterable[str] | None = None) -> list[PayloadEntry]:
     """Load only oracle-backed entries; reserved and unmapped files never fire."""
     return list(load_corpus_report(sources).entries)
-
-
-def _dedup_canonical(entries: list[PayloadEntry]) -> list[PayloadEntry]:
-    """Dedup by url-decoded canonical — keeps first of each encoding family."""
-    import urllib.parse
-
-    seen: dict[str, PayloadEntry] = {}
-    for e in entries:
-        try:
-            from reachagent.payloads.payload_resolver import resolve_entry
-
-            canon = urllib.parse.unquote(resolve_entry(e))
-        except Exception:  # noqa: BLE001 — broken entry keeps original key
-            canon = e.payload_ref
-        if canon not in seen:
-            seen[canon] = e
-    return list(seen.values())
 
 
 def build_library(

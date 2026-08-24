@@ -30,19 +30,12 @@ class FfufRunner(ReconToolRunner):
 
     def command(self, target: str) -> list[str]:
         """ffuf -u <target>/FUZZ -w <wordlist> -mc 200,204,301,302 -o <file> -of json."""
-        import logging as _logging
         import os as _os2
         import tempfile
 
-        _log = _logging.getLogger(__name__)
-        profile = None
-        try:
-            from reachagent.recon.live_tuning import get_profile_for_target
+        from reachagent.recon.live_tuning import profile_argv  # ponytail: 5× copy → 1
 
-            profile = get_profile_for_target(target)
-        except Exception as exc:  # noqa: BLE001
-            _log.debug("ffuf profile picker fallback: %s", exc)
-        if profile is not None:
+        if (profile := profile_argv(target, [])) is not None:
             fd, path = tempfile.mkstemp(suffix=".json", prefix="ffuf-")  # noqa: S108
             _os2.close(fd)
             argv: list[str] = [

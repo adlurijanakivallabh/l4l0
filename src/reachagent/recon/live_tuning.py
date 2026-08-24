@@ -438,3 +438,13 @@ def get_profile_for_target(
     except Exception as exc:  # noqa: BLE001 — must never crash caller
         _log.debug("profile lookup fallback: %s", exc)
         return None
+
+
+def profile_argv(  # ponytail: 5× copy → 1
+    target: str,
+    base_argv: list[str] | None = None,  # noqa: ARG001 — uniformity
+    *,
+    client: ReconProfileClient | None = None,
+) -> ReconProfile | None:
+    """Single helper for 5 runners — replaces copy-pasted profile block."""
+    return get_profile_for_target(target, client=client)

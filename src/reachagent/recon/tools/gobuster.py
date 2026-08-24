@@ -21,8 +21,9 @@ import re
 
 from reachagent.graph.nodes import Endpoint, Host
 from reachagent.recon.calibration import CalibrationResult
+from reachagent.recon.tools._net import host_of as _host_of
 from reachagent.recon.tools._wordlist import preferred_wordlist
-from reachagent.recon.tools.base import ReconToolRunner, _recon_host_of
+from reachagent.recon.tools.base import ReconToolRunner
 
 _log = logging.getLogger(__name__)
 
@@ -132,26 +133,10 @@ class GobusterRunner(ReconToolRunner):
         default; it is a fixed path element, never the target, so it is not an
         injection surface.
         """
-        # Profile picker — LLM picks ONE named profile (bundled), flag-gated OFF.
-        profile = None
-        try:
-            from reachagent.recon.live_tuning import get_profile_for_target
+        from reachagent.recon.live_tuning import profile_argv  # ponytail: 5× copy → 1
 
-            profile = get_profile_for_target(target)
-        except Exception as exc:  # noqa: BLE001
-            _log.debug("gobuster profile picker fallback: %s", exc)
-        if profile is not None:
-            argv: list[str] = [
-                "gobuster",
-                "dir",
-                "-q",
-                "-u",
-                target,
-                "-w",
-                profile.wordlist,
-            ]
-            argv += list(profile.flags)
-            return argv
+        if (profile := profile_argv(target, [])) is not None:
+            return ["gobuster", "dir", "-q", "-u", target, "-w", profile.wordlist, *profile.flags]
         # Live-reasoning tuning — default OFF so nothing existing breaks.
         # When REACHAGENT_GOBUSTER_LIVE_TUNING=1, Claude proposes a choice
         # FROM the allowlist (wordlist/flags/status) given target signals;
@@ -174,7 +159,7 @@ class GobusterRunner(ReconToolRunner):
                     and choice.flags in allowed_flags
                     and choice.filter_codes in allowed_codes
                 ):
-                    argv: list[str] = [  # type: ignore[no-redef]
+                    argv: list[str] = [
                         "gobuster",
                         "dir",
                         "-q",
@@ -243,6 +228,3 @@ class GobusterRunner(ReconToolRunner):
             self.graph.add_resolves_to(host_node, endpoint_node)
             written.append(endpoint_node)
         return tuple(written)
-
-
-_host_of = _recon_host_of  # ponytail: deduped to base helper

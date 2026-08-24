@@ -3,14 +3,13 @@
 Two defense-in-depth scope checkpoints, never one:
 
   A. Cold-start gating — recon fixtures filtered host-by-host through
-     ScopeEnforcer *before* any graph write. Out-of-scope host never becomes a
+     ScopeGuard *before* any graph write. Out-of-scope host never becomes a
      Host/Endpoint/resolves_to fact → coordinator never selects it. Audited as
      refused_out_of_scope. Endpoint fixtures (gobuster/nmap) are target-bound,
      not host-filtered.
 
-  B. Firer gating — RequestFirer built from enforcer-backed wrapper that
-     delegates to ScopeEnforcer.is_allowed (wildcard-aware). Every
-     fire_request/fire_browser checked before any packet. Even direct
+  B. Firer gating — RequestFirer built from ScopeGuard (wildcard-aware).
+     Every fire_request/fire_browser checked before any packet. Even direct
      graph.add_host bypass of A still caught by B.
 
 Finding gate: six OracleMechanism only, run_oracle → is_violation → write_finding.
@@ -21,7 +20,6 @@ Validator confirms — payload_chain drives the public MCP contracts via McpCall
 from __future__ import annotations
 
 import logging
-import urllib.parse
 from collections.abc import Iterable
 from typing import Any
 
@@ -29,7 +27,7 @@ import httpx
 
 from reachagent.execution.audit import AuditLog
 from reachagent.execution.firer import RequestFirer
-from reachagent.execution.scope import OutOfScopeError, ScopeGuard
+from reachagent.execution.scope import ScopeGuard
 from reachagent.graph.chain_solver import ChainSolver
 from reachagent.graph.nodes import FindingStatus, Host, SinkType
 from reachagent.graph.store import ReachabilityGraph
@@ -40,125 +38,102 @@ from reachagent.tools import coordinator_support as _coordinator_support
 _log = logging.getLogger(__name__)
 
 
-# -- ScopeEnforcer (checkpoint A) --------------------------------------------
+# -- Scope helpers (canonical: execution.scope.ScopeGuard) ---------------------
+# ponytail: ScopeEnforcer + extract_host/parse_patterns/_matches_pattern removed
+# — wildcard centralized in ScopeGuard._host_matches, one impl only.
 
 
-def extract_host(target: str) -> str:
-    """Bare host from URL or bare host string, lowercased for comparison."""
+def _parse_hosts(raw: str | None) -> list[str]:
+    return [p.strip().lower() for p in raw.split(",") if p.strip()] if raw else []
+
+
+# backward-compat shims — thin aliases, no second impl (tests import from here)
+def extract_host(target: str) -> str:  # noqa: D103
     raw = target.strip()
     if not raw:
         return ""
-    if "://" not in raw:
-        host = raw.split("/", 1)[0].split(":", 1)[0]
-        return host.lower()
     try:
-        parsed = urllib.parse.urlparse(raw)
-        host = parsed.hostname or ""
-        return host.lower()
-    except Exception:  # noqa: BLE001
-        return raw.lower()
+        host = httpx.URL(raw).host
+        if host:
+            return host.lower()
+    except Exception:  # noqa: BLE001,S110 — bare host fallback is expected
+        pass
+    return raw.split("/", 1)[0].split(":", 1)[0].lower()
 
 
-def parse_patterns(raw: str | None) -> list[str]:
-    """Comma-separated host patterns → normalized pattern strings."""
-    if not raw:
-        return []
-    patterns: list[str] = []
-    for token in raw.split(","):
-        p = token.strip().lower()
-        if p:
-            patterns.append(p)
-    return patterns
+def parse_patterns(raw: str | None) -> list[str]:  # noqa: D103
+    return _parse_hosts(raw)
 
 
-def _matches_pattern(host: str, pattern: str) -> bool:
-    """Single allowlist pattern vs host (case-insensitive, host-only).
+def _matches_pattern(host: str, pattern: str) -> bool:  # noqa: D103
+    # delegate to ScopeRule for single source of truth
+    from reachagent.execution.scope import ScopeRule as _SR
 
-    "*.example.com" matches example.com and any *.example.com (suffix with dot).
-    "example.com" matches exactly example.com. No partial string.
-    """
-    h = host.lower()
-    pat = pattern.lower()
-    if pat.startswith("*."):
-        base = pat[2:]
-        if not base:
-            return False
-        if h == base:
-            return True
-        return h.endswith("." + base)
-    return h == pat
+    return _SR(host=pattern).matches(httpx.URL(f"https://{host}/"))
 
 
-class ScopeEnforcer:
-    """Deny-by-default host scope with wildcard and out-of-scope precedence (§10)."""
+class ScopeEnforcer(ScopeGuard):  # noqa: D101
+    """Deprecated alias — use ScopeGuard.from_raw / from_hosts directly."""
 
     def __init__(
         self,
         in_scope: Iterable[str] | str | None,
         out_of_scope: Iterable[str] | str | None = None,
     ) -> None:
-        if isinstance(in_scope, str):
-            allow_raw = parse_patterns(in_scope)
-        else:
-            allow_raw = []
-            if in_scope is not None:
-                for item in in_scope:
-                    allow_raw.extend(parse_patterns(item))
-        if isinstance(out_of_scope, str):
-            deny_raw = parse_patterns(out_of_scope)
-        else:
-            deny_raw = []
-            if out_of_scope is not None:
-                for item in out_of_scope:
-                    deny_raw.extend(parse_patterns(item))
-        self._allow = allow_raw
-        self._deny = deny_raw
+        def _collect(v: Iterable[str] | str | None) -> list[str]:
+            if v is None:
+                return []
+            if isinstance(v, str):
+                return _parse_hosts(v)
+            out: list[str] = []
+            for item in v:
+                out.extend(_parse_hosts(item))
+            return out
+
+        from reachagent.execution.scope import ScopeRule as _SR
+
+        super().__init__(
+            [_SR(host=h) for h in _collect(in_scope)],
+            [_SR(host=h) for h in _collect(out_of_scope)],
+        )
+        # keep old attribute names for tests that peek at _allow/_deny (string list)
+        object.__setattr__(self, "_allow", [r.host for r in self._rules])
+        # _deny stays as ScopeRule list for is_in_scope logic; expose string copy as _deny_hosts
+        object.__setattr__(self, "_deny_hosts", [r.host for r in self._deny])
 
     @classmethod
-    def from_raw(cls, in_scope: str | None, out_of_scope: str | None = None) -> ScopeEnforcer:
-        allow = parse_patterns(in_scope) if in_scope else []
-        deny = parse_patterns(out_of_scope) if out_of_scope else []
-        return cls(allow, deny)
+    def from_raw(
+        cls, in_scope: str | None, out_of_scope: str | None = None
+    ) -> ScopeEnforcer:
+        return cls(in_scope, out_of_scope)
 
-    def is_allowed(self, host: str) -> bool:
-        """True only if host matches allowlist and not denylist (host-only compare)."""
-        h = extract_host(host)
-        if not h:
-            return False
-        for pat in self._deny:
-            if _matches_pattern(h, pat):
-                return False
-        for pat in self._allow:
-            if _matches_pattern(h, pat):
-                return True
-        return False
+    def is_allowed(self, host: str) -> bool:  # noqa: D102
+        return self.is_in_scope(host)
 
-    def allowed_hosts(self, hosts: Iterable[str]) -> list[str]:
-        """Filter iterable of hosts to allowed ones."""
+    def allowed_hosts(self, hosts: Iterable[str]) -> list[str]:  # noqa: D102
         return [h for h in hosts if self.is_allowed(h)]
 
 
-class EnforcerScopeWrapper:
-    """ScopeGuard-compatible wrapper delegating to ScopeEnforcer (wildcard-aware).
+class EnforcerScopeWrapper(ScopeGuard):  # noqa: D101
+    """Deprecated — use ScopeGuard directly."""
 
-    Duck-typed for RequestFirer — only enforce()/is_in_scope() are used.
-    Host compare via ScopeEnforcer so "*.example.com" truly allows subdomains.
-    """
+    def __init__(self, enforcer: ScopeEnforcer | ScopeGuard) -> None:
+        # unwrap if it's already a guard; else copy rules
+        if isinstance(enforcer, ScopeGuard):
+            # copy underlying ScopeRule lists (not the shim string lists)
+            rules = getattr(enforcer, "_rules", [])
+            deny = getattr(enforcer, "_deny", [])
+            # filter to only ScopeRule instances (shim string lists are ignored)
+            from reachagent.execution.scope import ScopeRule as _SR
 
-    def __init__(self, enforcer: ScopeEnforcer) -> None:
-        self._enforcer = enforcer
+            deny_rules = [r for r in deny if isinstance(r, _SR)]
+            super().__init__(rules, deny_rules)
+        else:
+            super().__init__([], [])
 
-    def is_in_scope(self, url: str | httpx.URL) -> bool:
-        parsed = httpx.URL(url) if isinstance(url, str) else url
-        host = parsed.host
-        if not host:
-            return False
-        return self._enforcer.is_allowed(host)
 
-    def enforce(self, url: str | httpx.URL) -> None:
-        if not self.is_in_scope(url):
-            parsed = httpx.URL(url) if isinstance(url, str) else url
-            raise OutOfScopeError(f"target not in scope: {parsed.host}{parsed.path}")
+# canonical name for internal use
+_ScopeGuard = ScopeGuard
 
 
 # -- Cold-start: recon ingest gated by ScopeEnforcer (checkpoint A) ----------
@@ -219,7 +194,7 @@ def detect_target_type(target: str) -> str:
     return "domain"
 
 
-def _filter_fixture_by_scope(raw: str, enforcer: ScopeEnforcer, runner_name: str) -> str:
+def _filter_fixture_by_scope(raw: str, scope: ScopeGuard, runner_name: str) -> str:
     """Host-per-line runners: filter; endpoint/XML runners: passthrough."""
     if runner_name in _PASSTHROUGH_RUNNERS:
         return raw
@@ -232,8 +207,8 @@ def _filter_fixture_by_scope(raw: str, enforcer: ScopeEnforcer, runner_name: str
         if not stripped or stripped.startswith("#"):
             kept.append(line)
             continue
-        host = extract_host(stripped.split()[0])
-        if enforcer.is_allowed(host):
+        host = stripped.split()[0]
+        if scope.is_in_scope(host):
             kept.append(line)
     return "\n".join(kept)
 
@@ -412,8 +387,8 @@ def scan_target(
 ) -> dict[str, Any]:
     """Generic autonomous scan entrypoint.
 
-    Cold-start discovery gated by ScopeEnforcer (A); firing gated by
-    enforcer-backed firer wrapper (B, wildcard-aware).
+    Cold-start discovery gated by ScopeGuard (A); firing gated by
+    ScopeGuard (B, wildcard-aware).
 
     dry_run=True: discover + score, return plan without firing any payload.
     dry_run=False: full loop (query_graph → score_and_select → check_budget →
@@ -429,7 +404,7 @@ def scan_target(
     run (atomic JSON). On resume, cold-start fixtures are NOT re-ingested — the
     loaded graph already carries them.
     """
-    enforcer = ScopeEnforcer(in_scope, out_of_scope)
+    scope = ScopeGuard.from_raw(in_scope, out_of_scope)
 
     resumed = resume_path is not None
     if resumed:
@@ -444,16 +419,16 @@ def scan_target(
 
     target_host = extract_host(base_url)
     if not resumed:
-        if enforcer.is_allowed(target_host):
+        if scope.is_in_scope(target_host):
             g.add_host(Host(address=target_host, hostname=target_host, source="scan"))
         else:
             a.record("scan", "RECON", target_host, "refused_out_of_scope")
 
     # The firer is built once and shared by wildcard calibration (below) and the
     # main loop — scope + read-only-first + audit hold on both (§10).
-    firer_scope = EnforcerScopeWrapper(enforcer)
+    firer_scope = scope
     client = httpx.Client(transport=transport) if transport is not None else httpx.Client()
-    firer = RequestFirer(client, firer_scope, a)  # type: ignore[arg-type]
+    firer = RequestFirer(client, firer_scope, a)
 
     if not resumed and surface_path is not None:
         # Optional --surface seeding (Task 27): materialize a declared surface
@@ -509,7 +484,7 @@ def scan_target(
         # URL-shaped tools need the full base_url; host-line and port/TLS tools
         # take the bare host (or host:port) target.
         _URL_TOOLS = frozenset({"gobuster", "whatweb", "katana"})
-        scope_guard = ScopeGuard.from_hosts([p.lstrip("*.") for p in enforcer._allow if p])
+        scope_guard = scope
         runners: list[Any] = [rt(graph=g, scope=scope_guard, audit=a) for rt in runner_types]
 
         # Wildcard calibration (D5, live only — it *fires* probes, so dry-run
@@ -558,16 +533,18 @@ def scan_target(
                 raw = fixtures.get(runner.name, "")
                 if not raw:
                     continue
-                allowed_raw = _filter_fixture_by_scope(raw, enforcer, runner.name)
+                allowed_raw = _filter_fixture_by_scope(raw, scope, runner.name)
                 runner.ingest(target_arg, allowed_raw)
                 # Audit any host lines that were dropped
                 for line in raw.splitlines():
                     stripped = line.strip()
                     if not stripped or stripped.startswith("#"):
                         continue
-                    host = extract_host(stripped.split()[0])
-                    if host and not enforcer.is_allowed(host):
-                        a.record(runner.name, "RECON", host, "refused_out_of_scope")
+                    host = stripped.split()[0]
+                    if host and not scope.is_in_scope(host):
+                        # record the raw host token lowercased (matches prior audit shape)
+                        h = extract_host(host)
+                        a.record(runner.name, "RECON", h or host.lower(), "refused_out_of_scope")
             elif not dry_run:
                 # Live cold-start: no fixtures → spawn the real recon binary.
                 # runner.run() is the live path — REACHAGENT_RECON_LIVE-gated

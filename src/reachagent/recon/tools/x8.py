@@ -22,7 +22,6 @@ _REFLECT_RE = re.compile(
 _host_of = _recon_host_of  # ponytail: deduped to base helper
 
 
-
 class X8Runner(ReconToolRunner):
     """Emit Parameter per X8-discovered reflecting param (§9). Facts only."""
 
@@ -31,17 +30,9 @@ class X8Runner(ReconToolRunner):
 
     def command(self, target: str) -> list[str]:
         """x8 -u <target> -w <wordlist> — hidden param discovery, reflected check."""
-        import logging as _logging
+        from reachagent.recon.live_tuning import profile_argv  # ponytail: 5× copy → 1
 
-        _log = _logging.getLogger(__name__)
-        profile = None
-        try:
-            from reachagent.recon.live_tuning import get_profile_for_target
-
-            profile = get_profile_for_target(target)
-        except Exception as exc:  # noqa: BLE001
-            _log.debug("x8 profile picker fallback: %s", exc)
-        if profile is not None:
+        if (profile := profile_argv(target, [])) is not None:
             wordlist = preferred_wordlist("REACHAGENT_X8_WORDLIST", x8=True)
             argv: list[str] = ["x8", "-u", target, "-w", wordlist]
             argv += list(profile.flags)

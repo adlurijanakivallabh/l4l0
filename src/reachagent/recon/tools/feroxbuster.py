@@ -30,18 +30,11 @@ class FeroxbusterRunner(ReconToolRunner):
 
     def command(self, target: str) -> list[str]:
         """feroxbuster --url <target> --silent --json -o <file> — JSON to file."""
-        import logging as _logging
         import tempfile
 
-        _log = _logging.getLogger(__name__)
-        profile = None
-        try:
-            from reachagent.recon.live_tuning import get_profile_for_target
+        from reachagent.recon.live_tuning import profile_argv  # ponytail: 5× copy → 1
 
-            profile = get_profile_for_target(target)
-        except Exception as exc:  # noqa: BLE001
-            _log.debug("feroxbuster profile picker fallback: %s", exc)
-        if profile is not None:
+        if (profile := profile_argv(target, [])) is not None:
             fd, path = tempfile.mkstemp(suffix=".json", prefix="ferox-")  # noqa: S108
             os.close(fd)
             argv: list[str] = [
