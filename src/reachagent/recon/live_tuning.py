@@ -56,12 +56,73 @@ RECON_ALLOWLIST: dict[str, tuple[str, ...] | tuple[tuple[str, ...], ...]] = {
         "200,204,301,302,307,401,403",
         "200,301,302",
         "200,204,301,302,307",
+        "200,204,301,302",
     ),
 }
 
 _SAFE_DEFAULT_WORDLIST = "/usr/share/wordlists/dirb/common.txt"
 _SAFE_DEFAULT_FLAGS: tuple[str, ...] = ()
 _SAFE_DEFAULT_STATUS = "200,204,301,302,307,401,403"
+
+# ---------------------------------------------------------------------------
+# RECON_PROFILES — named bundles (Phase 0 audit, Phase 1 wiring). Each
+# profile is tool set + wordlist + flag preset + status filter, all drawn
+# from RECON_ALLOWLIST. LLM picks ONE profile name, not freeform params.
+# ponytail: one dict, not per-tool config file.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ReconProfile:
+    """Named recon profile — every field is allowlisted via RECON_ALLOWLIST."""
+
+    wordlist: str
+    flags: tuple[str, ...]
+    status_codes: str
+    tools: tuple[str, ...]
+
+
+RECON_PROFILES: dict[str, ReconProfile] = {
+    # wordlist/flags/status all members of RECON_ALLOWLIST; tool set is hint.
+    "api_target": ReconProfile(
+        wordlist="/usr/share/seclists/Discovery/Web-Content/api/api-seen-in-wild.txt",
+        flags=("-t", "20"),
+        status_codes="200,204,301,302",
+        tools=("gobuster", "ffuf", "httpx", "whatweb", "katana"),
+    ),
+    "cms_target": ReconProfile(
+        wordlist="/usr/share/seclists/Discovery/Web-Content/CMS/wordpress.fuzz.txt",
+        flags=("-t", "20"),
+        status_codes="200,204,301,302,307,401,403",
+        tools=("gobuster", "ffuf", "whatweb", "wpscan_passive"),
+    ),
+    "static_site": ReconProfile(
+        wordlist="/usr/share/seclists/Discovery/Web-Content/raft-medium-directories.txt",
+        flags=(),
+        status_codes="200,204,301,302,307",
+        tools=("gobuster", "ffuf", "katana", "httpx"),
+    ),
+    "spa_target": ReconProfile(
+        wordlist="/usr/share/seclists/Discovery/Web-Content/raft-medium-directories.txt",
+        flags=("-t", "20"),
+        status_codes="200,204,301,302",
+        tools=("katana", "gobuster", "httpx", "whatweb"),
+    ),
+    "aggressive_recon": ReconProfile(
+        wordlist="/usr/share/seclists/Discovery/Web-Content/raft-medium-directories.txt",
+        flags=("-t", "50"),
+        status_codes="200,204,301,302,307,401,403",
+        tools=("gobuster", "ffuf", "feroxbuster", "masscan", "nmap", "subfinder", "amass"),
+    ),
+    "quiet_recon": ReconProfile(
+        wordlist="/usr/share/wordlists/dirb/common.txt",
+        flags=("--timeout", "10s"),
+        status_codes="200,204,301,302,307",
+        tools=("gobuster", "httpx", "whatweb"),
+    ),
+}
+
+_SAFE_DEFAULT_PROFILE = "static_site"
 
 
 @dataclass(frozen=True)
@@ -109,7 +170,7 @@ class AnthropicTunerClient:
             raise RuntimeError("ANTHROPIC_API_KEY not set")
         # Lazy import so hermetic tests without anthropic installed still load.
         try:
-            import anthropic  # type: ignore[import-not-found]
+            import anthropic  # type: ignore
         except Exception as exc:  # noqa: BLE001
             raise RuntimeError(f"anthropic SDK not available: {exc}") from exc
         client = anthropic.Anthropic(api_key=self._api_key)
@@ -212,3 +273,115 @@ def propose_recon_tuning(
     except Exception as exc:  # noqa: BLE001 — live call must never crash the runner
         _log.warning("live tuning failed (%s); fallback to safe default", exc)
         return _safe_default()
+
+
+# ---------------------------------------------------------------------------
+# Recon profile picker — LLM picks ONE named profile, not freeform params.
+# Same propose → allowlist VALIDATE → existing EXECUTE pattern; default OFF.
+# ---------------------------------------------------------------------------
+
+
+class ReconProfileClient(Protocol):
+    """Thin swappable profile picker — Anthropic now, OpenAI later."""
+
+    def propose(
+        self, target_signals: dict[str, str], allowed_profiles: tuple[str, ...]
+    ) -> dict[str, str]:
+        """Return raw proposal dict with key ``profile_name``."""
+        ...
+
+
+class AnthropicProfileClient:
+    """Anthropic-only profile picker."""
+
+    def __init__(
+        self, *, api_key: str | None = None, model: str = "claude-3-5-sonnet-20240620"
+    ) -> None:
+        self._api_key = api_key or os.environ.get("ANTHROPIC_API_KEY", "")
+        self._model = model
+
+    def propose(
+        self, target_signals: dict[str, str], allowed_profiles: tuple[str, ...]
+    ) -> dict[str, str]:
+        if not self._api_key:
+            raise RuntimeError("ANTHROPIC_API_KEY not set")
+        try:
+            import anthropic
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeError(f"anthropic SDK not available: {exc}") from exc
+        client = anthropic.Anthropic(api_key=self._api_key)
+        profiles = ", ".join(allowed_profiles)
+        signals = "; ".join(f"{k}={v}" for k, v in sorted(target_signals.items()))
+        profile_hints = "; ".join(
+            f"{k}: wordlist={v.wordlist.split('/')[-1]}, "  # noqa: E501
+            f"flags={' '.join(v.flags) or 'default'}, codes={v.status_codes}"  # noqa: E501
+            for k, v in RECON_PROFILES.items()
+        )
+        prompt = (
+            "You are a recon profile picker. Given target signals, pick ONE "
+            "profile name FROM the allowlist that best fits "
+            "(api_target for /api/swagger, cms_target for wp-content, "
+            "spa_target for JS-heavy, quiet/aggressive for stealth/speed). "
+            'Respond as JSON {"profile_name": "static_site"}. '
+            f"Signals: {signals}. Allowlist: {profiles}. Profiles: {profile_hints}. "
+            "Pick only from allowlist, no invented names."
+        )
+        resp = client.messages.create(
+            model=self._model,
+            max_tokens=128,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        text = ""
+        for block in resp.content:
+            if getattr(block, "type", "") == "text":
+                text += getattr(block, "text", "")
+        import json as _json
+
+        try:
+            data = _json.loads(text)
+        except Exception as exc:
+            import re as _re
+
+            m = _re.search(r"\{.*\}", text, flags=_re.DOTALL)
+            if not m:
+                raise ValueError(f"no JSON in model response: {text[:500]!r}") from exc
+            data = _json.loads(m.group(0))
+        return {"profile_name": str(data.get("profile_name", ""))}
+
+
+def _validate_profile_choice(raw: dict[str, str]) -> ReconProfile | None:
+    name = str(raw.get("profile_name", "")).strip()
+    if name not in RECON_PROFILES:
+        _log.warning("profile not allowlisted: %r", name)
+        return None
+    return RECON_PROFILES[name]
+
+
+def propose_recon_profile(
+    target_signals: dict[str, str],
+    *,
+    client: ReconProfileClient | None = None,
+) -> ReconProfile:
+    """Pick ONE recon profile from RECON_PROFILES, allowlist-validated.
+
+    Any failure, timeout, or non-allowlisted name falls back to
+    RECON_PROFILES[_SAFE_DEFAULT_PROFILE] and logs why.
+    """
+    try:
+        tuner = client if client is not None else AnthropicProfileClient()
+        raw = tuner.propose(target_signals, tuple(RECON_PROFILES.keys()))
+        validated = _validate_profile_choice(raw)
+        if validated is not None:
+            return validated
+        _log.info("profile picker fallback to %s (validation failed)", _SAFE_DEFAULT_PROFILE)
+        return RECON_PROFILES[_SAFE_DEFAULT_PROFILE]
+    except Exception as exc:  # noqa: BLE001 — live call must never crash runner
+        _log.warning("profile picker failed (%s); fallback to %s", exc, _SAFE_DEFAULT_PROFILE)
+        return RECON_PROFILES[_SAFE_DEFAULT_PROFILE]
+
+
+def _profile_name_of(profile: ReconProfile) -> str:
+    for k, v in RECON_PROFILES.items():
+        if v is profile:
+            return k
+    return _SAFE_DEFAULT_PROFILE

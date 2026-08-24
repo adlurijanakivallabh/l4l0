@@ -1,12 +1,13 @@
 # Live-Reasoning Recon Tuning — Three-Layer Propose / Validate / Execute
 
-**Status:** Three layers built. This document is the safety contract for
-live-reasoning proposal-only tuning: `live_tuning.py` (recon wordlist/flags),
-`vuln_tuning.py` (vuln classes per endpoint shape), and `payload_tuning.py`
-(payload choice from existing library) — all Anthropic-only, allowlist-
-validated, flag-gated. No oracle, firing, or role-boundary code is bypassed;
-all extensions are proposal-only with fixed-code validation and existing
-`fire_request`/`run_oracle`/`Validator` execution.
+**Status:** Three layers + recon profiles built. This document is the safety
+contract for live-reasoning proposal-only tuning: `live_tuning.py` (recon
+wordlist/flags + 6 `RECON_PROFILES`), `vuln_tuning.py` (vuln classes per
+endpoint shape), and `payload_tuning.py` (payload choice from existing library)
+— all Anthropic-only, allowlist-validated, flag-gated. No oracle, firing, or
+role-boundary code is bypassed; all extensions are proposal-only with
+fixed-code validation and existing `fire_request`/`run_oracle`/`Validator`
+execution.
 
 ## 0. Reference posture
 
@@ -182,6 +183,18 @@ prefers WP-flavored `sqli` payload_ref before raw `api`).
 Three-layer map complete — no further live layer planned without review.
 OQ2 (graph-aware signals) closed via bucket-aware ranking; OQ3 (explicit
 recon budget) enforced via `max_attempts` still honored.
+
+### 4.3 §4c — recon profile picker — BUILT (Phase 1)
+
+Same propose→validate→execute, now LLM picks ONE named `ReconProfile` from
+`RECON_PROFILES` (6 profiles: api/cms/static/spa/aggressive/quiet each
+bundling wordlist+flags+status+tool hint, all drawn from `RECON_ALLOWLIST`).
+Validated `profile_name in RECON_PROFILES` before use; outside→fallback
+`static_site` and log why. Wiring: `GobusterRunner` + `FfufRunner` +
+`FeroxbusterRunner` + `DirbRunner` + `X8Runner` (flags-only for x8, wordlist
+stays param list) when `REACHAGENT_RECON_PROFILE=1` (default OFF); second
+allowlist check `profile.wordlist in allowed_wl` etc. before argv. Facts-only
+unchanged, env overrides still win.
 
 ## 5. Blast radius and what live reasoning will never do
 

@@ -39,11 +39,52 @@ class FeroxbusterRunner(ReconToolRunner):
 
     def command(self, target: str) -> list[str]:
         """feroxbuster --url <target> --silent --json -o <file> — JSON to file."""
+        import logging as _logging
         import tempfile
 
+        _log = _logging.getLogger(__name__)
+        if os.environ.get("REACHAGENT_RECON_PROFILE") == "1":
+            try:
+                from reachagent.recon.live_tuning import (
+                    RECON_ALLOWLIST,
+                    RECON_PROFILES,
+                    propose_recon_profile,
+                )
+                from reachagent.recon.tools.gobuster import _collect_signals as _signals
+
+                profile = propose_recon_profile(_signals(target))
+                allowed_wl = set(RECON_ALLOWLIST["wordlists"])
+                allowed_flags = {tuple(p) for p in RECON_ALLOWLIST["flag_presets"]}
+                allowed_codes = set(RECON_ALLOWLIST["status_codes"])
+                if (
+                    profile.wordlist in allowed_wl
+                    and profile.flags in allowed_flags
+                    and profile.status_codes in allowed_codes
+                    and profile in RECON_PROFILES.values()
+                ):
+                    fd, path = tempfile.mkstemp(suffix=".json", prefix="ferox-")  # noqa: S108
+                    os.close(fd)
+                    argv: list[str] = [
+                        "feroxbuster",
+                        "--url",
+                        target,
+                        "--silent",
+                        "--json",
+                        "-o",
+                        path,
+                        "-w",
+                        profile.wordlist,
+                    ]
+                    argv += list(profile.flags)
+                    threads = os.environ.get("REACHAGENT_FEROX_THREADS")
+                    if threads and threads.isdigit() and "-t" not in argv:
+                        argv += ["-t", threads]
+                    return argv
+            except Exception as exc:  # noqa: BLE001
+                _log.debug("feroxbuster profile picker fallback: %s", exc)
         fd, path = tempfile.mkstemp(suffix=".json", prefix="ferox-")  # noqa: S108 — mkstemp safe temp
         os.close(fd)
-        argv: list[str] = ["feroxbuster", "--url", target, "--silent", "--json", "-o", path]
+        argv: list[str] = ["feroxbuster", "--url", target, "--silent", "--json", "-o", path]  # type: ignore[no-redef]
         wordlist = preferred_wordlist("REACHAGENT_FEROX_WORDLIST")
         # Forward -w when explicitly set or richer default found
         if (

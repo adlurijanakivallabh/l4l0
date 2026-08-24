@@ -54,7 +54,7 @@ class AnthropicPayloadClient:
         if not self._api_key:
             raise RuntimeError("ANTHROPIC_API_KEY not set")
         try:
-            import anthropic  # type: ignore[import-not-found]
+            import anthropic  # type: ignore
         except Exception as exc:  # noqa: BLE001
             raise RuntimeError(f"anthropic SDK not available: {exc}") from exc
         client = anthropic.Anthropic(api_key=self._api_key)

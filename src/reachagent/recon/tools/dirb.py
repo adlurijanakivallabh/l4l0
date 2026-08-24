@@ -41,6 +41,32 @@ class DirbRunner(ReconToolRunner):
 
     def command(self, target: str) -> list[str]:
         """dirb <target> <wordlist> -S — silent, results to stdout."""
+        import logging as _logging
+        import os as _os
+
+        _log = _logging.getLogger(__name__)
+        if _os.environ.get("REACHAGENT_RECON_PROFILE") == "1":
+            try:
+                from reachagent.recon.live_tuning import (
+                    RECON_ALLOWLIST,
+                    RECON_PROFILES,
+                    propose_recon_profile,
+                )
+                from reachagent.recon.tools.gobuster import _collect_signals as _signals
+
+                profile = propose_recon_profile(_signals(target))
+                allowed_wl = set(RECON_ALLOWLIST["wordlists"])
+                allowed_flags = {tuple(p) for p in RECON_ALLOWLIST["flag_presets"]}
+                allowed_codes = set(RECON_ALLOWLIST["status_codes"])
+                if (
+                    profile.wordlist in allowed_wl
+                    and profile.flags in allowed_flags
+                    and profile.status_codes in allowed_codes
+                    and profile in RECON_PROFILES.values()
+                ):
+                    return ["dirb", target, profile.wordlist, "-S"]
+            except Exception as exc:  # noqa: BLE001
+                _log.debug("dirb profile picker fallback: %s", exc)
         wordlist = preferred_wordlist("REACHAGENT_DIRB_WORDLIST")
         return ["dirb", target, wordlist, "-S"]
 
