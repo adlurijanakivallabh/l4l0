@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+import json
+
+from fastapi.testclient import TestClient
+
+from reachagent.execution.audit import AuditLog
 from reachagent.graph.nodes import Finding, FindingStatus, Session
 from reachagent.graph.store import ReachabilityGraph, session_id
-from reachagent.gui.app import _finding_rows
+from reachagent.gui.app import _finding_rows, _scans, app
 
 
 def _g_with_chain() -> tuple[ReachabilityGraph, str, str]:
@@ -71,3 +76,67 @@ def test_finding_rows_no_chain_is_empty() -> None:
     )
     rows = {r["finding_id"]: r for r in _finding_rows(g)}
     assert rows[a]["chains"] == []
+
+
+# -- report export (real Phase 4 report served for download) -----------------
+
+
+def _seeded_export_scan() -> str:
+    g = ReachabilityGraph()
+    g.add_finding(
+        Finding(
+            vuln_class="bola",
+            severity="high",
+            oracle_used="differential",
+            evidence_ref="orchestrator/bola/1",
+            status=FindingStatus.CONFIRMED_VIOLATION,
+        )
+    )
+    sid = "t-export"
+    _scans[sid] = {
+        "target": "https://demo.example",
+        "status": "done",
+        "phase": "report",
+        "graph": g,
+        "audit": AuditLog(),
+        "events": [],
+        "report_md": (
+            "# ReachAgent report\n\n| finding_id | vuln_class |\n"
+            "|---|---|\n| finding:bola:1 | bola |"
+        ),
+    }
+    return sid
+
+
+def test_export_markdown_serves_the_report_for_download() -> None:
+    sid = _seeded_export_scan()
+    r = TestClient(app).get(f"/api/scan/{sid}/export?format=markdown")
+    assert r.status_code == 200
+    assert "text/markdown" in r.headers["content-type"]
+    assert "attachment" in r.headers["content-disposition"]
+    assert "ReachAgent report" in r.text
+
+
+def test_export_json_serves_deterministic_findings() -> None:
+    sid = _seeded_export_scan()
+    r = TestClient(app).get(f"/api/scan/{sid}/export?format=json")
+    assert r.status_code == 200
+    assert "application/json" in r.headers["content-type"]
+    rows = json.loads(r.text)
+    assert rows[0]["vuln_class"] == "bola"
+    assert rows[0]["status"] == "confirmed_violation"
+
+
+def test_export_html_is_self_contained() -> None:
+    sid = _seeded_export_scan()
+    r = TestClient(app).get(f"/api/scan/{sid}/export?format=html")
+    assert r.status_code == 200
+    assert "text/html" in r.headers["content-type"]
+    assert "ReachAgent report" in r.text
+
+
+def test_export_unknown_format_defaults_markdown() -> None:
+    sid = _seeded_export_scan()
+    r = TestClient(app).get(f"/api/scan/{sid}/export?format=xml")
+    assert r.status_code == 200
+    assert "text/markdown" in r.headers["content-type"]

@@ -53,7 +53,16 @@
   .out-ingested{color:var(--cyan)}
   .out-profile{color:var(--accent)}
   .muted{color:var(--muted)}
-  #report{white-space:pre-wrap;background:var(--panel2);border:1px solid var(--line);border-radius:.4rem;padding:.7rem;font-size:.75rem;max-height:220px;overflow:auto}
+  #report{background:var(--panel2);border:1px solid var(--line);border-radius:.4rem;padding:.7rem;font-size:.75rem;max-height:320px;overflow:auto}
+  .report-view h2{font-size:.95rem;color:var(--accent);margin:.4rem 0}
+  .report-view h3,.report-view h4{color:var(--accent);margin:.35rem 0}
+  .report-view p{margin:.3rem 0;line-height:1.55}
+  .report-view hr{border:0;border-top:1px solid var(--line);margin:.6rem 0}
+  .report-view table{border-collapse:collapse;margin:.5rem 0;font-size:.72rem}
+  .report-view th,.report-view td{border:1px solid var(--line);padding:.3rem .5rem;text-align:left}
+  .report-view th{color:var(--muted);background:var(--panel)}
+  .dl{display:inline-block;margin-right:.5rem;color:var(--accent);border:1px solid var(--accent);border-radius:.3rem;padding:.25rem .6rem;font-size:.72rem;text-decoration:none}
+  .dl:hover{background:var(--accent);color:#04121f}
   /* findings dashboard */
   #findings{display:flex;flex-direction:column;gap:.6rem;max-height:400px;overflow:auto}
   .fcard{background:var(--panel2);border:1px solid var(--line);border-left:3px solid var(--muted);border-radius:.4rem;padding:.6rem .7rem}
@@ -120,8 +129,13 @@
       <div id="findings"><span class="muted">No findings yet.</span></div>
     </div>
     <div class="card">
-      <h2>Report</h2>
-      <div id="report">No findings yet.</div>
+      <h2>Report — Phase 4 (LLM narrative + deterministic findings table)</h2>
+      <div id="exports" style="display:none;margin-bottom:.6rem">
+        <a id="dl-md" class="dl" download href="#">Download .md</a>
+        <a id="dl-json" class="dl" download href="#">Download .json</a>
+        <a id="dl-html" class="dl" download href="#">Download .html</a>
+      </div>
+      <div id="report" class="report-view">No findings yet.</div>
     </div>
   </div>
 </main>
@@ -184,6 +198,47 @@ function renderAudit(rows){
   a.scrollTop=a.scrollHeight;
 }
 
+function mdToHtml(md){
+  // Minimal markdown → HTML for the Phase 4 report (headings, tables, bold, lists).
+  const esc=s=>String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+  const lines=md.split("\n"); const out=[]; let inTable=false, rows=[];
+  function flushTable(){
+    if(!rows.length) return;
+    out.push("<table>"+rows.map((r,i)=>"<tr>"+r.map(c=>(i?"<td>":"<th>")+c+"</"+(i?"td>":"th>")).join("")+"</tr>").join("")+"</table>");
+    rows=[];
+  }
+  lines.forEach(line=>{
+    const t=line.trim();
+    if(t.startsWith("|")&&t.endsWith("|")){
+      const cells=t.slice(1,-1).split("|").map(c=>esc(c.trim()));
+      if(!inTable){inTable=true;rows=[cells];}
+      else if(!cells.every(c=>/^:?-{2,}:?$/.test(c))) rows.push(cells);
+      return;
+    }
+    if(inTable){inTable=false;flushTable();}
+    if(/^#{1,4} /.test(t)) out.push("<h"+(t.indexOf(" "))+">"+esc(t.replace(/^#+\s*/,""))+"</h"+(t.indexOf(" "))+">");
+    else if(t==="---") out.push("<hr>");
+    else if(/^- /.test(t)) out.push("<li>"+esc(t.slice(2))+"</li>");
+    else if(t==="") out.push("");
+    else out.push("<p>"+esc(t).replace(/\*\*(.+?)\*\*/g,"<b>$1</b>")+"</p>");
+  });
+  if(inTable) flushTable();
+  return out.join("\n");
+}
+
+function renderReport(md){
+  $("report").innerHTML=md?mdToHtml(md):'<span class="muted">No report yet.</span>';
+}
+
+function renderExports(id, done){
+  const box=$("exports");
+  if(!done){box.style.display="none";return;}
+  box.style.display="block";
+  $("dl-md").href="/api/scan/"+id+"/export?format=markdown";
+  $("dl-json").href="/api/scan/"+id+"/export?format=json";
+  $("dl-html").href="/api/scan/"+id+"/export?format=html";
+}
+
 function renderFindings(findings){
   const box=$("findings"); box.innerHTML="";
   if(!findings||!findings.length){ box.innerHTML='<span class="muted">No findings yet.</span>'; return; }
@@ -224,7 +279,8 @@ $("go").onclick=async()=>{
   if(!target){alert("target required");return;}
   $("status").textContent="starting…"; $("phase").textContent="1 RECON";
   renderProfile([]); renderCounts(null); renderTimeline([]); renderAudit([]); renderFindings([]);
-  $("report").textContent="Scanning…";
+  renderReport(""); renderExports(null,false);
+  $("report").innerHTML='<span class="muted">Scanning…</span>';
   const body={target,in_scope:scope,out_of_scope:$("outscope").value.trim()||null,
     max_attempts:parseInt($("attempts").value,10)||20,
     use_llm:$("use_llm").checked,
@@ -248,11 +304,12 @@ async function poll(){
   renderTimeline(j.events);
   renderAudit(j.audit);
   renderFindings(j.findings);
-  if(j.report_md) $("report").textContent=j.report_md;
+  renderReport(j.report_md);
+  renderExports(scanId, j.status==="done");
   if(j.status==="done"||j.status==="error"){
     clearInterval(timer);
-    if(j.status==="error"){ $("report").textContent="Error: "+(j.error||"unknown"); return; }
-    $("status").textContent="done — "+scanId+" (refresh the report in a later stage)";
+    if(j.status==="error"){ $("report").innerHTML='<span class="muted">Error: '+(j.error||"unknown")+"</span>"; return; }
+    $("status").textContent="done — "+scanId;
   }
 }
 </script>

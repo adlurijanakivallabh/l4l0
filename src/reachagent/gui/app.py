@@ -17,7 +17,7 @@ import uuid
 from typing import Any
 
 from fastapi import FastAPI
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from reachagent.execution.audit import AuditLog
@@ -281,6 +281,48 @@ def get_report(scan_id: str) -> JSONResponse:
     graph: ReachabilityGraph = data["graph"]
     md = generate_llm_report(graph)
     return JSONResponse({"scan_id": scan_id, "report_md": md})
+
+
+def _report_html(report_md: str) -> str:
+    """A minimal self-contained HTML export of the Phase 4 report (narrative + table)."""
+    import html as _html
+
+    body = _html.escape(report_md)
+    return (
+        "<!doctype html><html><head><meta charset='utf-8'>"
+        "<title>ReachAgent report</title>"
+        "<style>body{font-family:ui-monospace,Menlo,monospace;max-width:880px;margin:2rem auto;"
+        "padding:0 1rem;line-height:1.55}table{border-collapse:collapse}th,td{border:1px solid #999;"
+        "padding:.35rem .6rem;text-align:left}</style></head>"
+        f"<body><h1>ReachAgent report</h1><pre style='white-space:pre-wrap'>{body}</pre></body></html>"
+    )
+
+
+@app.get("/api/scan/{scan_id}/export")
+def export_report(scan_id: str, format: str = "markdown") -> Response:
+    """Download the report in markdown/json/html — real data from the completed scan."""
+    from reachagent.report.renderer import render_findings_json, render_findings_markdown
+
+    data = _scans.get(scan_id)
+    if not data or "graph" not in data:
+        return JSONResponse({"error": "not found or not done"}, status_code=404)
+    graph: ReachabilityGraph = data["graph"]
+    if format == "json":
+        body, media, ext = render_findings_json(graph), "application/json", "json"
+    elif format == "html":
+        body, media, ext = (
+            _report_html(data.get("report_md") or render_findings_markdown(graph)),
+            "text/html",
+            "html",
+        )
+    else:
+        body = data.get("report_md") or render_findings_markdown(graph)
+        media, ext = "text/markdown", "md"
+    return Response(
+        content=body,
+        media_type=media,
+        headers={"Content-Disposition": f'attachment; filename="reachagent-report.{ext}"'},
+    )
 
 
 # mount static after routes (so / doesn't clash)
