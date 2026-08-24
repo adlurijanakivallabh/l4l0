@@ -180,9 +180,10 @@ prefers WP-flavored `sqli` payload_ref before raw `api`).
   harvest. Proposal-only — never invents a ref, never bypasses
   `fire → run_oracle → Validator`.
 
-Three-layer map complete — no further live layer planned without review.
-OQ2 (graph-aware signals) closed via bucket-aware ranking; OQ3 (explicit
-recon budget) enforced via `max_attempts` still honored.
+Three-layer map complete; Phase 4 reporting closes the loop — no further
+live layer planned without review. OQ2 (graph-aware signals) closed via
+bucket-aware ranking; OQ3 (explicit recon budget) enforced via `max_attempts`
+still honored.
 
 ### 4.3 §4c — recon profile picker — BUILT (Phase 1)
 
@@ -195,6 +196,18 @@ Validated `profile_name in RECON_PROFILES` before use; outside→fallback
 stays param list) when `REACHAGENT_RECON_PROFILE=1` (default OFF); second
 allowlist check `profile.wordlist in allowed_wl` etc. before argv. Facts-only
 unchanged, env overrides still win.
+
+### 4.4 §4d — reporting from confirmed findings only — BUILT (Phase 4)
+
+Same pattern, safest layer. Input is ONLY `graph.findings()` where
+`status is CONFIRMED_VIOLATION` (via `render_findings_*`). LLM proposes
+`narrative` prose (what was tested, severity, reproduction per finding_id);
+fixed code validates `narrative` is non-empty string (and logs, but never
+blocks the deterministic table which is always appended). Report cannot
+retroactively promote an unconfirmed candidate — it only describes what's
+already real. `src/reachagent/report/llm_report.py` (`ReportClient`
+Protocol / `AnthropicReportClient`, `generate_llm_report`) + deterministic
+fallback via `render_findings_markdown` on any failure/timeout/empty.
 
 ## 5. Blast radius and what live reasoning will never do
 
