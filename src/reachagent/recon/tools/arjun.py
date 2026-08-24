@@ -15,12 +15,9 @@ from __future__ import annotations
 import json
 
 from reachagent.graph.nodes import Endpoint, Host, Parameter
-from reachagent.recon.tools.base import ReconToolRunner
+from reachagent.recon.tools.base import ReconToolRunner, _recon_host_of
 
-
-def _host_of(target: str) -> str:
-    stripped = target.split("://", 1)[-1]
-    return stripped.split("/", 1)[0].split(":", 1)[0]
+_host_of = _recon_host_of  # ponytail: deduped to base helper
 
 
 class ArjunRunner(ReconToolRunner):

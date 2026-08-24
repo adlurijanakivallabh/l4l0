@@ -13,22 +13,13 @@ import os
 from reachagent.graph.nodes import Endpoint, Host
 from reachagent.recon.calibration import CalibrationResult
 from reachagent.recon.tools._wordlist import preferred_wordlist
-from reachagent.recon.tools.base import ReconToolRunner
+from reachagent.recon.tools.base import ReconToolRunner, _recon_host_of, _recon_path_of
 from reachagent.recon.tools.gobuster import _restricted_status
 
-
-def _host_of(target: str) -> str:
-    stripped = target.split("://", 1)[-1]
-    return stripped.split("/", 1)[0].split(":", 1)[0]
+_host_of = _recon_host_of  # ponytail: deduped to base helper
 
 
-def _path_of(url: str) -> str:
-    after_scheme = url.split("://", 1)[-1] if "://" in url else url
-    slash = after_scheme.find("/")
-    if slash == -1:
-        return "/"
-    path = after_scheme[slash:].split("#", 1)[0]
-    return path or "/"
+_path_of = _recon_path_of  # ponytail: deduped to base helper
 
 
 class FeroxbusterRunner(ReconToolRunner):

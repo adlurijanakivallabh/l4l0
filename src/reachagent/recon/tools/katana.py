@@ -7,29 +7,13 @@ no new node type, same shape as gobuster's path→Endpoint. Facts only.
 
 from __future__ import annotations
 
-import urllib.parse
-
 from reachagent.graph.nodes import Endpoint, Host
-from reachagent.recon.tools.base import ReconToolRunner
+from reachagent.recon.tools.base import ReconToolRunner, _recon_host_of, _recon_path_of
+
+_host_of = _recon_host_of  # ponytail: deduped to base helper
 
 
-def _host_of(url: str) -> str:
-    stripped = url.split("://", 1)[-1]
-    return stripped.split("/", 1)[0].split(":", 1)[0]
-
-
-def _path_of(url: str) -> str:
-    try:
-        parsed = urllib.parse.urlparse(url if "://" in url else f"http://{url}")
-        path = parsed.path or "/"
-        if parsed.query:
-            path = f"{path}?{parsed.query}"
-        return path
-    except Exception:  # noqa: BLE001
-        # Fallback: raw split
-        after_host = url.split("://", 1)[-1]
-        slash = after_host.find("/")
-        return after_host[slash:] if slash != -1 else "/"
+_path_of = _recon_path_of  # ponytail: deduped to base helper
 
 
 class KatanaRunner(ReconToolRunner):

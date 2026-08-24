@@ -12,7 +12,7 @@ import re
 from defusedxml.ElementTree import fromstring
 
 from reachagent.graph.nodes import Host, Service
-from reachagent.recon.tools.base import ReconToolRunner
+from reachagent.recon.tools.base import ReconToolRunner, _recon_host_of
 
 _DISCOVERED_RE = re.compile(
     r"Discovered\s+open\s+port\s+(?P<port>\d+)/(?P<proto>\w+)\s+on\s+(?P<host>\S+)",
@@ -20,9 +20,7 @@ _DISCOVERED_RE = re.compile(
 )
 
 
-def _host_of(target: str) -> str:
-    stripped = target.split("://", 1)[-1]
-    return stripped.split("/", 1)[0].split(":", 1)[0]
+_host_of = _recon_host_of  # ponytail: deduped to base helper
 
 
 class MasscanRunner(ReconToolRunner):

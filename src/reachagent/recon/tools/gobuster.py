@@ -22,7 +22,7 @@ import re
 from reachagent.graph.nodes import Endpoint, Host
 from reachagent.recon.calibration import CalibrationResult
 from reachagent.recon.tools._wordlist import preferred_wordlist
-from reachagent.recon.tools.base import ReconToolRunner
+from reachagent.recon.tools.base import ReconToolRunner, _recon_host_of
 
 _log = logging.getLogger(__name__)
 
@@ -258,7 +258,4 @@ class GobusterRunner(ReconToolRunner):
         return tuple(written)
 
 
-def _host_of(target: str) -> str:
-    """The bare host of a recon target (strip scheme + any path), for the Host node."""
-    stripped = target.split("://", 1)[-1]
-    return stripped.split("/", 1)[0]
+_host_of = _recon_host_of  # ponytail: deduped to base helper

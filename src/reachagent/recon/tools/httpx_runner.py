@@ -8,29 +8,14 @@ tech/webserver fields. Per §6/§9 (v1.8) tech/version is an **attribute** on Ho
 from __future__ import annotations
 
 import json
-import urllib.parse
 
 from reachagent.graph.nodes import Endpoint, Host
-from reachagent.recon.tools.base import ReconToolRunner
+from reachagent.recon.tools.base import ReconToolRunner, _recon_host_of, _recon_path_of
+
+_host_of = _recon_host_of  # ponytail: deduped to base helper
 
 
-def _host_of(url: str) -> str:
-    try:
-        parsed = urllib.parse.urlparse(url if "://" in url else f"http://{url}")
-        host = parsed.hostname or parsed.netloc.split(":", 1)[0]
-        return host or url.split("/", 1)[0].split(":", 1)[0]
-    except Exception:  # noqa: BLE001
-        return url.split("://", 1)[-1].split("/", 1)[0].split(":", 1)[0]
-
-
-def _path_of(url: str) -> str:
-    try:
-        parsed = urllib.parse.urlparse(url if "://" in url else f"http://{url}")
-        return parsed.path or "/"
-    except Exception:  # noqa: BLE001
-        after = url.split("://", 1)[-1]
-        slash = after.find("/")
-        return after[slash:] if slash != -1 else "/"
+_path_of = _recon_path_of  # ponytail: deduped to base helper
 
 
 class HttpxRunner(ReconToolRunner):

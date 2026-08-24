@@ -43,6 +43,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess  # noqa: S404 — argument-array only, shell=False, never a shell string
+import urllib.parse
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import ClassVar
@@ -251,6 +252,33 @@ class ReconToolRunner:
             except OSError:
                 pass
         return self.ingest(target, raw)
+
+
+def _recon_host_of(target: str) -> str:
+    """Bare host from URL/bare target, port-stripped — shared helper (ponytail: stdlib over 5× copy)."""  # noqa: E501
+    try:
+        if "://" not in target:
+            return target.split("/", 1)[0].split(":", 1)[0].split("@", 1)[-1]
+        return (
+            urllib.parse.urlparse(target).hostname
+            or target.split("://", 1)[-1].split("/", 1)[0].split(":", 1)[0]
+        )
+    except Exception:
+        return target.split("/", 1)[0].split(":", 1)[0]
+
+
+def _recon_path_of(url: str) -> str:
+    """Path+query from URL, fallback / — shared helper."""
+    try:
+        parsed = urllib.parse.urlparse(url if "://" in url else f"http://{url}")
+        path = parsed.path or "/"
+        if parsed.query:
+            path += f"?{parsed.query}"
+        return path.split("#", 1)[0] or "/"
+    except Exception:
+        after = url.split("://", 1)[-1] if "://" in url else url
+        slash = after.find("/")
+        return (after[slash:].split("#", 1)[0] if slash != -1 else "/") or "/"
 
 
 def _scope_url(target: str) -> httpx.URL:
