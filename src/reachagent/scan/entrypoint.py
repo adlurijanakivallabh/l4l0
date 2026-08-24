@@ -266,6 +266,70 @@ def _sink_for_vuln_class(vuln_class: str) -> SinkType | None:
     return mapping.get(vuln_class)
 
 
+def _live_vuln_class_for(selection: object, graph: ReachabilityGraph, base_url: str) -> str | None:
+    """Proposal-only vuln-class targeting — flag-gated, double-validated.
+
+    Reads Endpoint/Parameter/Host shape from the graph, calls live proposer
+    when enabled, validates every returned class against VULN_CLASS_ALLOWLIST
+    again, then returns the first chosen class that matches the param sink
+    (honest: only existing oracle wiring). Never fires, never calls
+    run_oracle/write_finding, never invents a payload string. Returns None
+    when flag OFF or proposer yields no sink-compatible class.
+    """
+    import os as _os
+
+    if (
+        _os.environ.get("REACHAGENT_VULN_TUNING") != "1"
+        and _os.environ.get("REACHAGENT_RECON_LIVE_TUNING") != "1"
+    ):
+        return None
+    try:
+        from reachagent.recon.vuln_tuning import VULN_CLASS_ALLOWLIST, propose_vuln_targets
+
+        ep = graph.endpoint(getattr(selection, "endpoint_node", ""))
+        param_node = getattr(selection, "parameter_node", None)
+        param = graph.parameter(param_node) if param_node else None
+        signals: dict[str, str] = {
+            "method": getattr(ep, "method", "GET"),
+            "path": getattr(ep, "path", "/")[:120],
+        }
+        if param is not None:
+            signals["param_name"] = param.name[:80]
+            signals["param_location"] = param.location
+            if param.inferred_sink_type is not None:
+                signals["sink"] = param.inferred_sink_type.value
+        # Host tech / base_url hint
+        try:
+            import httpx as _httpx  # noqa: WPS433
+
+            host = _httpx.URL(base_url).host or ""
+            for hid, h in graph.hosts():
+                if host in hid or hid in host:
+                    if getattr(h, "technology", None):
+                        signals["host_tech"] = str(h.technology)[:80]
+                    break
+        except Exception as exc:  # noqa: BLE001 — host tech best-effort
+            _log.debug("host tech collect skipped: %s", exc)
+        choice = propose_vuln_targets(signals)
+        # Defense in depth: second allowlist check even after propose validates.
+        allowed = set(VULN_CLASS_ALLOWLIST)
+        sink = signals.get("sink")
+        for vc in choice.vuln_classes:
+            if vc not in allowed:
+                continue
+            # Only return a class whose sink matches the param's sink (honest wiring).
+            # A mismatch (e.g. file_upload for a SQL sink) is proposal noise — skip.
+            vc_sink = _sink_for_vuln_class(vc)
+            if sink and vc_sink is not None and sink != vc_sink.value:
+                continue
+            return vc
+        # No sink-compatible class from proposer — keep caller's sink-matched default.
+        return None
+    except Exception as exc:  # noqa: BLE001 — proposer must not crash scan
+        _log.debug("vuln tuning skipped: %s", exc)
+        return None
+
+
 def _harvest_baseline_value(
     graph: ReachabilityGraph,
     firer: RequestFirer,
@@ -648,6 +712,14 @@ def scan_target(
             if _sink_for_vuln_class(vc) == param_sink:
                 vuln_class = vc
                 break
+        # Live vuln-class targeting — proposal-only, flag OFF by default.
+        # When REACHAGENT_VULN_TUNING=1 or REACHAGENT_RECON_LIVE_TUNING=1, shapes
+        # from Endpoint/Parameter/Host are sent to propose_vuln_targets() which
+        # picks FROM VULN_CLASS_ALLOWLIST; validated twice (inside + here) before
+        # any use. Never writes Finding/can_call, never calls run_oracle/fire.
+        _maybe = _live_vuln_class_for(sel, g, base_url)
+        if _maybe is not None:
+            vuln_class = _maybe
         # Coordinator may select a candidate with no parameter (endpoint-level
         # authz class, or a discovery that surfaced only a bare endpoint — the
         # live-run VAmPI case). Seed a benign probe parameter on the endpoint so

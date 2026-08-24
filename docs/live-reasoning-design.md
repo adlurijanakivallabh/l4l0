@@ -126,26 +126,32 @@ implemented now. The generic name `ReconTunerClient` / `propose_recon_tuning`
 is deliberate to avoid a provider-locked name that would need renaming when
 OpenAI is added. No OpenAI client ships in this commit.
 
-## 4. How the same pattern extends (described, not built)
+## 4. How the same pattern extends (§4a built, §4b described not built)
 
-### 4.1 Future (a) — vuln classes per endpoint shape
+### 4.1 §4a — vuln classes per endpoint shape — BUILT
 
 Same `propose → validate → execute`, different question. Given an
-`Endpoint`/`Parameter` shape (method, path, param location, `inferred_sink_type`,
-content-type, form fields), Claude proposes which vuln classes to probe first,
-e.g. `["sqli", "xss_reflected"]` vs `["path_traversal"]`.
+`Endpoint`/`Parameter` shape (method, path, param location,
+`inferred_sink_type`, Host technology), Claude proposes which vuln classes
+to probe first, e.g. `["sqli", "xss_reflected"]` vs `["path_traversal"]`.
 
-- Proposal is a subset of a fixed `VULN_CLASS_ALLOWLIST` set
-  (`sqli`, `xss_reflected`, `xss_stored`, `path_traversal`, `ssti`, `ssrf`,
-  `nosqli`, `ldap_injection`, `command_injection`, `jwt_forgery`,
-  `clickjacking`, `cors_misconfig`, `csrf_missing_protection`, `bola`,
-  `mass_assignment`, …). Validated against that set; outside → safe default
-  ordering.
-- Execution is unchanged: `get_payloads(vuln_class, sink)` → `fire_request` →
-  `run_oracle` → `Validator`. Model picks which class to try first, not
-  whether it is confirmed.
+- Allowlist: `VULN_CLASS_ALLOWLIST` in `src/reachagent/recon/vuln_tuning.py`
+  — 22 classes with existing oracle wiring (`sqli`…`race`), no invented
+  string. Safe default is `_SAFE_DEFAULT_CLASSES` (sink-matched ordering).
+- Interface: `propose_vuln_targets(endpoint_signals) -> VulnTargetChoice`
+  via `VulnTunerClient` Protocol / `AnthropicVulnClient` (Anthropic-only,
+  same swappable shape as `live_tuning.py`), validated per-item against
+  `VULN_CLASS_ALLOWLIST` + dedup + empty→fallback before return.
+- Wiring: `_live_vuln_class_for(selection, graph, base_url)` in
+  `src/reachagent/scan/entrypoint.py` — flag-gated `REACHAGENT_VULN_TUNING=1`
+  or `REACHAGENT_RECON_LIVE_TUNING=1` (default OFF), reads
+  `Endpoint`/`Parameter`/`Host` shape from graph, calls proposer, re-validates
+  against same allowlist + sink-compatibility check (`_sink_for_vuln_class`
+  vs `param.inferred_sink_type`) before overriding `vuln_class`. Proposal-only
+  — never fires, never calls `run_oracle`/`write_finding`, never invents
+  strings.
 
-### 4.2 Future (b) — payload choice from already-existing tagged library
+### 4.2 Future (b) — payload choice from already-existing tagged library — described not built
 
 Same pattern. Claude picks which existing tagged payload from the
 already-loaded `PayloadLibrary` to fire first, e.g. WordPress `author`
@@ -159,9 +165,9 @@ before generic fuzz.
 - Firing and confirmation unchanged. Blast radius is ordering, not new
   payloads.
 
-Do not build (a) or (b) in this commit. The design accounts for them so
-the interface stays provider-neutral and the allowlist discipline is
-pre-proven before the proposer question gets richer.
+§4a built; §4b still described not built. The interface stays
+provider-neutral and the allowlist discipline is pre-proven before the
+proposer question gets richer.
 
 ## 5. Blast radius and what live reasoning will never do
 
