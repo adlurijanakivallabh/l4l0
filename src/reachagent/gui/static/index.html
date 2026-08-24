@@ -1,0 +1,63 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>ReachAgent GUI — LLM-driven pentest</title>
+<style>
+  body{font-family:system-ui,sans-serif;max-width:900px;margin:2rem auto;padding:0 1rem}
+  input,button{padding:.5rem;font-size:1rem}
+  #log{white-space:pre-wrap;background:#f6f6f6;padding:1rem;border-radius:.5rem;max-height:300px;overflow:auto}
+  table{border-collapse:collapse;width:100%}
+  th,td{border:1px solid #ddd;padding:.4rem;text-align:left}
+  th{background:#f0f0f0}
+</style>
+<h1>ReachAgent GUI — LLM-driven</h1>
+<p>Prompt in → LLM drives recon (profile) → endpoints → payloads → report. Flag-gated, allowlist-validated, 6 oracles.</p>
+<label>Target URL <input id="target" placeholder="http://localhost:5000" style="width:360px"></label><br><br>
+<label>In-scope (comma) <input id="scope" placeholder="localhost,127.0.0.1" style="width:360px"></label><br><br>
+<label><input type="checkbox" id="use_llm"> Use LLM (ANTHROPIC_API_KEY must be set on server)</label><br><br>
+<button id="go">Start scan</button> <span id="status"></span>
+<h2>Findings</h2>
+<div id="report">No scan yet.</div>
+<table id="tbl" style="display:none"><thead><tr><th>finding_id</th><th>vuln_class</th><th>severity</th><th>oracle</th><th>evidence</th><th>status</th></tr></thead><tbody id="tbody"></tbody></table>
+<pre id="log"></pre>
+<script>
+const $ = id=>document.getElementById(id);
+let scanId=null, timer=null;
+$("go").onclick=async()=>{
+  const target=$("target").value.trim(), scope=$("scope").value.trim(), use_llm=$("use_llm").checked;
+  if(!target){alert("target required");return;}
+  $("status").textContent="starting…";
+  const r=await fetch("/api/scan",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({target,in_scope:scope,use_llm})});
+  const j=await r.json();
+  if(j.error){$("status").textContent=j.error;return;}
+  scanId=j.scan_id; $("status").textContent="running "+scanId;
+  $("report").textContent="Running… polling every 1s";
+  if(timer) clearInterval(timer);
+  timer=setInterval(poll,1000);
+};
+async function poll(){
+  if(!scanId) return;
+  const r=await fetch("/api/scan/"+scanId);
+  const j=await r.json();
+  $("status").textContent=j.status;
+  $("log").textContent=JSON.stringify(j,null,2);
+  if(j.findings && j.findings.length){
+    $("tbl").style.display="table";
+    const tb=$("tbody"); tb.innerHTML="";
+    j.findings.forEach(f=>{
+      const tr=document.createElement("tr");
+      tr.innerHTML=`<td>${f.finding_id}</td><td>${f.vuln_class}</td><td>${f.severity}</td><td>${f.oracle_used}</td><td>${f.evidence_ref}</td><td>${f.status}</td>`;
+      tb.appendChild(tr);
+    });
+  }
+  if(j.report_md) $("report").innerHTML="<pre>"+j.report_md.replace(/</g,"&lt;")+"</pre>";
+  if(j.status==="done" || j.status==="error"){
+    clearInterval(timer);
+    if(j.status==="done"){
+      // fetch LLM report
+      const rr=await fetch("/api/report/"+scanId);
+      const rj=await rr.json();
+      if(rj.report_md) $("report").innerHTML="<h3>LLM Report</h3><pre>"+rj.report_md.replace(/</g,"&lt;")+"</pre>"+$("report").innerHTML;
+    }
+  }
+}
+</script>

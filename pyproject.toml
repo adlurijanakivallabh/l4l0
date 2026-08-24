@@ -17,6 +17,8 @@ dependencies = [
     "playwright>=1.61.0",
     "defusedxml>=0.7.1",
     "textual>=8.2.8",
+    "fastapi>=0.110,<1.0",
+    "uvicorn>=0.30,<1.0",
 ]
 
 [project.scripts]
@@ -24,6 +26,7 @@ dependencies = [
 reachagent-mcp = "reachagent.mcp.server:main"
 reachagent-scan = "reachagent.scan.cli:main"
 reachagent-tui = "reachagent.tui.app:main"
+reachagent-gui = "reachagent.gui.app:main"
 
 [dependency-groups]
 dev = [
@@ -54,6 +57,8 @@ select = ["E", "F", "I", "W", "UP", "B", "S"]
 [tool.ruff.lint.per-file-ignores]
 # Assertions, non-crypto randomness, and dummy credentials are expected in tests.
 "tests/**" = ["S101", "S311", "S105", "S106"]
+# Single-file HTML template — long CSS/JS lines are the minimal one-string page.
+"src/reachagent/gui/**" = ["E501"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

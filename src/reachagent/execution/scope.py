@@ -79,9 +79,7 @@ class ScopeGuard:
         self._deny: list[ScopeRule] = list(deny_rules or [])
 
     @classmethod
-    def from_hosts(
-        cls, hosts: list[str], deny_hosts: list[str] | None = None
-    ) -> ScopeGuard:
+    def from_hosts(cls, hosts: list[str], deny_hosts: list[str] | None = None) -> ScopeGuard:
         """Build a guard that allows the given hosts in full (any path).
 
         ``hosts`` and ``deny_hosts`` may contain ``*.example.com`` wildcards.
@@ -92,9 +90,7 @@ class ScopeGuard:
         )
 
     @classmethod
-    def from_raw(
-        cls, in_scope: str | None, out_of_scope: str | None = None
-    ) -> ScopeGuard:
+    def from_raw(cls, in_scope: str | None, out_of_scope: str | None = None) -> ScopeGuard:
         """Comma-separated host patterns → guard (wildcard-aware)."""
 
         def _parse(raw: str | None) -> list[str]:
