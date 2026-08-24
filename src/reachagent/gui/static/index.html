@@ -53,12 +53,23 @@
   .out-ingested{color:var(--cyan)}
   .out-profile{color:var(--accent)}
   .muted{color:var(--muted)}
-  table{border-collapse:collapse;width:100%;font-size:.75rem}
-  th,td{border:1px solid var(--line);padding:.35rem .5rem;text-align:left;vertical-align:top}
-  th{color:var(--muted);font-weight:600;background:var(--panel2)}
-  #report{white-space:pre-wrap;background:var(--panel2);border:1px solid var(--line);border-radius:.4rem;padding:.7rem;font-size:.75rem;max-height:260px;overflow:auto}
-  .severe{font-weight:700}
-  .sev-critical{color:var(--err)} .sev-high{color:var(--warn)} .sev-medium{color:var(--warn)} .sev-low{color:var(--accent)}
+  #report{white-space:pre-wrap;background:var(--panel2);border:1px solid var(--line);border-radius:.4rem;padding:.7rem;font-size:.75rem;max-height:220px;overflow:auto}
+  /* findings dashboard */
+  #findings{display:flex;flex-direction:column;gap:.6rem;max-height:400px;overflow:auto}
+  .fcard{background:var(--panel2);border:1px solid var(--line);border-left:3px solid var(--muted);border-radius:.4rem;padding:.6rem .7rem}
+  .fcard.critical{border-left-color:var(--err)}
+  .fcard.high{border-left-color:var(--warn)}
+  .fcard.medium{border-left-color:var(--warn)}
+  .fcard.low{border-left-color:var(--accent)}
+  .fcard .fhead{display:flex;align-items:baseline;gap:.6rem}
+  .fcard .fclass{font-weight:700;font-size:.9rem}
+  .fcard .fsev{font-size:.64rem;text-transform:uppercase;letter-spacing:.05em;padding:.08rem .45rem;border-radius:.3rem;background:var(--panel);border:1px solid var(--line)}
+  .fcard .fmeta{color:var(--muted);font-size:.72rem;margin-top:.35rem;line-height:1.55}
+  .fcard .fmeta b{color:var(--text);font-weight:600}
+  .chain{display:flex;align-items:center;flex-wrap:wrap;gap:.35rem;margin-top:.5rem;font-size:.72rem}
+  .cn{background:var(--panel);border:1px solid var(--accent);color:var(--accent);border-radius:.3rem;padding:.12rem .5rem;white-space:nowrap}
+  .ce{color:var(--muted);font-size:.6rem;text-transform:uppercase;letter-spacing:.04em}
+  .ce.derived{color:var(--ok)}
 </style>
 </head>
 <body>
@@ -105,12 +116,12 @@
       <div id="audit"><span class="muted">Waiting for a scan.</span></div>
     </div>
     <div class="card">
-      <h2>Findings</h2>
+      <h2>Findings dashboard — oracle-confirmed, severity-coded, with chains</h2>
+      <div id="findings"><span class="muted">No findings yet.</span></div>
+    </div>
+    <div class="card">
+      <h2>Report</h2>
       <div id="report">No findings yet.</div>
-      <table id="tbl" style="display:none;margin-top:.6rem">
-        <thead><tr><th>finding_id</th><th>vuln_class</th><th>severity</th><th>oracle</th><th>evidence</th><th>status</th></tr></thead>
-        <tbody id="tbody"></tbody>
-      </table>
     </div>
   </div>
 </main>
@@ -120,7 +131,6 @@ let scanId=null, timer=null;
 
 const KIND_BADGE={info:"b-info",step:"b-step",finding:"b-finding","not-applicable":"b-na",error:"b-error"};
 const PHASE_STEP={recon:"1 RECON",endpoints:"2 ENDPOINTS",payloads:"3 PAYLOADS",report:"4 REPORT"};
-const SEV_CLASS={critical:"sev-critical",high:"sev-high",medium:"sev-medium",low:"sev-low"};
 const OUT_CLASS={
   fired:"out-fired",refused:"out-refused",error:"out-error",ingested:"out-ingested",profile:"out-profile"
 };
@@ -175,18 +185,38 @@ function renderAudit(rows){
 }
 
 function renderFindings(findings){
-  const tb=$("tbody"); tb.innerHTML="";
-  if(findings&&findings.length){
-    $("tbl").style.display="table";
-    findings.forEach(f=>{
-      const tr=document.createElement("tr");
-      const sev=document.createElement("td"); sev.className="severe "+(SEV_CLASS[f.severity]||""); sev.textContent=f.severity||"";
-      [f.finding_id,f.vuln_class].forEach(v=>{const td=document.createElement("td");td.textContent=v||"";tr.appendChild(td);});
-      tr.appendChild(sev);
-      [f.oracle_used,f.evidence_ref,f.status].forEach(v=>{const td=document.createElement("td");td.textContent=v||"";tr.appendChild(td);});
-      tb.appendChild(tr);
-    });
-  } else { $("tbl").style.display="none"; }
+  const box=$("findings"); box.innerHTML="";
+  if(!findings||!findings.length){ box.innerHTML='<span class="muted">No findings yet.</span>'; return; }
+  findings.forEach(f=>{
+    const card=document.createElement("div");
+    card.className="fcard "+(f.severity||"");
+    const head=document.createElement("div"); head.className="fhead";
+    const cls=document.createElement("span"); cls.className="fclass"; cls.textContent=f.vuln_class||"";
+    const sev=document.createElement("span"); sev.className="fsev"; sev.textContent=f.severity||"";
+    head.append(cls,sev); card.appendChild(head);
+    const meta=document.createElement("div"); meta.className="fmeta";
+    meta.innerHTML="<b>oracle:</b> "+(f.oracle_used||"-")+
+      " &nbsp;<b>evidence:</b> "+(f.evidence_ref||"-")+
+      " &nbsp;<b>status:</b> "+(f.status||"-")+
+      (f.chain_precondition?" &nbsp;<b>precondition:</b> "+f.chain_precondition:"");
+    card.appendChild(meta);
+    if(f.chains&&f.chains.length){
+      f.chains.forEach(ch=>{
+        const row=document.createElement("div"); row.className="chain";
+        ch.nodes.forEach((n,i)=>{
+          const cn=document.createElement("span"); cn.className="cn"; cn.textContent=n; row.appendChild(cn);
+          if(i<ch.kinds.length){
+            const e=document.createElement("span");
+            e.className="ce "+(ch.kinds[i]==="derived_credential"?"derived":"");
+            e.textContent=ch.kinds[i]==="derived_credential"?"⟶ credential":"⟶ enables";
+            row.appendChild(e);
+          }
+        });
+        card.appendChild(row);
+      });
+    }
+    box.appendChild(card);
+  });
 }
 
 $("go").onclick=async()=>{

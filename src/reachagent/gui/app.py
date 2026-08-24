@@ -198,6 +198,36 @@ def _graph_snapshot(graph: ReachabilityGraph | None) -> dict[str, Any]:
     }
 
 
+def _chain_label(graph: ReachabilityGraph, node: str) -> str:
+    """Short human label for a chain-path node (real graph node ids → class/kind)."""
+    if node.startswith("finding:"):
+        parts = node.split(":", 2)
+        return parts[1] if len(parts) > 1 else node
+    if node.startswith("session:"):
+        return "session"
+    if node.startswith("identity:"):
+        return node.split(":", 1)[1] if ":" in node else node
+    return node
+
+
+def _chains_for(graph: ReachabilityGraph, finding_node: str) -> list[dict[str, Any]]:
+    """The connected multi-hop paths from ``finding_node`` over chain edges (real data).
+
+    Each path is the ``chain_paths`` result: a run of ``Finding →enables→ Finding`` and
+    ``Finding →derived_credential→ Session|Identity`` edges, with the edge kind labelled
+    so the frontend can draw the chain (enables vs credential-yield).
+    """
+    derived = set(graph.derived_credential_edges())
+    out: list[dict[str, Any]] = []
+    for path in graph.chain_paths(finding_node):
+        kinds: list[str] = []
+        for i in range(len(path) - 1):
+            edge = (path[i], path[i + 1])
+            kinds.append("derived_credential" if edge in derived else "enables")
+        out.append({"nodes": [_chain_label(graph, n) for n in path], "kinds": kinds})
+    return out
+
+
 def _finding_rows(graph: ReachabilityGraph | None) -> list[dict[str, Any]]:
     if graph is None:
         return []
@@ -211,6 +241,9 @@ def _finding_rows(graph: ReachabilityGraph | None) -> list[dict[str, Any]]:
                 "oracle_used": getattr(f, "oracle_used", ""),
                 "evidence_ref": getattr(f, "evidence_ref", ""),
                 "status": getattr(getattr(f, "status", ""), "value", str(getattr(f, "status", ""))),
+                "metadata": dict(getattr(f, "metadata", {}) or {}),
+                "chain_precondition": (getattr(f, "metadata", {}) or {}).get("chain_precondition"),
+                "chains": _chains_for(graph, fid),
             }
         )
     return rows
