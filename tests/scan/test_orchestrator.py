@@ -1,0 +1,124 @@
+"""Hermetic test for the all-class orchestrator (plan v2)."""
+
+from __future__ import annotations
+
+import httpx
+
+from reachagent.scan.orchestrator import (
+    ALL_CLASSES,
+    ScanEvent,
+    scan_all_classes,
+)
+
+_SQL_ERROR = 'You have an error in your SQL syntax; near "\'"'
+
+
+def _handler(request: httpx.Request) -> httpx.Response:
+    """A small target: SQLi on /users/v1/{username} + a clickjacking/cors/csrf-prone /."""
+    path = request.url.path
+    origin = request.headers.get("origin", "")
+    # The root page ships no framing defense, a SameSite=None session cookie, and
+    # reflects any Origin with credentials — the three structural findings.
+    if path == "/":
+        headers = {
+            "content-type": "text/html",
+            "set-cookie": "session=abc; Path=/; SameSite=None; Secure",
+            "access-control-allow-origin": origin or "*",
+            "access-control-allow-credentials": "true",
+        }
+        return httpx.Response(200, text="<html>reachagent</html>", headers=headers)
+    if path in ("/users/v1", "/items"):
+        return httpx.Response(200, json={"users": [{"username": "name1"}]})
+    if path.startswith("/users/v1/"):
+        seg = path.rsplit("/", 1)[-1]
+        if seg.endswith("'"):
+            return httpx.Response(500, text=_SQL_ERROR)
+        if seg.startswith("reachagent-canary-"):
+            return httpx.Response(404, text="not found")
+        return httpx.Response(200, json={"username": "name1"})
+    if path.startswith("/items/"):
+        q = request.url.params.get("probe", "")
+        if q.endswith("'"):
+            return httpx.Response(500, text=_SQL_ERROR)
+        if q.startswith("reachagent-canary-"):
+            return httpx.Response(404, text="not found")
+        return httpx.Response(200, json={"username": "name1"})
+    return httpx.Response(404, text="not found")
+
+
+def _surface(tmp_path) -> str:  # noqa: ANN001
+    surface = tmp_path / "surface.yaml"
+    surface.write_text(
+        "endpoints:\n"
+        "  - method: GET\n    path: /\n"
+        "  - method: GET\n    path: /users/v1\n"
+        "  - method: GET\n    path: /users/v1/{username}\n"
+        "    parameters:\n      - name: username\n        location: path\n"
+    )
+    return str(surface)
+
+
+def test_scan_all_classes_detects_sqli_and_structural(tmp_path) -> None:  # noqa: ANN001
+    from reachagent.payloads import PayloadLibrary
+
+    events: list[ScanEvent] = []
+    result = scan_all_classes(
+        base_url="https://example.com",
+        in_scope="example.com",
+        transport=httpx.MockTransport(_handler),
+        surface_path=_surface(tmp_path),
+        events=events,
+        library=PayloadLibrary.from_file(),
+    )
+    classes = {f.vuln_class for _fid, f in result["graph"].findings()}
+    # The generic sink loop confirms sqli; the structural-header pass confirms the
+    # three client-side classes from the root page headers.
+    assert "sqli" in classes
+    assert {"clickjacking", "cors_misconfig", "csrf_missing_protection"} <= classes
+    # Every finding carries deterministic oracle provenance.
+    for _fid, f in result["graph"].findings():
+        assert f.status.value == "confirmed_violation"
+        assert f.oracle_used
+    # The phase timeline captured the three phases.
+    assert any(e.phase == "recon" for e in result["events"])
+    assert any(e.phase == "payloads" for e in result["events"])
+
+
+def test_all_classes_enum_is_stable() -> None:
+    # The orchestrator dispatches every class in the §9 coverage target.
+    assert "sqli" in ALL_CLASSES
+    assert "race" in ALL_CLASSES
+    assert len(ALL_CLASSES) >= 22
+
+
+def _clean_handler(request: httpx.Request) -> httpx.Response:
+    """A properly-hardened target: no SQL errors, full framing/CORS/CSRF defenses."""
+    path = request.url.path
+    headers = {
+        "x-frame-options": "DENY",
+        "content-security-policy": "frame-ancestors 'self'",
+        "set-cookie": "session=abc; Path=/; SameSite=Strict",
+        "access-control-allow-origin": "https://trusted.example",
+    }
+    if path in ("/users/v1", "/items"):
+        return httpx.Response(200, json={"users": [{"username": "name1"}]}, headers=headers)
+    if path.startswith("/users/v1/") or path.startswith("/items/"):
+        return httpx.Response(200, json={"username": "name1"}, headers=headers)
+    if path == "/":
+        return httpx.Response(200, text="<html>safe</html>", headers=headers)
+    return httpx.Response(404, text="not found")
+
+
+def test_clean_target_zero_findings(tmp_path) -> None:  # noqa: ANN001
+    """The orchestrator reports no findings on a hardened target (FP honesty)."""
+    from reachagent.payloads import PayloadLibrary
+
+    result = scan_all_classes(
+        base_url="https://safe.example",
+        in_scope="safe.example",
+        transport=httpx.MockTransport(_clean_handler),
+        surface_path=_surface(tmp_path),
+        library=PayloadLibrary.from_file(),
+    )
+    assert result["graph"].findings() == []
+    assert result["findings"] == []

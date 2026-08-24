@@ -417,8 +417,32 @@ def get_profile_for_target(
     client: ReconProfileClient | None = None,
 ) -> ReconProfile | None:
     """Flag-gated, double-validated profile lookup — single helper for 5 runners."""  # noqa: E501  # ponytail: 5× copy → 1
-    if os.environ.get("REACHAGENT_RECON_PROFILE") != "1":
+    decision = profile_decision(target, client=client)
+    name = decision.get("profile", "default")
+    if name == "default":
         return None
+    return RECON_PROFILES.get(name)
+
+
+def profile_decision(
+    target: str,
+    *,
+    client: ReconProfileClient | None = None,
+) -> dict[str, str]:
+    """The recon-profile decision for ``target`` as display data (real, not a stub).
+
+    The GUI's live scan-progress view shows exactly what the runners would use:
+    the LLM pick (or the fallback) plus *why*. ``profile`` is the chosen profile name
+    or ``"default"``; ``reason`` explains the pick / fallback / disabled state;
+    ``signals`` is the target-signal summary that drove the pick.
+    """
+    if os.environ.get("REACHAGENT_RECON_PROFILE") != "1":
+        return {
+            "profile": "default",
+            "reason": "LLM recon profile disabled (REACHAGENT_RECON_PROFILE unset) — "
+            "default wordlist",
+            "signals": "",
+        }
     try:
         signals = _collect_target_signals(target)
         profile = propose_recon_profile(signals, client=client)
@@ -426,18 +450,35 @@ def get_profile_for_target(
         allowed_wl = set(RECON_ALLOWLIST["wordlists"])
         allowed_flags = {tuple(p) for p in RECON_ALLOWLIST["flag_presets"]}
         allowed_codes = set(RECON_ALLOWLIST["status_codes"])
+        name = _profile_name_of(profile)
+        signal_summary = "; ".join(f"{k}={v}" for k, v in sorted(signals.items()))
         if (
             profile.wordlist in allowed_wl
             and profile.flags in allowed_flags
             and profile.status_codes in allowed_codes
             and profile in RECON_PROFILES.values()
         ):
-            return profile
+            return {
+                "profile": name,
+                "reason": (
+                    f"LLM picked '{name}' — wordlist={profile.wordlist.split('/')[-1]}, "
+                    f"flags={' '.join(profile.flags) or 'default'}, codes={profile.status_codes}"
+                ),
+                "signals": signal_summary,
+            }
         _log.warning("profile double-validation failed: %r", profile)
-        return None
-    except Exception as exc:  # noqa: BLE001 — must never crash caller
+        return {
+            "profile": "default",
+            "reason": f"'{name}' failed double-validation — safe default used",
+            "signals": signal_summary,
+        }
+    except Exception as exc:  # noqa: BLE001 — must never crash the scan
         _log.debug("profile lookup fallback: %s", exc)
-        return None
+        return {
+            "profile": "default",
+            "reason": f"profile lookup failed ({type(exc).__name__}) — safe default used",
+            "signals": "",
+        }
 
 
 def profile_argv(  # ponytail: 5× copy → 1

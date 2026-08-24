@@ -16,17 +16,15 @@ dependencies = [
     "mcp>=1.2,<2.0",
     "playwright>=1.61.0",
     "defusedxml>=0.7.1",
-    "textual>=8.2.8",
     "fastapi>=0.110,<1.0",
     "uvicorn>=0.30,<1.0",
 ]
 
 [project.scripts]
-# MCP server entry point — human-in-the-loop driving via Claude Desktop/Code (§13)
-reachagent-mcp = "reachagent.mcp.server:main"
-reachagent-scan = "reachagent.scan.cli:main"
-reachagent-tui = "reachagent.tui.app:main"
+# Web GUI — the primary entry point (no CLI, no TUI; plan v2)
 reachagent-gui = "reachagent.gui.app:main"
+# MCP server — human-in-the-loop driving via Claude Desktop/Code (§13)
+reachagent-mcp = "reachagent.mcp.server:main"
 
 [dependency-groups]
 dev = [
@@ -49,6 +47,8 @@ packages = ["src/reachagent"]
 src = ["src", "tests"]
 target-version = "py313"
 line-length = 100
+# Vendored payload corpora are upstream files, never our code — never lint them.
+exclude = ["third_party", ".claude", ".venv"]
 
 [tool.ruff.lint]
 # Baseline + security lint (S = bandit-equivalent, per CLAUDE.md).

@@ -1,63 +1,230 @@
 <!doctype html>
+<html lang="en">
+<head>
 <meta charset="utf-8">
-<title>ReachAgent GUI — LLM-driven pentest</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ReachAgent — live scan progress</title>
 <style>
-  body{font-family:system-ui,sans-serif;max-width:900px;margin:2rem auto;padding:0 1rem}
-  input,button{padding:.5rem;font-size:1rem}
-  #log{white-space:pre-wrap;background:#f6f6f6;padding:1rem;border-radius:.5rem;max-height:300px;overflow:auto}
-  table{border-collapse:collapse;width:100%}
-  th,td{border:1px solid #ddd;padding:.4rem;text-align:left}
-  th{background:#f0f0f0}
+  :root{
+    --bg:#0f1115; --panel:#171a21; --panel2:#1e222b; --line:#2a2f3a;
+    --text:#d7dce5; --muted:#8b93a3; --accent:#4ea1ff;
+    --ok:#3fb950; --warn:#d29922; --err:#f85149; --cyan:#39c5cf;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;background:var(--bg);color:var(--text);font-size:13px}
+  header{padding:.9rem 1.25rem;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:1rem;flex-wrap:wrap}
+  header h1{font-size:1rem;margin:0;letter-spacing:.02em}
+  #phase{display:inline-block;padding:.15rem .6rem;border:1px solid var(--accent);border-radius:999px;font-size:.75rem;color:var(--accent)}
+  #status{margin-left:auto;font-size:.8rem;color:var(--muted)}
+  main{display:grid;grid-template-columns:minmax(320px,380px) 1fr;gap:1rem;padding:1rem 1.25rem}
+  @media (max-width:900px){ main{grid-template-columns:1fr} }
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:.6rem;padding:1rem;margin-bottom:1rem}
+  .card h2{font-size:.72rem;text-transform:uppercase;letter-spacing:.09em;color:var(--muted);margin:0 0 .7rem}
+  label{display:block;font-size:.75rem;color:var(--muted);margin-bottom:.5rem}
+  input[type=text],input[type=number]{width:100%;background:var(--panel2);border:1px solid var(--line);color:var(--text);padding:.42rem .6rem;border-radius:.4rem;margin-bottom:.55rem;font:inherit}
+  .row{display:flex;gap:1rem;align-items:center;margin-bottom:.55rem}
+  .row label{margin:0;white-space:nowrap}
+  button{background:var(--accent);color:#04121f;border:0;padding:.5rem 1rem;border-radius:.4rem;font-weight:700;cursor:pointer;font:inherit}
+  button:hover{filter:brightness(1.1)}
+  .counts{display:grid;grid-template-columns:repeat(5,1fr);gap:.5rem}
+  .count{background:var(--panel2);border:1px solid var(--line);border-radius:.4rem;padding:.5rem;text-align:center}
+  .count b{display:block;font-size:1.3rem;color:var(--accent)}
+  .count span{font-size:.68rem;color:var(--muted);text-transform:uppercase;letter-spacing:.05em}
+  #profilecard{border-left:3px solid var(--accent)}
+  #profilecard .pname{font-size:1.05rem;color:var(--accent);font-weight:700}
+  #profilecard .preason{color:var(--muted);font-size:.78rem;margin-top:.3rem;line-height:1.4}
+  #profilecard .psignals{color:var(--muted);font-size:.7rem;margin-top:.3rem;opacity:.8}
+  #timeline{max-height:200px;overflow:auto;display:flex;flex-direction:column;gap:.3rem}
+  .ev{display:flex;gap:.5rem;align-items:baseline;font-size:.78rem;line-height:1.35}
+  .ev .ph{color:var(--muted);min-width:70px;font-size:.68rem;text-transform:lowercase}
+  .badge{flex:0 0 auto;border-radius:.3rem;padding:.05rem .4rem;font-size:.64rem;text-transform:uppercase}
+  .b-info{color:var(--muted);border:1px solid var(--line)}
+  .b-step{color:var(--accent);border:1px solid var(--accent)}
+  .b-finding{color:var(--ok);border:1px solid var(--ok)}
+  .b-na{color:var(--warn);border:1px solid var(--warn)}
+  .b-error{color:var(--err);border:1px solid var(--err)}
+  #audit{max-height:300px;overflow:auto;background:var(--panel2);border:1px solid var(--line);border-radius:.4rem;padding:.5rem .6rem;font-size:.72rem;line-height:1.55}
+  .al{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .al .ts{color:var(--muted)}
+  .al .id{color:var(--accent)}
+  .out-fired{color:var(--ok)}
+  .out-refused{color:var(--err)}
+  .out-error{color:var(--warn)}
+  .out-ingested{color:var(--cyan)}
+  .out-profile{color:var(--accent)}
+  .muted{color:var(--muted)}
+  table{border-collapse:collapse;width:100%;font-size:.75rem}
+  th,td{border:1px solid var(--line);padding:.35rem .5rem;text-align:left;vertical-align:top}
+  th{color:var(--muted);font-weight:600;background:var(--panel2)}
+  #report{white-space:pre-wrap;background:var(--panel2);border:1px solid var(--line);border-radius:.4rem;padding:.7rem;font-size:.75rem;max-height:260px;overflow:auto}
+  .severe{font-weight:700}
+  .sev-critical{color:var(--err)} .sev-high{color:var(--warn)} .sev-medium{color:var(--warn)} .sev-low{color:var(--accent)}
 </style>
-<h1>ReachAgent GUI — LLM-driven</h1>
-<p>Prompt in → LLM drives recon (profile) → endpoints → payloads → report. Flag-gated, allowlist-validated, 6 oracles.</p>
-<label>Target URL <input id="target" placeholder="http://localhost:5000" style="width:360px"></label><br><br>
-<label>In-scope (comma) <input id="scope" placeholder="localhost,127.0.0.1" style="width:360px"></label><br><br>
-<label><input type="checkbox" id="use_llm"> Use LLM (ANTHROPIC_API_KEY must be set on server)</label><br><br>
-<button id="go">Start scan</button> <span id="status"></span>
-<h2>Findings</h2>
-<div id="report">No scan yet.</div>
-<table id="tbl" style="display:none"><thead><tr><th>finding_id</th><th>vuln_class</th><th>severity</th><th>oracle</th><th>evidence</th><th>status</th></tr></thead><tbody id="tbody"></tbody></table>
-<pre id="log"></pre>
+</head>
+<body>
+<header>
+  <h1>ReachAgent — live scan progress</h1>
+  <span id="phase">idle</span>
+  <span id="status">Enter a target and start.</span>
+</header>
+<main>
+  <div>
+    <div class="card">
+      <h2>Scan</h2>
+      <label>Target URL <input id="target" placeholder="http://localhost:5000"></label>
+      <label>In-scope (comma) <input id="scope" placeholder="localhost,127.0.0.1"></label>
+      <label>Out-of-scope (optional) <input id="outscope" placeholder="admin.localhost"></label>
+      <label>Identities file (optional YAML) <input id="idents" placeholder="config/vampi-identities.example.yaml"></label>
+      <label>Max payload attempts <input id="attempts" type="number" value="20" min="5" max="200"></label>
+      <div class="row"><label><input type="checkbox" id="use_llm"> Use LLM</label></div>
+      <button id="go">Start scan</button>
+      <p class="muted" style="font-size:.68rem;margin:.6rem 0 0">LLM proposes the recon profile, vuln-class priority &amp; payload order; findings only from the 6 deterministic oracles. Use LLM needs a server-side ANTHROPIC_API_KEY.</p>
+    </div>
+    <div class="card">
+      <h2>Recon profile (LLM decision)</h2>
+      <div id="profilecard"><span class="muted">No scan yet.</span></div>
+    </div>
+    <div class="card">
+      <h2>Graph state (live)</h2>
+      <div id="counts" class="counts">
+        <div class="count"><b id="c-hosts">0</b><span>hosts</span></div>
+        <div class="count"><b id="c-services">0</b><span>services</span></div>
+        <div class="count"><b id="c-endpoints">0</b><span>endpoints</span></div>
+        <div class="count"><b id="c-params">0</b><span>params</span></div>
+        <div class="count"><b id="c-findings">0</b><span>findings</span></div>
+      </div>
+    </div>
+    <div class="card">
+      <h2>Phase timeline</h2>
+      <div id="timeline"><span class="muted" style="font-size:.75rem">No scan yet.</span></div>
+    </div>
+  </div>
+  <div>
+    <div class="card">
+      <h2>Live audit log — real ReachAgent execution trail</h2>
+      <div id="audit"><span class="muted">Waiting for a scan.</span></div>
+    </div>
+    <div class="card">
+      <h2>Findings</h2>
+      <div id="report">No findings yet.</div>
+      <table id="tbl" style="display:none;margin-top:.6rem">
+        <thead><tr><th>finding_id</th><th>vuln_class</th><th>severity</th><th>oracle</th><th>evidence</th><th>status</th></tr></thead>
+        <tbody id="tbody"></tbody>
+      </table>
+    </div>
+  </div>
+</main>
 <script>
-const $ = id=>document.getElementById(id);
+const $=id=>document.getElementById(id);
 let scanId=null, timer=null;
+
+const KIND_BADGE={info:"b-info",step:"b-step",finding:"b-finding","not-applicable":"b-na",error:"b-error"};
+const PHASE_STEP={recon:"1 RECON",endpoints:"2 ENDPOINTS",payloads:"3 PAYLOADS",report:"4 REPORT"};
+const SEV_CLASS={critical:"sev-critical",high:"sev-high",medium:"sev-medium",low:"sev-low"};
+const OUT_CLASS={
+  fired:"out-fired",refused:"out-refused",error:"out-error",ingested:"out-ingested",profile:"out-profile"
+};
+
+function renderProfile(events){
+  // The recon-profile decision is the first "recon" step event (real LLM decision).
+  const ev=(events||[]).find(e=>e.phase==="recon"&&e.kind==="step");
+  if(!ev){ $("profilecard").innerHTML='<span class="muted">Awaiting recon…</span>'; return; }
+  const d=ev.details||{};
+  $("profilecard").innerHTML=
+    '<div class="pname">'+(d.profile||"default")+'</div>'+
+    '<div class="preason">'+(ev.message||"")+'</div>'+
+    (d.signals?'<div class="psignals">signals: '+d.signals+'</div>':'');
+}
+
+function renderCounts(g){
+  const c=(g&&g.counts)||{};
+  $("c-hosts").textContent=c.hosts||0;
+  $("c-services").textContent=c.services||0;
+  $("c-endpoints").textContent=c.endpoints||0;
+  $("c-params").textContent=c.parameters||0;
+  $("c-findings").textContent=c.findings||0;
+}
+
+function renderTimeline(events){
+  const tl=$("timeline"); tl.innerHTML="";
+  if(!events||!events.length){ tl.innerHTML='<span class="muted" style="font-size:.75rem">No scan yet.</span>'; return; }
+  events.forEach(e=>{
+    const div=document.createElement("div"); div.className="ev";
+    const ph=document.createElement("span"); ph.className="ph"; ph.textContent=PHASE_STEP[e.phase]||e.phase;
+    const badge=document.createElement("span"); badge.className="badge "+(KIND_BADGE[e.kind]||"b-info"); badge.textContent=e.kind;
+    const msg=document.createElement("span"); msg.textContent=e.message;
+    div.append(ph,badge,msg); tl.appendChild(div);
+  });
+  tl.scrollTop=tl.scrollHeight;
+}
+
+function renderAudit(rows){
+  const a=$("audit"); a.innerHTML="";
+  if(!rows||!rows.length){ a.innerHTML='<span class="muted">Waiting for a scan.</span>'; return; }
+  rows.forEach(r=>{
+    const div=document.createElement("div"); div.className="al";
+    const ts=document.createElement("span"); ts.className="ts"; ts.textContent=(r.timestamp||"").slice(11,19)+" ";
+    const id=document.createElement("span"); id.className="id"; id.textContent=(r.identity||"")+" ";
+    const m=document.createElement("span"); m.className="muted"; m.textContent=(r.method||"").padEnd(6)+" ";
+    const tgt=document.createElement("span"); tgt.className="muted"; tgt.textContent=(r.target||"")+" ";
+    const key=(r.outcome||"").split(":")[0];
+    const out=document.createElement("span"); out.className=OUT_CLASS[key]||""; out.textContent=r.outcome||"";
+    div.append(ts,id,m,tgt,out); a.appendChild(div);
+  });
+  a.scrollTop=a.scrollHeight;
+}
+
+function renderFindings(findings){
+  const tb=$("tbody"); tb.innerHTML="";
+  if(findings&&findings.length){
+    $("tbl").style.display="table";
+    findings.forEach(f=>{
+      const tr=document.createElement("tr");
+      const sev=document.createElement("td"); sev.className="severe "+(SEV_CLASS[f.severity]||""); sev.textContent=f.severity||"";
+      [f.finding_id,f.vuln_class].forEach(v=>{const td=document.createElement("td");td.textContent=v||"";tr.appendChild(td);});
+      tr.appendChild(sev);
+      [f.oracle_used,f.evidence_ref,f.status].forEach(v=>{const td=document.createElement("td");td.textContent=v||"";tr.appendChild(td);});
+      tb.appendChild(tr);
+    });
+  } else { $("tbl").style.display="none"; }
+}
+
 $("go").onclick=async()=>{
-  const target=$("target").value.trim(), scope=$("scope").value.trim(), use_llm=$("use_llm").checked;
+  const target=$("target").value.trim(), scope=$("scope").value.trim()||target;
   if(!target){alert("target required");return;}
-  $("status").textContent="starting…";
-  const r=await fetch("/api/scan",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({target,in_scope:scope,use_llm})});
+  $("status").textContent="starting…"; $("phase").textContent="1 RECON";
+  renderProfile([]); renderCounts(null); renderTimeline([]); renderAudit([]); renderFindings([]);
+  $("report").textContent="Scanning…";
+  const body={target,in_scope:scope,out_of_scope:$("outscope").value.trim()||null,
+    max_attempts:parseInt($("attempts").value,10)||20,
+    use_llm:$("use_llm").checked,
+    identities_path:$("idents").value.trim()||null};
+  const r=await fetch("/api/scan",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
   const j=await r.json();
   if(j.error){$("status").textContent=j.error;return;}
   scanId=j.scan_id; $("status").textContent="running "+scanId;
-  $("report").textContent="Running… polling every 1s";
   if(timer) clearInterval(timer);
   timer=setInterval(poll,1000);
 };
+
 async function poll(){
   if(!scanId) return;
   const r=await fetch("/api/scan/"+scanId);
   const j=await r.json();
-  $("status").textContent=j.status;
-  $("log").textContent=JSON.stringify(j,null,2);
-  if(j.findings && j.findings.length){
-    $("tbl").style.display="table";
-    const tb=$("tbody"); tb.innerHTML="";
-    j.findings.forEach(f=>{
-      const tr=document.createElement("tr");
-      tr.innerHTML=`<td>${f.finding_id}</td><td>${f.vuln_class}</td><td>${f.severity}</td><td>${f.oracle_used}</td><td>${f.evidence_ref}</td><td>${f.status}</td>`;
-      tb.appendChild(tr);
-    });
-  }
-  if(j.report_md) $("report").innerHTML="<pre>"+j.report_md.replace(/</g,"&lt;")+"</pre>";
-  if(j.status==="done" || j.status==="error"){
+  $("status").textContent=j.status+(j.phase?" — "+j.phase:"");
+  if(j.phase) $("phase").textContent=PHASE_STEP[j.phase]||j.phase;
+  renderProfile(j.events);
+  renderCounts(j.graph);
+  renderTimeline(j.events);
+  renderAudit(j.audit);
+  renderFindings(j.findings);
+  if(j.report_md) $("report").textContent=j.report_md;
+  if(j.status==="done"||j.status==="error"){
     clearInterval(timer);
-    if(j.status==="done"){
-      // fetch LLM report
-      const rr=await fetch("/api/report/"+scanId);
-      const rj=await rr.json();
-      if(rj.report_md) $("report").innerHTML="<h3>LLM Report</h3><pre>"+rj.report_md.replace(/</g,"&lt;")+"</pre>"+$("report").innerHTML;
-    }
+    if(j.status==="error"){ $("report").textContent="Error: "+(j.error||"unknown"); return; }
+    $("status").textContent="done — "+scanId+" (refresh the report in a later stage)";
   }
 }
 </script>
+</body>
+</html>

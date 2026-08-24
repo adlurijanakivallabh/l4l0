@@ -240,32 +240,8 @@ def test_no_surface_unchanged_cold_start() -> None:
     assert "/users/v1/{username}" not in paths
 
 
-def test_cli_surface_flag_passes_through(monkeypatch, tmp_path: Path) -> None:  # noqa: ANN001
-    import reachagent.scan.entrypoint as entry_mod
-
-    surface = tmp_path / "surface.yaml"
-    surface.write_text("endpoints:\n  - method: GET\n    path: /x\n")
-    seen: dict[str, object] = {}
-
-    def fake_scan(**kwargs: object) -> dict[str, object]:
-        seen.update(kwargs)
-        return {"dry_run": False, "findings": [], "plan": [], "graph": ReachabilityGraph()}
-
-    monkeypatch.setattr(entry_mod, "scan_target", fake_scan)
-    import reachagent.scan.cli as cli_mod
-
-    cli_mod.main(
-        [
-            "--target",
-            "https://example.com",
-            "--in-scope",
-            "example.com",
-            "--live",
-            "--surface",
-            str(surface),
-        ]
-    )
-    assert seen.get("surface_path") == str(surface)
+# Surface pass-through is exercised by tests/scan/test_orchestrator.py (the orchestrator
+# calls scan_target with surface_path and the seeded endpoints materialize in the graph).
 
 
 # -- AST: six families + no validator -------------------------------------------------

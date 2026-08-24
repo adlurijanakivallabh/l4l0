@@ -1,13 +1,18 @@
-"""Web GUI for LLM-driven pentest loop — FastAPI, no TUI/CLI dependency (plan §4).
+"""Web GUI for the full LLM-driven pentest loop — FastAPI, no CLI/TUI (plan v2).
 
-Shares scan/entrypoint:scan_target + ReachabilityGraph/AuditLog; no ScopeGuard
-bypass. LLM drives each phase via existing flag-gated helpers (profile → vuln
-→ payload → report), allowlist-validated. GUI only observes graph via SSE poll.
+The GUI drives ``scan/orchestrator.scan_all_classes`` — the four-phase loop that
+covers all 22 attack classes — and streams its phase events back over a poll.
+LLM usage is proposal-only (recon profile / vuln-class priority / payload choice /
+report narrative), every finding is ``run_oracle → is_violation → write_finding``,
+and the orchestrator shares ``ReachabilityGraph`` / ``AuditLog`` / ``ScopeGuard``
+(the same engine the headless entrypoint uses — no ScopeGuard bypass).
 """
 
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
+import os
 import uuid
 from typing import Any
 
@@ -15,11 +20,17 @@ from fastapi import FastAPI
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from reachagent.execution.audit import AuditLog
 from reachagent.graph.store import ReachabilityGraph
 from reachagent.report.renderer import render_findings_markdown
+from reachagent.scan.orchestrator import ScanEvent, scan_all_classes
 
-app = FastAPI(title="ReachAgent GUI", version="1.0")
-_scans: dict[str, dict[str, Any]] = {}  # id → {graph, audit, status, target}
+app = FastAPI(title="ReachAgent GUI", version="2.0")
+_scans: dict[str, dict[str, Any]] = {}  # id → {status, phase, events, findings, report_md, error}
+
+
+def _event_dict(e: ScanEvent) -> dict[str, Any]:
+    return {"phase": e.phase, "kind": e.kind, "message": e.message, "details": e.details}
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -30,48 +41,111 @@ def index() -> str:
         return "<h1>ReachAgent GUI</h1><p>static/index.html missing</p>"
 
 
+def _opt_str(value: Any) -> str | None:
+    """Coerce an optional JSON string: ``None``/empty → ``None``, never the literal "None"."""
+    return str(value).strip() if value else None
+
+
 @app.post("/api/scan")
 async def start_scan(payload: dict[str, Any]) -> JSONResponse:
-    target = str(payload.get("target", "")).strip()
-    in_scope = str(payload.get("in_scope", "")).strip() or target
+    target = str(payload.get("target", "") or "").strip()
+    in_scope = str(payload.get("in_scope", "") or "").strip() or target
+    out_of_scope = _opt_str(payload.get("out_of_scope"))
     use_llm = bool(payload.get("use_llm", False))
+    max_attempts = int(payload.get("max_attempts", 20))
+    identities_path = _opt_str(payload.get("identities_path"))
     if not target:
         return JSONResponse({"error": "target required"}, status_code=400)
     scan_id = uuid.uuid4().hex[:8]
-    _scans[scan_id] = {"target": target, "status": "running", "findings": []}
-    # run scan in background (ponytail: asyncio.create_task, not thread pool)
-    asyncio.create_task(_run_scan(scan_id, target, in_scope, use_llm))
+    _scans[scan_id] = {
+        "target": target,
+        "status": "running",
+        "phase": "recon",
+        "events": [],
+        "findings": [],
+        "report_md": "",
+    }
+    asyncio.create_task(
+        _run_scan(scan_id, target, in_scope, out_of_scope, use_llm, max_attempts, identities_path)
+    )
     return JSONResponse({"scan_id": scan_id, "status": "running"})
 
 
-async def _run_scan(scan_id: str, target: str, in_scope: str, use_llm: bool) -> None:
-    import os
+def _load_identities(path: str | None) -> tuple[Any | None, str | None]:
+    """Seed an IdentityStore from a GUI-provided secrets YAML (or env); ``(None, None)`` if unset."""
+    from reachagent.identity.store import IdentityStore
 
-    # flag-gated LLM for this scan only (no global env leak beyond task)
-    env_patch = {"REACHAGENT_RECON_PROFILE": "1"} if use_llm else {}
-    # reuse existing scan_target — LLM helpers are flag-gated inside
-    from reachagent.scan.entrypoint import scan_target
+    if path:
+        try:
+            return IdentityStore.from_secrets_file(path), None
+        except Exception as exc:  # noqa: BLE001 — bad identities file must not kill the scan
+            return None, f"identities file error: {exc}"
+    try:
+        return IdentityStore.from_env(), None
+    except Exception:  # noqa: BLE001 — no identities configured is a valid unauth scan
+        return None, None
 
-    # patch env for this task
+
+async def _run_scan(
+    scan_id: str,
+    target: str,
+    in_scope: str,
+    out_of_scope: str | None,
+    use_llm: bool,
+    max_attempts: int,
+    identities_path: str | None,
+) -> None:
+    # LLM helpers are flag-gated inside the engine; a per-scan env patch (restored in
+    # finally) enables ALL the proposal-only proposers — recon profile, vuln-class
+    # priority per endpoint, and payload-choice ranking — without leaking beyond this
+    # task. Each is allowlist-validated; the deterministic engine still confirms.
+    env_patch = (
+        {
+            "REACHAGENT_RECON_PROFILE": "1",
+            "REACHAGENT_VULN_TUNING": "1",
+            "REACHAGENT_PAYLOAD_TUNING": "1",
+        }
+        if use_llm
+        else {}
+    )
     old = {k: os.environ.get(k) for k in env_patch}
     try:
         for k, v in env_patch.items():
             os.environ[k] = v
-        # run in thread to not block event loop (scan does httpx + subprocess)
-        import concurrent.futures
+        identities, id_error = _load_identities(identities_path)
+        if id_error:
+            _scans[scan_id].update({"status": "error", "error": id_error})
+            return
+        # Live references: the GUI polls these SAME objects while the scan writes them,
+        # so the live view streams the real audit log + graph state + phase events.
+        graph = ReachabilityGraph()
+        audit = AuditLog()
+        events: list[ScanEvent] = []
+        _scans[scan_id].update({"graph": graph, "audit": audit, "events": events})
+
+        def _run() -> dict[str, Any]:
+            return scan_all_classes(
+                base_url=target,
+                in_scope=in_scope,
+                out_of_scope=out_of_scope,
+                max_attempts=max_attempts,
+                identities=identities,
+                events=events,
+                graph=graph,
+                audit=audit,
+            )
 
         loop = asyncio.get_running_loop()
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-            result = await loop.run_in_executor(
-                pool,
-                lambda: scan_target(base_url=target, in_scope=in_scope, dry_run=False, max_attempts=20),
-            )
-        g: ReachabilityGraph = result["graph"]
-        findings = g.findings()
-        # store markdown for report
-        md = render_findings_markdown(g)
-        _scans[scan_id].update({"status": "done", "findings": findings, "report_md": md, "graph": g})
-    except Exception as exc:  # noqa: BLE001
+            await loop.run_in_executor(pool, _run)
+
+        md = render_findings_markdown(graph)
+        if use_llm:
+            from reachagent.report.llm_report import generate_llm_report
+
+            md = generate_llm_report(graph)
+        _scans[scan_id].update({"status": "done", "phase": "report", "report_md": md})
+    except Exception as exc:  # noqa: BLE001 — a scan failure is surfaced, not swallowed
         _scans[scan_id].update({"status": "error", "error": str(exc)})
     finally:
         for ok, ov in old.items():
@@ -81,15 +155,55 @@ async def _run_scan(scan_id: str, target: str, in_scope: str, use_llm: bool) -> 
                 os.environ.pop(ok, None)
 
 
-@app.get("/api/scan/{scan_id}")
-def get_scan(scan_id: str) -> JSONResponse:
-    data = _scans.get(scan_id)
-    if not data:
-        return JSONResponse({"error": "not found"}, status_code=404)
-    # serialize findings for GUI table
-    findings = []
-    for fid, f in data.get("findings", []):
-        findings.append(
+def _audit_rows(audit: AuditLog | None) -> list[dict[str, Any]]:
+    """The live audit tail — one row per execution-layer action (real data)."""
+    if audit is None:
+        return []
+    return [
+        {
+            "timestamp": e.timestamp.isoformat(timespec="seconds"),
+            "identity": e.identity,
+            "method": e.method,
+            "target": e.target,
+            "outcome": e.outcome,
+        }
+        for e in audit.entries[-200:]
+    ]
+
+
+def _graph_snapshot(graph: ReachabilityGraph | None) -> dict[str, Any]:
+    """A live snapshot of the reachability graph the scan is building (real data)."""
+    if graph is None:
+        return {"counts": {}, "hosts": [], "endpoints": []}
+    return {
+        "counts": {
+            "hosts": len(graph.hosts()),
+            "services": len(graph.services()),
+            "endpoints": len(graph.endpoints()),
+            "parameters": sum(len(graph.parameters_of(ep)) for ep, _ in graph.endpoints()),
+            "findings": len(graph.findings()),
+        },
+        "hosts": [h.address for h_id, h in graph.hosts()[:20]],
+        "endpoints": [
+            {
+                "method": ep.method,
+                "path": ep.path,
+                "sinks": [
+                    p.inferred_sink_type.value if p.inferred_sink_type is not None else ""
+                    for _pn, p in graph.parameters_of(ep_id)
+                ],
+            }
+            for ep_id, ep in graph.endpoints()[:40]
+        ],
+    }
+
+
+def _finding_rows(graph: ReachabilityGraph | None) -> list[dict[str, Any]]:
+    if graph is None:
+        return []
+    rows = []
+    for fid, f in graph.findings():
+        rows.append(
             {
                 "finding_id": fid,
                 "vuln_class": getattr(f, "vuln_class", ""),
@@ -99,12 +213,25 @@ def get_scan(scan_id: str) -> JSONResponse:
                 "status": getattr(getattr(f, "status", ""), "value", str(getattr(f, "status", ""))),
             }
         )
+    return rows
+
+
+@app.get("/api/scan/{scan_id}")
+def get_scan(scan_id: str) -> JSONResponse:
+    data = _scans.get(scan_id)
+    if not data:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    graph: ReachabilityGraph | None = data.get("graph")
     return JSONResponse(
         {
             "scan_id": scan_id,
             "target": data.get("target"),
             "status": data.get("status"),
-            "findings": findings,
+            "phase": data.get("phase"),
+            "events": [_event_dict(e) for e in data.get("events", [])],
+            "audit": _audit_rows(data.get("audit")),
+            "graph": _graph_snapshot(graph),
+            "findings": _finding_rows(graph),
             "report_md": data.get("report_md", ""),
             "error": data.get("error"),
         }
@@ -116,11 +243,10 @@ def get_report(scan_id: str) -> JSONResponse:
     data = _scans.get(scan_id)
     if not data or "graph" not in data:
         return JSONResponse({"error": "not found or not done"}, status_code=404)
-    # LLM-driven report over confirmed findings only
     from reachagent.report.llm_report import generate_llm_report
 
-    g: ReachabilityGraph = data["graph"]
-    md = generate_llm_report(g)
+    graph: ReachabilityGraph = data["graph"]
+    md = generate_llm_report(graph)
     return JSONResponse({"scan_id": scan_id, "report_md": md})
 
 

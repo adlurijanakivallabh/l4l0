@@ -29,6 +29,7 @@ for it.
 
 ## Commands
 
+- GUI (primary entry — no CLI, no TUI, plan v2): `uv run reachagent-gui --host 127.0.0.1 --port 8000`
 - Lint: `uv run ruff check --fix .`
 - Format: `uv run ruff format .`
 - Security lint (bandit-equivalent rules): `uv run ruff check --select S .`

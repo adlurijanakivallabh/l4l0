@@ -218,33 +218,6 @@ def test_dry_run_returns_plan_without_firing() -> None:
     assert len(list(result["graph"].endpoints())) >= 1
 
 
-def test_cli_dry_run_no_live_flag(capsys) -> None:
-    from reachagent.scan.cli import main
-
-    rc = main(["--target", "https://example.com", "--in-scope", "example.com"])
-    assert rc == 0
-    out = capsys.readouterr().out
-    assert "dry-run: no requests fired" in out
-    assert "pass --live to fire" in out
-
-
-def test_cli_no_dry_run_without_live_stays_dry_run(capsys) -> None:
-    """--no-dry-run without --live must NOT fire live."""
-    from reachagent.scan.cli import main
-
-    rc = main(["--target", "https://example.com", "--in-scope", "example.com", "--no-dry-run"])
-    assert rc == 0
-    out = capsys.readouterr().out
-    assert "dry-run: no requests fired" in out
-
-
-def test_cli_requires_target_absolute_url() -> None:
-    from reachagent.scan.cli import main
-
-    with pytest.raises(SystemExit):
-        main(["--target", "example.com", "--in-scope", "example.com"])
-
-
 # -- Structural boundary: no validator import outside validator.py ----------
 
 
@@ -254,7 +227,7 @@ def test_scan_imports_do_not_pull_validator_outside_seam() -> None:
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom) and node.module:
             assert "reachagent.tools.validator" not in node.module, (
-                "scan/entrypoint.py must not import validator directly — use OrcaleRunner seam"
+                "scan/entrypoint.py must not import validator directly — use OracleRunner seam"
             )
         if isinstance(node, ast.Import):
             for alias in node.names:
@@ -265,9 +238,9 @@ def test_scan_imports_no_external_scanner_dep() -> None:
     src = Path("src/reachagent/scan/entrypoint.py").read_text().lower()
     for dep in ("sqlmap", "nuclei", "zap", "burp", "caido"):
         assert dep not in src
-    cli_src = Path("src/reachagent/scan/cli.py").read_text().lower()
+    orch_src = Path("src/reachagent/scan/orchestrator.py").read_text().lower()
     for dep in ("sqlmap", "nuclei", "zap", "burp", "caido"):
-        assert dep not in cli_src
+        assert dep not in orch_src
 
 
 # -- Live cold-start recon (prereq commit) --------------------------------------

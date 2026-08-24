@@ -102,9 +102,7 @@ class ScopeEnforcer(ScopeGuard):  # noqa: D101
         object.__setattr__(self, "_deny_hosts", [r.host for r in self._deny])
 
     @classmethod
-    def from_raw(
-        cls, in_scope: str | None, out_of_scope: str | None = None
-    ) -> ScopeEnforcer:
+    def from_raw(cls, in_scope: str | None, out_of_scope: str | None = None) -> ScopeEnforcer:
         return cls(in_scope, out_of_scope)
 
     def is_allowed(self, host: str) -> bool:  # noqa: D102
@@ -225,6 +223,7 @@ def _vuln_classes_for_library() -> list[str]:
         "nosqli",
         "ldap_injection",
         "command_injection",
+        "ssrf",
     ]
 
 
@@ -237,6 +236,7 @@ def _sink_for_vuln_class(vuln_class: str) -> SinkType | None:
         "path_traversal": SinkType.FILE_PATH,
         "ssti": SinkType.TEMPLATE,
         "ldap_injection": SinkType.LDAP,
+        "ssrf": SinkType.URL,
     }
     return mapping.get(vuln_class)
 
