@@ -35,47 +35,34 @@ class FfufRunner(ReconToolRunner):
         import tempfile
 
         _log = _logging.getLogger(__name__)
-        if os.environ.get("REACHAGENT_RECON_PROFILE") == "1":
-            try:
-                from reachagent.recon.live_tuning import (
-                    RECON_ALLOWLIST,
-                    RECON_PROFILES,
-                    propose_recon_profile,
-                )
-                from reachagent.recon.tools.gobuster import _collect_signals as _signals
+        profile = None
+        try:
+            from reachagent.recon.live_tuning import get_profile_for_target
 
-                profile = propose_recon_profile(_signals(target))
-                allowed_wl = set(RECON_ALLOWLIST["wordlists"])
-                allowed_flags = {tuple(p) for p in RECON_ALLOWLIST["flag_presets"]}
-                allowed_codes = set(RECON_ALLOWLIST["status_codes"])
-                if (
-                    profile.wordlist in allowed_wl
-                    and profile.flags in allowed_flags
-                    and profile.status_codes in allowed_codes
-                    and profile in RECON_PROFILES.values()
-                ):
-                    fd, path = tempfile.mkstemp(suffix=".json", prefix="ffuf-")  # noqa: S108
-                    _os2.close(fd)
-                    argv: list[str] = [
-                        "ffuf",
-                        "-u",
-                        target.rstrip("/") + "/FUZZ",
-                        "-w",
-                        profile.wordlist,
-                        "-mc",
-                        profile.status_codes,
-                        "-o",
-                        path,
-                        "-of",
-                        "json",
-                    ]
-                    argv += list(profile.flags)
-                    threads = os.environ.get("REACHAGENT_FFUF_THREADS")
-                    if threads and threads.isdigit() and "-t" not in argv:
-                        argv += ["-t", threads]
-                    return argv
-            except Exception as exc:  # noqa: BLE001
-                _log.debug("ffuf profile picker fallback: %s", exc)
+            profile = get_profile_for_target(target)
+        except Exception as exc:  # noqa: BLE001
+            _log.debug("ffuf profile picker fallback: %s", exc)
+        if profile is not None:
+            fd, path = tempfile.mkstemp(suffix=".json", prefix="ffuf-")  # noqa: S108
+            _os2.close(fd)
+            argv: list[str] = [
+                "ffuf",
+                "-u",
+                target.rstrip("/") + "/FUZZ",
+                "-w",
+                profile.wordlist,
+                "-mc",
+                profile.status_codes,
+                "-o",
+                path,
+                "-of",
+                "json",
+            ]
+            argv += list(profile.flags)
+            threads = os.environ.get("REACHAGENT_FFUF_THREADS")
+            if threads and threads.isdigit() and "-t" not in argv:
+                argv += ["-t", threads]
+            return argv
         wordlist = preferred_wordlist("REACHAGENT_FFUF_WORDLIST")
         # 307 added; 401/403 left as audit TODO (ACL surface, not auto-match)
         match_codes = os.environ.get("REACHAGENT_FFUF_MATCH_CODES", "200,204,301,302,307")

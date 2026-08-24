@@ -385,3 +385,56 @@ def _profile_name_of(profile: ReconProfile) -> str:
         if v is profile:
             return k
     return _SAFE_DEFAULT_PROFILE
+
+
+def _collect_target_signals(target: str) -> dict[str, str]:
+    """Lightweight target signals for profile picker — headers + body hint (ponytail: stdlib)."""  # noqa: E501
+    signals: dict[str, str] = {"target": target}
+    hint = os.environ.get("REACHAGENT_GOBUSTER_TECH_HINT") or os.environ.get("REACHAGENT_TECH_HINT")
+    if hint:
+        signals["tech"] = hint
+        return signals
+    try:
+        import httpx
+
+        url = target if target.startswith("http") else f"http://{target}"
+        resp = httpx.get(url, timeout=5.0, follow_redirects=False)
+        signals["server"] = (resp.headers.get("server") or "")[:80]
+        signals["x_powered_by"] = (resp.headers.get("x-powered-by") or "")[:80]
+        body = resp.text[:2000].lower()
+        if "wp-content" in body or "wordpress" in body:
+            signals["tech"] = "wordpress"
+        elif "api" in target.lower() or "swagger" in body or "openapi" in body:
+            signals["tech"] = "api"
+    except Exception as exc:  # noqa: BLE001 — best-effort
+        _log.debug("profile signal collect skipped: %s", exc)
+    return signals
+
+
+def get_profile_for_target(
+    target: str,
+    *,
+    client: ReconProfileClient | None = None,
+) -> ReconProfile | None:
+    """Flag-gated, double-validated profile lookup — single helper for 5 runners."""  # noqa: E501  # ponytail: 5× copy → 1
+    if os.environ.get("REACHAGENT_RECON_PROFILE") != "1":
+        return None
+    try:
+        signals = _collect_target_signals(target)
+        profile = propose_recon_profile(signals, client=client)
+        # Defense in depth: second allowlist check even after propose validates.
+        allowed_wl = set(RECON_ALLOWLIST["wordlists"])
+        allowed_flags = {tuple(p) for p in RECON_ALLOWLIST["flag_presets"]}
+        allowed_codes = set(RECON_ALLOWLIST["status_codes"])
+        if (
+            profile.wordlist in allowed_wl
+            and profile.flags in allowed_flags
+            and profile.status_codes in allowed_codes
+            and profile in RECON_PROFILES.values()
+        ):
+            return profile
+        _log.warning("profile double-validation failed: %r", profile)
+        return None
+    except Exception as exc:  # noqa: BLE001 — must never crash caller
+        _log.debug("profile lookup fallback: %s", exc)
+        return None

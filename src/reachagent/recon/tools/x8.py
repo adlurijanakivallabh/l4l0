@@ -12,16 +12,15 @@ import re
 
 from reachagent.graph.nodes import Endpoint, Host, Parameter
 from reachagent.recon.tools._wordlist import preferred_wordlist
-from reachagent.recon.tools.base import ReconToolRunner
+from reachagent.recon.tools.base import ReconToolRunner, _recon_host_of
 
 _REFLECT_RE = re.compile(
     r"param\s+['\"]?(?P<name>[A-Za-z0-9_\-]+)['\"]?\s+reflected", re.IGNORECASE
 )
 
 
-def _host_of(target: str) -> str:
-    stripped = target.split("://", 1)[-1]
-    return stripped.split("/", 1)[0].split(":", 1)[0]
+_host_of = _recon_host_of  # ponytail: deduped to base helper
+
 
 
 class X8Runner(ReconToolRunner):
@@ -33,27 +32,20 @@ class X8Runner(ReconToolRunner):
     def command(self, target: str) -> list[str]:
         """x8 -u <target> -w <wordlist> — hidden param discovery, reflected check."""
         import logging as _logging
-        import os as _os
 
         _log = _logging.getLogger(__name__)
-        if _os.environ.get("REACHAGENT_RECON_PROFILE") == "1":
-            try:
-                from reachagent.recon.live_tuning import (
-                    RECON_ALLOWLIST,
-                    RECON_PROFILES,
-                    propose_recon_profile,
-                )
-                from reachagent.recon.tools.gobuster import _collect_signals as _signals
+        profile = None
+        try:
+            from reachagent.recon.live_tuning import get_profile_for_target
 
-                profile = propose_recon_profile(_signals(target))
-                allowed_flags = {tuple(p) for p in RECON_ALLOWLIST["flag_presets"]}
-                if profile.flags in allowed_flags and profile in RECON_PROFILES.values():
-                    wordlist = preferred_wordlist("REACHAGENT_X8_WORDLIST", x8=True)
-                    argv: list[str] = ["x8", "-u", target, "-w", wordlist]
-                    argv += list(profile.flags)
-                    return argv
-            except Exception as exc:  # noqa: BLE001
-                _log.debug("x8 profile picker fallback: %s", exc)
+            profile = get_profile_for_target(target)
+        except Exception as exc:  # noqa: BLE001
+            _log.debug("x8 profile picker fallback: %s", exc)
+        if profile is not None:
+            wordlist = preferred_wordlist("REACHAGENT_X8_WORDLIST", x8=True)
+            argv: list[str] = ["x8", "-u", target, "-w", wordlist]
+            argv += list(profile.flags)
+            return argv
         wordlist = preferred_wordlist("REACHAGENT_X8_WORDLIST", x8=True)
         return ["x8", "-u", target, "-w", wordlist]
 

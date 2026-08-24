@@ -133,38 +133,25 @@ class GobusterRunner(ReconToolRunner):
         injection surface.
         """
         # Profile picker — LLM picks ONE named profile (bundled), flag-gated OFF.
-        if os.environ.get("REACHAGENT_RECON_PROFILE") == "1":
-            try:
-                from reachagent.recon.live_tuning import (
-                    RECON_ALLOWLIST,
-                    RECON_PROFILES,
-                    propose_recon_profile,
-                )
+        profile = None
+        try:
+            from reachagent.recon.live_tuning import get_profile_for_target
 
-                signals = _collect_signals(target)
-                profile = propose_recon_profile(signals)
-                allowed_wl = set(RECON_ALLOWLIST["wordlists"])
-                allowed_flags = {tuple(p) for p in RECON_ALLOWLIST["flag_presets"]}
-                allowed_codes = set(RECON_ALLOWLIST["status_codes"])
-                if (
-                    profile.wordlist in allowed_wl
-                    and profile.flags in allowed_flags
-                    and profile.status_codes in allowed_codes
-                    and profile in RECON_PROFILES.values()
-                ):
-                    argv: list[str] = [
-                        "gobuster",
-                        "dir",
-                        "-q",
-                        "-u",
-                        target,
-                        "-w",
-                        profile.wordlist,
-                    ]
-                    argv += list(profile.flags)
-                    return argv
-            except Exception as exc:  # noqa: BLE001 — profile fallback
-                _log.debug("gobuster profile picker fallback: %s", exc)
+            profile = get_profile_for_target(target)
+        except Exception as exc:  # noqa: BLE001
+            _log.debug("gobuster profile picker fallback: %s", exc)
+        if profile is not None:
+            argv: list[str] = [
+                "gobuster",
+                "dir",
+                "-q",
+                "-u",
+                target,
+                "-w",
+                profile.wordlist,
+            ]
+            argv += list(profile.flags)
+            return argv
         # Live-reasoning tuning — default OFF so nothing existing breaks.
         # When REACHAGENT_GOBUSTER_LIVE_TUNING=1, Claude proposes a choice
         # FROM the allowlist (wordlist/flags/status) given target signals;
