@@ -13,6 +13,8 @@ path.
 
 from __future__ import annotations
 
+import logging as _logging
+import os as _os
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import NoReturn, Protocol
@@ -22,6 +24,8 @@ from reachagent.execution.audit import AuditLog
 from reachagent.oracles import OracleMechanism
 from reachagent.tools import coordinator as _coordinator
 from reachagent.tools import coordinator_support as _coordinator_support
+
+_log = _logging.getLogger(__name__)
 
 _FAILURE_OUTCOME = "payload_chain_failure"
 
@@ -363,6 +367,55 @@ def _evidence_for(
     )
 
 
+def _maybe_reorder_payloads(
+    entries: list[Mapping[str, object]],
+    vuln_class: str,
+    sink_type: object,
+    slot_kit: Mapping[str, object] | None,
+) -> list[Mapping[str, object]]:
+    """Proposal-only reorder — flag-gated, dynamic-allowlist-validated.
+
+    When REACHAGENT_PAYLOAD_TUNING=1 or REACHAGENT_RECON_LIVE_TUNING=1, asks
+    propose_payload_choice to rank which existing bucket refs to try first.
+    Dynamic allowlist is the exact bucket set; fallback is original confidence
+    order. Never invents a ref, respects max_attempts downstream.
+    """
+    if (
+        _os.environ.get("REACHAGENT_PAYLOAD_TUNING") != "1"
+        and _os.environ.get("REACHAGENT_RECON_LIVE_TUNING") != "1"
+    ):
+        return entries
+    try:
+        from reachagent.recon.payload_tuning import propose_payload_choice
+
+        candidate_refs = [
+            str(e.get("payload_ref")) for e in entries if isinstance(e.get("payload_ref"), str)
+        ]
+        if not candidate_refs:
+            return entries
+        signals: dict[str, str] = {
+            "vuln_class": vuln_class,
+            "sink": str(sink_type) if sink_type else "",
+        }
+        # Surface slot_kit tech hint if present (WordPress/API etc.)
+        if slot_kit and isinstance(slot_kit.get("tech"), str):
+            signals["tech"] = str(slot_kit["tech"])[:80]
+        choice = propose_payload_choice(signals, vuln_class, candidate_refs)
+        # Defense in depth: second allowlist check even after proposer validates.
+        allowed = set(candidate_refs)
+        ordered = [r for r in choice.payload_refs if r in allowed]
+        if not ordered:
+            return entries
+        by_ref = {str(e.get("payload_ref")): e for e in entries}
+        remaining = [r for r in candidate_refs if r not in set(ordered)]
+        new_order = ordered + remaining
+        reordered = [by_ref[r] for r in new_order if r in by_ref]
+        return reordered if reordered else entries
+    except Exception as exc:  # noqa: BLE001 — proposer must not break chain
+        _log.debug("payload reorder skipped: %s", exc)
+        return entries
+
+
 def run_payload_chain(
     call: McpCaller,
     *,
@@ -421,6 +474,12 @@ def run_payload_chain(
         failure = f"no payloads matched vuln_class={vuln_class!r} sink_type={sink_type!r}"
         _record_failure(audit_failure, failure)
         return PayloadChainResult(attempted=0, confirmed=False, failure=failure)
+
+    # Live payload-choice — proposal-only, flag OFF by default. When
+    # REACHAGENT_PAYLOAD_TUNING=1 or REACHAGENT_RECON_LIVE_TUNING=1, ranks
+    # which existing bucket payload_ref to try first for this endpoint shape.
+    # Dynamic allowlist is the exact bucket set — no invented string.
+    entries = _maybe_reorder_payloads(entries, vuln_class, sink_type, slot_kit)
 
     attempted = 0
     for entry in entries:

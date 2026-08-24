@@ -1,11 +1,12 @@
 # Live-Reasoning Recon Tuning — Three-Layer Propose / Validate / Execute
 
-**Status:** Proposal-only. This document is the safety contract before any live
-reasoning touches recon. The code in this commit implements ONLY
-`src/reachagent/recon/live_tuning.py` (Anthropic-only, allowlist-validated)
-and an opt-in flag-gated hook in `src/reachagent/recon/tools/gobuster.py`.
-No oracle, firing, or role-boundary code is touched. All other extensions
-are described, not built.
+**Status:** Three layers built. This document is the safety contract for
+live-reasoning proposal-only tuning: `live_tuning.py` (recon wordlist/flags),
+`vuln_tuning.py` (vuln classes per endpoint shape), and `payload_tuning.py`
+(payload choice from existing library) — all Anthropic-only, allowlist-
+validated, flag-gated. No oracle, firing, or role-boundary code is bypassed;
+all extensions are proposal-only with fixed-code validation and existing
+`fire_request`/`run_oracle`/`Validator` execution.
 
 ## 0. Reference posture
 
@@ -126,7 +127,7 @@ implemented now. The generic name `ReconTunerClient` / `propose_recon_tuning`
 is deliberate to avoid a provider-locked name that would need renaming when
 OpenAI is added. No OpenAI client ships in this commit.
 
-## 4. How the same pattern extends (§4a built, §4b described not built)
+## 4. How the same pattern extends (§4a built, §4b built — three-layer map complete)
 
 ### 4.1 §4a — vuln classes per endpoint shape — BUILT
 
@@ -151,23 +152,36 @@ to probe first, e.g. `["sqli", "xss_reflected"]` vs `["path_traversal"]`.
   — never fires, never calls `run_oracle`/`write_finding`, never invents
   strings.
 
-### 4.2 Future (b) — payload choice from already-existing tagged library — described not built
+### 4.2 §4b — payload choice from already-existing tagged library — BUILT
 
-Same pattern. Claude picks which existing tagged payload from the
-already-loaded `PayloadLibrary` to fire first, e.g. WordPress `author`
-parameter prefers `xss_reflected` template `"<script>alert(1)</script>"`
-before generic fuzz.
+Same pattern, last layer. Given endpoint shape + `vuln_class` + the
+sink-matched bucket `get_payloads` already returned (confidence ordered
+`0 STRUCTURAL…5 TIMING` template-first), Claude ranks which *existing*
+`payload_ref` to try first for THIS target (e.g. WordPress `sqli` sink
+prefers WP-flavored `sqli` payload_ref before raw `api`).
 
-- Proposal is a `payload_ref` string like `sqli/error-based/quote-break`
-  or `third_party/payloadsallthethings/...#L123` — validated that it
-  exists in `library.get_payloads(vuln_class, sink)` for that sink and is
-  in the allowlist of known refs. No new strings are invented.
-- Firing and confirmation unchanged. Blast radius is ordering, not new
-  payloads.
+- Allowlist: **dynamic** — the exact set of `payload_ref` strings in that
+  bucket (`candidate_refs: list[str]`). Nothing outside the bucket can be
+  selected; invented ref → fallback. Safe default is original confidence
+  order (first 20).
+- Interface: `propose_payload_choice(endpoint_signals, vuln_class,
+  candidate_refs) -> PayloadChoice` via `PayloadTunerClient` Protocol /
+  `AnthropicPayloadClient` (Anthropic-only, same shape), validated every
+  returned ref is member of `candidate_refs`, dedup, empty→fallback, logs
+  why. Model-agnostic — `client` swappable, OpenAI later different session.
+- Wiring: `_maybe_reorder_payloads(entries, vuln_class, sink_type,
+  slot_kit)` in `src/reachagent/tools/payload_chain.py` — flag-gated
+  `REACHAGENT_PAYLOAD_TUNING=1` or `REACHAGENT_RECON_LIVE_TUNING=1`
+  (default OFF), builds `candidate_refs` from `entries`, calls proposer
+  with `{"vuln_class","sink","tech"}` signals, re-validates via
+  intersection with `candidate_refs` (defense in depth), reorders bucket
+  as `ordered + remaining` while respecting `max_attempts=20` and sibling
+  harvest. Proposal-only — never invents a ref, never bypasses
+  `fire → run_oracle → Validator`.
 
-§4a built; §4b still described not built. The interface stays
-provider-neutral and the allowlist discipline is pre-proven before the
-proposer question gets richer.
+Three-layer map complete — no further live layer planned without review.
+OQ2 (graph-aware signals) closed via bucket-aware ranking; OQ3 (explicit
+recon budget) enforced via `max_attempts` still honored.
 
 ## 5. Blast radius and what live reasoning will never do
 
