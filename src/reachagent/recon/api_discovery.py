@@ -40,6 +40,7 @@ from dataclasses import dataclass
 from reachagent.execution.firer import RequestFirer
 from reachagent.graph.nodes import Endpoint, Host, Parameter, Protocol
 from reachagent.graph.store import ReachabilityGraph
+from reachagent.recon.tools._net import host_of
 
 # Common machine-readable spec locations, probed read-only in order.
 _SPEC_PATHS: tuple[str, ...] = (
@@ -223,5 +224,6 @@ def discover_api(
 
 
 def _host_of(target: str) -> str:
-    stripped = target.split("://", 1)[-1]
-    return stripped.split("/", 1)[0]
+    # Keep API-discovery hosts canonical with every other recon runner: a
+    # non-default port belongs to the URL, not to a second Host graph node.
+    return host_of(target)

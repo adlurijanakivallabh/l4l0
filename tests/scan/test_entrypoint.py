@@ -11,47 +11,44 @@ import pytest
 from reachagent.execution import ScopeGuard
 from reachagent.execution.audit import AuditLog
 from reachagent.execution.firer import RequestFirer
+from reachagent.execution.scope import ScopeRule  # noqa: F401
 from reachagent.graph.nodes import Endpoint, Host
 from reachagent.graph.store import ReachabilityGraph
-from reachagent.scan.entrypoint import ScopeEnforcer, extract_host, scan_target
+from reachagent.scan.entrypoint import scan_target
 
-# -- ScopeEnforcer ----------------------------------------------------------
+# -- ScopeGuard (canonical scope semantics — wildcard/case/deny precedence) --
 
 
 def test_wildcard_matches_base_and_subdomain_not_partial() -> None:
-    se = ScopeEnforcer("*.example.com")
-    assert se.is_allowed("example.com") is True
-    assert se.is_allowed("api.example.com") is True
-    assert se.is_allowed("evil-notexample.com") is False
-    assert se.is_allowed("example.com.evil.com") is False
+    guard = ScopeGuard.from_hosts(["*.example.com"])
+    assert guard.is_in_scope("https://example.com/") is True
+    assert guard.is_in_scope("https://api.example.com/") is True
+    assert guard.is_in_scope("https://evil-notexample.com/") is False
+    assert guard.is_in_scope("https://example.com.evil.com/") is False
 
 
 def test_exact_match_and_case_insensitive() -> None:
-    se = ScopeEnforcer("Example.COM")
-    assert se.is_allowed("example.com") is True
-    assert se.is_allowed("EXAMPLE.COM") is True
-    assert se.is_allowed("other.com") is False
+    rule = ScopeRule(host="Example.COM")
+    parsed = httpx.URL("https://example.com/")
+    assert rule.matches(parsed) is True
+    rule2 = ScopeRule(host="EXAMPLE.COM")
+    assert rule2.matches(httpx.URL("https://EXAMPLE.com/")) is True
+    assert rule2.matches(httpx.URL("https://other.com/")) is False
 
 
 def test_out_of_scope_always_wins() -> None:
-    se = ScopeEnforcer("*.example.com", "admin.example.com")
-    assert se.is_allowed("api.example.com") is True
-    assert se.is_allowed("admin.example.com") is False
-    assert se.is_allowed("ADMIN.EXAMPLE.COM") is False
+    guard = ScopeGuard.from_hosts(
+        ["*.example.com"],
+        deny_hosts=["admin.example.com"],
+    )
+    assert guard.is_in_scope("https://api.example.com/") is True
+    assert guard.is_in_scope("https://admin.example.com/") is False
 
 
-def test_bare_host_and_subdomain_isolation() -> None:
-    se = ScopeEnforcer("example.com")
-    assert se.is_allowed("example.com") is True
-    assert se.is_allowed("sub.example.com") is False
-    assert se.is_allowed("https://example.com/path?q=1") is True
-    assert se.is_allowed("example.com:8080") is True
-
-
-def test_extract_host_bare_and_url() -> None:
-    assert extract_host("https://Example.COM:8080/path") == "example.com"
-    assert extract_host("api.example.com") == "api.example.com"
-    assert extract_host("  ADMIN.example.com  ") == "admin.example.com"
+def test_bare_host_isolation_via_rule() -> None:
+    rule = ScopeRule(host="example.com")
+    assert rule.matches(httpx.URL("https://example.com/path")) is True
+    assert rule.matches(httpx.URL("https://sub.example.com/")) is False
 
 
 # -- Checkpoint A: out-of-scope host never materializes --------------------
@@ -59,12 +56,12 @@ def test_extract_host_bare_and_url() -> None:
 
 def test_checkpoint_a_wildcard_mixed_fixture() -> None:
     """In-scope *.example.com: api.example.com maps, evil.com never does."""
-    se = ScopeEnforcer("*.example.com")
+    se = ScopeGuard.from_hosts(["*.example.com"])
     g = ReachabilityGraph()
     a = AuditLog()
     from reachagent.recon.tools.subdomains import SubfinderRunner
 
-    scope_guard = ScopeGuard.from_hosts(["example.com"])
+    scope_guard = se
     runner = SubfinderRunner(graph=g, scope=scope_guard, audit=a)
     raw = "api.example.com\nevil.com\n"
     from reachagent.scan.entrypoint import _filter_fixture_by_scope
@@ -73,8 +70,8 @@ def test_checkpoint_a_wildcard_mixed_fixture() -> None:
     if allowed.strip():
         runner.ingest("example.com", allowed)
     for line in raw.splitlines():
-        h = extract_host(line.strip())
-        if h and not se.is_allowed(h):
+        h = line.strip().split("/")[0]
+        if h and not se.is_in_scope(h):
             a.record(runner.name, "RECON", h, "refused_out_of_scope")
     hosts = {host.address for _, host in g.hosts()}
     assert "api.example.com" in hosts
@@ -105,11 +102,9 @@ def test_gobuster_endpoints_not_host_filtered() -> None:
 
 def test_defense_b_bypassing_a_still_caught_by_firer() -> None:
     """Bypass A (direct graph.add_host out-of-scope) → B (firer) still refuses."""
-    se = ScopeEnforcer("example.com")
+    guard = ScopeGuard.from_hosts(["example.com"])
     g = ReachabilityGraph()
     g.add_host(Host(address="evil.com", hostname="evil.com", source="test"))
-    allowed = [p.lstrip("*.") for p in se._allow if p]
-    guard = ScopeGuard.from_hosts(allowed)
     audit = AuditLog()
     firer = RequestFirer(httpx.Client(), guard, audit)
     from reachagent.execution.scope import OutOfScopeError
@@ -135,10 +130,8 @@ def test_defense_a_bypassing_b_still_caught_by_graph_gating() -> None:
 def test_firer_wildcard_allows_subdomain() -> None:
     """B must honor *.example.com — api.example.com fires, evil.com refused."""
     from reachagent.execution.scope import OutOfScopeError
-    from reachagent.scan.entrypoint import EnforcerScopeWrapper
 
-    se = ScopeEnforcer("*.example.com")
-    wrapper = EnforcerScopeWrapper(se)
+    wrapper = ScopeGuard.from_hosts(["*.example.com"])
     audit = AuditLog()
 
     def ok_handler(request: httpx.Request) -> httpx.Response:

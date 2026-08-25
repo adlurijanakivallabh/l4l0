@@ -23,7 +23,6 @@ import base64
 import json
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
 
 import httpx
 
@@ -44,23 +43,8 @@ from reachagent.eval.mcp_session import SharedState as _SharedState
 from reachagent.eval.mcp_session import mcp_call as _call
 from reachagent.eval.mcp_session import mcp_for as _mcp_for
 from reachagent.eval.mcp_session import session_as as _session_as
-from reachagent.execution.audit import AuditLog  # noqa: F401 — legacy import shim
-from reachagent.execution.firer import RequestFirer  # noqa: F401 — legacy import shim
-from reachagent.execution.scope import (
-    ScopeGuard,  # noqa: F401 — legacy import shim
-    ScopeRule,  # noqa: F401 — legacy import shim
-)
-from reachagent.graph.nodes import (
-    Endpoint,  # noqa: F401 — legacy import shim
-    Parameter,  # noqa: F401 — legacy import shim
-)
-from reachagent.graph.store import ReachabilityGraph  # noqa: F401 — legacy import shim
-from reachagent.mcp import server  # noqa: F401 — legacy import shim
-from reachagent.payloads import PayloadLibrary  # noqa: F401 — legacy import shim
-from reachagent.tools.explorer_context import ExplorerContext  # noqa: F401 — legacy import shim
-
-if TYPE_CHECKING:
-    pass
+from reachagent.graph.nodes import Endpoint, Parameter
+from reachagent.mcp import server
 
 _HTTP_TIMEOUT = 15.0
 # Sentinels below are the *fallback* values the generic _evidence_for uses when

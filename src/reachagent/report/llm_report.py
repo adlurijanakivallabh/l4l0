@@ -18,6 +18,7 @@ import os
 from typing import Protocol
 
 from reachagent.graph.store import ReachabilityGraph
+from reachagent.llm.client import OpenAICompatibleClient, build_openai_compatible_client
 from reachagent.report.renderer import (
     finding_to_dict,
     render_findings_markdown,
@@ -52,21 +53,23 @@ class AnthropicReportClient:
             raise RuntimeError(f"anthropic SDK not available: {exc}") from exc
         client = anthropic.Anthropic(api_key=self._api_key)
         findings = findings_context.get("findings", [])
+        objective = str(findings_context.get("operator_goal", ""))[:500]
         # Keep context compact: only finding_id/vuln_class/severity/evidence_ref, capped.
         import json as _json
 
         ctx_str = _json.dumps(findings, indent=2)[:4000]
         prompt = (
-            "You are a pentest report writer. Given ONLY confirmed findings "
+            "You are a pentest report writer for an AUTHORIZED"
+                "lab assessment. Given ONLY confirmed findings "
             "(already validated via deterministic oracles), write a concise markdown "
             "report: what was tested, what was found, severity, and reproduction steps per "
             "finding_id. Do NOT invent new findings, do NOT claim unconfirmed vulns. "
             'Respond as JSON {"narrative": "<markdown>"}. '
-            f"Confirmed findings: {ctx_str}"
+            f"Testing objective: {objective}\nConfirmed findings: {ctx_str}"
         )
         resp = client.messages.create(
             model=self._model,
-            max_tokens=1024,
+            max_tokens=4096,
             messages=[{"role": "user", "content": prompt}],
         )
         text = ""
@@ -82,6 +85,30 @@ class AnthropicReportClient:
             if not m:
                 raise ValueError(f"no JSON in model response: {text[:500]!r}") from exc
             data = _json.loads(m.group(0))
+        return {"narrative": str(data.get("narrative", ""))}
+
+
+class OpenAIReportClient:
+    """OpenAI-compatible implementation of the report protocol."""
+
+    def __init__(self, *, client: OpenAICompatibleClient | None = None) -> None:
+        self._client = client or OpenAICompatibleClient()
+
+    def propose(self, findings_context: dict[str, object]) -> dict[str, str]:
+        findings = findings_context.get("findings", [])
+        objective = str(findings_context.get("operator_goal", ""))[:500]
+        import json as _json
+
+        ctx_str = _json.dumps(findings, indent=2)[:4000]
+        prompt = (
+            "You are a pentest report writer. Given ONLY confirmed findings "
+            "(already validated via deterministic oracles), write a concise markdown "
+            "report: what was tested, what was found, severity, and reproduction steps per "
+            "finding_id. Do NOT invent new findings, do NOT claim unconfirmed vulns. "
+            'Respond as JSON {"narrative": "<markdown>"}. '
+            f"Testing objective: {objective}\nConfirmed findings: {ctx_str}"
+        )
+        data = self._client.propose_json(prompt, max_tokens=4096)
         return {"narrative": str(data.get("narrative", ""))}
 
 
@@ -121,6 +148,7 @@ def generate_llm_report(
     graph: ReachabilityGraph,
     *,
     client: ReportClient | None = None,
+    operator_prompt: str | None = None,
 ) -> str:
     """Generate LLM narrative + deterministic table over confirmed findings only.
 
@@ -135,10 +163,21 @@ def generate_llm_report(
     # Try LLM when available
     narrative: str | None = None
     try:
-        tuner = client if client is not None else AnthropicReportClient()
-        raw = tuner.propose({"findings": findings_ctx, "count": len(findings_ctx)})
+        if client is not None:
+            tuner = client
+        else:
+            compatible = build_openai_compatible_client()
+            tuner = OpenAIReportClient(client=compatible) if compatible else AnthropicReportClient()
+        context: dict[str, object] = {"findings": findings_ctx, "count": len(findings_ctx)}
+        if operator_prompt:
+            context["operator_goal"] = operator_prompt[:500]
+        raw = tuner.propose(context)
         narrative = _validate_narrative(raw, allowed_ids)
     except Exception as exc:  # noqa: BLE001 — LLM must never crash reporting
+        from reachagent.llm.runtime import llm_required
+
+        if llm_required():
+            raise
         _log.warning("LLM report failed (%s); fallback to deterministic", exc)
         narrative = None
 

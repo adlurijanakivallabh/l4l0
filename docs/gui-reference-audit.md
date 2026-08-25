@@ -1,146 +1,168 @@
-# GUI Reference Audit — pentagi / cai / hexstrike-ai / PentestGPT / claude-bug-bounty
+# Reference-project GUI audit — pentagi, cai, hexstrike-ai, PentestGPT, claude-bug-bounty
 
-**Date:** 2026-08-24 · **Scope:** read the actual frontend source of every reference
-project that has a real GUI; for the rest, prove they are CLI-only. Feeds
-`docs/gui-plan.md`. No implementation in this stage.
+**Date:** 2026-08-24 · **Method:** each project's UI source read in full by a
+subagent (frontend tree enumerated, key files read to EOF); licenses stated before
+reading. This is the "what do the references actually look like" pass behind
+`docs/gui-plan.md`.
 
-## Licenses (stated before reading)
+**Licenses (stated first, as required):**
+- **pentagi** — MIT (`Copyright (c) 2025 PentAGI Development Team`).
+- **cai** — dual: `src/cai/agents` MIT (from openai-agents-python), `src/cai` core
+  Alias Robotics S.L. research-use-only. The TUI/REPL is read for visual ideas only.
+- **hexstrike-ai** — MIT (`Copyright (c) 2026 Muhammad Osama (0x4m4)`).
+- **PentestGPT** — MIT (`Copyright (c) 2023 Grey_D`).
+- **claude-bug-bounty** — MIT (`Copyright (c) 2026 Claude Bug Bounty Hunter Contributors`).
 
-| Project | License |
-|---|---|
-| pentagi | MIT (`Copyright (c) 2025 PentAGI Development Team`) |
-| cai | **Dual** — `src/cai/agents` MIT (from openai-agents-python); `src/cai` core is Alias Robotics **research-use-only** (commercial prohibited). Read for visual-reference ideas only. |
-| hexstrike-ai | MIT (`Copyright (c) 2026 Muhammad Osama (0x4m4)`) |
-| PentestGPT | MIT (`Copyright (c) 2023 Grey_D`) |
-| claude-bug-bounty | MIT (`Copyright (c) 2026 Claude Bug Bounty Hunter Contributors`) |
-
-## Summary — who has a GUI at all
-
-| Project | GUI? | Kind |
-|---|---|---|
-| **pentagi** | ✅ | **Real web GUI** (React SPA) — the only one |
-| cai | ⚠️ | Terminal UI only (Textual TUI + Rich/prompt_toolkit REPL) — no web GUI |
-| hexstrike-ai | ❌ | CLI / MCP-server + JSON REST API only (flask `jsonify()` routes, no HTML/JS/CSS) |
-| PentestGPT | ❌ | CLI-only (`pentestgpt_legacy/main.py` argparse + interactive loop; `docs/redesign/*.html` is a static design doc, not an app) |
-| claude-bug-bounty | ❌ | CLI / agent toolkit only. `demo/app.py` is an **intentionally-vulnerable target** (shuvonsec.me lookalike, 6 planted bugs) for the tutorial, and `site/` is a marketing landing page — neither is the tool's UI |
+**Bottom line up front:** only **pentagi** has a real web GUI. cai has a terminal
+TUI + REPL (not a web GUI). hexstrike-ai, PentestGPT, and claude-bug-bounty are
+CLI/agent-only — none ships a GUI (their "web" files are a JSON API, a static
+design doc, and a marketing page / vulnerable demo *target*, respectively).
 
 ---
 
-## 1. pentagi — the real web GUI (the primary reference)
+## 1. pentagi — the one real web GUI (MIT)
 
-### Framework + UI library
-**React 19.2 + TypeScript 6 + Vite 8** (SWC, rollup code-splitting) + **pnpm** +
-`react-router-dom` 7 (data router, lazy pages + Suspense). **Tailwind CSS 4** +
-**shadcn/ui-style primitives on Radix UI** (20+ Radix primitives), `class-variance-authority`
-+ `clsx` + `tailwind-merge`, `lucide-react` icons. Data: **Apollo Client 4.2** (GraphQL
-over `HttpLink` + `GraphQLWsLink` WebSocket) + axios 1.18 (REST auth/resources). Tables:
-**TanStack Table 8 + TanStack Virtual 3**. Terminal: **@xterm/xterm 6** (WebGL, read-only).
-Rich text: **TipTap 3**. Charts: **Recharts 3**. PDF: **@react-pdf/renderer 4**.
-Markdown: react-markdown + rehype/remark. Forms: react-hook-form + zod.
+### 1.1 Framework + UI library
+React **19.2** + TypeScript + **Vite** (SWC, pnpm), `react-router-dom` 7 (data
+router), **Tailwind CSS 4** + **shadcn/ui** primitives on **Radix UI** (20+
+primitives), **Apollo Client 4** (GraphQL) + axios (REST), **TanStack Table 8** +
+**TanStack Virtual 3** (virtualized tables), **@xterm/xterm 6** (embedded live
+terminal, WebGL), **Recharts 3** (charts), **TipTap 3** (rich-text markdown
+editors), **@react-pdf/renderer** (PDF reports), `react-markdown` for report view,
+`react-resizable-panels` (split panes), `cmdk` command palette, `sonner` toasts,
+`lucide-react` icons, `react-hook-form` + `zod`.
 
-### Literal screens/views (from the actual page tree)
-- `login` — 2-col split: email/password + OAuth form left, animated logo on gradient right
-- `oauth result` — popup window that posts back to opener
-- `dashboard` — Tabs **Analytics | Overview**; Analytics = Week/Month/Quarter picker +
-  4 Recharts views (**Flows Activity**, **Tool Calls**, **Token Usage**, **Cost**) +
-  Flow Execution Details drill-down; Overview = 4 **MetricCards** + Usage-by-Provider/
-  Model/AgentType tables + Tool-Calls-by-Function table
-- `flows list` — virtualized DataTable (ID/title/**status-badge**/provider/terminals/created/
-  updated; global filter, sort, pagination, column-hiding, hover actions, context menu)
-- `new flow` — centered card: Automation/Assistant tabs, textarea + provider dropdown
-- `flow detail` — **resizable 50/50 split**: LEFT panel Tabs **Automation | Assistant |
-  Dashboard**, RIGHT panel Tabs **Terminal | Tasks | Agents | Searches | Vector Store |
-  Files | Screenshots**; header with status icon, breadcrumb, **Report** dropdown
-- `flow detail — automation chat` — message cards (thinking toggle, markdown, result as
-  markdown OR inline mini-xterm), task/subtask filter, composer + Stop
-- `flow detail — assistant chat` — assistant selector, per-assistant message log
-- `flow detail — dashboard` — per-flow usage/cost/tool-calls stats
-- `flow detail — terminal` — read-only xterm.js, WebGL, 10k scrollback, search
-- `flow detail — tasks` — task/subtask cards with status icons, autoscroll
-- `flow detail — agents` / `searches` / `vector store` — log cards with filters
-- `flow detail — files` — 3 sources (uploads/resources/container snapshots), upload/
-  download/copy/delete
-- `flow detail — screenshots` — screenshot gallery
-- `flow report` — standalone markdown report web view + client-side PDF generation
-- `templates list` + `template detail` (TipTap markdown editor, 11 pentest presets)
-- `knowledges list` + `knowledge detail` (semantic search, TipTap editor)
-- `resources` — full file manager (recursive tree, bulk actions, drag-drop, view-options)
-- `settings account / providers / provider detail / prompts / prompt detail / api-tokens`
+### 1.2 Literal screens/views
+- login (2-col split: centered form left, animated logo on a primary-tinted gradient right; force-password-change sub-view)
+- oauth result (popup window → posts message to opener → auto-closes)
+- **dashboard** — Tabs `Analytics | Overview`; Analytics = period picker + 4 Recharts views (Flows Activity, Tool Calls, Token Usage, Cost) + Flow Execution Details list; Overview = 4 MetricCards + Usage by Provider/Model/AgentType + Tool Calls by Function tables
+- **flows list** — virtualized DataTable (ID/title/status-badge/provider-icon/terminals/created/updated; global filter, column-hiding, pagination, sort; hover actions, right-click context menu, inline rename, New Flow)
+- new flow (centered card; Automation | Assistant tabs; FlowForm = autosize textarea + provider dropdown + Use-Agents switch + templates/resources attach)
+- **flow detail** — full-height split (ResizablePanelGroup 50/50): LEFT panel Tabs `Automation | Assistant | Dashboard`, RIGHT panel Tabs `Terminal | Tasks | Agents | Searches | Vector Store | Files | Screenshots`; header = status icon + provider + double-click-rename title + Report dropdown (open/copy-MD/download-MD/download-PDF) + favorite + prev/next
+  - automation chat (message cards: thinking toggle, markdown, collapsible result as markdown **or inline mini xterm**; composer with status-aware placeholder + Stop)
+  - assistant chat (assistant selector grouped Active/Finished/Failed; per-assistant log)
+  - dashboard (per-flow usage/cost/toolcalls by agent-type/model/function; metric cards)
+  - **terminal** (read-only xterm.js, WebGL, 10k scrollback, search + task/subtask filter)
+  - tasks (task/subtask cards with status icons, search, autoscroll)
+  - agents / searches / vector store (log cards, search + task filter)
+  - files (3 sources: uploads / resources / container snapshots; upload, attach, pull, promote, download, copy path, delete)
+  - screenshots (gallery)
+- flow report (standalone markdown view; `?download=true` triggers client-side PDF)
+- templates list + template detail (TipTap markdown editor, 11 pentest presets, rich/raw toggle)
+- knowledges list + knowledge detail (semantic search with 400ms debounce, TipTap editor, docType answer/code/guide)
+- resources (full file manager: recursive tree, folders-first, bulk actions, drag-drop move, view-options persisted)
+- settings account / providers list / provider detail / prompts list / prompt detail (TipTap, Diff vs default) / api-tokens
 
-### How live data reaches the screen during a running flow
-**GraphQL WebSocket SUBSCRIPTIONS (graphql-ws), not polling — zero polling intervals in
-the app.** `lib/apollo.ts` splits `isSubscriptionOperation → wsLink, else httpLink`; the
-socket is lazy, infinite-retry with exponential+jitter backoff (cap 30s), re-fetches
-active queries on reconnect. ~25 **delta-only** subscription ops (flowCreated/Updated,
-taskCreated/Updated, `terminalLogAdded`, `messageLogAdded/Updated`, agentLogAdded,
-searchLogAdded, vectorStoreLogAdded, screenshotAdded, …). A single flow-detail page mounts
-**~16 subscriptions simultaneously** via `flow-provider`, and a custom
-`createSubscriptionCacheLink` auto-merges each subscription payload into the matching
-Apollo cache entry — the UI updates with no manual wiring.
+### 1.3 How live data reaches the screen
+**GraphQL WebSocket subscriptions** (Apollo `GraphQLWsLink` + `graphql-ws`), **zero
+polling**. The schema exposes ~25 delta-only subscriptions (flowCreated/Updated/
+Deleted, taskCreated/Updated, terminalLogAdded, messageLogAdded/Updated,
+agentLogAdded, screenshotAdded, …); a single flow-detail page mounts ~16 at once.
+Two custom Apollo links auto-merge each subscription payload into the matching
+cache row (no manual wiring). Socket is lazy, infinite retry with exp-jitter
+backoff (cap 30s); on reconnect it refetches active queries.
 
-### Visual style
-**Dark + light themes** (toggle stored in localStorage). Dashboard/agent-console aesthetic:
-sidebar nav, resizable split-panel chat, embedded live terminal (xterm WebGL), Recharts.
-**Accent is indigo/blue, hue 245** (not a red/terminal theme). Exact tokens from
-`src/styles/index.css`:
-- light: `--background oklch(1 0 0)`, `--primary oklch(0.25 0.14 245)` (white fg), `--accent oklch(0.9 0.03 245)`
+### 1.4 Visual style
+Dark **and** light themes (toggle stored in localStorage). "Agent-console /
+dashboard" aesthetic: sidebar nav, chat split-view with resizable panels, embedded
+live terminal (xterm, WebGL), Recharts panels. Accent is an **indigo/blue, hue 245**.
+Theme tokens (from `frontend/src/styles/index.css`, `oklch`):
+- light: `--background oklch(1 0 0)`, `--primary oklch(0.25 0.14 245)` (fill, white fg), `--accent oklch(0.9 0.03 245)`
 - dark: `--background oklch(0.15 0.02 245)`, `--primary oklch(0.5 0.16 245)`, `--accent oklch(0.24 0.09 245)`
+Typeface is system; visual baselines are pinned to the `mcr.microsoft.com/playwright` container for font stability.
 
-### Real screenshots (captured)
-pentagi ships its own Playwright **visual baseline PNGs** (light + dark, 1280px). 11 of
-them are copied into this repo for reference:
-`docs/gui-reference-screens/` → `dashboard-light/dark`, `flows-light/dark`, `flows-5-light`,
-`resources-light/dark`, `settings-prompts-light`, `settings-providers-light`,
-`knowledges-light`, `templates-light`. (A fresh local capture was not run: the Vite+terser
-build OOMs in this sandbox's 1.2Gi free RAM; the baselines are the same pixels the project
-pins for its own e2e.)
+### 1.5 Screenshots
+The repo ships **20 pre-existing Playwright visual baselines** (light+dark:
+dashboard, flows list, templates, knowledges, resources, settings-providers/
+prompts/api-tokens) — real renders of the mock tier. Downscaled views copied into
+this repo:
+- `docs/gui-reference/pentagi-dashboard-light.jpg` · `pentagi-dashboard-dark.jpg`
+- `docs/gui-reference/pentagi-flows-light.jpg` · `pentagi-flows-dark.jpg`
+(originals: `~/Downloads/references/pentagi/frontend/e2e/specs/visual/*-snapshots/*.png`)
 
----
-
-## 2. cai — terminal UI only (secondary visual reference)
-
-### Framework + UI
-Two mutually-exclusive frontends (`CAI_TUI_MODE`), both terminal-only, **no web GUI**:
-1. **Textual TUI** (`src/cai/tui/`, textual ≥0.86) — a real `CAITerminal(App)` with its
-   own CSS, custom themes, Textual widgets (TabbedContent, ListView, RichLog, Static),
-   MVC split (model/state + controller/input + view/layout). The `tui` extra pulls
-   networkx/numpy/scipy for a graph canvas.
-2. **Headless REPL** — prompt_toolkit input line + **Rich** rendering (Live, Panel,
-   Table, Markdown, Status) + questionary wizards.
-
-### Screens
-- TUI: **Terminal** tab (grid of `UniversalTerminal` widgets — status-dot header, agent/
-  model selects, RichLog output, status/action bars); **Graph** tab (CTRCanvas draggable/
-  zoomable node graph); **Help** tab; docked **Sidebar** (Agents/Teams/Queue/Stats/Keys);
-  overlay AgentSelector/AgentCreator panels; command palette (Ctrl+P).
-- REPL: session-banner screen (ASCII CAI logo, green), `CAI> ` prompt with ghost + status
-  toolbar, **multi-row Rich Live task checklist** (agent pill, tool label, timer, animated
-  RUNNING/THINKING dot-chase, COMPLETED/ERROR pills, handoff lines), `/help` panels,
-  session selector, Ctrl+O output expander, exception-recovery screen.
-
-### Live mechanism
-**Event-driven, no polling for agent/tool output.** Textual reactive props with watchers;
-a 0.5s interval polls only the status bar; streaming output is injected into per-terminal
-RichLog widgets. REPL: Rich `Live` blocks at **8Hz while running / 2Hz idle**, subscribed
-to a `cai.output` event bus (TurnStart/TaskStart/TaskUpdate/…/AgentHandoff), transient
-(erased on turn end). Bottom toolbar refreshes via a background daemon thread every 5s.
-
-### Visual style
-Dark, terminal-native: green accent (green `CAI>` prompt, ASCII logo), Rich panels,
-monospace. **This is the "live scan log" aesthetic** — contrast with pentagi's dashboard.
+**Fresh-run attempt:** blocked in this sandbox — the frontend install failed with
+Node v24 `ERR_VM_DYNAMIC_IMPORT_CALLBACK_MISSING` (corepack/pnpm 11 incompatibility
+on Node 24); the mock tier (`pnpm build` + `vite preview` :8100 + Playwright route
+interception from cassettes) is otherwise the standalone path (no Postgres/Go/LLM),
+but the production tsc+terser build is also an OOM risk at this sandbox's ~1.6 GiB
+free RAM. The shipped baselines are the project's own official renders of that
+exact tier, so they stand as the screenshot evidence.
 
 ---
 
-## 3. What these tell us for ReachAgent
+## 2. cai — terminal TUI + REPL, no web GUI (MIT agents / research core)
 
-- **pentagi is the only modern web-dashboard reference**: sidebar + dark dashboard +
-  resizable chat/terminal split + live push. Its stack (React + shadcn + GraphQL-WS) is
-  justified by ~27 CRUD screens and per-tool-call terminal streaming.
-- **cai proves a live "stream + status checklist" UI works with no web stack at all** —
-  the exact live-scan-log + per-task-status pattern ReachAgent needs, in a terminal.
-- ReachAgent's real data is **small and live-for-minutes**: hosts/services/endpoints/
-  params (dozens), findings + chains (few), an audit log (hundreds of rows), and an
-  orchestrator event stream. That is a **dashboard + live log**, not a 27-screen console
-  and not per-tool-call terminal push. This drives the plan in `docs/gui-plan.md`.
+### 2.1 Framework
+Two mutually-exclusive terminal frontends (`CAI_TUI_MODE`):
+1. **Textual TUI** (`textual>=0.86`): a real `App` class (`CAITerminal`) with its
+   own ~1523-line CSS, custom themes, widgets (`TabbedContent`, `ListView`,
+   `Select`, `RichLog`, `Static`, `Footer`), MVC split.
+2. **Headless REPL**: `prompt_toolkit>=3.0.39` input line + **Rich** for all
+   rendering (`Live`, `Panel`, `Table`, `Markdown`, `Status`) + `questionary`.
 
-→ See `docs/gui-plan.md` for the one concrete plan.
+### 2.2 Literal screens
+- TUI `Terminal` tab (grid of N terminal widgets, each: status-dot header + agent/model/container selects, RichLog output, InfoStatusBar, streaming ActualActionBar)
+- TUI `Graph` tab (CTRCanvas: draggable/zoomable node graph)
+- TUI `Help` tab (two-column quick-start)
+- TUI Sidebar (Ctrl+S: Agents / Teams / Queue / Stats / Keys)
+- TUI overlay panels (AgentSelectorPanel + AgentCreatorPanel) + command palette
+- REPL banner screen (ASCII "CAI" logo in green + session panel + /command table)
+- REPL input line (green `CAI> ` prompt, completion menu, bottom status toolbar)
+- REPL compact multi-row **Live task checklist** (agent pill, tool label, timer, animated RUNNING/THINKING dot chase, COMPLETED/ERROR pills, handoff sublines)
+- REPL `/help` panels, `/sessions` selector, Ctrl+O output popup, exception-recovery screen
+
+### 2.3 Live mechanism
+TUI: Textual reactive properties with watchers + `set_interval(0.5s)` status-poll
++ `set_interval(1.0s)` layout indicator; agent/tool output injected into RichLog
+widgets via a Rich `Console` subclass that redirects `print()`. REPL: `Rich Live`
+blocks — the checklist runs at **8Hz during a turn / 2Hz idle** (`transient=True`,
+`auto_refresh=True`), subscribed to an OUTPUT event bus (TurnStart/TaskStart/
+TaskUpdate/TaskComplete/AgentHandoff); the block is erased at turn end so only the
+final markdown panel stays in scrollback. Bottom toolbar refreshes via a background
+daemon thread every 5s.
+
+### 2.4 Visual style
+Dark, green-on-black terminal. ASCII art, Rich panels, status dots, animated dot
+chase for running tasks. No color theming beyond terminal defaults; green accent.
+
+### 2.5 Screenshots
+None captured (terminal-only; not in scope of a GUI screenshot pass).
+
+---
+
+## 3. hexstrike-ai (MIT) — no GUI
+Whole repo is 2 Python files (`hexstrike_mcp.py` MCP server, `hexstrike_server.py`)
++ a Flask **JSON REST API** (every route returns `jsonify()` — no templates, no
+static). `assets/` is PNG images only (logos, usage screenshots). `REACT`/`VUE`
+appear only as a `TechnologyStack` enum used to **fingerprint target web apps**
+(`__REACT_DEVTOOLS`/`__VUE__` markers), not its own UI. **CLI/MCP + JSON API only.**
+
+## 4. PentestGPT (MIT) — no GUI
+No streamlit/gradio/flask/fastapi in any tool source. The only web-ish Python is
+`tests/support/local_target.py` — a vulnerable HTTP **target** for tests.
+`docs/redesign/pentestgpt-redesign-decisions.html` is a **static design doc**
+(self-contained `<style>`, no JS), superseded. Entrypoint is `argparse` CLI +
+interactive loop. **CLI only.**
+
+## 5. claude-bug-bounty (MIT) — no GUI in the tool
+- `demo/app.py` = an **intentionally-vulnerable target** web app (shuvonsec.me
+  lookalike, 6 planted bugs: XSS/open-redirect/SSRF/.env/admin/debug) for the A→Z
+  tutorial — *not* the tool's UI.
+- `site/index.html` = the **bughunter.fun marketing landing page**.
+- The tool itself (`agent.py`/`brain.py`/`engine.py`/`commands/`) is a CLI / Claude
+  Code plugin (`bughunter` command via argparse). **CLI/agent only.**
+
+---
+
+## 6. What transfers to ReachAgent (patterns, not code)
+
+| Pattern | Source | Transferable? |
+|---|---|---|
+| Split-pane flow detail: left chat/timeline, right terminal/tasks | pentagi | Yes — ReachAgent timeline + audit pane |
+| Findings as severity-flagged dashboard cards + drill-down | pentagi dashboard | Yes — ReachAgent `Finding` nodes |
+| Embedded live terminal pane (xterm) | pentagi | Optional — ReachAgent's audit log is the analog |
+| GraphQL **WebSocket subscriptions**, zero polling | pentagi | **No** — overkill for one append-only event stream; poll/SSE is honest |
+| Live task checklist with animated status dots (8Hz) | cai REPL | Yes — the phase-timeline "stream" feel |
+| Dark-first dashboard + indigo accent (hue 245, oklch tokens) | pentagi | Yes — visual direction |
+| React 19 + Vite + shadcn/TanStack/Apollo stack | pentagi | **No** — a node build + ~30 deps for data ReachAgent already renders in vanilla |
+| Terminal-only, green-on-black | cai | No — ReachAgent wants a dashboard, not a TUI |

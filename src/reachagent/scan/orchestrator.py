@@ -1,6 +1,6 @@
-"""All-class, LLM-driven scan orchestrator (plan v2: 22 classes → six oracle families).
+"""All-class, LLM-driven scan orchestrator (23 classes → six oracle families).
 
-The user prompt drives the *phases*; the deterministic engine confirms. Four phases:
+The user prompt drives the plan; the deterministic engine confirms. Core phases:
 
   1. RECON     — cold-start facts + spec-first API discovery (reused from scan_target).
   2. ENDPOINTS — graph Endpoint/Parameter/Host shape; the LLM picks vuln-class priority
@@ -42,6 +42,7 @@ from reachagent.tools import validator
 
 if TYPE_CHECKING:
     from reachagent.identity.store import IdentityStore
+    from reachagent.llm.planner import PlannerClient
 
 _log = logging.getLogger(__name__)
 
@@ -74,6 +75,19 @@ ALL_CLASSES: tuple[str, ...] = (
     "race",
 )
 
+_GENERIC_CLASSES = frozenset(
+    {
+        "sqli",
+        "xss_reflected",
+        "path_traversal",
+        "ssti",
+        "nosqli",
+        "ldap_injection",
+        "command_injection",
+        "ssrf",
+    }
+)
+
 _ATTACKER_ORIGIN = "https://reachagent.evil.example"
 _UPLOAD_PATHS = (
     "/upload",
@@ -92,8 +106,8 @@ _TIMING_TRIALS = 10
 class ScanEvent:
     """One streamable event from the orchestrator → GUI (phase timeline)."""
 
-    phase: str  # recon | endpoints | payloads | report
-    kind: str  # info | step | verdict | finding | not-applicable | error
+    phase: str  # plan | recon | endpoints | insertion-points | payloads | verification | report
+    kind: str  # info | plan | step | verdict | finding | not-applicable | error
     message: str
     details: dict[str, Any] = field(default_factory=dict)
 
@@ -836,8 +850,12 @@ def scan_all_classes(
     library: Any | None = None,
     graph: ReachabilityGraph | None = None,
     audit: AuditLog | None = None,
+    operator_prompt: str | None = None,
+    require_llm: bool = False,
+    planner_client: PlannerClient | None = None,
+    live_recon: bool = False,
 ) -> dict[str, Any]:
-    """Run the full four-phase LLM-driven loop over ALL attack classes.
+    """Run the validated multi-phase LLM-driven loop over ALL attack classes.
 
     Phase 1+2+3-sink reuse ``scan_target`` (cold-start recon, api_discovery, the generic
     sink-matched payload chain). The remaining classes run through their deterministic
@@ -846,15 +864,106 @@ def scan_all_classes(
     ``graph``/``audit`` may be injected so the caller holds live references to the state
     the scan is writing (the GUI streams them while the scan runs).
     """
-    from reachagent.scan.entrypoint import scan_target
+    from reachagent.scan.entrypoint import detect_target_type, scan_target
 
     events_out = events if events is not None else []
-    _emit(events_out, "recon", "info", "phase 1+2: recon + endpoint discovery", target=base_url)
+    execution_plan = None
+    planned_recon_tools: tuple[str, ...] | None = None
+    planned_signal_tools: tuple[str, ...] = ()
+    scan_budget = max_attempts
+    if require_llm:
+        # The GUI path has one model-controlled plan boundary. Validation is
+        # strict and provider errors propagate; deterministic drivers still own
+        # all request/oracle/finding capabilities after this proposal.
+        from reachagent.llm.planner import (
+            PlanningContext,
+            build_planner_client,
+            build_tool_catalog,
+            plan_execution,
+        )
+
+        lib_for_plan = library if library is not None else _library()
+        entries = getattr(lib_for_plan, "all_entries", lambda: ())()
+        payload_refs = tuple(
+            str(getattr(entry, "payload_ref", ""))
+            for entry in entries[:100]
+            if getattr(entry, "payload_ref", "")
+        )
+        target_type = detect_target_type(base_url)
+        context = PlanningContext(
+            target=base_url,
+            target_type=target_type,
+            in_scope=tuple(part.strip() for part in in_scope.split(",") if part.strip()),
+            graph_facts={"phase": "recon", "target": base_url},
+            operator_prompt=operator_prompt or "",
+            payload_refs=payload_refs,
+            max_request_budget=max(1, max_attempts),
+            max_tool_budget=16,
+        )
+        own_client = planner_client is None
+        plan_client = planner_client or build_planner_client()
+        try:
+            execution_plan = plan_execution(context, plan_client)
+        finally:
+            if own_client and hasattr(plan_client, "close"):
+                plan_client.close()
+        catalog_by_name = {entry.name: entry for entry in build_tool_catalog()}
+        recon_names: list[str] = []
+        signal_names: list[str] = []
+        for phase in execution_plan.phases:
+            for tool_name in phase.tools:
+                if catalog_by_name[tool_name].signal_gated:
+                    signal_names.append(tool_name)
+                else:
+                    recon_names.append(tool_name)
+        planned_recon_tools = tuple(dict.fromkeys(recon_names))
+        planned_signal_tools = tuple(dict.fromkeys(signal_names))
+        scan_budget = min(max_attempts, execution_plan.request_budget)
+        _emit(
+            events_out,
+            "plan",
+            "plan",
+            "LLM execution plan accepted",
+            rationale=execution_plan.rationale,
+            request_budget=execution_plan.request_budget,
+            tool_budget=execution_plan.tool_budget,
+            phases=[
+                {
+                    "name": phase.name,
+                    "rationale": phase.rationale,
+                    "tools": list(phase.tools),
+                    "profile": phase.profile,
+                    "vuln_classes": list(phase.vuln_classes),
+                    "payload_refs": list(phase.payload_refs),
+                }
+                for phase in execution_plan.phases
+            ],
+        )
+        for phase in execution_plan.phases:
+            _emit(
+                events_out,
+                phase.name,
+                "plan",
+                f"LLM planned {phase.name} phase",
+                rationale=phase.rationale,
+                tools=list(phase.tools),
+                vuln_classes=list(phase.vuln_classes),
+                payload_refs=list(phase.payload_refs),
+            )
+    _emit(events_out, "recon", "info", "phase 1: recon and technology discovery", target=base_url)
     # The recon-profile decision is real data the GUI shows first: which profile the LLM
     # picked for this target and why (or the safe-default reason when LLM is off/failed).
     from reachagent.recon.live_tuning import profile_decision
 
-    profile = profile_decision(base_url)
+    profile = profile_decision(base_url, operator_prompt=operator_prompt)
+    if operator_prompt:
+        _emit(
+            events_out,
+            "recon",
+            "step",
+            "operator objective supplied to the proposal phases",
+            objective=operator_prompt[:500],
+        )
     _emit(
         events_out,
         "recon",
@@ -863,6 +972,7 @@ def scan_all_classes(
         profile=profile["profile"],
         signals=profile["signals"],
     )
+    _emit(events_out, "endpoints", "info", "phase 2: endpoints and insertion points")
     lib = library if library is not None else _library()
 
     result = scan_target(
@@ -870,8 +980,13 @@ def scan_all_classes(
         in_scope=in_scope,
         out_of_scope=out_of_scope,
         dry_run=False,
-        max_attempts=max_attempts,
+        max_attempts=scan_budget,
         surface_path=surface_path,
+        identities=identities,
+        operator_prompt=operator_prompt,
+        recon_tools=planned_recon_tools,
+        live_recon=live_recon,
+        events=events_out,
         transport=transport,
         library=lib,
         graph=graph,
@@ -883,14 +998,39 @@ def scan_all_classes(
         events_out,
         "endpoints",
         "info",
-        "phase 2 done",
+        "phase 2 done — insertion points ready for payload selection",
         endpoints=len(list(graph.endpoints())),
+        parameters=sum(len(graph.parameters_of(ep)) for ep, _ in graph.endpoints()),
         hosts=len([n for n, _ in graph.hosts()]),
+        selected_tools=list(result.get("recon_tools", ())),
+        planned_signal_tools=list(planned_signal_tools),
     )
 
     scope = ScopeGuard.from_raw(in_scope, out_of_scope)
+    from reachagent.recon.signal_dispatch import run_signal_tools
+
+    run_signal_tools(
+        tool_names=planned_signal_tools,
+        graph=graph,
+        scope=scope,
+        audit=audit,
+        target=base_url,
+        emit=lambda phase, kind, message, **details: _emit(
+            events_out, phase, kind, message, **details
+        ),
+        live_recon=live_recon,
+    )
+    identity_headers: dict[str, dict[str, str]] = {}
+    if identities is not None:
+        for name in identities.names():
+            token = identities.token_store(name).get_token()
+            if token:
+                identity_headers[name] = {"Authorization": f"Bearer {token}"}
     firer = RequestFirer(
-        httpx.Client(transport=transport) if transport is not None else httpx.Client(), scope, audit
+        httpx.Client(transport=transport) if transport is not None else httpx.Client(),
+        scope,
+        audit,
+        identity_headers=identity_headers,
     )
     seam = _ValidatorSeam(graph)
     identity, auth_headers = _identity_for_scan(identities, events_out)
@@ -961,6 +1101,34 @@ def scan_all_classes(
 
     findings = [fid for fid, _ in graph.findings()]
     _emit(events_out, "payloads", "info", "phase 3 done", findings=len(findings))
+    driven_classes = {
+        *_GENERIC_CLASSES,
+        "clickjacking",
+        "cors_misconfig",
+        "csrf_missing_protection",
+        "file_upload",
+        "jwt_forgery",
+        "bola",
+        "bfla",
+        "graphql",
+        "business_logic",
+        "sqli_blind",
+    }
+    for vuln_class in ALL_CLASSES:
+        if vuln_class not in driven_classes:
+            _emit(
+                events_out,
+                "payloads",
+                "not-applicable",
+                f"{vuln_class}: no discovered precondition for a safe driver",
+            )
+    _emit(
+        events_out,
+        "report",
+        "info",
+        "phase 4 ready — confirmed findings handed to report generation",
+        findings=len(findings),
+    )
     return {
         "graph": graph,
         "audit": audit,

@@ -14,7 +14,6 @@ path.
 from __future__ import annotations
 
 import logging as _logging
-import os as _os
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import NoReturn, Protocol
@@ -380,9 +379,10 @@ def _maybe_reorder_payloads(
     Dynamic allowlist is the exact bucket set; fallback is original confidence
     order. Never invents a ref, respects max_attempts downstream.
     """
-    if (
-        _os.environ.get("REACHAGENT_PAYLOAD_TUNING") != "1"
-        and _os.environ.get("REACHAGENT_RECON_LIVE_TUNING") != "1"
+    from reachagent.llm.runtime import flag_enabled, llm_required
+
+    if not flag_enabled("REACHAGENT_PAYLOAD_TUNING") and not flag_enabled(
+        "REACHAGENT_RECON_LIVE_TUNING"
     ):
         return entries
     try:
@@ -412,6 +412,8 @@ def _maybe_reorder_payloads(
         reordered = [by_ref[r] for r in new_order if r in by_ref]
         return reordered if reordered else entries
     except Exception as exc:  # noqa: BLE001 — proposer must not break chain
+        if llm_required():
+            raise
         _log.debug("payload reorder skipped: %s", exc)
         return entries
 

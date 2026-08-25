@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import threading
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 import httpx
@@ -76,10 +77,16 @@ class RequestFirer:
         client: httpx.Client,
         scope: ScopeGuard,
         audit: AuditLog | None = None,
+        identity_headers: Mapping[str, Mapping[str, str]] | None = None,
     ) -> None:
         self._client = client
         self._scope = scope
         self._audit = audit or AuditLog()
+        # Optional per-identity auth material. Values are kept in this runtime
+        # collaborator, never copied into graph nodes or audit entries.
+        self._identity_headers = {
+            str(name): dict(headers) for name, headers in (identity_headers or {}).items()
+        }
         # Endpoints whose read-only case has been confirmed safe, keyed by
         # identity plus scheme://host[:port]/path. Clearance cannot transfer
         # between test identities.
@@ -213,6 +220,18 @@ class RequestFirer:
         method = method.upper()
         parsed = httpx.URL(url)
         target = self._endpoint_key(parsed)
+
+        # Merge configured identity headers first, allowing an explicit probe
+        # header (for example Origin) to override one value for this request.
+        configured = self._identity_headers.get(identity, {})
+        if not configured and identity.startswith("identity:"):
+            configured = self._identity_headers.get(identity.split(":", 1)[1], {})
+        if configured:
+            explicit = kwargs.get("headers")
+            merged = dict(configured)
+            if isinstance(explicit, Mapping):
+                merged.update({str(k): str(v) for k, v in explicit.items()})
+            kwargs["headers"] = merged
 
         # Gate 1: scope, before anything else touches the network (§10).
         try:

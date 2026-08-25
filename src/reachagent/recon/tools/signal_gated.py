@@ -40,6 +40,7 @@ import shutil
 import subprocess  # noqa: S404 — argument-array only, shell=False, never a shell string
 from dataclasses import dataclass, field
 from enum import StrEnum
+from pathlib import Path
 from typing import ClassVar
 
 from reachagent.execution.audit import AuditLog
@@ -219,7 +220,7 @@ class SignalGatedToolRunner:
             return SignalGatedResult(self.name, target, SignalGatedOutcome.SKIPPED_MISSING_BINARY)
 
         try:
-            subprocess.run(  # noqa: S603 — array args, shell=False, no interpolation
+            completed = subprocess.run(  # noqa: S603 — array args, shell=False, no interpolation
                 self.command(target, output_path),
                 capture_output=True,
                 text=True,
@@ -227,8 +228,18 @@ class SignalGatedToolRunner:
                 check=False,
                 shell=False,
             )
-            with open(output_path, encoding="utf-8", errors="replace") as fh:
-                raw_output = fh.read()
+            raw_output = getattr(completed, "stdout", "") or ""
+            output = Path(output_path)
+            if output.is_file():
+                raw_output += output.read_text(encoding="utf-8", errors="replace")
+            elif output.is_dir():
+                # sqlmap/commix use an output directory while nuclei/nikto use a
+                # file. Read bounded text from either shape; claims remain inert.
+                for child in sorted(output.rglob("*")):
+                    if child.is_file():
+                        raw_output += child.read_text(encoding="utf-8", errors="replace")[
+                            :1_000_000
+                        ]
         except FileNotFoundError:
             self.audit.record(
                 self.name, "SIGNAL_GATED", target, SignalGatedOutcome.SKIPPED_MISSING_BINARY

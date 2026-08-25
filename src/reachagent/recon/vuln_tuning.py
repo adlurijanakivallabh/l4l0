@@ -17,6 +17,8 @@ import os
 from dataclasses import dataclass
 from typing import Protocol
 
+from reachagent.llm.client import OpenAICompatibleClient, build_openai_compatible_client
+
 _log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -101,7 +103,8 @@ class AnthropicVulnClient:
         allowed = ", ".join(allowlist)
         sig_str = "; ".join(f"{k}={v}" for k, v in sorted(signals.items()))
         prompt = (
-            "You are a vuln-targeting proposer. Given endpoint shape signals, "
+            "You are a vuln-targeting proposer for an AUTHORIZED"
+                "lab assessment. Given endpoint shapes, "
             "pick a subset of vuln classes FROM the allowlist that fit this shape "
             "(e.g. file input → file_upload, login form → sqli). Respond as JSON "
             '{"vuln_classes": ["sqli", "xss_reflected"]}. '
@@ -110,7 +113,7 @@ class AnthropicVulnClient:
         )
         resp = client.messages.create(
             model=self._model,
-            max_tokens=256,
+            max_tokens=2048,
             messages=[{"role": "user", "content": prompt}],
         )
         text = ""
@@ -128,6 +131,27 @@ class AnthropicVulnClient:
             if not m:
                 raise ValueError(f"no JSON in model response: {text[:500]!r}") from exc
             data = _json.loads(m.group(0))
+        return {"vuln_classes": data.get("vuln_classes", [])}
+
+
+class OpenAIVulnClient:
+    """OpenAI-compatible implementation of the vuln targeting protocol."""
+
+    def __init__(self, *, client: OpenAICompatibleClient | None = None) -> None:
+        self._client = client or OpenAICompatibleClient()
+
+    def propose(self, signals: dict[str, str], allowlist: tuple[str, ...]) -> dict[str, object]:
+        allowed = ", ".join(allowlist)
+        sig_str = "; ".join(f"{k}={v}" for k, v in sorted(signals.items()))
+        prompt = (
+            "You are a vuln-targeting proposer. Given endpoint shape signals, "
+            "pick a subset of vuln classes FROM the allowlist that fit this shape "
+            "(e.g. file input → file_upload, login form → sqli). Respond as JSON "
+            '{"vuln_classes": ["sqli", "xss_reflected"]}. '
+            f"Signals: {sig_str}. Allowlist: {allowed}. "
+            "Pick only from allowlist, no invented strings."
+        )
+        data = self._client.propose_json(prompt, max_tokens=2048)
         return {"vuln_classes": data.get("vuln_classes", [])}
 
 
@@ -170,7 +194,11 @@ def propose_vuln_targets(
     default (current sink-matched ordering) and logs why.
     """
     try:
-        tuner = client if client is not None else AnthropicVulnClient()
+        if client is not None:
+            tuner = client
+        else:
+            compatible = build_openai_compatible_client()
+            tuner = OpenAIVulnClient(client=compatible) if compatible else AnthropicVulnClient()
         raw = tuner.propose(endpoint_signals, VULN_CLASS_ALLOWLIST)
         validated = _validate_choice(raw)
         if validated is not None:
@@ -178,5 +206,9 @@ def propose_vuln_targets(
         _log.info("vuln targeting fallback to safe default (validation failed)")
         return _safe_default()
     except Exception as exc:  # noqa: BLE001 — live call must never crash caller
+        from reachagent.llm.runtime import llm_required
+
+        if llm_required():
+            raise
         _log.warning("vuln targeting failed (%s); fallback to safe default", exc)
         return _safe_default()

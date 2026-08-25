@@ -16,6 +16,8 @@ import os
 from dataclasses import dataclass
 from typing import Protocol
 
+from reachagent.llm.client import OpenAICompatibleClient, build_openai_compatible_client
+
 _log = logging.getLogger(__name__)
 
 
@@ -61,7 +63,8 @@ class AnthropicPayloadClient:
         sig_str = "; ".join(f"{k}={v}" for k, v in sorted(signals.items()))
         cands = ", ".join(candidate_refs[:20])
         prompt = (
-            "You are a payload-choice proposer. Given endpoint signals, "
+            "You are a payload-choice proposer for an AUTHORIZED"
+                "lab assessment. Given endpoint signals, "
             f"vuln_class={vuln_class}, and the candidate bucket, rank which "
             "payload_refs to try first for THIS target (e.g. WordPress sqli "
             "prefers WP-flavored). Respond as JSON "
@@ -71,7 +74,7 @@ class AnthropicPayloadClient:
         )
         resp = client.messages.create(
             model=self._model,
-            max_tokens=512,
+            max_tokens=4096,
             messages=[{"role": "user", "content": prompt}],
         )
         text = ""
@@ -89,6 +92,30 @@ class AnthropicPayloadClient:
             if not m:
                 raise ValueError(f"no JSON in model response: {text[:500]!r}") from exc
             data = _json.loads(m.group(0))
+        return {"payload_refs": data.get("payload_refs", [])}
+
+
+class OpenAIPayloadClient:
+    """OpenAI-compatible implementation of the payload-choice protocol."""
+
+    def __init__(self, *, client: OpenAICompatibleClient | None = None) -> None:
+        self._client = client or OpenAICompatibleClient()
+
+    def propose(
+        self, signals: dict[str, str], vuln_class: str, candidate_refs: list[str]
+    ) -> dict[str, object]:
+        sig_str = "; ".join(f"{k}={v}" for k, v in sorted(signals.items()))
+        cands = ", ".join(candidate_refs[:20])
+        prompt = (
+            "You are a payload-choice proposer. Given endpoint signals, "
+            f"vuln_class={vuln_class}, and the candidate bucket, rank which "
+            "payload_refs to try first for THIS target (e.g. WordPress sqli "
+            "prefers WP-flavored). Respond as JSON "
+            '{"payload_refs": ["ref1", "ref2"]}. '
+            f"Signals: {sig_str}. Bucket: {cands}. "
+            "Pick only refs FROM the bucket verbatim, no invented strings."
+        )
+        data = self._client.propose_json(prompt, max_tokens=4096)
         return {"payload_refs": data.get("payload_refs", [])}
 
 
@@ -136,7 +163,13 @@ def propose_payload_choice(
     if not candidate_refs:
         return PayloadChoice(payload_refs=())
     try:
-        tuner = client if client is not None else AnthropicPayloadClient()
+        if client is not None:
+            tuner = client
+        else:
+            compatible = build_openai_compatible_client()
+            tuner = (
+                OpenAIPayloadClient(client=compatible) if compatible else AnthropicPayloadClient()
+            )
         raw = tuner.propose(endpoint_signals, vuln_class, candidate_refs)
         validated = _validate_choice(raw, candidate_refs)
         if validated is not None:
@@ -144,5 +177,9 @@ def propose_payload_choice(
         _log.info("payload choice fallback to original order (validation failed)")
         return _safe_default(candidate_refs)
     except Exception as exc:  # noqa: BLE001 — live call must never crash caller
+        from reachagent.llm.runtime import llm_required
+
+        if llm_required():
+            raise
         _log.warning("payload choice failed (%s); fallback to original order", exc)
         return _safe_default(candidate_refs)

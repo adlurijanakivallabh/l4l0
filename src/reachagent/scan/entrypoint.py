@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Iterable
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import httpx
 
@@ -37,102 +37,12 @@ from reachagent.tools import coordinator_support as _coordinator_support
 
 _log = logging.getLogger(__name__)
 
-
-# -- Scope helpers (canonical: execution.scope.ScopeGuard) ---------------------
-# ponytail: ScopeEnforcer + extract_host/parse_patterns/_matches_pattern removed
-# — wildcard centralized in ScopeGuard._host_matches, one impl only.
+if TYPE_CHECKING:
+    from reachagent.identity.store import IdentityStore
 
 
-def _parse_hosts(raw: str | None) -> list[str]:
-    return [p.strip().lower() for p in raw.split(",") if p.strip()] if raw else []
-
-
-# backward-compat shims — thin aliases, no second impl (tests import from here)
-def extract_host(target: str) -> str:  # noqa: D103
-    raw = target.strip()
-    if not raw:
-        return ""
-    try:
-        host = httpx.URL(raw).host
-        if host:
-            return host.lower()
-    except Exception:  # noqa: BLE001,S110 — bare host fallback is expected
-        pass
-    return raw.split("/", 1)[0].split(":", 1)[0].lower()
-
-
-def parse_patterns(raw: str | None) -> list[str]:  # noqa: D103
-    return _parse_hosts(raw)
-
-
-def _matches_pattern(host: str, pattern: str) -> bool:  # noqa: D103
-    # delegate to ScopeRule for single source of truth
-    from reachagent.execution.scope import ScopeRule as _SR
-
-    return _SR(host=pattern).matches(httpx.URL(f"https://{host}/"))
-
-
-class ScopeEnforcer(ScopeGuard):  # noqa: D101
-    """Deprecated alias — use ScopeGuard.from_raw / from_hosts directly."""
-
-    def __init__(
-        self,
-        in_scope: Iterable[str] | str | None,
-        out_of_scope: Iterable[str] | str | None = None,
-    ) -> None:
-        def _collect(v: Iterable[str] | str | None) -> list[str]:
-            if v is None:
-                return []
-            if isinstance(v, str):
-                return _parse_hosts(v)
-            out: list[str] = []
-            for item in v:
-                out.extend(_parse_hosts(item))
-            return out
-
-        from reachagent.execution.scope import ScopeRule as _SR
-
-        super().__init__(
-            [_SR(host=h) for h in _collect(in_scope)],
-            [_SR(host=h) for h in _collect(out_of_scope)],
-        )
-        # keep old attribute names for tests that peek at _allow/_deny (string list)
-        object.__setattr__(self, "_allow", [r.host for r in self._rules])
-        # _deny stays as ScopeRule list for is_in_scope logic; expose string copy as _deny_hosts
-        object.__setattr__(self, "_deny_hosts", [r.host for r in self._deny])
-
-    @classmethod
-    def from_raw(cls, in_scope: str | None, out_of_scope: str | None = None) -> ScopeEnforcer:
-        return cls(in_scope, out_of_scope)
-
-    def is_allowed(self, host: str) -> bool:  # noqa: D102
-        return self.is_in_scope(host)
-
-    def allowed_hosts(self, hosts: Iterable[str]) -> list[str]:  # noqa: D102
-        return [h for h in hosts if self.is_allowed(h)]
-
-
-class EnforcerScopeWrapper(ScopeGuard):  # noqa: D101
-    """Deprecated — use ScopeGuard directly."""
-
-    def __init__(self, enforcer: ScopeEnforcer | ScopeGuard) -> None:
-        # unwrap if it's already a guard; else copy rules
-        if isinstance(enforcer, ScopeGuard):
-            # copy underlying ScopeRule lists (not the shim string lists)
-            rules = getattr(enforcer, "_rules", [])
-            deny = getattr(enforcer, "_deny", [])
-            # filter to only ScopeRule instances (shim string lists are ignored)
-            from reachagent.execution.scope import ScopeRule as _SR
-
-            deny_rules = [r for r in deny if isinstance(r, _SR)]
-            super().__init__(rules, deny_rules)
-        else:
-            super().__init__([], [])
-
-
-# canonical name for internal use
-_ScopeGuard = ScopeGuard
-
+# Host extraction has one implementation: recon.tools._net.host_of.
+from reachagent.recon.tools._net import host_of as _host_of  # noqa: E402
 
 # -- Cold-start: recon ingest gated by ScopeEnforcer (checkpoint A) ----------
 
@@ -241,7 +151,12 @@ def _sink_for_vuln_class(vuln_class: str) -> SinkType | None:
     return mapping.get(vuln_class)
 
 
-def _live_vuln_class_for(selection: object, graph: ReachabilityGraph, base_url: str) -> str | None:
+def _live_vuln_class_for(
+    selection: object,
+    graph: ReachabilityGraph,
+    base_url: str,
+    operator_prompt: str | None = None,
+) -> str | None:
     """Proposal-only vuln-class targeting — flag-gated, double-validated.
 
     Reads Endpoint/Parameter/Host shape from the graph, calls live proposer
@@ -251,11 +166,10 @@ def _live_vuln_class_for(selection: object, graph: ReachabilityGraph, base_url: 
     run_oracle/write_finding, never invents a payload string. Returns None
     when flag OFF or proposer yields no sink-compatible class.
     """
-    import os as _os
+    from reachagent.llm.runtime import flag_enabled, llm_required
 
-    if (
-        _os.environ.get("REACHAGENT_VULN_TUNING") != "1"
-        and _os.environ.get("REACHAGENT_RECON_LIVE_TUNING") != "1"
+    if not flag_enabled("REACHAGENT_VULN_TUNING") and not flag_enabled(
+        "REACHAGENT_RECON_LIVE_TUNING"
     ):
         return None
     try:
@@ -268,6 +182,8 @@ def _live_vuln_class_for(selection: object, graph: ReachabilityGraph, base_url: 
             "method": getattr(ep, "method", "GET"),
             "path": getattr(ep, "path", "/")[:120],
         }
+        if operator_prompt:
+            signals["operator_goal"] = operator_prompt[:500]
         if param is not None:
             signals["param_name"] = param.name[:80]
             signals["param_location"] = param.location
@@ -301,6 +217,8 @@ def _live_vuln_class_for(selection: object, graph: ReachabilityGraph, base_url: 
         # No sink-compatible class from proposer — keep caller's sink-matched default.
         return None
     except Exception as exc:  # noqa: BLE001 — proposer must not crash scan
+        if llm_required():
+            raise
         _log.debug("vuln tuning skipped: %s", exc)
         return None
 
@@ -384,6 +302,11 @@ def scan_target(
     resume_path: str | None = None,
     state_path: str | None = None,
     surface_path: str | None = None,
+    identities: IdentityStore | None = None,
+    operator_prompt: str | None = None,
+    recon_tools: Iterable[str] | None = None,
+    live_recon: bool = False,
+    events: list[Any] | None = None,
 ) -> dict[str, Any]:
     """Generic autonomous scan entrypoint.
 
@@ -417,7 +340,8 @@ def scan_target(
         solver = ChainSolver(g)
     lib = library if library is not None else build_library()
 
-    target_host = extract_host(base_url)
+    target_host = _host_of(base_url)
+    selected_recon_tools: tuple[str, ...] = ()
     if not resumed:
         if scope.is_in_scope(target_host):
             g.add_host(Host(address=target_host, hostname=target_host, source="scan"))
@@ -428,7 +352,35 @@ def scan_target(
     # main loop — scope + read-only-first + audit hold on both (§10).
     firer_scope = scope
     client = httpx.Client(transport=transport) if transport is not None else httpx.Client()
-    firer = RequestFirer(client, firer_scope, a)
+    identity_headers: dict[str, dict[str, str]] = {}
+    if identities is not None:
+        for name in identities.names():
+            token = identities.token_store(name).get_token()
+            if token:
+                identity_headers[name] = {"Authorization": f"Bearer {token}"}
+    firer = RequestFirer(client, firer_scope, a, identity_headers=identity_headers)
+
+    def _tool_event(tool_name: str, outcome: str, *, detail: str = "", **extra: Any) -> None:
+        """Emit a per-tool event so the GUI tools panel streams real activity."""
+        if events is None:
+            return
+        try:
+            from reachagent.scan.orchestrator import ScanEvent
+
+            details: dict[str, Any] = {"tool": tool_name, "outcome": outcome}
+            if detail:
+                details["detail"] = detail
+            details.update(extra)
+            events.append(
+                ScanEvent(
+                    phase="tools",
+                    kind="step",
+                    message=f"{tool_name}: {outcome}",
+                    details=details,
+                )
+            )
+        except Exception:  # noqa: BLE001 — event emission must never break the scan
+            _log.debug("tool event emission failed for %s", tool_name, exc_info=True)
 
     if not resumed and surface_path is not None:
         # Optional --surface seeding (Task 27): materialize a declared surface
@@ -481,11 +433,63 @@ def scan_target(
                 DirbRunner,
             ]
 
+        # A validated LLM plan may choose a compatible subset (or add a
+        # registered adapter that the legacy target-type defaults did not use).
+        # The registry contains classes already implemented in this package;
+        # it never accepts a binary name or an arbitrary command from the model.
+        if recon_tools is not None:
+            from reachagent.recon.tools.arjun import ArjunRunner
+            from reachagent.recon.tools.httpx_runner import HttpxRunner
+            from reachagent.recon.tools.masscan import MasscanRunner
+            from reachagent.recon.tools.nmap import NmapRunner
+            from reachagent.recon.tools.paramspider import ParamSpiderRunner
+            from reachagent.recon.tools.rustscan import RustscanRunner
+            from reachagent.recon.tools.tls_probe import TestsslRunner
+            from reachagent.recon.tools.wpscan_passive import WpscanPassiveRunner
+            from reachagent.recon.tools.x8 import X8Runner
+
+            registry: dict[str, type[Any]] = {rt.name: rt for rt in runner_types}
+            registry.update(
+                {
+                    cls.name: cls
+                    for cls in (
+                        ArjunRunner,
+                        HttpxRunner,
+                        MasscanRunner,
+                        NmapRunner,
+                        ParamSpiderRunner,
+                        RustscanRunner,
+                        TestsslRunner,
+                        WpscanPassiveRunner,
+                        X8Runner,
+                    )
+                }
+            )
+            requested = tuple(dict.fromkeys(str(name).strip().lower() for name in recon_tools))
+            runner_types = [registry[name] for name in requested if name in registry]
+            selected_recon_tools = tuple(rt.name for rt in runner_types)
+
         # URL-shaped tools need the full base_url; host-line and port/TLS tools
         # take the bare host (or host:port) target.
-        _URL_TOOLS = frozenset({"gobuster", "whatweb", "katana"})
+        _URL_TOOLS = frozenset(
+            {
+                "arjun",
+                "dirb",
+                "feroxbuster",
+                "ffuf",
+                "gobuster",
+                "httpx",
+                "katana",
+                "paramspider",
+                "whatweb",
+                "wpscan",
+                "x8",
+            }
+        )
         scope_guard = scope
         runners: list[Any] = [rt(graph=g, scope=scope_guard, audit=a) for rt in runner_types]
+        if not selected_recon_tools:
+            selected_recon_tools = tuple(runner.name for runner in runners)
 
         # Wildcard calibration (D5, live only — it *fires* probes, so dry-run
         # stays zero-fired). A catch-all makes content-discovery path facts
@@ -529,12 +533,20 @@ def scan_target(
                 if dns_resolve is not None:
                     runner.resolve = dns_resolve
             target_arg = base_url if runner.name in _URL_TOOLS else target_host
+            _tool_event(runner.name, "starting")
             if fixtures is not None:
                 raw = fixtures.get(runner.name, "")
                 if not raw:
+                    _tool_event(runner.name, "no-fixture", detail="skipped (no fixture data)")
                     continue
                 allowed_raw = _filter_fixture_by_scope(raw, scope, runner.name)
-                runner.ingest(target_arg, allowed_raw)
+                ingest_result = runner.ingest(target_arg, allowed_raw)
+                _tool_event(
+                    runner.name,
+                    ingest_result.outcome.value,
+                    nodes=len(ingest_result.nodes),
+                    detail=ingest_result.detail,
+                )
                 # Audit any host lines that were dropped
                 for line in raw.splitlines():
                     stripped = line.strip()
@@ -543,14 +555,19 @@ def scan_target(
                     host = stripped.split()[0]
                     if host and not scope.is_in_scope(host):
                         # record the raw host token lowercased (matches prior audit shape)
-                        h = extract_host(host)
+                        h = _host_of(host)
                         a.record(runner.name, "RECON", h or host.lower(), "refused_out_of_scope")
             elif not dry_run:
-                # Live cold-start: no fixtures → spawn the real recon binary.
-                # runner.run() is the live path — REACHAGENT_RECON_LIVE-gated
-                # (unset → SKIPPED_NOT_LIVE), scope-gated before spawn, array
-                # args shell=False, missing-binary graceful skip.
-                runner.run(target_arg)
+                run_result = runner.run(
+                    target_arg,
+                    environ={"REACHAGENT_RECON_LIVE": "1"} if live_recon else None,
+                )
+                _tool_event(
+                    runner.name,
+                    run_result.outcome.value,
+                    nodes=len(run_result.nodes),
+                    detail=run_result.detail,
+                )
 
         # Spec-first API discovery (Task 27, live only — it fires read-only GET
         # probes). After --surface seeding and cold-start recon, before the
@@ -588,8 +605,14 @@ def scan_target(
                     target = spawned
                 solver.recover_derived(target, path_id="scan")
 
-    seeded_identities = list(g.identities())
-    if not seeded_identities:
+    # Seed every configured identity into the same graph the Coordinator reads.
+    # The old path always created only ``seed`` here, so a GUI-provided identity
+    # file was used by the bespoke checks but never by the generic insertion-point
+    # loop. Credentials stay in IdentityStore; only role/provenance enter the graph.
+    if identities is not None and identities.names():
+        for name in identities.names():
+            g.add_identity(name, identities.identity(name))
+    elif not list(g.identities()):
         from reachagent.graph.nodes import AuthState, Identity, Provenance
 
         g.add_identity(
@@ -634,6 +657,7 @@ def scan_target(
             },
             "fired": len([e for e in a.entries if e.outcome.startswith("fired:")]),
             "scope": {"in_scope": in_scope, "out_of_scope": out_of_scope},
+            "recon_tools": selected_recon_tools,
             "graph": g,
             "audit": a,
         }
@@ -653,9 +677,11 @@ def scan_target(
         return _pc.call_tool_sync(mcp, name, arguments)
 
     iterations = 0
-    max_iterations = 20
-    attempted_edges: set[tuple[str, str]] = set()
-    while iterations < max_iterations:
+    # The solver owns the real per-path cap (40 by default). Keep this matching
+    # ceiling as a second guard for a graph-mutating plugin that creates candidates.
+    max_iterations = 40
+    attempted_edges: set[tuple[str, str, str | None]] = set()
+    while iterations < max_iterations and solver.budget_remaining("scan") > 0:
         iterations += 1
         cands = _coordinator.query_graph(context)
         if resumed:
@@ -673,15 +699,16 @@ def scan_target(
         # No-reselect (live-run divergence #4): skip edges already attempted THIS
         # run — mark_edge_inconclusive writes a durable verdict, but query_graph
         # re-assesses inconclusive edges by design, so without this per-run filter
-        # a dead/no-sink candidate is reselected for all 20 iterations.
-        cands = [c for c in cands if (c.identity_node, c.endpoint_node) not in attempted_edges]
+        # a dead/no-sink candidate is reselected for the full path budget.
+        cands = [
+            c
+            for c in cands
+            if (c.identity_node, c.endpoint_node, c.parameter_node) not in attempted_edges
+        ]
         sel = _coordinator.score_and_select(cands)
         if sel is None:
             break
-        attempted_edges.add((sel.identity_node, sel.endpoint_node))
         if not _coordinator_support.budget_status(context):
-            break
-        if not solver.consume_budget("scan"):
             break
         vuln_class = "sqli"
         param_sink = g.parameter_sink(sel.parameter_node) if sel.parameter_node else None
@@ -694,7 +721,7 @@ def scan_target(
         # from Endpoint/Parameter/Host are sent to propose_vuln_targets() which
         # picks FROM VULN_CLASS_ALLOWLIST; validated twice (inside + here) before
         # any use. Never writes Finding/can_call, never calls run_oracle/fire.
-        _maybe = _live_vuln_class_for(sel, g, base_url)
+        _maybe = _live_vuln_class_for(sel, g, base_url, operator_prompt)
         if _maybe is not None:
             vuln_class = _maybe
         # Coordinator may select a candidate with no parameter (endpoint-level
@@ -707,13 +734,17 @@ def scan_target(
             try:
                 _ = g.endpoint(sel.endpoint_node)  # endpoint must exist to seed on it
             except Exception:  # noqa: BLE001 — a missing endpoint cannot be seeded
-                solver.consume_budget("scan")
+                attempted_edges.add((sel.identity_node, sel.endpoint_node, None))
                 continue
             from reachagent.graph.nodes import Parameter as _ProbeParam
 
             param_node = g.add_parameter(
                 sel.endpoint_node, _ProbeParam(name="probe", location="query")
             )
+        # Record the concrete insertion point after a bare endpoint has been
+        # materialized; otherwise the newly seeded parameter would look like a
+        # fresh candidate on the next Coordinator pass.
+        attempted_edges.add((sel.identity_node, sel.endpoint_node, param_node))
         baseline_payload = "baseline"
         if param_node is not None:
             param = g.parameter(param_node)
@@ -768,6 +799,7 @@ def scan_target(
         "graph": g,
         "audit": a,
         "iterations": iterations,
+        "recon_tools": selected_recon_tools,
     }
 
 

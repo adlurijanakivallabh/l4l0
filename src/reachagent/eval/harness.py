@@ -66,17 +66,6 @@ from reachagent.eval.mcp_session import mcp_call as _call
 from reachagent.eval.mcp_session import mcp_for as _mcp_for
 from reachagent.eval.mcp_session import read_only_fire as _read_only_fire
 from reachagent.eval.mcp_session import session_as as _session_as
-from reachagent.execution.audit import AuditLog  # noqa: F401 — re-export surface
-from reachagent.execution.firer import RequestFirer  # noqa: F401 — legacy import shim
-from reachagent.execution.scope import ScopeGuard  # noqa: F401 — legacy import shim
-from reachagent.graph.nodes import (
-    Endpoint,  # noqa: F401 — legacy import shim
-    Parameter,  # noqa: F401 — legacy import shim
-)
-from reachagent.graph.store import ReachabilityGraph  # noqa: F401 — legacy import shim
-from reachagent.mcp import server  # noqa: F401 — legacy import shim
-from reachagent.payloads import PayloadLibrary  # noqa: F401 — legacy import shim
-from reachagent.tools.explorer_context import ExplorerContext  # noqa: F401 — legacy import shim
 
 if TYPE_CHECKING:
     pass

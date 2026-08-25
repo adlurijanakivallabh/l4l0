@@ -76,6 +76,13 @@ def test_openapi_json_materializes_endpoints_and_params() -> None:
     assert g.findings() == [] and g.can_call_edges() == []
 
 
+def test_api_discovery_does_not_duplicate_host_for_non_default_port() -> None:
+    g = ReachabilityGraph()
+    firer, _a = _firer(_openapi_handler())
+    discover_api(g, firer, f"https://{_TARGET}:8443")
+    assert [host.address for _node, host in g.hosts()] == [_TARGET]
+
+
 def test_swagger_and_v3_variants_parsed_identically() -> None:
     for spec_path in ("/swagger.json", "/v3/api-docs", "/api/openapi.json"):
         g = ReachabilityGraph()

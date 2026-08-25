@@ -1,7 +1,7 @@
-"""Web GUI for the full LLM-driven pentest loop — FastAPI, no CLI/TUI (plan v2).
+"""Web GUI for the full LLM-driven assessment loop — FastAPI, no CLI/TUI.
 
-The GUI drives ``scan/orchestrator.scan_all_classes`` — the four-phase loop that
-covers all 22 attack classes — and streams its phase events back over a poll.
+The GUI drives ``scan/orchestrator.scan_all_classes`` — the validated multi-phase
+loop that covers all 23 attack classes — and streams its phase events back over a poll.
 LLM usage is proposal-only (recon profile / vuln-class priority / payload choice /
 report narrative), every finding is ``run_oracle → is_violation → write_finding``,
 and the orchestrator shares ``ReachabilityGraph`` / ``AuditLog`` / ``ScopeGuard``
@@ -12,8 +12,10 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
-import os
+import json
 import uuid
+from contextvars import copy_context
+from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI
@@ -27,6 +29,129 @@ from reachagent.scan.orchestrator import ScanEvent, scan_all_classes
 
 app = FastAPI(title="ReachAgent GUI", version="2.0")
 _scans: dict[str, dict[str, Any]] = {}  # id → {status, phase, events, findings, report_md, error}
+_providers_path = Path(__file__).resolve().parents[3] / "config" / "providers.json"
+
+
+def _load_providers() -> list[dict[str, Any]]:
+    """Named provider configs for the settings panel."""
+    if _providers_path.exists():
+        try:
+            data = json.loads(_providers_path.read_text(encoding="utf-8"))
+            return data if isinstance(data, list) else []
+        except Exception:  # noqa: BLE001 — corrupt file = empty list, never crash
+            return []
+    return []
+
+
+def _save_providers(providers: list[dict[str, Any]]) -> None:
+    _providers_path.parent.mkdir(parents=True, exist_ok=True)
+    _providers_path.write_text(json.dumps(providers, indent=2), encoding="utf-8")
+
+
+@app.get("/api/providers")
+def list_providers() -> JSONResponse:
+    """All named provider configurations + the server-default env summary."""
+    import os
+
+    env_default = {
+        "provider": os.environ.get("REACHAGENT_LLM_PROVIDER", ""),
+        "base_url": os.environ.get("REACHAGENT_LLM_BASE_URL", ""),
+        "model": os.environ.get("REACHAGENT_LLM_MODEL", ""),
+        "api_style": os.environ.get("REACHAGENT_LLM_API_STYLE", "chat_completions"),
+        "has_key": bool(os.environ.get("REACHAGENT_LLM_API_KEY", "")),
+        "name": "(server default)",
+    }
+    providers = [
+        {k: p.get(k, "") for k in ("id", "name", "provider", "base_url", "model", "api_style")}
+        for p in _load_providers()
+    ]
+    return JSONResponse({"default": env_default, "providers": providers})
+
+
+@app.post("/api/providers")
+async def save_provider(payload: dict[str, Any]) -> JSONResponse:
+    """Create or update one named provider config. Key stored server-side only."""
+    name = str(payload.get("name", "")).strip()
+    provider_type = str(payload.get("provider", "")).strip()
+    api_key = str(payload.get("api_key", "")).strip()
+    base_url = str(payload.get("base_url", "")).strip()
+    model = str(payload.get("model", "")).strip()
+    api_style = str(payload.get("api_style", "chat_completions")).strip()
+    provider_id = payload.get("id")
+    if not name or not provider_type:
+        return JSONResponse({"error": "name and provider are required"}, status_code=400)
+    if provider_type not in ("openai-compatible", "deepseek", "openai"):
+        return JSONResponse(
+            {"error": f"unsupported provider type {provider_type!r}"}, status_code=400
+        )
+    if api_style not in ("chat_completions", "responses"):
+        return JSONResponse({"error": f"unsupported api_style {api_style!r}"}, status_code=400)
+    if provider_type == "openai-compatible" and (not base_url or not model):
+        return JSONResponse(
+            {"error": "base_url and model are required for openai-compatible"},
+            status_code=400,
+        )
+    providers = _load_providers()
+    entry = {
+        "id": provider_id or uuid.uuid4().hex[:8],
+        "name": name,
+        "provider": provider_type,
+        "api_key": api_key,
+        "base_url": base_url,
+        "model": model,
+        "api_style": api_style,
+    }
+    found = False
+    for i, existing in enumerate(providers):
+        if existing.get("id") == entry["id"]:
+            # Keep old key when the form resubmits the placeholder.
+            if not api_key and existing.get("api_key"):
+                entry["api_key"] = existing["api_key"]
+            providers[i] = entry
+            found = True
+            break
+    if not found:
+        providers.append(entry)
+    _save_providers(providers)
+    return JSONResponse({"ok": True, "id": entry["id"]})
+
+
+@app.delete("/api/providers/{provider_id}")
+def delete_provider(provider_id: str) -> JSONResponse:
+    providers = _load_providers()
+    remaining = [p for p in providers if p.get("id") != provider_id]
+    if len(remaining) == len(providers):
+        return JSONResponse({"error": "not found"}, status_code=404)
+    _save_providers(remaining)
+    return JSONResponse({"ok": True})
+
+
+@app.post("/api/providers/{provider_id}/test")
+def test_provider(provider_id: str) -> JSONResponse:
+    """Send a tiny prompt through the saved config (connection test)."""
+    from reachagent.llm.client import OpenAICompatibleClient
+
+    entry = next((p for p in _load_providers() if p.get("id") == provider_id), None)
+    if entry is None:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    try:
+        client = OpenAICompatibleClient(
+            provider=entry["provider"],
+            api_key=entry.get("api_key") or None,
+            base_url=entry.get("base_url") or None,
+            model=entry.get("model") or None,
+            api_style=entry.get("api_style") or None,
+            timeout=30.0,
+        )
+    except Exception as exc:  # noqa: BLE001 — config errors surface to the operator
+        return JSONResponse({"ok": False, "error": str(exc)})
+    try:
+        out = client.complete("Reply with exactly: ok", max_tokens=1024)
+        return JSONResponse({"ok": True, "reply": out.strip()[:100]})
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse({"ok": False, "error": str(exc)[:300]})
+    finally:
+        client.close()
 
 
 def _event_dict(e: ScanEvent) -> dict[str, Any]:
@@ -51,14 +176,59 @@ async def start_scan(payload: dict[str, Any]) -> JSONResponse:
     target = str(payload.get("target", "") or "").strip()
     in_scope = str(payload.get("in_scope", "") or "").strip() or target
     out_of_scope = _opt_str(payload.get("out_of_scope"))
-    use_llm = bool(payload.get("use_llm", False))
-    max_attempts = int(payload.get("max_attempts", 20))
+    use_llm = payload.get("use_llm") is True
+    llm_provider_raw = _opt_str(payload.get("llm_provider"))
+    llm_provider: str | None = None
+    named_overrides: dict[str, str] | None = None
+    if llm_provider_raw and llm_provider_raw.startswith("named:"):
+        named_id = llm_provider_raw[len("named:") :]
+        entry = next((p for p in _load_providers() if p.get("id") == named_id), None)
+        if entry is None:
+            return JSONResponse(
+                {"error": f"unknown provider id {named_id!r}", "code": "llm_provider_unavailable"},
+                status_code=400,
+            )
+        named_overrides = {
+            "REACHAGENT_LLM_PROVIDER": entry["provider"],
+            "REACHAGENT_LLM_API_KEY": entry.get("api_key", ""),
+            "REACHAGENT_LLM_BASE_URL": entry.get("base_url", ""),
+            "REACHAGENT_LLM_MODEL": entry.get("model", ""),
+            "REACHAGENT_LLM_API_STYLE": entry.get("api_style", "chat_completions"),
+        }
+        llm_provider = entry["provider"]
+    else:
+        llm_provider = llm_provider_raw
+    operator_prompt = _opt_str(payload.get("prompt"))
+    try:
+        max_attempts = max(1, min(int(payload.get("max_attempts", 20)), 200))
+    except (TypeError, ValueError):
+        return JSONResponse(
+            {"error": "max_attempts must be an integer", "code": "invalid_input"}, status_code=400
+        )
     identities_path = _opt_str(payload.get("identities_path"))
     if not target:
         return JSONResponse({"error": "target required"}, status_code=400)
+    if not use_llm:
+        return JSONResponse(
+            {
+                "error": "LLM execution is required for GUI scans",
+                "code": "llm_required",
+            },
+            status_code=400,
+        )
+    try:
+        from reachagent.llm.client import require_provider_config
+
+        require_provider_config(llm_provider)
+    except Exception as exc:  # noqa: BLE001 — fail before creating a scan
+        return JSONResponse(
+            {"error": str(exc), "code": "llm_provider_unavailable"},
+            status_code=400,
+        )
     scan_id = uuid.uuid4().hex[:8]
     _scans[scan_id] = {
         "target": target,
+        "operator_prompt": operator_prompt,
         "status": "running",
         "phase": "recon",
         "events": [],
@@ -66,7 +236,18 @@ async def start_scan(payload: dict[str, Any]) -> JSONResponse:
         "report_md": "",
     }
     asyncio.create_task(
-        _run_scan(scan_id, target, in_scope, out_of_scope, use_llm, max_attempts, identities_path)
+        _run_scan(
+            scan_id,
+            target,
+            in_scope,
+            out_of_scope,
+            use_llm,
+            max_attempts,
+            identities_path,
+            llm_provider,
+            operator_prompt,
+            named_overrides,
+        )
     )
     return JSONResponse({"scan_id": scan_id, "status": "running"})
 
@@ -94,24 +275,50 @@ async def _run_scan(
     use_llm: bool,
     max_attempts: int,
     identities_path: str | None,
+    llm_provider: str | None = None,
+    operator_prompt: str | None = None,
+    named_overrides: dict[str, str] | None = None,
 ) -> None:
-    # LLM helpers are flag-gated inside the engine; a per-scan env patch (restored in
-    # finally) enables ALL the proposal-only proposers — recon profile, vuln-class
-    # priority per endpoint, and payload-choice ranking — without leaking beyond this
-    # task. Each is allowlist-validated; the deterministic engine still confirms.
-    env_patch = (
-        {
-            "REACHAGENT_RECON_PROFILE": "1",
-            "REACHAGENT_VULN_TUNING": "1",
-            "REACHAGENT_PAYLOAD_TUNING": "1",
-        }
-        if use_llm
-        else {}
-    )
-    old = {k: os.environ.get(k) for k in env_patch}
+    import os
+
+    from reachagent.llm.runtime import override
+
+    saved: dict[str, str | None] = {}
+    if named_overrides:
+        for key, value in named_overrides.items():
+            saved[key] = os.environ.get(key)
+            os.environ[key] = value
     try:
-        for k, v in env_patch.items():
-            os.environ[k] = v
+        with override(enabled=use_llm, provider=llm_provider, required=use_llm):
+            await _run_scan_body(
+                scan_id,
+                target,
+                in_scope,
+                out_of_scope,
+                use_llm,
+                max_attempts,
+                identities_path,
+                operator_prompt,
+            )
+    finally:
+        for key, old_value in saved.items():
+            if old_value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = old_value
+
+
+async def _run_scan_body(
+    scan_id: str,
+    target: str,
+    in_scope: str,
+    out_of_scope: str | None,
+    use_llm: bool,
+    max_attempts: int,
+    identities_path: str | None,
+    operator_prompt: str | None,
+) -> None:
+    try:
         identities, id_error = _load_identities(identities_path)
         if id_error:
             _scans[scan_id].update({"status": "error", "error": id_error})
@@ -133,26 +340,31 @@ async def _run_scan(
                 events=events,
                 graph=graph,
                 audit=audit,
+                operator_prompt=operator_prompt,
+                require_llm=use_llm,
+                live_recon=True,
             )
 
         loop = asyncio.get_running_loop()
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-            await loop.run_in_executor(pool, _run)
+            await loop.run_in_executor(pool, copy_context().run, _run)
 
         md = render_findings_markdown(graph)
         if use_llm:
             from reachagent.report.llm_report import generate_llm_report
 
-            md = generate_llm_report(graph)
+            md = generate_llm_report(graph, operator_prompt=operator_prompt)
+        events.append(
+            ScanEvent(
+                phase="report",
+                kind="step",
+                message="phase 4 complete — report generated from confirmed findings",
+                details={"findings": len(graph.findings())},
+            )
+        )
         _scans[scan_id].update({"status": "done", "phase": "report", "report_md": md})
     except Exception as exc:  # noqa: BLE001 — a scan failure is surfaced, not swallowed
         _scans[scan_id].update({"status": "error", "error": str(exc)})
-    finally:
-        for ok, ov in old.items():
-            if ov is not None:
-                os.environ[ok] = ov
-            else:
-                os.environ.pop(ok, None)
 
 
 def _audit_rows(audit: AuditLog | None) -> list[dict[str, Any]]:
@@ -196,6 +408,79 @@ def _graph_snapshot(graph: ReachabilityGraph | None) -> dict[str, Any]:
             for ep_id, ep in graph.endpoints()[:40]
         ],
     }
+
+
+def _surface_snapshot(graph: ReachabilityGraph | None) -> dict[str, Any]:
+    """Return the real Host → Service/Endpoint → Parameter surface tree."""
+    if graph is None:
+        return {"hosts": [], "orphan_endpoints": []}
+    endpoint_by_host: dict[str, list[tuple[str, Any]]] = {}
+    for host_id, endpoint_id in graph.resolves_to_edges():
+        try:
+            endpoint_by_host.setdefault(host_id, []).append(
+                (endpoint_id, graph.endpoint(endpoint_id))
+            )
+        except (KeyError, TypeError):
+            continue
+
+    def endpoint_row(endpoint_id: str, endpoint: Any) -> dict[str, Any]:
+        return {
+            "id": endpoint_id,
+            "method": endpoint.method,
+            "path": endpoint.path,
+            "content_type": endpoint.content_type,
+            "technology": endpoint.technology,
+            "access_restricted": endpoint.access_restricted,
+            "parameters": [
+                {
+                    "id": param_id,
+                    "name": param.name,
+                    "location": param.location,
+                    "inferred_sink_type": (
+                        param.inferred_sink_type.value
+                        if param.inferred_sink_type is not None
+                        else None
+                    ),
+                }
+                for param_id, param in graph.parameters_of(endpoint_id)
+            ],
+        }
+
+    hosts: list[dict[str, Any]] = []
+    for host_id, host in graph.hosts():
+        hosts.append(
+            {
+                "id": host_id,
+                "address": host.address,
+                "hostname": host.hostname,
+                "source": host.source,
+                "technology": host.technology,
+                "detected_version": host.detected_version,
+                "services": [
+                    {
+                        "id": service_id,
+                        "port": service.port,
+                        "protocol": service.protocol,
+                        "service_name": service.service_name,
+                        "banner": service.banner,
+                        "detected_version": service.detected_version,
+                        "source": service.source,
+                    }
+                    for service_id, service in graph.services_of(host_id)
+                ],
+                "endpoints": [
+                    endpoint_row(endpoint_id, endpoint)
+                    for endpoint_id, endpoint in endpoint_by_host.get(host_id, [])
+                ],
+            }
+        )
+    attached = {endpoint_id for values in endpoint_by_host.values() for endpoint_id, _ in values}
+    orphan_endpoints = [
+        endpoint_row(endpoint_id, endpoint)
+        for endpoint_id, endpoint in graph.endpoints()
+        if endpoint_id not in attached
+    ]
+    return {"hosts": hosts, "orphan_endpoints": orphan_endpoints}
 
 
 def _chain_label(graph: ReachabilityGraph, node: str) -> str:
@@ -255,13 +540,17 @@ def get_scan(scan_id: str) -> JSONResponse:
     if not data:
         return JSONResponse({"error": "not found"}, status_code=404)
     graph: ReachabilityGraph | None = data.get("graph")
+    events = data.get("events", [])
+    phase = data.get("phase")
+    if data.get("status") == "running" and events:
+        phase = events[-1].phase
     return JSONResponse(
         {
             "scan_id": scan_id,
             "target": data.get("target"),
             "status": data.get("status"),
-            "phase": data.get("phase"),
-            "events": [_event_dict(e) for e in data.get("events", [])],
+            "phase": phase,
+            "events": [_event_dict(e) for e in events],
             "audit": _audit_rows(data.get("audit")),
             "graph": _graph_snapshot(graph),
             "findings": _finding_rows(graph),
@@ -271,16 +560,56 @@ def get_scan(scan_id: str) -> JSONResponse:
     )
 
 
+@app.get("/api/scan/{scan_id}/surface")
+def get_surface(scan_id: str) -> JSONResponse:
+    """Read-only Host/Service/Endpoint/Parameter graph slice for the GUI."""
+    data = _scans.get(scan_id)
+    if not data or "graph" not in data:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    return JSONResponse({"scan_id": scan_id, **_surface_snapshot(data.get("graph"))})
+
+
+@app.get("/api/scan/{scan_id}/audit")
+def get_audit(scan_id: str, limit: int = 200) -> JSONResponse:
+    """Read-only bounded audit tail; the full execution log stays server-side."""
+    data = _scans.get(scan_id)
+    if not data:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    limit = max(1, min(limit, 1000))
+    return JSONResponse({"scan_id": scan_id, "entries": _audit_rows(data.get("audit"))[-limit:]})
+
+
+@app.get("/api/scan/{scan_id}/chains")
+def get_chains(scan_id: str) -> JSONResponse:
+    """Return connected chain paths for the real confirmed findings."""
+    data = _scans.get(scan_id)
+    if not data or "graph" not in data:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    graph: ReachabilityGraph = data["graph"]
+    return JSONResponse(
+        {
+            "scan_id": scan_id,
+            "chains": [
+                {"finding_id": finding_id, "paths": _chains_for(graph, finding_id)}
+                for finding_id, finding in graph.findings()
+                if getattr(getattr(finding, "status", None), "value", "") == "confirmed_violation"
+            ],
+        }
+    )
+
+
 @app.get("/api/report/{scan_id}")
 def get_report(scan_id: str) -> JSONResponse:
     data = _scans.get(scan_id)
     if not data or "graph" not in data:
         return JSONResponse({"error": "not found or not done"}, status_code=404)
-    from reachagent.report.llm_report import generate_llm_report
-
-    graph: ReachabilityGraph = data["graph"]
-    md = generate_llm_report(graph)
-    return JSONResponse({"scan_id": scan_id, "report_md": md})
+    # Phase 4 generates the report inside the strict scan runtime.  Serve that
+    # stored result; do not re-run a provider call (or a deterministic fallback)
+    # from a later request outside the scan context.
+    report_md = data.get("report_md")
+    if not isinstance(report_md, str) or not report_md:
+        return JSONResponse({"error": "report not ready"}, status_code=409)
+    return JSONResponse({"scan_id": scan_id, "report_md": report_md})
 
 
 def _report_html(report_md: str) -> str:
@@ -301,7 +630,7 @@ def _report_html(report_md: str) -> str:
 @app.get("/api/scan/{scan_id}/export")
 def export_report(scan_id: str, format: str = "markdown") -> Response:
     """Download the report in markdown/json/html — real data from the completed scan."""
-    from reachagent.report.renderer import render_findings_json, render_findings_markdown
+    from reachagent.report.renderer import render_findings_json
 
     data = _scans.get(scan_id)
     if not data or "graph" not in data:
@@ -309,15 +638,14 @@ def export_report(scan_id: str, format: str = "markdown") -> Response:
     graph: ReachabilityGraph = data["graph"]
     if format == "json":
         body, media, ext = render_findings_json(graph), "application/json", "json"
-    elif format == "html":
-        body, media, ext = (
-            _report_html(data.get("report_md") or render_findings_markdown(graph)),
-            "text/html",
-            "html",
-        )
     else:
-        body = data.get("report_md") or render_findings_markdown(graph)
-        media, ext = "text/markdown", "md"
+        report_md = data.get("report_md")
+        if not isinstance(report_md, str) or not report_md:
+            return JSONResponse({"error": "report not ready"}, status_code=409)
+        if format == "html":
+            body, media, ext = _report_html(report_md), "text/html", "html"
+        else:
+            body, media, ext = report_md, "text/markdown", "md"
     return Response(
         content=body,
         media_type=media,

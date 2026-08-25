@@ -141,9 +141,10 @@ class GobusterRunner(ReconToolRunner):
         # When REACHAGENT_GOBUSTER_LIVE_TUNING=1, Claude proposes a choice
         # FROM the allowlist (wordlist/flags/status) given target signals;
         # proposal is validated twice (inside live_tuning + here) before use.
-        if (
-            os.environ.get("REACHAGENT_GOBUSTER_LIVE_TUNING") == "1"
-            or os.environ.get("REACHAGENT_RECON_LIVE_TUNING") == "1"
+        from reachagent.llm.runtime import flag_enabled, llm_required
+
+        if flag_enabled("REACHAGENT_GOBUSTER_LIVE_TUNING") or flag_enabled(
+            "REACHAGENT_RECON_LIVE_TUNING"
         ):
             try:
                 from reachagent.recon.live_tuning import RECON_ALLOWLIST, propose_recon_tuning
@@ -171,6 +172,8 @@ class GobusterRunner(ReconToolRunner):
                     argv += list(choice.flags)
                     return argv
             except Exception as exc:  # noqa: BLE001 — live tuning fallback
+                if llm_required():
+                    raise
                 _log.debug("gobuster live tuning fallback: %s", exc)
         wordlist = preferred_wordlist("REACHAGENT_GOBUSTER_WORDLIST")
         argv = ["gobuster", "dir", "-q", "-u", target, "-w", wordlist]

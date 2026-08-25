@@ -32,15 +32,10 @@ from reachagent.eval.mcp_session import SharedState as _Shared
 from reachagent.eval.mcp_session import mcp_call as _call
 from reachagent.eval.mcp_session import mcp_for as _mcp
 from reachagent.eval.mcp_session import session_as as _session
-from reachagent.execution.audit import AuditLog  # noqa: F401 — legacy import shim
-from reachagent.execution.firer import RequestFirer  # noqa: F401 — legacy import shim
-from reachagent.execution.scope import ScopeGuard  # noqa: F401 — legacy import shim
 from reachagent.graph.chain_solver import ChainSolver
 from reachagent.graph.nodes import Endpoint, Parameter
 from reachagent.graph.store import ReachabilityGraph, finding_id
-from reachagent.mcp import server  # noqa: F401 — legacy import shim
-from reachagent.payloads import PayloadLibrary  # noqa: F401 — legacy import shim
-from reachagent.tools.explorer_context import ExplorerContext  # noqa: F401 — legacy import shim
+from reachagent.mcp import server
 
 if TYPE_CHECKING:
     from reachagent.execution.firer import FireResult  # noqa: F401 — TYPE_CHECKING shim
