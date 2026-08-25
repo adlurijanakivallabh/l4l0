@@ -450,12 +450,12 @@ def plan_execution(
     *,
     catalog: Sequence[ToolCatalogEntry] | None = None,
 ) -> ExecutionPlan:
-    """Plan with a PentAGI-style fixer loop.
+    """Plan with a validation-fixer loop.
 
     First attempt uses the plain planning prompt. On validation failure, the
     validator's error and the rejected JSON go back to the model with a fixer
-    instruction (same pattern as PentAGI's input_toolcall_fixer.tmpl plus its
-    maxRetriesToCallFunction loop): minimal correction, same intent. Provider
+    instruction maximal-correction discipline: minimal correction, same intent, schema-conformant
+    output only. Provider
     and network failures still propagate immediately - only validation errors
     are fixable.
     """

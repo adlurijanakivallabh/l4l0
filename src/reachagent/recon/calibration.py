@@ -2,7 +2,7 @@
 
 This is the calibration-baseline helper logged as deferred in
 ``docs/audits/recon-gap-audit.md`` (and the (b) item from the comprehensive
-reference audit, D5 WAF item — technique inspiration from claude-bug-bounty's
+deferred audit item — technique inspiration from community bug-bounty tooling
 ``waf_response_analyzer.py``, MIT, paraphrased not copied). It fires a few
 random read-only GET paths at a target and decides whether the target serves a
 *catch-all* — the same body for any arbitrary path. When it does, content
@@ -158,7 +158,7 @@ class CalibrationRunner:
 # Same catch-all FP class, but for subdomain enumeration: a zone with a wildcard
 # A record answers ANY random label with the same IP, so a discovered
 # "subdomain" may be the catch-all, not a real host. Technique inspiration from
-# claude-bug-bounty's recon_engine.sh DNS wildcard pre-check (MIT, paraphrased).
+# DNS wildcard pre-check pattern (community bug-bounty tooling, MIT).
 #
 # # DECISION BLOCK (D1-D4) — DNS analog, mirroring the HTTP block above
 #
