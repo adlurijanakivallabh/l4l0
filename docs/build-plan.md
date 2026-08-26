@@ -190,6 +190,18 @@ Add missing signal-gated tools (dirsearch, wafw00f).
 Goal: Replace the single-plan-upfront approach with iterative LLM reasoning
 between phases - the LLM sees what recon found, then decides what to do next.
 
+**Status: COMPLETE** (2026-08-26)
+
+Built:
+- Login detection + session capture (identity/login.py): probes graph POST
+  endpoints with auth-shaped paths AND HTML pages with password-type inputs;
+  submits credentials in form-encoded or JSON format based on what was
+  detected; captures session material into IdentityStore.open_session.
+- Orchestrator wiring: each seeded identity attempts login before scanning;
+  fail-loud on wrong credentials, CAPTCHA/challenge markers, or rate-limiting.
+- Each credential set binds as a separate identity, enabling cross-identity
+  BOLA/IDOR differential oracles across roles.
+
 Reference files to read IN FULL:
 - Reference A: provider.go (1010 lines) - GenerateSubtasks, RefineSubtasks,
   PerformAgentChain, PrepareAgentChain
