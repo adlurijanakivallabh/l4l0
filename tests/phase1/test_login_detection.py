@@ -125,8 +125,9 @@ class TestSubmitLogin:
             return FakeFireResult(200, "ok")
 
         firer.fire = _fire  # type: ignore[assignment]
-        token = submit_login(firer, "test_user", self._html_form(), "admin", "pass123")
-        assert "session=xyz" in token
+        captured = submit_login(firer, "test_user", self._html_form(), "admin", "pass123")
+        assert captured.kind == "cookie"
+        assert "session=xyz" in captured.token
 
     def test_wrong_credentials_raises_loud(self) -> None:
         firer = MockFirer()
@@ -171,5 +172,6 @@ class TestAuthenticateIdentity:
         firer.fire = _fire  # type: ignore[assignment]
         store = self._store()
         token = authenticate_identity(firer, store, "testuser", _BASE)
-        assert "jwt" in token.lower() or len(token) > 8
-        assert store.token_store("testuser").get_token() == token
+        # The return value is prefixed with the kind so callers can distinguish.
+        assert "bearer:" in token
+        assert store.token_store("testuser").get_token() == token.split(":", 1)[1]

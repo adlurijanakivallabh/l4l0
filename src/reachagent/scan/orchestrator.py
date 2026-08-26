@@ -1092,6 +1092,9 @@ def scan_all_classes(
         )
         for name in identities.names():
             token = identities.token_store(name).get_token()
+            session_kind = "bearer"
+            if token and ":" in token and token.split(":", 1)[0] in ("cookie", "bearer"):
+                session_kind, token = token.split(":", 1)
             if not token and identities.credential(name):
                 try:
                     _emit(events_out, "endpoints", "step",
@@ -1105,7 +1108,12 @@ def scan_all_classes(
                     _emit(events_out, "endpoints", "error",
                           f"login failed for {name!r}: {exc}")
                     raise
-            if token:
+            if not token:
+                continue
+            if session_kind == "cookie":
+                # A captured cookie goes in a Cookie header (not Authorization).
+                identity_headers[name] = {"Cookie": token}
+            else:
                 identity_headers[name] = {"Authorization": f"Bearer {token}"}
     firer = RequestFirer(
         httpx.Client(transport=transport) if transport is not None else httpx.Client(),

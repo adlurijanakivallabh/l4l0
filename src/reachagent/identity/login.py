@@ -23,10 +23,12 @@ from urllib.parse import urljoin
 
 _log = logging.getLogger(__name__)
 _AUTH_PATH_HINTS = ("login", "signin", "sign-in", "auth", "session", "token")
-_PASSWORD_TYPE = re.compile(r"type=.password.", re.IGNORECASE)
-_INPUT_NAME = re.compile(r"name=.([\w\-]+).", re.IGNORECASE)
-_FORM_ACTION = re.compile(r"action=.([^\x27\x22]*).", re.IGNORECASE)
-_FORM_METHOD = re.compile(r"method=.([^\x27\x22]*).", re.IGNORECASE)
+# HTML attribute values may be single-quoted, double-quoted, or unquoted
+# (HTML5 allows all three), so the quote char is optional in each pattern.
+_PASSWORD_TYPE = re.compile(r"type=.?password.?", re.IGNORECASE)
+_INPUT_NAME = re.compile(r"name=.?([\w\-]+)", re.IGNORECASE)
+_FORM_ACTION = re.compile(r"action=.?([^\s>]+)", re.IGNORECASE)
+_FORM_METHOD = re.compile(r"method=.?(\w+)", re.IGNORECASE)
 
 
 class LoginError(RuntimeError):
@@ -43,6 +45,17 @@ class DetectedLoginForm:
     password_field: str = ""
     method: str = "POST"
     extra_fields: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class CapturedSession:
+    """Session material captured from a login response.
+
+    kind: cookie (send as Cookie header) or bearer (send as Authorization).
+    """
+
+    token: str
+    kind: str
 
 
 def detect_login_forms(
@@ -100,7 +113,7 @@ def _parse_html_login_form(html_body: str, page_url: str) -> DetectedLoginForm |
             continue
         action_m = _FORM_ACTION.search(block)
         method_m = _FORM_METHOD.search(block)
-        action = action_m.group(1).strip() if action_m else ""
+        action = (action_m.group(1).rstrip("\"\'").strip() if action_m else "")
         method = (method_m.group(1).strip() if method_m else "post").upper()
         submit_url = urljoin(page_url, action) if action else page_url
 
@@ -141,7 +154,7 @@ def submit_login(
     form: DetectedLoginForm,
     username: str,
     password: str,
-) -> str:
+) -> CapturedSession:
     """Submit credentials to the detected login form and return the session token.
 
     Raises LoginError on failure (fail loud, never silent).
@@ -178,24 +191,24 @@ def submit_login(
     if not (200 <= result.status_code < 400):
         raise LoginError(f"login rejected at {form.url}: HTTP {result.status_code}")
 
-    token = _extract_session_token(result, body_text)
-    if not token:
+    captured = _extract_session_token(result, body_text)
+    if not captured.token:
         raise LoginError(f"login succeeded but no session material captured at {form.url}")
-    return token
+    return captured
 
 
-def _extract_session_token(result: object, body_text: str) -> str:
+def _extract_session_token(result: object, body_text: str) -> CapturedSession:
     """Extract session material from a login response."""
     headers = getattr(result, "headers", None)
     if headers is not None:
         set_cookie = str(headers.get("set-cookie", ""))
         if set_cookie:
-            return set_cookie.split(";")[0].strip()
+            return CapturedSession(token=set_cookie.split(";")[0].strip(), kind="cookie")
         for hname in ("authorization", "x-auth-token"):
             header_val = str(headers.get(hname, ""))
             if header_val:
-                return header_val
-    lowered = body_text[:2000]
+                kind = "bearer" if hname == "authorization" else "bearer"
+                return CapturedSession(token=header_val, kind=kind)
     import json as _json
 
     try:
@@ -204,11 +217,10 @@ def _extract_session_token(result: object, body_text: str) -> str:
             for key in ("token", "access_token", "jwt", "session_token"):
                 val: object | None = data.get(key)
                 if isinstance(val, str) and len(val) > 8:
-                    return val
+                    return CapturedSession(token=val, kind="bearer")
     except Exception:  # noqa: BLE001, S110 — non-JSON body, skip token extraction
         pass
-    _ = lowered  # reserved for future regex-based extraction
-    return ""
+    return CapturedSession(token="", kind="bearer")
 
 
 def authenticate_identity(
@@ -228,12 +240,12 @@ def authenticate_identity(
     last_error = ""
     for form in forms:
         try:
-            token = submit_login(firer, identity_name, form, cred.username, cred.password)
+            captured = submit_login(firer, identity_name, form, cred.username, cred.password)
         except LoginError as exc:
             last_error = str(exc)
             continue
-        identity_store.open_session(identity_name, token)  # type: ignore[attr-defined]
-        return token
+        identity_store.open_session(identity_name, captured.token)  # type: ignore[attr-defined]
+        return f"{captured.kind}:{captured.token}"
 
     raise LoginError(
         f"all {len(forms)} login surface(s) failed for {identity_name!r}: {last_error}"
