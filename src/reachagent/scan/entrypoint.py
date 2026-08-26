@@ -151,27 +151,27 @@ def _sink_for_vuln_class(vuln_class: str) -> SinkType | None:
     return mapping.get(vuln_class)
 
 
-def _live_vuln_class_for(
+def _live_vuln_classes_for(
     selection: object,
     graph: ReachabilityGraph,
     base_url: str,
     operator_prompt: str | None = None,
-) -> str | None:
-    """Proposal-only vuln-class targeting — flag-gated, double-validated.
+) -> tuple[str, ...]:
+    """Ranked vuln-class targeting — flag-gated, double-validated.
 
     Reads Endpoint/Parameter/Host shape from the graph, calls live proposer
     when enabled, validates every returned class against VULN_CLASS_ALLOWLIST
-    again, then returns the first chosen class that matches the param sink
-    (honest: only existing oracle wiring). Never fires, never calls
-    run_oracle/write_finding, never invents a payload string. Returns None
-    when flag OFF or proposer yields no sink-compatible class.
+    again, then returns ALL sink-compatible classes in the LLM's priority order.
+    The caller iterates this list when earlier classes fail. Returns an empty
+    tuple when flag OFF (the caller falls back to the default single-class
+    sink-matched heuristic).
     """
     from reachagent.llm.runtime import flag_enabled, llm_required
 
     if not flag_enabled("REACHAGENT_VULN_TUNING") and not flag_enabled(
         "REACHAGENT_RECON_LIVE_TUNING"
     ):
-        return None
+        return ()
     try:
         from reachagent.recon.vuln_tuning import VULN_CLASS_ALLOWLIST, propose_vuln_targets
 
@@ -205,22 +205,22 @@ def _live_vuln_class_for(
         # Defense in depth: second allowlist check even after propose validates.
         allowed = set(VULN_CLASS_ALLOWLIST)
         sink = signals.get("sink")
+        compatible: list[str] = []
         for vc in choice.vuln_classes:
             if vc not in allowed:
                 continue
-            # Only return a class whose sink matches the param's sink (honest wiring).
+            # Only keep classes whose sink matches the param's sink (honest wiring).
             # A mismatch (e.g. file_upload for a SQL sink) is proposal noise — skip.
             vc_sink = _sink_for_vuln_class(vc)
             if sink and vc_sink is not None and sink != vc_sink.value:
                 continue
-            return vc
-        # No sink-compatible class from proposer — keep caller's sink-matched default.
-        return None
+            compatible.append(vc)
+        return tuple(compatible)
     except Exception as exc:  # noqa: BLE001 — proposer must not crash scan
         if llm_required():
             raise
         _log.debug("vuln tuning skipped: %s", exc)
-        return None
+        return ()
 
 
 def _harvest_baseline_value(
@@ -724,20 +724,19 @@ def scan_target(
             break
         if not _coordinator_support.budget_status(context):
             break
-        vuln_class = "sqli"
+        # Default: the first sink-matched class from the library ordering.
         param_sink = g.parameter_sink(sel.parameter_node) if sel.parameter_node else None
+        default_class = "sqli"
         for vc in _vuln_classes_for_library():
             if _sink_for_vuln_class(vc) == param_sink:
-                vuln_class = vc
+                default_class = vc
                 break
-        # Live vuln-class targeting — proposal-only, flag OFF by default.
-        # When REACHAGENT_VULN_TUNING=1 or REACHAGENT_RECON_LIVE_TUNING=1, shapes
-        # from Endpoint/Parameter/Host are sent to propose_vuln_targets() which
-        # picks FROM VULN_CLASS_ALLOWLIST; validated twice (inside + here) before
-        # any use. Never writes Finding/can_call, never calls run_oracle/fire.
-        _maybe = _live_vuln_class_for(sel, g, base_url, operator_prompt)
-        if _maybe is not None:
-            vuln_class = _maybe
+        # Live vuln-class targeting — ranked list, flag OFF by default. The LLM
+        # reasons about which classes fit this insertion point's shape and why;
+        # we iterate through its ranking when earlier classes fail.
+        ranked_classes = _live_vuln_classes_for(sel, g, base_url, operator_prompt)
+        if not ranked_classes:
+            ranked_classes = (default_class,)
         # Coordinator may select a candidate with no parameter (endpoint-level
         # authz class, or a discovery that surfaced only a bare endpoint — the
         # live-run VAmPI case). Seed a benign probe parameter on the endpoint so
@@ -778,16 +777,24 @@ def scan_target(
                 from reachagent.scan.orchestrator import ScanEvent as SE
                 events.append(SE(phase='payloads', kind='step', message=msg))
 
-        result = _pc.run_payload_chain(
-            _caller,
-            identity=sel.identity_node,
-            endpoint_node=sel.endpoint_node,
-            param_node=param_node,
-            vuln_class=vuln_class,
-            baseline_payload=baseline_payload,
-            max_attempts=max_attempts,
-            on_event=_on_chain_event,
-        )
+        # Iterate through the ranked vuln classes: try the LLM's first pick;
+        # when it doesn't confirm, move to its second pick, etc. Stop on the
+        # first confirmed finding (the oracle decided — not the LLM).
+        result = None
+        for vc in ranked_classes:
+            _log.debug("trying vuln_class=%s on %s", vc, sel.endpoint_node)
+            result = _pc.run_payload_chain(
+                _caller,
+                identity=sel.identity_node,
+                endpoint_node=sel.endpoint_node,
+                param_node=param_node,
+                vuln_class=vc,
+                baseline_payload=baseline_payload,
+                max_attempts=max_attempts,
+                on_event=_on_chain_event,
+            )
+            if result.confirmed and result.finding_node:
+                break
         if result.confirmed and result.finding_node:
             findings.append(result.finding_node)
             try:

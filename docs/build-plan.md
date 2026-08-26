@@ -122,6 +122,19 @@ inference from response body analysis.
 Goal: Better payload selection based on discovered endpoint characteristics;
 better evidence collection during payload execution.
 
+**Status: COMPLETE** (2026-08-26)
+
+Built:
+- Upgraded vuln-class targeting from a single-class pick to a RANKED LIST
+  per insertion point. The LLM reasons about which classes fit the shape
+  and why (login form gets sqli before xss; URL param gets ssrf; file path
+  gets traversal before command injection), using method, path, param
+  location, inferred sink, host tech, and operator objective as context.
+- The payload chain loop now iterates through the ranked list when earlier
+  classes fail to confirm — stopping on the first oracle-confirmed finding,
+  never on an LLM opinion. Sink-compatibility filtering is preserved so a
+  SQL-sink parameter never receives a traversal payload.
+
 Reference files to read IN FULL:
 - Reference A: performer.go (1151 lines) - retry loop, reflector pattern,
   summarization awareness, mentor protocol

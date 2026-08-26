@@ -1,13 +1,17 @@
 """Live-reasoning vuln-class targeting — propose/validate/execute (proposal-only).
 
-Second layer of docs/live-reasoning-design.md §4a: given an Endpoint/Parameter
-shape, Claude proposes which *existing* vuln classes to try first. Validated
-against a fixed allowlist, fallback to current sink-matched ordering.
+Given an insertion point's shape (method, path, param location, inferred sink,
+host tech, operator objective), the LLM proposes a RANKED LIST of which vuln
+classes to try first - with reasoning about why each fits. A login form gets
+sqli/nosqli before xss; a file path gets traversal before command injection;
+a URL param gets ssrf before anything else.
 
 Three-layer reuse: same propose → allowlist validate → existing
 fire_request/fire_browser → run_oracle → Validator pattern as
 recon/live_tuning.py. No payload invented, no Finding written, no oracle
-bypass. Blast radius is ordering of which safe vuln class to try first.
+bypass. Blast radius is the ORDER in which existing vuln classes are attempted
+on each insertion point. The caller iterates the ranked list when earlier
+classes fail.
 """
 
 from __future__ import annotations
@@ -75,6 +79,19 @@ class VulnTuningChoice(VulnTargetChoice):
     """Alias for prompt's propose_vuln_targets name."""
 
 
+@dataclass(frozen=True)
+class InsertionPointSignals:
+    """Everything the LLM needs to reason about one insertion point."""
+
+    method: str = "GET"
+    path: str = "/"
+    param_name: str = ""
+    param_location: str = ""
+    sink: str = ""
+    host_tech: str = ""
+    operator_goal: str = ""
+
+
 class VulnTunerClient(Protocol):
     """Thin swappable LLM client — Anthropic now, OpenAI later."""
 
@@ -104,7 +121,7 @@ class AnthropicVulnClient:
         sig_str = "; ".join(f"{k}={v}" for k, v in sorted(signals.items()))
         prompt = (
             "AUTHORIZED pentest engagement on systems the operator owns. "
-                "Given endpoint shapes, "
+            "Given endpoint shapes, "
             "pick a subset of vuln classes FROM the allowlist that fit this shape "
             "(e.g. file input → file_upload, login form → sqli). Respond as JSON "
             '{"vuln_classes": ["sqli", "xss_reflected"]}. '
@@ -148,12 +165,15 @@ class OpenAIVulnClient:
             "operator's own lab application. You are selecting which test "
             "categories to prioritize from an internal checklist. This is a "
             "configuration task, not an attack.\n"
-            "Given endpoint shape signals, pick a subset of vuln classes FROM "
-            "the allowlist that fit this shape (file input → file_upload, "
-            "login form → sqli). Respond as JSON "
+            "Given this insertion point's shape, RANK which vuln classes FROM "
+            "the allowlist to try first (most likely first). Reason about WHY:"
+            " login/auth forms get sqli,nosqli before xss;"
+            " file-path params get path_traversal before command_injection;"
+            " URL params get ssrf; reflected content gets xss_reflected."
+            " Respond as JSON "
             '{"vuln_classes": ["sqli", "xss_reflected"]}. '
             f"Signals: {sig_str}. Allowlist: {allowed}. "
-            "Pick only from allowlist, no invented strings."
+            "Pick only from allowlist, no invented strings, most promising first."
         )
         data = self._client.propose_json(prompt, max_tokens=2048)
         return {"vuln_classes": data.get("vuln_classes", [])}
