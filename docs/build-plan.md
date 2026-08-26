@@ -227,6 +227,33 @@ but has the highest impact on finding rate.
 
 Goal: Professional-quality reports; GUI that shows everything the operator needs.
 
+### Phase 6.5 (inserted): Signal-gated tool layer - LLM-driven selection
+
+**Status: COMPLETE** (2026-08-26)
+
+Built:
+- recon/signal_tuning.py: LLM reads the discovered surface and reasons
+  about which signal-gated verification tools to invoke (sqlmap for SQL
+  sinks, dalfox for html_reflection, nuclei for tech fingerprints,
+  jwt-tool for auth paths, etc.). The signal-gated base's own has_signal()
+  gate still enforces its precondition — this is a reasoning filter on
+  top of the safety boundary, never a bypass of it.
+- Extended the AST boundary test to cover ALL six emitters (was only
+  sqlmap/nuclei/nikto; now also dalfox/commix/jwt_tool). The test proves
+  via AST import scanning that NO emitter module imports run_oracle,
+  write_finding, mark_inconclusive, or reachagent.tools.validator.
+
+Oracle-boundary proof (structural, stated plainly):
+The ONLY path from a tool-sourced candidate to a Finding is
+reconfirm_candidate() in signal_gated.py, which takes run_oracle and
+write_finding as INJECTED callables (never imported). The AST scan in
+tests/phase3/test_signal_gated_tools.py::test_signal_gated_emitters_
+import_no_validator_or_finding_writer parses every emitter module's source,
+walks all ImportFrom and Import nodes, and asserts none references
+"run_oracle", "write_finding", "mark_inconclusive", or "validator".
+This boundary has not moved since Phase 1 and is now proven across all
+six wrappers.
+
 Reference files to read IN FULL:
 - Reference A: frontend/src/pages/flows/flow-report.tsx - report rendering
 - Reference A: frontend report export (PDF generation)
