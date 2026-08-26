@@ -28,6 +28,16 @@ class PayloadChoice:
     payload_refs: tuple[str, ...]
 
 
+@dataclass(frozen=True)
+class PayloadAttemptContext:
+    """What happened when a payload was tried — feeds mutation reasoning."""
+
+    tried_ref: str
+    outcome: str  # "no_reflection" | "waf_blocked" | "error_response" | "timeout"
+    status_code: int = 0
+    detail: str = ""
+
+
 class PayloadTunerClient(Protocol):
     """Thin swappable LLM client — Anthropic now, OpenAI later."""
 
@@ -36,6 +46,7 @@ class PayloadTunerClient(Protocol):
         signals: dict[str, str],
         vuln_class: str,
         candidate_refs: list[str],
+        prior_attempts: tuple[PayloadAttemptContext, ...] = (),
     ) -> dict[str, object]:
         """Return raw proposal dict with key ``payload_refs`` (list of strings)."""
         ...
@@ -51,7 +62,11 @@ class AnthropicPayloadClient:
         self._model = model
 
     def propose(
-        self, signals: dict[str, str], vuln_class: str, candidate_refs: list[str]
+        self,
+        signals: dict[str, str],
+        vuln_class: str,
+        candidate_refs: list[str],
+        prior_attempts: tuple[PayloadAttemptContext, ...] = (),
     ) -> dict[str, object]:
         if not self._api_key:
             raise RuntimeError("ANTHROPIC_API_KEY not set")
@@ -102,17 +117,34 @@ class OpenAIPayloadClient:
         self._client = client or OpenAICompatibleClient()
 
     def propose(
-        self, signals: dict[str, str], vuln_class: str, candidate_refs: list[str]
+        self,
+        signals: dict[str, str],
+        vuln_class: str,
+        candidate_refs: list[str],
+        prior_attempts: tuple[PayloadAttemptContext, ...] = (),
     ) -> dict[str, object]:
         sig_str = "; ".join(f"{k}={v}" for k, v in sorted(signals.items()))
         cands = ", ".join(candidate_refs[:20])
+        attempts_text = ""
+        if prior_attempts:
+            attempt_lines = [
+                f"  - {a.tried_ref}: {a.outcome} (status={a.status_code}) {a.detail}"
+                for a in prior_attempts[:5]
+            ]
+            attempts_text = (
+                "\nPreviously tried (avoid repeating the same approach):\n"
+                + "\n".join(attempt_lines)
+            )
         prompt = (
             "You are a payload-choice proposer. Given endpoint signals, "
             f"vuln_class={vuln_class}, and the candidate bucket, rank which "
-            "payload_refs to try first for THIS target (e.g. WordPress sqli "
-            "prefers WP-flavored). Respond as JSON "
+            "payload_refs to try first for THIS target. If previous attempts "
+            "failed with WAF blocks or no reflection, prefer encoding variants "
+            "or a different technique within the same class."
+            " Respond as JSON "
             '{"payload_refs": ["ref1", "ref2"]}. '
             f"Signals: {sig_str}. Bucket: {cands}. "
+            f"{attempts_text}"
             "Pick only refs FROM the bucket verbatim, no invented strings."
         )
         data = self._client.propose_json(prompt, max_tokens=4096)
@@ -153,6 +185,7 @@ def propose_payload_choice(
     candidate_refs: list[str],
     *,
     client: PayloadTunerClient | None = None,
+    prior_attempts: tuple[PayloadAttemptContext, ...] = (),
 ) -> PayloadChoice:
     """Propose payload ordering for a bucket, dynamic-allowlist-validated.
 
@@ -163,14 +196,13 @@ def propose_payload_choice(
     if not candidate_refs:
         return PayloadChoice(payload_refs=())
     try:
+        tuner: PayloadTunerClient
         if client is not None:
             tuner = client
         else:
             compatible = build_openai_compatible_client()
-            tuner = (
-                OpenAIPayloadClient(client=compatible) if compatible else AnthropicPayloadClient()
-            )
-        raw = tuner.propose(endpoint_signals, vuln_class, candidate_refs)
+            tuner = OpenAIPayloadClient(client=compatible) if compatible else AnthropicPayloadClient()  # noqa: E501 — type annotation needed for mypy
+        raw = tuner.propose(endpoint_signals, vuln_class, candidate_refs, prior_attempts)
         validated = _validate_choice(raw, candidate_refs)
         if validated is not None:
             return validated

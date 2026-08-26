@@ -371,6 +371,7 @@ def _maybe_reorder_payloads(
     vuln_class: str,
     sink_type: object,
     slot_kit: Mapping[str, object] | None,
+    prior_attempts: tuple = (),
 ) -> list[Mapping[str, object]]:
     """Proposal-only reorder — flag-gated, dynamic-allowlist-validated.
 
@@ -400,7 +401,9 @@ def _maybe_reorder_payloads(
         # Surface slot_kit tech hint if present (WordPress/API etc.)
         if slot_kit and isinstance(slot_kit.get("tech"), str):
             signals["tech"] = str(slot_kit["tech"])[:80]
-        choice = propose_payload_choice(signals, vuln_class, candidate_refs)
+        choice = propose_payload_choice(
+            signals, vuln_class, candidate_refs, prior_attempts=prior_attempts
+        )
         # Defense in depth: second allowlist check even after proposer validates.
         allowed = set(candidate_refs)
         ordered = [r for r in choice.payload_refs if r in allowed]

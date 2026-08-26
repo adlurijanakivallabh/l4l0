@@ -290,7 +290,10 @@ def get_payloads(
     and vice versa. ``sink_type`` should be the value ``fingerprint_parameter``
     wrote — read it from the graph via :meth:`ReachabilityGraph.parameter_sink`.
     """
-    return ctx.library.get_payloads(vuln_class, sink_type)
+    entries = ctx.library.get_payloads(vuln_class, sink_type)
+    from reachagent.payloads.encoding import expand_encoding_variants
+
+    return expand_encoding_variants(entries)
 
 
 def fire_request(
