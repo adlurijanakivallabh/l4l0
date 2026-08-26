@@ -1082,8 +1082,29 @@ def scan_all_classes(
     )
     identity_headers: dict[str, dict[str, str]] = {}
     if identities is not None:
+        # Attempt login for each seeded identity (fail loud per-identity).
+        from reachagent.identity.login import LoginError, authenticate_identity
+
+        probe_firer = RequestFirer(
+            httpx.Client(transport=transport) if transport is not None else httpx.Client(),
+            scope,
+            audit,
+        )
         for name in identities.names():
             token = identities.token_store(name).get_token()
+            if not token and identities.credential(name):
+                try:
+                    _emit(events_out, "endpoints", "step",
+                          f"authenticating {name!r} against detected login surface")
+                    token = authenticate_identity(
+                        probe_firer, identities, name, base_url, graph=graph,
+                    )
+                    _emit(events_out, "endpoints", "step",
+                          f"authenticated {name!r} — session captured")
+                except LoginError as exc:
+                    _emit(events_out, "endpoints", "error",
+                          f"login failed for {name!r}: {exc}")
+                    raise
             if token:
                 identity_headers[name] = {"Authorization": f"Bearer {token}"}
     firer = RequestFirer(
