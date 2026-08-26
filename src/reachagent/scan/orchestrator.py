@@ -1099,6 +1099,17 @@ def scan_all_classes(
         events=events_out,
     )
 
+    from reachagent.scan.xss_dom import run_xss_dom
+
+    run_xss_dom(
+        graph=graph,
+        firer=firer,
+        base_url=base_url,
+        identity=identity,
+        seam=seam,
+        events=events_out,
+    )
+
     findings = [fid for fid, _ in graph.findings()]
     _emit(events_out, "payloads", "info", "phase 3 done", findings=len(findings))
     driven_classes = {
