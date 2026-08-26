@@ -209,6 +209,8 @@ def _live_vuln_classes_for(
         for vc in choice.vuln_classes:
             if vc not in allowed:
                 continue
+            if vc in compatible:
+                continue
             # Only keep classes whose sink matches the param's sink (honest wiring).
             # A mismatch (e.g. file_upload for a SQL sink) is proposal noise — skip.
             vc_sink = _sink_for_vuln_class(vc)
