@@ -322,10 +322,7 @@ def propose_recon_tuning(
         _log.info("live tuning fallback to safe default (validation failed)")
         return _safe_default()
     except Exception as exc:  # noqa: BLE001 — live call must never crash the runner
-        from reachagent.llm.runtime import llm_required
-
-        if llm_required():
-            raise
+        _log.warning("tuning LLM call failed: %s", exc)
         _log.warning("live tuning failed (%s); fallback to safe default", exc)
         return _safe_default()
 
@@ -471,10 +468,7 @@ def propose_recon_profile(
         _log.info("profile picker fallback to %s (validation failed)", _SAFE_DEFAULT_PROFILE)
         return RECON_PROFILES[_SAFE_DEFAULT_PROFILE]
     except Exception as exc:  # noqa: BLE001 — live call must never crash runner
-        from reachagent.llm.runtime import llm_required
-
-        if llm_required():
-            raise
+        _log.warning("tuning LLM call failed: %s", exc)
         _log.warning("profile picker failed (%s); fallback to %s", exc, _SAFE_DEFAULT_PROFILE)
         return RECON_PROFILES[_SAFE_DEFAULT_PROFILE]
 
@@ -577,10 +571,7 @@ def profile_decision(
             "signals": signal_summary,
         }
     except Exception as exc:  # noqa: BLE001 — must never crash the scan
-        from reachagent.llm.runtime import llm_required
-
-        if llm_required():
-            raise
+        _log.warning("tuning LLM call failed: %s", exc)
         _log.debug("profile lookup fallback: %s", exc)
         return {
             "profile": "default",

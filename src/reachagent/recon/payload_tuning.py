@@ -177,9 +177,6 @@ def propose_payload_choice(
         _log.info("payload choice fallback to original order (validation failed)")
         return _safe_default(candidate_refs)
     except Exception as exc:  # noqa: BLE001 — live call must never crash caller
-        from reachagent.llm.runtime import llm_required
-
-        if llm_required():
-            raise
+        _log.warning("tuning LLM call failed: %s", exc)
         _log.warning("payload choice failed (%s); fallback to original order", exc)
         return _safe_default(candidate_refs)

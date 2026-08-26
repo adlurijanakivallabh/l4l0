@@ -383,7 +383,7 @@ def validate_execution_plan(
             entry = catalog_by_name.get(tool_name)
             if entry is None:
                 raise PlanValidationError(f"unknown tool: {tool_name!r}")
-            if entry.phase != name:
+            if entry.phase != name and not (name == "surface" and entry.phase == "recon"):
                 raise PlanValidationError(f"tool {tool_name!r} is not valid in phase {name!r}")
             if context.target_type not in entry.target_types:
                 raise PlanValidationError(
