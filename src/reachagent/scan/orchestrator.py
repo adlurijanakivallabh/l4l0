@@ -1037,6 +1037,35 @@ def scan_all_classes(
         planned_signal_tools=list(planned_signal_tools),
     )
 
+    # LLM-driven surface prioritization (flag-gated, ordering only): after
+    # recon completes, send the discovered surface to the LLM and get back a
+    # ranked list of which endpoints to attack first. The Coordinator still
+    # scores/selects with its deterministic formula — this only changes the
+    # order in which candidates are presented so high-value endpoints are
+    # scored first when budget runs out before coverage does.
+    from reachagent.recon.surface_tuning import propose_surface_priority
+
+    # Reset any stale priority from a prior scan before proposing anew.
+    from reachagent.tools.coordinator_support import clear_surface_priority
+
+    clear_surface_priority()
+    priority = propose_surface_priority(
+        graph,
+        target_type=detect_target_type(base_url),
+        operator_prompt=operator_prompt,
+    )
+    if priority is not None:
+        from reachagent.tools.coordinator_support import set_surface_priority
+        set_surface_priority(priority.ranked_ids)
+        _emit(
+            events_out,
+            "endpoints",
+            "step",
+            f"LLM surface prioritization: {priority.rationale}",
+            ranked_count=len(priority.ranked_ids),
+            ranked_ids=list(priority.ranked_ids[:10]),
+        )
+
     scope = ScopeGuard.from_raw(in_scope, out_of_scope)
     from reachagent.recon.signal_dispatch import run_signal_tools
 

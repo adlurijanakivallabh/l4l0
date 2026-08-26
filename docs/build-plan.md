@@ -89,6 +89,20 @@ capability descriptions.
 
 Goal: Find more real parameters and endpoints by improving discovery logic.
 
+**Status: COMPLETE** (2026-08-26)
+
+Built:
+- LLM-driven surface prioritization layer (recon/surface_tuning.py): after
+  recon completes, the discovered surface (endpoints, parameters, inferred
+  sinks, technologies, auth hints) is sent to the LLM which ranks which
+  endpoints to attack first with real reasoning. The ranking is validated
+  against actual graph node ids (invented ids dropped) and wired into the
+  Coordinator scoring as a flat +2 bonus that breaks ties without overriding
+  the deterministic object-sensitivity or sink-weight signals.
+- Stale-priority reset between scans prevents cross-run contamination.
+- Flag-gated via REACHAGENT_SURFACE_TUNING (off by default); never crashes
+  the scan; never fires a request, calls an oracle, or writes a finding.
+
 Reference files to read IN FULL:
 - Reference B: tools/web/headers.py - HTTP header probing
 - Reference A: pentester.tmpl methodology section on web app testing

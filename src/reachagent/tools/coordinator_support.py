@@ -99,6 +99,24 @@ _ACTIVE_CONTEXTS: dict[tuple[str, str], CoordinatorContext] = {}
 _ACTIVE_SOLVERS: dict[tuple[str, str], ChainSolver] = {}
 _ACTIVE_PATH_KEYS: dict[str, set[tuple[str, str]]] = {}
 
+# LLM surface-priority bonus: endpoint node ids ranked by the surface-tuning
+# layer get a scoring bump so the deterministic formula still owns the final
+# selection but LLM-prioritized endpoints win ties and near-ties first.
+_SURFACE_PRIORITY_BONUS = 2
+_surface_priority: dict[str, int] = {}  # endpoint_node_id -> rank (lower = higher)
+
+
+def set_surface_priority(ranked_ids: tuple[str, ...]) -> None:
+    """Record an LLM-ranked ordering of endpoint node ids (lower index = higher)."""
+    _surface_priority.clear()
+    for rank, ep_id in enumerate(ranked_ids):
+        _surface_priority[ep_id] = rank
+
+
+def clear_surface_priority() -> None:
+    """Reset to default ordering (used between scans)."""
+    _surface_priority.clear()
+
 
 def _registry_key(context: CoordinatorContext) -> tuple[str, str]:
     return (context.run_id, context.path_id)
@@ -214,13 +232,24 @@ def _prior_attempts(graph: ReachabilityGraph, identity_node: str, endpoint_node:
 
 
 def score(candidate: CoordinatorCandidate) -> Selection:
-    """Compute exact §4 formula against current graph state."""
+    """Compute the scoring formula against current graph state.
+
+    When the surface-tuning layer has set a priority ordering, endpoints in
+    that ordering get a small bonus so they are selected first when scores
+    would otherwise tie. The bonus is bounded and never overrides a large
+    deterministic gap (object sensitivity or sink weight dominate).
+    """
     graph = candidate.context.graph
     object_tier = _object_sensitivity(graph, candidate.endpoint_node)
     spawned = candidate.is_newly_spawned_identity
     sink_weight = _sink_weight(graph, candidate.parameter_node)
     prior = _prior_attempts(graph, candidate.identity_node, candidate.endpoint_node)
-    total = object_tier * 3 + spawned * 5 + sink_weight - prior
+    # Surface-priority bonus: a ranked endpoint gets a flat bonus (2 points),
+    # enough to break ties but never to override object sensitivity (max 9)
+    # or a strong sink signal (max 6). The LLM reorders near-equals; the
+    # deterministic formula still owns the outcome when evidence differs.
+    priority_bonus = _SURFACE_PRIORITY_BONUS if candidate.endpoint_node in _surface_priority else 0
+    total = object_tier * 3 + spawned * 5 + sink_weight + priority_bonus - prior
     return Selection(candidate, total, object_tier, spawned, sink_weight, prior)
 
 
