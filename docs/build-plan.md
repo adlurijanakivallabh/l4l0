@@ -158,6 +158,18 @@ diffing for parameter value injection, improve encoding variants.
 Goal: Make signal-gated tools actually fire when their preconditions are met,
 and ensure their output is properly routed through oracles.
 
+**Status: COMPLETE** (2026-08-26)
+
+Built:
+- Wired expand_encoding_variants into explorer.get_payloads — this was dead
+  code (the variant cache was checked in resolve() but never populated).
+  Now a WAF-filtered base payload automatically gets url-encoded and
+  double-url-encoded variants in the same bucket (bounded at 2/entry).
+- Added PayloadAttemptContext dataclass for failure-context mutation
+  reasoning. The payload-tuning prompt now accepts prior attempt outcomes
+  (no_reflection, waf_blocked, error_response, timeout) so the LLM prefers
+  encoding variants or different techniques when earlier payloads failed.
+
 Reference files to read IN FULL:
 - Reference A: pentester.tmpl sections on msfconsole, network_recon, web_testing
 - Reference B: all exploitation-related tool files
