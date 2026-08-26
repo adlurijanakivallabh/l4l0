@@ -51,6 +51,19 @@ are architectural patterns, not command-line invocations:
 Goal: Make recon produce richer graph facts by studying how the references
 structure their reconnaissance methodology.
 
+**Status: COMPLETE** (2026-08-26)
+
+Built:
+- 6 new recon tool wrappers: naabu, dnsx, shuffledns, waybackurls, gau,
+  wafw00f — each a scoped, audited, scope-gated ReconToolRunner with hermetic
+  fixture tests.
+- Per-tool capability descriptions in the planner catalog so the LLM can
+  reason about *why* to select each tool (32 total catalog entries).
+- Output-size cap in base.py (50k normal / 10k minified) to prevent large
+  tool stdout from flooding LLM context.
+- All new wrappers wired into the scan entrypoint's registry and URL-tools
+  set so LLM-planned scans can dispatch them.
+
 Reference files to read IN FULL during this phase:
 - Reference A (MIT): pkg/tools/terminal.go - command execution, output capture,
   timeout handling, detach vs blocking modes

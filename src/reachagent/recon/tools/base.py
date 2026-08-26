@@ -65,6 +65,7 @@ __all__ = [
     "ReconResult",
     "_recon_host_of",
     "_recon_path_of",
+    "_truncate_output",
     "RECON_ENV_LIVE",
 ]
 
@@ -75,6 +76,14 @@ RECON_ENV_LIVE = "REACHAGENT_RECON_LIVE"
 # How long a live tool invocation may run before we abandon it (seconds). Recon
 # tools can hang; a bounded timeout keeps the run from stalling.
 _LIVE_TIMEOUT = 300.0
+
+# Output truncation (context-efficiency, reference-informed): a recon tool that
+# emits huge output (minified JS bundles, verbose XML) would flood the LLM
+# context. Cap at _OUTPUT_MAX_CHARS normally; when the content looks minified,
+# cap tighter at _MINIFIED_MAX_CHARS. Detection is heuristic (avg line length).
+_OUTPUT_MAX_CHARS = 50_000
+_MINIFIED_MAX_CHARS = 10_000
+_MINIFIED_AVG_LINE = 500  # avg chars/line above which content is "minified"
 
 
 class ReconOutcome(StrEnum):
@@ -251,6 +260,7 @@ class ReconToolRunner:
 
         # Gate 4: parse output into transport-tier facts (re-checks scope).
         raw = completed.stdout
+        raw = _truncate_output(raw)
         if file_output_arg is not None:
             try:
                 with open(file_output_arg, encoding="utf-8", errors="replace") as fh:
@@ -279,3 +289,19 @@ def _scope_url(target: str) -> httpx.URL:
     if "://" in target:
         return httpx.URL(target)
     return httpx.URL(f"http://{target}")
+
+
+def _truncate_output(raw: str) -> str:
+    """Bound tool stdout for LLM context efficiency.
+
+    Minified content (avg line length > threshold) is capped tighter — it is
+    dense and mostly noise for fact extraction. A truncation marker is appended
+    so downstream consumers know the parse saw partial output.
+    """
+    lines = raw.splitlines()
+    avg_len = sum(len(line) for line in lines) / max(len(lines), 1)
+    limit = _MINIFIED_MAX_CHARS if avg_len > _MINIFIED_AVG_LINE else _OUTPUT_MAX_CHARS
+    if len(raw) <= limit:
+        return raw
+    marker = f"\n# [truncated: {len(raw)} -> {limit} chars]"
+    return raw[:limit] + marker

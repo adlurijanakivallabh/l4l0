@@ -21,24 +21,30 @@ from reachagent.recon.tools import (
     CommixRunner,
     DalfoxRunner,
     DirbRunner,
+    DnsxRunner,
     FeroxbusterRunner,
     FfufRunner,
+    GauRunner,
     GobusterRunner,
     HttpxRunner,
     JwtToolRunner,
     KatanaRunner,
     MasscanRunner,
+    NaabuRunner,
     NiktoRunner,
     NmapRunner,
     NucleiRunner,
     ParamSpiderRunner,
     RustscanRunner,
+    ShuffleDnsRunner,
     SqlmapRunner,
     SslscanRunner,
     SslyzeRunner,
     SubfinderRunner,
     TestsslRunner,
     TheHarvesterRunner,
+    Wafw00fRunner,
+    WaybackUrlsRunner,
     WhatWebRunner,
     WpscanPassiveRunner,
     X8Runner,
@@ -121,6 +127,7 @@ class ToolCatalogEntry:
     name: str
     phase: str
     target_types: frozenset[str]
+    description: str = ""
     signal_gated: bool = False
 
 
@@ -167,12 +174,17 @@ class ExecutionPlan:
 
 
 def _entry(
-    runner: type[object], phase: str, target_types: frozenset[str], *, signal_gated: bool = False
+    runner: type[object],
+    phase: str,
+    target_types: frozenset[str],
+    *,
+    description: str = "",
+    signal_gated: bool = False,
 ) -> ToolCatalogEntry:
     name = getattr(runner, "name", "")
     if not isinstance(name, str) or not name:
         raise RuntimeError(f"runner {runner!r} has no catalog name")
-    return ToolCatalogEntry(name, phase, target_types, signal_gated)
+    return ToolCatalogEntry(name, phase, target_types, description, signal_gated)
 
 
 def build_tool_catalog() -> tuple[ToolCatalogEntry, ...]:
@@ -184,32 +196,169 @@ def build_tool_catalog() -> tuple[ToolCatalogEntry, ...]:
     entries = (
         # Network probes consume the extracted authority, so they are valid for
         # a URL/domain too (the dispatcher never passes a path to them).
-        _entry(NmapRunner, "recon", any_target),
-        _entry(MasscanRunner, "recon", any_target),
-        _entry(RustscanRunner, "recon", any_target),
-        _entry(SubfinderRunner, "recon", web_targets),
-        _entry(AmassRunner, "recon", web_targets),
-        _entry(TheHarvesterRunner, "recon", web_targets),
-        _entry(WhatWebRunner, "recon", web_targets),
-        _entry(HttpxRunner, "recon", web_targets),
-        _entry(KatanaRunner, "recon", web_targets),
-        _entry(GobusterRunner, "recon", web_targets),
-        _entry(FfufRunner, "recon", web_targets),
-        _entry(FeroxbusterRunner, "recon", web_targets),
-        _entry(DirbRunner, "recon", web_targets),
-        _entry(TestsslRunner, "recon", tls_targets),
-        _entry(SslscanRunner, "recon", tls_targets),
-        _entry(SslyzeRunner, "recon", tls_targets),
-        _entry(WpscanPassiveRunner, "recon", web_targets),
-        _entry(ArjunRunner, "insertion-points", web_targets),
-        _entry(ParamSpiderRunner, "insertion-points", web_targets),
-        _entry(X8Runner, "insertion-points", web_targets),
-        _entry(NucleiRunner, "verification", any_target, signal_gated=True),
-        _entry(NiktoRunner, "verification", any_target, signal_gated=True),
-        _entry(SqlmapRunner, "verification", any_target, signal_gated=True),
-        _entry(DalfoxRunner, "verification", any_target, signal_gated=True),
-        _entry(CommixRunner, "verification", any_target, signal_gated=True),
-        _entry(JwtToolRunner, "verification", any_target, signal_gated=True),
+        _entry(NmapRunner, "recon", any_target, description="Service/version scanner via -oX XML."),
+        _entry(
+            MasscanRunner,
+            "recon",
+            any_target,
+            description="Ultra-fast rate-limited port scanner for large ranges.",
+        ),
+        _entry(
+            RustscanRunner,
+            "recon",
+            any_target,
+            description="Rapid port scanner, pipes into nmap for versioning.",
+        ),
+        _entry(
+            NaabuRunner,
+            "recon",
+            any_target,
+            description="Fast SYN port scanner. Lighter than nmap.",
+        ),
+        _entry(
+            SubfinderRunner,
+            "recon",
+            web_targets,
+            description="Passive subdomain discovery. Fast and stealthy.",
+        ),
+        _entry(
+            AmassRunner, "recon", web_targets, description="Deep subdomain enum (passive + active)."
+        ),
+        _entry(
+            ShuffleDnsRunner,
+            "recon",
+            web_targets,
+            description="Active DNS brute-force subdomain discovery.",
+        ),
+        _entry(DnsxRunner, "recon", web_targets, description="DNS resolution / A-record lookup."),
+        _entry(
+            TheHarvesterRunner, "recon", web_targets, description="OSINT email/hostname harvester."
+        ),
+        _entry(
+            WhatWebRunner,
+            "recon",
+            web_targets,
+            description="Web tech fingerprinter (CMS/framework/server).",
+        ),
+        _entry(
+            HttpxRunner,
+            "recon",
+            web_targets,
+            description="HTTP prober: live hosts + status/title/tech.",
+        ),
+        _entry(
+            KatanaRunner,
+            "recon",
+            web_targets,
+            description="JS-aware crawler: HTML links + JS files.",
+        ),
+        _entry(
+            GobusterRunner,
+            "recon",
+            web_targets,
+            description="Directory brute-force discovery via wordlist.",
+        ),
+        _entry(
+            FfufRunner, "recon", web_targets, description="Flexible web fuzzer with JSON output."
+        ),
+        _entry(
+            FeroxbusterRunner,
+            "recon",
+            web_targets,
+            description="Recursive content discovery (JSON mode).",
+        ),
+        _entry(
+            DirbRunner, "recon", web_targets, description="Classic content scanner, text output."
+        ),
+        _entry(
+            WaybackUrlsRunner,
+            "recon",
+            web_targets,
+            description="Passive URL discovery from archive snapshots.",
+        ),
+        _entry(
+            GauRunner, "recon", web_targets, description="URL discovery: Crawl/URLScan/OTX/Wayback."
+        ),
+        _entry(Wafw00fRunner, "recon", web_targets, description="WAF fingerprinting."),
+        _entry(
+            TestsslRunner,
+            "recon",
+            tls_targets,
+            description="TLS/SSL config checker: protocols + ciphers.",
+        ),
+        _entry(SslscanRunner, "recon", tls_targets, description="Fast TLS cipher-suite scanner."),
+        _entry(
+            SslyzeRunner,
+            "recon",
+            tls_targets,
+            description="TLS analysis scanner (structured JSON).",
+        ),
+        _entry(
+            WpscanPassiveRunner,
+            "recon",
+            web_targets,
+            description="WordPress passive fingerprinter.",
+        ),
+        _entry(
+            ArjunRunner,
+            "insertion-points",
+            web_targets,
+            description="Hidden param discovery (response diff).",
+        ),
+        _entry(
+            ParamSpiderRunner,
+            "insertion-points",
+            web_targets,
+            description="Query-param mining from archived URLs.",
+        ),
+        _entry(
+            X8Runner,
+            "insertion-points",
+            web_targets,
+            description="Param brute-force + reflection check.",
+        ),
+        _entry(
+            NucleiRunner,
+            "verification",
+            any_target,
+            signal_gated=True,
+            description="Template vuln scanner (gated on tech signal).",
+        ),
+        _entry(
+            NiktoRunner,
+            "verification",
+            any_target,
+            signal_gated=True,
+            description="Server misconfig claims (gated on tech).",
+        ),
+        _entry(
+            SqlmapRunner,
+            "verification",
+            any_target,
+            signal_gated=True,
+            description="SQL injection testing (gated on SQL sink).",
+        ),
+        _entry(
+            DalfoxRunner,
+            "verification",
+            any_target,
+            signal_gated=True,
+            description="XSS scanner (gated on html_reflection).",
+        ),
+        _entry(
+            CommixRunner,
+            "verification",
+            any_target,
+            signal_gated=True,
+            description="Command injection tester (gated on shell).",
+        ),
+        _entry(
+            JwtToolRunner,
+            "verification",
+            any_target,
+            signal_gated=True,
+            description="JWT security analyzer (gated on auth path).",
+        ),
     )
     if len({entry.name for entry in entries}) != len(entries):
         raise RuntimeError("recon catalog has duplicate wrapper names")
@@ -236,6 +385,7 @@ def planning_prompt(
             "name": entry.name,
             "phase": entry.phase,
             "target_types": sorted(entry.target_types),
+            "description": entry.description,
             "signal_gated": entry.signal_gated,
         }
         for entry in entries
@@ -470,7 +620,6 @@ def plan_execution(
             fix_prompt = (
                 "Your previous plan JSON was rejected by strict validation.\n"
                 f"VALIDATION ERROR: {exc}\n\n"
-
                 f"YOUR PREVIOUS (REJECTED) JSON:\n{json.dumps(raw)[:4000]}\n\n\n"
                 "Fix it with MINIMAL changes preserving your original intent. "
                 "Same rules as before: only catalog tool names, only allowlisted "

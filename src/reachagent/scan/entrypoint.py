@@ -439,12 +439,17 @@ def scan_target(
         # it never accepts a binary name or an arbitrary command from the model.
         if recon_tools is not None:
             from reachagent.recon.tools.arjun import ArjunRunner
+            from reachagent.recon.tools.dnsx import DnsxRunner
             from reachagent.recon.tools.httpx_runner import HttpxRunner
             from reachagent.recon.tools.masscan import MasscanRunner
+            from reachagent.recon.tools.naabu import NaabuRunner
             from reachagent.recon.tools.nmap import NmapRunner
             from reachagent.recon.tools.paramspider import ParamSpiderRunner
             from reachagent.recon.tools.rustscan import RustscanRunner
+            from reachagent.recon.tools.shuffledns import ShuffleDnsRunner
             from reachagent.recon.tools.tls_probe import TestsslRunner
+            from reachagent.recon.tools.url_discovery import GauRunner, WaybackUrlsRunner
+            from reachagent.recon.tools.wafw00f import Wafw00fRunner
             from reachagent.recon.tools.wpscan_passive import WpscanPassiveRunner
             from reachagent.recon.tools.x8 import X8Runner
 
@@ -454,12 +459,18 @@ def scan_target(
                     cls.name: cls
                     for cls in (
                         ArjunRunner,
+                        DnsxRunner,
+                        GauRunner,
                         HttpxRunner,
                         MasscanRunner,
                         NmapRunner,
+                        NaabuRunner,
                         ParamSpiderRunner,
                         RustscanRunner,
+                        ShuffleDnsRunner,
                         TestsslRunner,
+                        WaybackUrlsRunner,
+                        Wafw00fRunner,
                         WpscanPassiveRunner,
                         X8Runner,
                     )
@@ -477,10 +488,13 @@ def scan_target(
                 "dirb",
                 "feroxbuster",
                 "ffuf",
+                "gau",
                 "gobuster",
                 "httpx",
                 "katana",
                 "paramspider",
+                "wafw00f",
+                "waybackurls",
                 "whatweb",
                 "wpscan",
                 "x8",
