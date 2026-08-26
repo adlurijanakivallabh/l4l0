@@ -759,6 +759,11 @@ def scan_target(
                 )
                 if harvested is not None:
                     baseline_payload = harvested
+        def _on_chain_event(msg: str) -> None:
+            if events is not None:
+                from reachagent.scan.orchestrator import ScanEvent as SE
+                events.append(SE(phase='payloads', kind='step', message=msg))
+
         result = _pc.run_payload_chain(
             _caller,
             identity=sel.identity_node,
@@ -767,6 +772,7 @@ def scan_target(
             vuln_class=vuln_class,
             baseline_payload=baseline_payload,
             max_attempts=max_attempts,
+            on_event=_on_chain_event,
         )
         if result.confirmed and result.finding_node:
             findings.append(result.finding_node)

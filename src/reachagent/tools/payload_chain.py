@@ -432,6 +432,7 @@ def run_payload_chain(
     evidence_prefix: str = "generic/payload-chain",
     budget_check: Callable[[], bool] | None = None,
     audit_failure: Callable[[str], None] | None = None,
+    on_event: Callable[[str], None] | None = None,
 ) -> PayloadChainResult:
     """Drive one fingerprinted parameter through catalog payloads via MCP.
 
@@ -442,6 +443,15 @@ def run_payload_chain(
     iteration. Empty catalogs, unresolved refs, unsupported oracle adapters, and
     exhausted budgets return explicit failed results; they never become clean.
     """
+    def _ev(msg: str) -> None:
+        if on_event:
+            try:
+                on_event(msg)
+            except Exception:
+                _log.debug("event callback error", exc_info=True)
+
+    _ev(f"fingerprinting {endpoint_node}")
+
     # Only file_path/template have no observational fingerprint path — for every
     # other class the canary evidence decides the sink (a hint must never
     # override observed signal; explorer enforces this too).
@@ -457,6 +467,7 @@ def run_payload_chain(
         fingerprint_args["vuln_class"] = vuln_class
     fingerprint = _call_result(call, "fingerprint_parameter", **fingerprint_args)
     sink_type = fingerprint.get("inferred_sink_type")
+    _ev(f"fingerprint: sink={sink_type}")
     try:
         entries = _as_entries(
             call(
@@ -497,6 +508,7 @@ def run_payload_chain(
         payload = entry.get("resolved_value")
         payload_ref = entry.get("payload_ref")
         oracle_type = entry.get("oracle_type")
+        _ev(f"firing {payload_ref} ({oracle_type})")
         if not isinstance(payload, str) or not payload:
             detail = f"payload {payload_ref!r} resolved to an empty/non-string value"
             _record_failure(audit_failure, detail)
@@ -609,6 +621,7 @@ def run_payload_chain(
         finding_node = finding.get("finding_node")
         if not isinstance(finding_node, str):
             _raise_audited(audit_failure, f"write_finding for {payload_ref!r} omitted finding_node")
+        _ev(f"CONFIRMED {vuln_class} via {payload_ref}")
         return PayloadChainResult(
             attempted=attempted,
             confirmed=True,

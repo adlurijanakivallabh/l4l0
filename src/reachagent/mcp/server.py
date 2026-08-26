@@ -492,6 +492,10 @@ def register_tools(mcp: FastMCP, session: _Session) -> None:
         outputs = []
         for e in entries:
             kit = mint_fire_kit(**(slot_kit or {}))
+            try:
+                resolved = resolve_entry(e, **kit)
+            except Exception:  # noqa: BLE001, S112 — unresolvable payload is skipped
+                continue
             outputs.append(
                 PayloadEntryOut(
                     vuln_class=e.vuln_class,
@@ -502,7 +506,7 @@ def register_tools(mcp: FastMCP, session: _Session) -> None:
                     oracle_type=e.oracle_type.value,
                     payload_ref=e.payload_ref,
                     graph_edge_on_success=e.graph_edge_on_success,
-                    resolved_value=resolve_entry(e, **kit),
+                    resolved_value=resolved,
                     slot_kit=kit,
                 )
             )

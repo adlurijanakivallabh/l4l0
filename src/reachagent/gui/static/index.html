@@ -140,6 +140,7 @@
         <div class="metric"><span class="metric-label">Confirmed findings</span><strong id="c-findings" class="metric-value green">0</strong></div>
       </div>
       <article class="panel" style="margin-top:13px"><div class="panel-head"><div><h3>Tool activity</h3><p>Per-tool recon + verification outcomes, streamed live.</p></div><span class="panel-tag">real runner results</span></div><div class="panel-body"><div id="tool-activity"><span class="empty">No tools dispatched yet.</span></div></div></article>
+      <article class="panel" style="margin-top:13px"><div class="panel-head"><div><h3>Live console</h3><p>Every fingerprint, payload fire, oracle verdict, and finding as it happens.</p></div><span class="panel-tag">real-time</span></div><div class="panel-body" style="padding:0"><div id="live-console" style="max-height:350px;overflow-y:auto;padding:12px 15px;background:var(--field);font:11px/1.7 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--muted)"><span class="empty">Console output appears here during a scan.</span></div></div></article>
       <div class="workspace-grid">
         <article class="panel"><div class="panel-head"><div><h3>Phase timeline</h3><p>Append-only orchestrator events</p></div><span class="panel-tag">1s poll</span></div><div class="panel-body"><div id="timeline"><span class="empty">No assessment yet.</span></div></div></article>
         <article class="panel"><div class="panel-head"><div><h3>Agent decision</h3><p>Why this assessment path was chosen</p></div><span class="panel-tag">proposal</span></div><div class="panel-body decision"><div class="decision-profile"><span class="eyebrow">Recon profile</span><div id="profile-name" class="decision-name">No assessment yet</div><div id="profile-reason" class="decision-reason">The selected profile and its signals will appear here.</div><div id="profile-signals" class="decision-signals">Awaiting live events</div></div><div class="decision-list"><div class="decision-row"><span>Scope guard</span><b class="check">● enforced</b></div><div class="decision-row"><span>Read-only first</span><b class="check">● enforced</b></div><div class="decision-row"><span>Oracle confirmation</span><b class="check">● required</b></div></div></div></article>
@@ -221,6 +222,20 @@ function renderTools(events){
   });
   box.scrollTop=box.scrollHeight;
 }
+function renderConsole(events){
+  const box=document.getElementById("live-console");if(!box)return;
+  if(!events||!events.length){box.innerHTML='<span class="empty">Waiting...</span>';return;}
+  box.innerHTML="";
+  events.forEach(function(e){
+    var d=document.createElement("div");
+    d.textContent="["+e.phase+"] "+e.message;
+    if(e.kind==="finding"){d.style.color="var(--green)";}
+    else if(e.kind==="error"){d.style.color="var(--red)";}
+    else if(e.kind==="not-applicable"){d.style.color="var(--faint)";}
+    box.appendChild(d);
+  });
+  box.scrollTop=box.scrollHeight;
+}
 function renderAudit(rows){
   const a=$("audit");a.innerHTML="";if(!rows||!rows.length){a.innerHTML='<span class="empty">Waiting for an assessment.</span>';return;}
   rows.forEach(r=>{const div=document.createElement("div");div.className="al";const ts=document.createElement("span");ts.className="ts";ts.textContent=(r.timestamp||"").slice(11,19);const id=document.createElement("span");id.className="id";id.textContent=r.identity||"—";const m=document.createElement("span");m.className="muted";m.textContent=r.method||"—";const tgt=document.createElement("span");tgt.className="muted";tgt.textContent=r.target||"—";const key=(r.outcome||"").split(":")[0];const out=document.createElement("span");out.className=OUT_CLASS[key]||"";out.textContent=r.outcome||"—";div.append(ts,id,m,tgt,out);a.appendChild(div);});a.scrollTop=a.scrollHeight;
@@ -261,7 +276,7 @@ function renderSurface(surface){
 function setTarget(target,scanStatus){$("side-target").textContent=target||"No target selected";$("side-state").textContent=scanStatus||"Idle";}
 async function poll(){
   if(!scanId)return;
-  try{const r=await fetch("/api/scan/"+scanId);const j=await r.json();$("status").textContent=j.status+(j.phase?" — "+j.phase:"");$("side-state").textContent=j.status||"running";if(j.phase)$("phase").textContent=PHASE_STEP[j.phase]||j.phase;renderProfile(j.events);renderCounts(j.graph);renderTimeline(j.events);renderTools(j.events);renderAudit(j.audit);renderFindings(j.findings);try{const sr=await fetch("/api/scan/"+scanId+"/surface");renderSurface(await sr.json());}catch(_e){}renderReport(j.report_md);renderExports(scanId,j.status==="done");if(j.status==="done"||j.status==="error"){clearInterval(timer);timer=null;setBusy(false);if(j.status==="error")$("report").textContent="Error: "+(j.error||"unknown");$("status").textContent=j.status+" — "+scanId;}}
+  try{const r=await fetch("/api/scan/"+scanId);const j=await r.json();$("status").textContent=j.status+(j.phase?" — "+j.phase:"");$("side-state").textContent=j.status||"running";if(j.phase)$("phase").textContent=PHASE_STEP[j.phase]||j.phase;renderProfile(j.events);renderCounts(j.graph);renderTimeline(j.events);renderTools(j.events);renderConsole(j.events);renderAudit(j.audit);renderFindings(j.findings);try{const sr=await fetch("/api/scan/"+scanId+"/surface");renderSurface(await sr.json());}catch(_e){}renderReport(j.report_md);renderExports(scanId,j.status==="done");if(j.status==="done"||j.status==="error"){clearInterval(timer);timer=null;setBusy(false);if(j.status==="error")$("report").textContent="Error: "+(j.error||"unknown");$("status").textContent=j.status+" — "+scanId;}}
   catch(err){clearInterval(timer);timer=null;setBusy(false);$("status").textContent="connection error";$("side-state").textContent="offline";$("report").textContent=String(err);}
 }
 $("go").onclick=async()=>{
