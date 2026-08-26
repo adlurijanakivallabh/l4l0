@@ -23,7 +23,9 @@ Classes that need conditions the discovered surface does not provide are reporte
 from __future__ import annotations
 
 import logging
+import os
 import re
+import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
@@ -570,9 +572,38 @@ def run_sqli_blind(
                     baseline_ms.append(b.elapsed_seconds * 1000)
             return TimingProbe(tuple(probe_ms), tuple(baseline_ms))
 
+        # OOB collaborator: active when env is configured, dormant otherwise.
+        oob_collaborator = None
+        if os.environ.get("REACHAGENT_OOB_BASE_DOMAIN"):
+            from reachagent.oob.collaborator import InteractshCollaborator
+
+            try:
+                oob_collaborator = InteractshCollaborator()
+            except Exception:  # noqa: BLE001, S110 — no OOB domain configured is valid
+                pass
+
+        if oob_collaborator is not None:
+
+            def fire_oob() -> Any:
+                from reachagent.sqli.blind_detector import OOBProbe
+
+                nonce = "ra" + uuid.uuid4().hex[:12]
+                domain = oob_collaborator.callback_domain(nonce)
+                return OOBProbe(nonce=nonce, callback_domain=domain)
+
+            observed_nonces_fn = lambda: oob_collaborator.observed_nonces()  # noqa: E731
+            oob_domain = oob_collaborator._base_domain
+            _emit(events, "payloads", "step", f"OOB collaborator active ({oob_domain})")
+        else:
+            def fire_oob() -> Any:
+                return None  # OOB dormant without a collaborator (honest)
+
+            def observed_nonces_fn() -> frozenset[str]:
+                return frozenset()
+
         prober = BlindSqliProber(
-            fire_oob=lambda: None,  # OOB dormant without a collaborator (honest)
-            observed_nonces=lambda: frozenset(),
+            fire_oob=fire_oob,
+            observed_nonces=observed_nonces_fn,
             fire_timing=fire_timing,
             oracle_runner=seam.run,
         )
