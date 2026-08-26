@@ -482,12 +482,15 @@ def test_signal_gated_emitters_import_no_validator_or_finding_writer() -> None:
     # AST scan (like the recon test): no emitter module imports run_oracle /
     # write_finding / mark_inconclusive or the validator module. The only path to a
     # Finding is reconfirm_candidate's injected callables — never a tool's own import.
+    import reachagent.recon.tools.commix as commix_mod
+    import reachagent.recon.tools.dalfox as dalfox_mod
     import reachagent.recon.tools.nikto as nikto_mod
     import reachagent.recon.tools.nuclei as nuclei_mod
+    import reachagent.recon.tools.jwt_tool as jwt_tool_mod
     import reachagent.recon.tools.sqlmap as sqlmap_mod
 
     banned = {"run_oracle", "write_finding", "mark_inconclusive"}
-    for mod in (sqlmap_mod, nuclei_mod, nikto_mod):
+    for mod in (commix_mod, dalfox_mod, jwt_tool_mod, nikto_mod, nuclei_mod, sqlmap_mod):
         src = Path(mod.__file__).read_text(encoding="utf-8")
         tree = ast.parse(src)
         for node in ast.walk(tree):
