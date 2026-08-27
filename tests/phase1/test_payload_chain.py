@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import httpx
-import pytest
-from mcp.server.fastmcp.exceptions import ToolError
 
 from reachagent.execution import AuditLog, RequestFirer, ScopeGuard
 from reachagent.graph.nodes import AuthState, Endpoint, Identity, Parameter, Provenance, SinkType
@@ -14,7 +12,6 @@ from reachagent.oracles import OracleMechanism
 from reachagent.payloads import PayloadEntry, PayloadLibrary, build_library, resolve_entry
 from reachagent.tools.explorer_context import ExplorerContext
 from reachagent.tools.payload_chain import (
-    PayloadChainError,
     audit_failure_callback,
     call_tool_sync,
     run_coordinator_payload_step,
@@ -168,18 +165,24 @@ def test_missing_payload_slot_is_loud_and_audited() -> None:
     parameter = session.graph.add_parameter(endpoint, Parameter("q", "query"))
     failures: list[str] = []
 
-    with pytest.raises(ToolError):
-        run_payload_chain(
-            lambda name, arguments: call_tool_sync(mcp, name, arguments),
-            identity="anonymous",
-            endpoint_node=endpoint,
-            param_node=parameter,
-            vuln_class="sqli_blind",
-            baseline_payload="baseline",
-            audit_failure=failures.append,
-        )
+    # The full library's sqli_blind/sql bucket carries a timing_statistical entry
+    # whose evidence needs the dedicated blind-SQLi prober. The generic chain has
+    # no safe adapter for it, so the entry is SKIPPED with a loud audit — never
+    # fired, never silently clean — and the explicit failed result reports why.
+    result = run_payload_chain(
+        lambda name, arguments: call_tool_sync(mcp, name, arguments),
+        identity="anonymous",
+        endpoint_node=endpoint,
+        param_node=parameter,
+        vuln_class="sqli_blind",
+        baseline_payload="baseline",
+        audit_failure=failures.append,
+    )
 
-    assert failures == ["payload lookup failed: ToolError"]
+    assert result.confirmed is False
+    assert any("no safe evidence adapter" in f for f in failures)
+    assert "timing_statistical" in failures[0]
+    assert result.failure and "payloads exhausted" in result.failure
     assert session.graph.findings() == []
 
 
@@ -200,18 +203,23 @@ def test_dead_payload_ref_is_loud_and_audited() -> None:
     parameter = session.graph.add_parameter(endpoint, Parameter("q", "query"))
     failures: list[str] = []
 
-    with pytest.raises(ToolError):
-        run_payload_chain(
-            lambda name, arguments: call_tool_sync(mcp, name, arguments),
-            identity="anonymous",
-            endpoint_node=endpoint,
-            param_node=parameter,
-            vuln_class="sqli",
-            baseline_payload="baseline",
-            audit_failure=failures.append,
-        )
+    # The MCP get_payloads layer skips unresolvable refs (dead handles) rather
+    # than crashing the whole chain; the explicit failed result is still loud:
+    # it says the bucket was exhausted and nothing was confirmed.
+    result = run_payload_chain(
+        lambda name, arguments: call_tool_sync(mcp, name, arguments),
+        identity="anonymous",
+        endpoint_node=endpoint,
+        param_node=parameter,
+        vuln_class="sqli",
+        baseline_payload="baseline",
+        audit_failure=failures.append,
+    )
 
-    assert failures == ["payload lookup failed: ToolError"]
+    assert result.confirmed is False
+    assert result.attempted == 0
+    # Every entry skipped -> the earlier, equally-explicit empty-bucket failure.
+    assert result.failure and "no payloads matched" in result.failure
     assert session.graph.findings() == []
 
 
@@ -231,17 +239,21 @@ def test_unsupported_oracle_is_loud_and_audited() -> None:
     endpoint = session.graph.add_endpoint(Endpoint("GET", "/users/v1/name"))
     parameter = session.graph.add_parameter(endpoint, Parameter("q", "query"))
     failures: list[str] = []
-    with pytest.raises(PayloadChainError):
-        run_payload_chain(
-            lambda name, arguments: call_tool_sync(mcp, name, arguments),
-            identity="anonymous",
-            endpoint_node=endpoint,
-            param_node=parameter,
-            vuln_class="sqli",
-            baseline_payload="baseline",
-            audit_failure=failures.append,
-        )
+
+    # An unsupported oracle family is skipped with a loud audit; the chain
+    # continues past it and the explicit failure names the reason.
+    result = run_payload_chain(
+        lambda name, arguments: call_tool_sync(mcp, name, arguments),
+        identity="anonymous",
+        endpoint_node=endpoint,
+        param_node=parameter,
+        vuln_class="sqli",
+        baseline_payload="baseline",
+        audit_failure=failures.append,
+    )
     assert failures and "no safe evidence adapter" in failures[0]
+    assert result.confirmed is False
+    assert session.graph.findings() == []
 
 
 def test_success_mcp_sequence_includes_validator_calls() -> None:
@@ -434,17 +446,21 @@ def test_non_arithmetic_ssti_payload_is_rejected_before_any_attack_fire() -> Non
     endpoint = session.graph.add_endpoint(Endpoint("GET", "/users/v1/name"))
     parameter = session.graph.add_parameter(endpoint, Parameter("_q", "query"))
     failures: list[str] = []
-    with pytest.raises(PayloadChainError, match="no deterministic rendered"):
-        run_payload_chain(
-            lambda name, arguments: call_tool_sync(_surface(mcp), name, arguments),
-            identity="anonymous",
-            endpoint_node=endpoint,
-            param_node=parameter,
-            vuln_class="ssti",
-            baseline_payload="baseline",
-            audit_failure=failures.append,
-        )
+
+    # The unsafe payload is SKIPPED with a loud audit before any attack fire —
+    # the safety guarantee is unchanged (nothing non-deterministic crosses the
+    # wire); the mechanism is a per-entry skip instead of a chain-wide abort.
+    result = run_payload_chain(
+        lambda name, arguments: call_tool_sync(_surface(mcp), name, arguments),
+        identity="anonymous",
+        endpoint_node=endpoint,
+        param_node=parameter,
+        vuln_class="ssti",
+        baseline_payload="baseline",
+        audit_failure=failures.append,
+    )
     assert failures and "no deterministic rendered" in failures[0]
+    assert result.confirmed is False and result.attempted == 0
     # Only canary fired — no attack fire reached the wire.
     assert not any(
         r.url.params.get("_q")

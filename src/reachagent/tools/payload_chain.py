@@ -500,11 +500,11 @@ def run_payload_chain(
     attempted = 0
     for entry in entries:
         if attempted >= max_attempts:
-            failure = f"payload budget exhausted after {attempted} attempts"
+            failure = f"payloads exhausted after {attempted} attempts (budget cap)"
             _record_failure(audit_failure, failure)
             return PayloadChainResult(attempted=attempted, confirmed=False, failure=failure)
         if budget_check is not None and not budget_check():
-            failure = f"payload budget exhausted after {attempted} attempts"
+            failure = f"payloads exhausted after {attempted} attempts (budget gate)"
             _record_failure(audit_failure, failure)
             return PayloadChainResult(attempted=attempted, confirmed=False, failure=failure)
 
@@ -525,6 +525,12 @@ def run_payload_chain(
             _record_failure(audit_failure, detail)
             raise PayloadChainError(detail)
 
+        # A library entry whose oracle family has no generic evidence adapter is
+        # SKIPPED with a loud audit — not a chain-killing raise. The library
+        # legitimately carries families (e.g. timing_statistical) that need the
+        # dedicated blind-SQLi prober instead of this generic chain; firing them
+        # here would produce evidence no oracle can consume. The scan continues
+        # with the remaining entries in the bucket.
         try:
             _evidence_for(
                 oracle_type,
@@ -536,8 +542,10 @@ def run_payload_chain(
                 vuln_class=vuln_class,
             )
         except PayloadChainError as exc:
-            _record_failure(audit_failure, str(exc))
-            raise
+            failure = f"skipped {payload_ref!r}: {exc}"
+            _record_failure(audit_failure, failure)
+            _ev(f"skipped {payload_ref}: no safe evidence adapter ({oracle_type})")
+            continue
 
         try:
             baseline = _call_result(
@@ -632,6 +640,6 @@ def run_payload_chain(
             payload_ref=payload_ref,
         )
 
-    failure = f"payloads exhausted without confirmed violation after {attempted} attempts"
+    failure = f"payloads exhausted after {attempted} attempts (bucket exhausted)"
     _record_failure(audit_failure, failure)
     return PayloadChainResult(attempted=attempted, confirmed=False, failure=failure)
