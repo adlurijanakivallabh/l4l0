@@ -268,6 +268,32 @@ GUI: real-time cost tracking, scan history comparison.
 
 Goal: Everything works reliably together; precision/recall targets met.
 
+### Phase 7.5 (inserted): MCP browser + proxy firing mechanisms
+
+**Status: COMPLETE** (2026-08-27)
+
+Built:
+- recon/transport_tuning.py: LLM reasons about which firing mechanism to use
+  per insertion point — http (default), browser (CSRF-protected forms,
+  JS-rendered SPAs, click flows), or proxy (header manipulation: auth-bypass
+  via X-Forwarded-For tampering, CORS origin probing). Advisory only; the
+  deterministic oracle remains the sole confirmation authority.
+- fire_proxy_request MCP tool: repeater-style custom-header requests through
+  the gated RequestFirer. Scope, read-only-first, and audit gates all hold;
+  the response goes through the fire_ref handle so only run_oracle can
+  confirm anything from it.
+- fire_browser_form MCP tool: Playwright form fill+submit for browser-only
+  insertion points. Scope-enforced before launch; hidden CSRF inputs submit
+  natively; returns JSON-safe data (status, final_url, session cookie) for
+  the oracle — never a finding itself.
+
+Boundary verification:
+- test_mcp_server.py role-boundary tests re-verified passing with the two
+  new tools registered on the Explorer side (no write_finding/run_oracle
+  reachable from either).
+- AST scan in test_transport_tuning.py proves neither new tool's body calls
+  run_oracle() or write_finding() directly.
+
 Build: Full eval suite re-run across VAmPI vulnerable/secure, Juice Shop,
 crAPI. Fix any regressions. Performance profiling. Security audit of our own code.
 
