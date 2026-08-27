@@ -213,6 +213,16 @@ async def start_scan(payload: dict[str, Any]) -> JSONResponse:
     out_of_scope = _opt_str(payload.get("out_of_scope"))
     use_llm = payload.get("use_llm") is True
     llm_provider_raw = _opt_str(payload.get("llm_provider"))
+    # A single saved provider is the unambiguous GUI default.  The launch form
+    # sends an empty value when the browser still has "Server default" selected;
+    # do not route that case through the legacy Anthropic default.
+    if not llm_provider_raw:
+        from reachagent.llm.runtime import selected_provider
+
+        if not selected_provider():
+            saved = [p for p in _load_providers() if str(p.get("id", "")).strip()]
+            if len(saved) == 1:
+                llm_provider_raw = f"named:{saved[0]['id']}"
     llm_provider: str | None = None
     named_overrides: dict[str, str] | None = None
     if llm_provider_raw and llm_provider_raw.startswith("named:"):

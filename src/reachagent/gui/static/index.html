@@ -348,6 +348,7 @@ function renderProvOptions(j){
   (j.providers||[]).forEach(p=>{const o=document.createElement("option");o.value="named:"+p.id;o.textContent=p.name;sel.appendChild(o);});
   [["deepseek","DeepSeek / compatible"],["openai","OpenAI / compatible"]].forEach(([v,t])=>{const o=document.createElement("option");o.value=v;o.textContent=t;sel.appendChild(o);});
   if(current)sel.value=current;
+  else if(!(j.default||{}).has_key&&(j.providers||[]).length===1)sel.value="named:"+j.providers[0].id;
 }
 function openProvForm(p){
   provEditing=p?p.id:null;

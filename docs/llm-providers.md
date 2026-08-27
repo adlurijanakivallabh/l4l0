@@ -54,6 +54,10 @@ provider dropdown lists all saved configs as named:<id> entries. Selecting
 one applies that provider's key/URL/model/style for the duration of that
 scan only.
 
+If the launch form leaves the provider at **Server default**, and no server
+default environment provider is configured, a single saved named config is
+selected automatically. With multiple saved configs, choose one explicitly.
+
 The Test button sends a tiny prompt through the saved config and reports the
 reply or error, so you can verify connectivity before launching a scan.
 

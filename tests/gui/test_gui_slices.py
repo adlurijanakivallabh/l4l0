@@ -91,6 +91,39 @@ def test_scan_endpoint_preflights_named_provider_values(monkeypatch: pytest.Monk
     _scans.pop(response.json()["scan_id"], None)
 
 
+def test_scan_endpoint_uses_single_saved_provider_when_form_omits_selection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("REACHAGENT_LLM_PROVIDER", raising=False)
+    monkeypatch.delenv("REACHAGENT_LLM_API_KEY", raising=False)
+    monkeypatch.setattr(
+        gui_app,
+        "_load_providers",
+        lambda: [
+            {
+                "id": "only-provider",
+                "name": "only-provider",
+                "provider": "openai-compatible",
+                "api_key": "unit-test-key",
+                "base_url": "https://llm.example/v1/responses",
+                "model": "unit-model",
+                "api_style": "responses",
+            }
+        ],
+    )
+
+    async def noop_scan(*_args: object, **_kwargs: object) -> None:
+        return None
+
+    monkeypatch.setattr(gui_app, "_run_scan", noop_scan)
+    response = TestClient(app).post(
+        "/api/scan",
+        json={"target": "https://demo.example", "in_scope": "demo.example", "use_llm": True},
+    )
+    assert response.status_code == 200
+    _scans.pop(response.json()["scan_id"], None)
+
+
 def test_report_endpoint_serves_the_stored_phase4_report() -> None:
     graph = ReachabilityGraph()
     scan_id = "stored-report"
