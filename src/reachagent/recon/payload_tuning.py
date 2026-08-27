@@ -16,7 +16,12 @@ import os
 from dataclasses import dataclass
 from typing import Protocol
 
-from reachagent.llm.client import OpenAICompatibleClient, build_openai_compatible_client
+from reachagent.llm.client import (
+    OpenAICompatibleClient,
+    build_openai_compatible_client,
+    is_model_output_error,
+)
+from reachagent.llm.runtime import llm_required
 
 _log = logging.getLogger(__name__)
 
@@ -78,14 +83,14 @@ class AnthropicPayloadClient:
         sig_str = "; ".join(f"{k}={v}" for k, v in sorted(signals.items()))
         cands = ", ".join(candidate_refs[:20])
         prompt = (
-            "You are a payload-choice proposer for an AUTHORIZED"
-            "lab assessment. Given endpoint signals, "
-            f"vuln_class={vuln_class}, and the candidate bucket, rank which "
-            "payload_refs to try first for THIS target (e.g. WordPress sqli "
-            "prefers WP-flavored). Respond as JSON "
-            '{"payload_refs": ["ref1", "ref2"]}. '
+            "You are a defensive coverage planner for an authorized application. "
+            "Choose the order of existing validation-reference labels for this "
+            "insertion point. Do not generate payload content, exploit steps, "
+            "or new references. The labels are opaque handles selected only "
+            "from the supplied bucket. Respond as JSON "
+            '{"payload_refs": ["reference_from_bucket"]}. '
             f"Signals: {sig_str}. Bucket: {cands}. "
-            "Pick only refs FROM the bucket verbatim, no invented strings."
+            "Return bucket labels verbatim, most relevant first."
         )
         resp = client.messages.create(
             model=self._model,
@@ -135,18 +140,17 @@ class OpenAIPayloadClient:
                 attempt_lines
             )
         prompt = (
-            "You are a payload-choice proposer. Given endpoint signals, "
-            f"vuln_class={vuln_class}, and the candidate bucket, rank which "
-            "payload_refs to try first for THIS target. If previous attempts "
-            "failed with WAF blocks or no reflection, prefer encoding variants "
-            "or a different technique within the same class."
-            " Respond as JSON "
-            '{"payload_refs": ["ref1", "ref2"]}. '
+            "You are a defensive coverage planner. Choose the order of existing "
+            "validation-reference labels for this insertion point. Never create "
+            "payload content, exploit steps, or new references. If previous "
+            "checks were blocked or inconclusive, prefer a different existing "
+            "reference within the same category. Respond as JSON "
+            '{"payload_refs": ["reference_from_bucket"]}. '
             f"Signals: {sig_str}. Bucket: {cands}. "
             f"{attempts_text}"
-            "Pick only refs FROM the bucket verbatim, no invented strings."
+            "Return bucket labels verbatim, most relevant first."
         )
-        data = self._client.propose_json(prompt, max_tokens=4096)
+        data = self._client.propose_json(prompt, max_tokens=1024)
         return {"payload_refs": data.get("payload_refs", [])}
 
 
@@ -210,6 +214,8 @@ def propose_payload_choice(
         _log.info("payload choice fallback to original order (validation failed)")
         return _safe_default(candidate_refs)
     except Exception as exc:  # noqa: BLE001 — live call must never crash caller
+        if llm_required() and not is_model_output_error(exc):
+            raise
         _log.warning("tuning LLM call failed: %s", exc)
         _log.warning("payload choice failed (%s); fallback to original order", exc)
         return _safe_default(candidate_refs)

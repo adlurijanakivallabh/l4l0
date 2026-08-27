@@ -188,6 +188,24 @@ def _opt_str(value: Any) -> str | None:
     return str(value).strip() if value else None
 
 
+def _validate_named_provider(config: dict[str, str]) -> None:
+    """Validate a saved provider without sending a request or mutating env."""
+    from reachagent.llm.client import OpenAICompatibleClient
+
+    api_key = config.get("REACHAGENT_LLM_API_KEY", "").strip()
+    if not api_key:
+        raise RuntimeError("API key is required for the selected named provider")
+    client = OpenAICompatibleClient(
+        provider=config.get("REACHAGENT_LLM_PROVIDER", ""),
+        api_key=api_key,
+        base_url=config.get("REACHAGENT_LLM_BASE_URL", ""),
+        model=config.get("REACHAGENT_LLM_MODEL", ""),
+        api_style=config.get("REACHAGENT_LLM_API_STYLE", "chat_completions"),
+        timeout=30.0,
+    )
+    client.close()
+
+
 @app.post("/api/scan")
 async def start_scan(payload: dict[str, Any]) -> JSONResponse:
     target = str(payload.get("target", "") or "").strip()
@@ -236,7 +254,10 @@ async def start_scan(payload: dict[str, Any]) -> JSONResponse:
     try:
         from reachagent.llm.client import require_provider_config
 
-        require_provider_config(llm_provider)
+        if named_overrides is not None:
+            _validate_named_provider(named_overrides)
+        else:
+            require_provider_config(llm_provider)
     except Exception as exc:  # noqa: BLE001 — fail before creating a scan
         return JSONResponse(
             {"error": str(exc), "code": "llm_provider_unavailable"},

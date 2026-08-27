@@ -472,7 +472,13 @@ def run_payload_chain(
     if hint is not None:
         fingerprint_args["sink_hint"] = hint
         fingerprint_args["vuln_class"] = vuln_class
-    fingerprint = _call_result(call, "fingerprint_parameter", **fingerprint_args)
+    try:
+        fingerprint = _call_result(call, "fingerprint_parameter", **fingerprint_args)
+    except Exception as exc:
+        failure = f"fingerprint unavailable for {vuln_class!r}: {type(exc).__name__}"
+        _record_failure(audit_failure, failure)
+        _ev(failure)
+        return PayloadChainResult(attempted=0, confirmed=False, failure=failure)
     sink_type = fingerprint.get("inferred_sink_type")
     _ev(f"fingerprint: sink={sink_type}")
     try:

@@ -82,7 +82,7 @@ class OpenAISignalToolClient:
             f"Operator objective: {goal}\n"
             f"Surface:\n{surface_summary[:2000]}"
         )
-        text = client.complete(prompt, max_tokens=2048)
+        text = client.complete(prompt, max_tokens=1024)
         return extract_json_object(text)
 
 

@@ -18,7 +18,11 @@ import os
 from typing import Protocol
 
 from reachagent.graph.store import ReachabilityGraph
-from reachagent.llm.client import OpenAICompatibleClient, build_openai_compatible_client
+from reachagent.llm.client import (
+    OpenAICompatibleClient,
+    build_openai_compatible_client,
+    is_model_output_error,
+)
 from reachagent.report.renderer import (
     finding_to_dict,
     render_findings_markdown,
@@ -59,12 +63,12 @@ class AnthropicReportClient:
 
         ctx_str = _json.dumps(findings, indent=2)[:4000]
         prompt = (
-            "You are a pentest report writer for an AUTHORIZED"
-            "lab assessment. Given ONLY confirmed findings "
-            "(already validated via deterministic oracles), write a concise markdown "
-            "report: what was tested, what was found, severity, and reproduction steps per "
-            "finding_id. Do NOT invent new findings, do NOT claim unconfirmed vulns. "
-            'Respond as JSON {"narrative": "<markdown>"}. '
+            "You are a security-assessment documentation assistant. Given ONLY "
+            "the verified records below, write a concise markdown summary of "
+            "the observed results, severity, evidence reference, and safe "
+            "reproduction notes for each record. Do not add tests, payloads, "
+            "procedures, or unverified claims. Respond as JSON "
+            '{"narrative": "<markdown>"}. '
             f"Testing objective: {objective}\nConfirmed findings: {ctx_str}"
         )
         resp = client.messages.create(
@@ -101,14 +105,15 @@ class OpenAIReportClient:
 
         ctx_str = _json.dumps(findings, indent=2)[:4000]
         prompt = (
-            "You are a pentest report writer. Given ONLY confirmed findings "
-            "(already validated via deterministic oracles), write a concise markdown "
-            "report: what was tested, what was found, severity, and reproduction steps per "
-            "finding_id. Do NOT invent new findings, do NOT claim unconfirmed vulns. "
-            'Respond as JSON {"narrative": "<markdown>"}. '
+            "You are a security-assessment documentation assistant. Given ONLY "
+            "the verified records below, write a concise markdown summary of "
+            "the observed results, severity, evidence reference, and safe "
+            "reproduction notes for each record. Do not add tests, payloads, "
+            "procedures, or unverified claims. Respond as JSON "
+            '{"narrative": "<markdown>"}. '
             f"Testing objective: {objective}\nConfirmed findings: {ctx_str}"
         )
-        data = self._client.propose_json(prompt, max_tokens=4096)
+        data = self._client.propose_json(prompt, max_tokens=1024)
         return {"narrative": str(data.get("narrative", ""))}
 
 
@@ -176,7 +181,7 @@ def generate_llm_report(
     except Exception as exc:  # noqa: BLE001 — LLM must never crash reporting
         from reachagent.llm.runtime import llm_required
 
-        if llm_required():
+        if llm_required() and not is_model_output_error(exc):
             raise
         _log.warning("LLM report failed (%s); fallback to deterministic", exc)
         narrative = None

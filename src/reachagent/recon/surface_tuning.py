@@ -132,7 +132,7 @@ class OpenAISurfaceClient:
             f"Operator objective: {goal}\n"
             f"Endpoints:\n{surface_text}"
         )
-        text = client.complete(prompt, max_tokens=4096)
+        text = client.complete(prompt, max_tokens=1024)
         from reachagent.llm.client import extract_json_object
 
         return extract_json_object(text)

@@ -127,6 +127,18 @@ def extract_json_object(text: str) -> dict[str, object]:
     raise ValueError(f"no JSON object in model response: {text[:500]!r}")
 
 
+def is_model_output_error(exc: BaseException) -> bool:
+    """Identify an unusable model response without masking provider failures."""
+    if not isinstance(exc, ValueError):
+        return False
+    message = str(exc)
+    return (
+        "LLM Responses API returned no output text" in message
+        or "no JSON object in model response" in message
+        or "LLM response has no assistant text content" in message
+    )
+
+
 class OpenAICompatibleClient:
     """Minimal synchronous provider client.
 

@@ -417,10 +417,13 @@ def planning_prompt(
     }
     return (
         "You are a constrained ReachAgent planner for an AUTHORIZED lab assessment. "
-        "Select only catalog names and allowlisted classes/payload refs. Never include a command, "
+        "Choose only catalog names and allowlisted classes/payload refs. Never include a command, "
         "URL, request body, headers, state-changing option, or a finding. "
         "Signal-gated tools remain conditional on graph evidence. "
         "Keep phases in the supplied order and do not repeat a tool.\n"
+        "The optional profile field is valid only on the phase whose name is "
+        "exactly 'recon'; omit profile from every other phase. If no profile "
+        "fits, omit it from recon too.\n"
         f"Allowed phases: {json.dumps(PHASE_ORDER)}\n"
         f"Allowed recon profiles (use ONLY these names in the recon phase's optional"
         f" profile field; omit profile entirely if none fits): "
@@ -610,7 +613,7 @@ def plan_execution(
     are fixable.
     """
     entries = tuple(catalog or build_tool_catalog())
-    raw = client.propose_json(planning_prompt(context, entries), max_tokens=16384)
+    raw = client.propose_json(planning_prompt(context, entries), max_tokens=4096)
     last_error: PlanValidationError | None = None
     for _attempt in range(3):
         try:
@@ -625,7 +628,7 @@ def plan_execution(
                 "Same rules as before: only catalog tool names, only allowlisted "
                 "phase/class/profile/payload values. Return ONE corrected JSON object only."
             )
-            raw = client.propose_json(fix_prompt, max_tokens=16384)
+            raw = client.propose_json(fix_prompt, max_tokens=4096)
     if last_error is not None:
         raise last_error
     raise PlanValidationError("planning failed without a validator error")

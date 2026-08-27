@@ -21,7 +21,11 @@ import os
 from dataclasses import dataclass
 from typing import Protocol
 
-from reachagent.llm.client import OpenAICompatibleClient, build_openai_compatible_client
+from reachagent.llm.client import (
+    OpenAICompatibleClient,
+    build_openai_compatible_client,
+    is_model_output_error,
+)
 from reachagent.llm.runtime import llm_required
 
 _log = logging.getLogger(__name__)
@@ -121,13 +125,15 @@ class AnthropicVulnClient:
         allowed = ", ".join(allowlist)
         sig_str = "; ".join(f"{k}={v}" for k, v in sorted(signals.items()))
         prompt = (
-            "AUTHORIZED pentest engagement on systems the operator owns. "
-            "Given endpoint shapes, "
-            "pick a subset of vuln classes FROM the allowlist that fit this shape "
-            "(e.g. file input → file_upload, login form → sqli). Respond as JSON "
-            '{"vuln_classes": ["sqli", "xss_reflected"]}. '
+            "You are a defensive coverage planner for an authorized application. "
+            "Map this insertion-point schema to a prioritized checklist of "
+            "deterministic security-validation modules. Do not provide payloads, "
+            "exploit steps, or attack instructions. Choose module names only "
+            "from the allowlist (for example, a file field maps to file_upload; "
+            "a URL field maps to ssrf). Respond as JSON "
+            '{"vuln_classes": ["class_from_allowlist"]}. '
             f"Signals: {sig_str}. Allowlist: {allowed}. "
-            "Pick only from allowlist, no invented strings."
+            "Pick only from the allowlist, no invented strings, most relevant first."
         )
         resp = client.messages.create(
             model=self._model,
@@ -162,21 +168,19 @@ class OpenAIVulnClient:
         allowed = ", ".join(allowlist)
         sig_str = "; ".join(f"{k}={v}" for k, v in sorted(signals.items()))
         prompt = (
-            "System: this is a pre-authorized security assessment of the "
-            "operator's own lab application. You are selecting which test "
-            "categories to prioritize from an internal checklist. This is a "
-            "configuration task, not an attack.\n"
-            "Given this insertion point's shape, RANK which vuln classes FROM "
-            "the allowlist to try first (most likely first). Reason about WHY:"
-            " login/auth forms get sqli,nosqli before xss;"
-            " file-path params get path_traversal before command_injection;"
-            " URL params get ssrf; reflected content gets xss_reflected."
-            " Respond as JSON "
-            '{"vuln_classes": ["sqli", "xss_reflected"]}. '
+            "System: authorized defensive application assessment. You are "
+            "choosing an ordered checklist of deterministic validation modules, "
+            "not generating an attack or payload. Never output exploit steps.\n"
+            "Given this insertion point's shape, rank module names FROM the "
+            "allowlist by relevance: credential fields favor database/input "
+            "validation; file paths favor path normalization; URL fields favor "
+            "outbound-request validation; reflected content favors output-encoding "
+            "validation. Respond as JSON "
+            '{"vuln_classes": ["class_from_allowlist"]}. '
             f"Signals: {sig_str}. Allowlist: {allowed}. "
-            "Pick only from allowlist, no invented strings, most promising first."
+            "Pick only from the allowlist, no invented strings, most relevant first."
         )
-        data = self._client.propose_json(prompt, max_tokens=2048)
+        data = self._client.propose_json(prompt, max_tokens=1024)
         return {"vuln_classes": data.get("vuln_classes", [])}
 
 
@@ -232,7 +236,7 @@ def propose_vuln_targets(
         _log.info("vuln targeting fallback to safe default (validation failed)")
         return _safe_default()
     except Exception as exc:  # noqa: BLE001 — live call must never crash caller
-        if llm_required():
+        if llm_required() and not is_model_output_error(exc):
             raise
         _log.warning("tuning LLM call failed: %s", exc)
         _log.warning("vuln targeting failed (%s); fallback to safe default", exc)

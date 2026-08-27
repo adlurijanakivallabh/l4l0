@@ -1,4 +1,4 @@
-"""Strict GUI-mode LLM failures do not silently fall back."""
+"""Strict GUI-mode provider failures do not silently fall back."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ import pytest
 from reachagent.graph.store import ReachabilityGraph
 from reachagent.llm.runtime import override
 from reachagent.recon.live_tuning import profile_decision, propose_recon_profile
-from reachagent.recon.vuln_tuning import propose_vuln_targets
+from reachagent.recon.vuln_tuning import _SAFE_DEFAULT_CLASSES, propose_vuln_targets
 from reachagent.report.llm_report import generate_llm_report
 from reachagent.tools.payload_chain import _maybe_reorder_payloads
 
@@ -25,6 +25,14 @@ def test_strict_vulnerability_proposal_propagates_provider_error() -> None:
     with override(enabled=True, provider="deepseek", required=True):
         with pytest.raises(RuntimeError, match="provider unavailable"):
             propose_vuln_targets({"method": "GET"}, client=_failing_client())
+
+
+def test_strict_empty_model_output_uses_allowlisted_safe_proposal() -> None:
+    client = Mock()
+    client.propose.side_effect = ValueError("LLM Responses API returned no output text")
+    with override(enabled=True, provider="deepseek", required=True):
+        choice = propose_vuln_targets({"method": "GET"}, client=client)
+    assert choice.vuln_classes == _SAFE_DEFAULT_CLASSES
 
 
 def test_strict_profile_proposal_propagates_provider_error() -> None:

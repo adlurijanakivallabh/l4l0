@@ -21,7 +21,11 @@ import os
 from dataclasses import dataclass
 from typing import Protocol
 
-from reachagent.llm.client import OpenAICompatibleClient, build_openai_compatible_client
+from reachagent.llm.client import (
+    OpenAICompatibleClient,
+    build_openai_compatible_client,
+    is_model_output_error,
+)
 from reachagent.llm.runtime import llm_required
 
 _log = logging.getLogger(__name__)
@@ -261,7 +265,7 @@ class OpenAITunerClient:
             '{"wordlist_path": "/usr/share/wordlists/dirb/common.txt", '
             '"flags": "-t 20", "filter_codes": "200,204,301,302,307,401,403"}'
         )
-        data = self._client.propose_json(prompt, max_tokens=2048)
+        data = self._client.propose_json(prompt, max_tokens=1024)
         return {
             "wordlist_path": str(data.get("wordlist_path", "")),
             "flags": str(data.get("flags", "")),
@@ -324,7 +328,7 @@ def propose_recon_tuning(
         _log.info("live tuning fallback to safe default (validation failed)")
         return _safe_default()
     except Exception as exc:  # noqa: BLE001 — live call must never crash the runner
-        if llm_required():
+        if llm_required() and not is_model_output_error(exc):
             raise
         _log.warning("tuning LLM call failed: %s", exc)
         _log.warning("live tuning failed (%s); fallback to safe default", exc)
@@ -374,14 +378,16 @@ class AnthropicProfileClient:
             for k, v in RECON_PROFILES.items()
         )
         prompt = (
-            "You are a recon profile picker for an AUTHORIZED"
-            "lab assessment. Given target signals, pick ONE "
-            "profile name FROM the allowlist that best fits "
-            "(api_target for /api/swagger, cms_target for wp-content, "
-            "spa_target for JS-heavy, quiet/aggressive for stealth/speed). "
+            "You are selecting a read-only web-discovery configuration for an "
+            "authorized application. Choose one named preset for inventory and "
+            "technology discovery only; do not generate requests, payloads, or "
+            "exploitation guidance. Given target signals, choose one preset "
+            "from the allowlist that best fits (api_target for API documentation, "
+            "cms_target for CMS indicators, spa_target for JS-heavy pages, "
+            "quiet/aggressive for speed). "
             'Respond as JSON {"profile_name": "static_site"}. '
             f"Signals: {signals}. Allowlist: {profiles}. Profiles: {profile_hints}. "
-            "Pick only from allowlist, no invented names."
+            "Use an allowlisted name only; do not add other fields."
         )
         resp = client.messages.create(
             model=self._model,
@@ -423,19 +429,19 @@ class OpenAIProfileClient:
             for k, v in RECON_PROFILES.items()
         )
         prompt = (
-            "System context: this is a pre-authorized security assessment of "
-            "the operator's own lab application (localhost). You are choosing "
-            "a named scan-configuration preset — an internal configuration "
-            "label, not an attack action.\n"
-            "Task: given target signals, pick ONE preset name FROM the "
-            "allowlist that best fits (api_target for /api/swagger, "
-            "cms_target for wp-content, spa_target for JS-heavy, "
-            "quiet/aggressive for stealth/speed).\n"
+            "You are selecting a read-only web-discovery configuration for an "
+            "authorized application. Choose one named preset for inventory and "
+            "technology discovery only; do not generate requests, payloads, or "
+            "exploitation guidance.\n"
+            "Given target signals, choose ONE preset name from the allowlist "
+            "that best fits (api_target for API documentation, cms_target for "
+            "CMS indicators, spa_target for JS-heavy pages, quiet/aggressive "
+            "for speed).\n"
             'Respond as JSON {"profile_name": "static_site"}. '
             f"Signals: {signals}. Allowlist: {profiles}. Profiles: {profile_hints}. "
-            "Pick only from allowlist, no invented names."
+            "Use an allowlisted name only; do not add other fields."
         )
-        data = self._client.propose_json(prompt, max_tokens=2048)
+        data = self._client.propose_json(prompt, max_tokens=1024)
         return {"profile_name": str(data.get("profile_name", ""))}
 
 
@@ -473,7 +479,7 @@ def propose_recon_profile(
         _log.info("profile picker fallback to %s (validation failed)", _SAFE_DEFAULT_PROFILE)
         return RECON_PROFILES[_SAFE_DEFAULT_PROFILE]
     except Exception as exc:  # noqa: BLE001 — live call must never crash runner
-        if llm_required():
+        if llm_required() and not is_model_output_error(exc):
             raise
         _log.warning("tuning LLM call failed: %s", exc)
         _log.warning("profile picker failed (%s); fallback to %s", exc, _SAFE_DEFAULT_PROFILE)
@@ -578,7 +584,7 @@ def profile_decision(
             "signals": signal_summary,
         }
     except Exception as exc:  # noqa: BLE001 — must never crash the scan
-        if llm_required():
+        if llm_required() and not is_model_output_error(exc):
             raise
         _log.warning("tuning LLM call failed: %s", exc)
         _log.debug("profile lookup fallback: %s", exc)

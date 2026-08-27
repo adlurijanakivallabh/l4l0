@@ -186,6 +186,29 @@ def test_missing_payload_slot_is_loud_and_audited() -> None:
     assert session.graph.findings() == []
 
 
+def test_fingerprint_rejection_is_nonfatal_and_audited() -> None:
+    session, mcp = _session(lambda request: httpx.Response(200, text="no reflection"))
+    endpoint = session.graph.add_endpoint(Endpoint("GET", "/users/{username}"))
+    parameter = session.graph.add_parameter(endpoint, Parameter("username", "path"))
+    failures: list[str] = []
+
+    result = run_payload_chain(
+        lambda name, arguments: call_tool_sync(mcp, name, arguments),
+        identity="anonymous",
+        endpoint_node=endpoint,
+        param_node=parameter,
+        vuln_class="ssti",
+        baseline_payload="baseline",
+        audit_failure=failures.append,
+    )
+
+    assert result.confirmed is False
+    assert result.attempted == 0
+    assert result.failure and "fingerprint unavailable" in result.failure
+    assert failures == [result.failure]
+    assert session.graph.findings() == []
+
+
 def test_dead_payload_ref_is_loud_and_audited() -> None:
     entry = PayloadEntry(
         vuln_class="sqli",

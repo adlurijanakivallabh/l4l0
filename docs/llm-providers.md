@@ -31,9 +31,11 @@ OpenAI-compatible adapter without guessing from vendor-specific keys.
 `REACHAGENT_DEEPSEEK_BASE_URL` and `REACHAGENT_DEEPSEEK_MODEL` override the
 DeepSeek defaults. Requests use HTTPX, a 30-second timeout, bearer auth, and a
 single prompt. The GUI performs a local key preflight and rejects an
-unconfigured provider before starting a scan. In strict GUI mode, provider
-errors, malformed JSON, or unallowlisted proposals fail the scan; compatibility
-fallback remains only for library/fixture callers.
+unconfigured provider before starting a scan. In strict GUI mode, provider,
+network, and configuration errors fail the scan. If a model returns no usable
+output, the affected proposal uses its allowlisted safe default (or the
+deterministic report renderer); no finding authority is changed. Compatibility
+fallback remains available for library/fixture callers as well.
 
 ## Named provider configs (GUI Settings panel)
 
@@ -61,4 +63,3 @@ reply or error, so you can verify connectivity before launching a scan.
 - POST /api/providers - create or update (name, provider, base_url, model, api_style, api_key)
 - DELETE /api/providers/{id} - remove a config
 - POST /api/providers/{id}/test - connection test (returns ok+reply or ok=false+error)
-

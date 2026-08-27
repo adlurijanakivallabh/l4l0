@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+from importlib import import_module
+
+import pytest
 from fastapi.testclient import TestClient
 
 from reachagent.graph.nodes import Endpoint, Host, Parameter, Service
 from reachagent.graph.store import ReachabilityGraph
 from reachagent.gui.app import _scans, app
+
+gui_app = import_module("reachagent.gui.app")
 
 
 def test_surface_slice_contains_host_service_endpoint_parameter_tree() -> None:
@@ -50,6 +55,40 @@ def test_scan_endpoint_rejects_deterministic_only_mode() -> None:
     assert response.status_code == 400
     assert response.json()["code"] == "llm_required"
     assert set(_scans) == before
+
+
+def test_scan_endpoint_preflights_named_provider_values(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        gui_app,
+        "_load_providers",
+        lambda: [
+            {
+                "id": "unit-provider",
+                "name": "unit-provider",
+                "provider": "openai-compatible",
+                "api_key": "unit-test-key",
+                "base_url": "https://llm.example/v1/responses",
+                "model": "unit-model",
+                "api_style": "responses",
+            }
+        ],
+    )
+
+    async def noop_scan(*_args: object, **_kwargs: object) -> None:
+        return None
+
+    monkeypatch.setattr(gui_app, "_run_scan", noop_scan)
+    response = TestClient(app).post(
+        "/api/scan",
+        json={
+            "target": "https://demo.example",
+            "in_scope": "demo.example",
+            "use_llm": True,
+            "llm_provider": "named:unit-provider",
+        },
+    )
+    assert response.status_code == 200
+    _scans.pop(response.json()["scan_id"], None)
 
 
 def test_report_endpoint_serves_the_stored_phase4_report() -> None:

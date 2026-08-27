@@ -390,3 +390,18 @@ Built (own implementation, own visual identity, zero build tooling):
   run recorded 1,154 passed, 3 skipped, and 5 failures: one local payload-slot
   contract regression (fixed) and four external service startup races. All five
   now pass in focused reruns; no deterministic local failure remains.
+
+### Portal validation — Playwright (2026-08-27)
+
+- `reachagent-gui --host 127.0.0.1 --port 8000` served the portal with HTTP 200;
+  provider listing and connection test also returned HTTP 200.
+- Browser testing found and fixed the missing `renderReport` client renderer and
+  the named-provider preflight path that discarded saved base URL/model values.
+- Proposal prompts now describe defensive coverage/configuration work only, and
+  output budgets are bounded for responsive Responses-API calls. Empty model
+  output falls back to an allowlisted proposal or deterministic report; real
+  provider/configuration/network failures still surface in strict mode.
+- The configured Responses-compatible model then produced a valid plan/profile;
+  the live page displayed tool activity, reasoning events, mapped graph nodes,
+  and audit entries for `http://127.0.0.1:5000`.
+- Screenshots are retained locally under `output/playwright/` (ignored from git).

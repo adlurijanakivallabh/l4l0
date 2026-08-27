@@ -16,3 +16,4 @@ reachagentchat/
 # Runtime provider configs (contain API keys)
 config/providers.json
 .playwright-cli/
+output/playwright/
