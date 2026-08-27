@@ -8,7 +8,7 @@ from unittest.mock import patch
 from reachagent.graph.nodes import Endpoint, Host, Parameter
 from reachagent.graph.store import ReachabilityGraph
 from reachagent.recon.vuln_tuning import VULN_CLASS_ALLOWLIST, VulnTargetChoice
-from reachagent.scan.entrypoint import _live_vuln_class_for
+from reachagent.scan.entrypoint import _live_vuln_classes_for
 
 
 def _graph_one_param() -> tuple[ReachabilityGraph, object]:
@@ -44,8 +44,9 @@ def test_flag_off_returns_none_zero_regression() -> None:
     with patch.dict(os.environ, {}, clear=False):
         for k in ("REACHAGENT_VULN_TUNING", "REACHAGENT_RECON_LIVE_TUNING"):
             os.environ.pop(k, None)
-        got = _live_vuln_class_for(sel, g, "http://127.0.0.1:5000")
-    assert got is None
+        got = _live_vuln_classes_for(sel, g, "http://127.0.0.1:5000")
+    assert got == ()  # ranked-tuple contract: flag-off is empty, not None
+    # The renamed contract returns a ranked tuple; flag-off is the empty tuple.
     assert len(list(g.findings())) == 0
 
 
@@ -54,8 +55,9 @@ def test_flag_on_mocked_uses_chosen_vuln_class_proposal_only() -> None:
     chosen = VulnTargetChoice(vuln_classes=("path_traversal", "sqli"))
     with patch.dict(os.environ, {"REACHAGENT_VULN_TUNING": "1"}, clear=False):
         with patch("reachagent.recon.vuln_tuning.propose_vuln_targets", return_value=chosen):
-            got = _live_vuln_class_for(sel, g, "http://127.0.0.1:5000")
-    assert got in VULN_CLASS_ALLOWLIST or got is None
+            got = _live_vuln_classes_for(sel, g, "http://127.0.0.1:5000")
+    assert all(c in VULN_CLASS_ALLOWLIST for c in got)
+    assert isinstance(got, tuple)  # sink-compatible subset, in LLM priority order
     assert len(list(g.findings())) == 0
 
 
@@ -64,6 +66,6 @@ def test_flag_on_outside_allowlist_fallback_still_safe_proposal_only() -> None:
     evil = VulnTargetChoice(vuln_classes=("evil-class",))  # type: ignore[arg-type]
     with patch.dict(os.environ, {"REACHAGENT_VULN_TUNING": "1"}, clear=False):
         with patch("reachagent.recon.vuln_tuning.propose_vuln_targets", return_value=evil):
-            got = _live_vuln_class_for(sel, g, "http://127.0.0.1:5000")
-    assert got is None
+            got = _live_vuln_classes_for(sel, g, "http://127.0.0.1:5000")
+    assert got == ()
     assert len(list(g.findings())) == 0
