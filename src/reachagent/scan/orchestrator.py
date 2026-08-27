@@ -1003,6 +1003,27 @@ def scan_all_classes(
         profile=profile["profile"],
         signals=profile["signals"],
     )
+
+    # Agentic-loop reassessment point 1 (after recon, before endpoints):
+    # the LLM sees what recon discovered and may skip or re-focus the next
+    # phases. Bounded; advisory; never touches oracle/finding authority.
+    from reachagent.scan.agentic_loop import reassess_after_phase
+
+    decision_1 = reassess_after_phase(
+        graph,
+        "recon",
+        ("endpoints", "payloads", "verification"),
+        operator_prompt=operator_prompt,
+    )
+    if decision_1 is not None:
+        _emit(
+            events_out,
+            "recon",
+            "step",
+            f"LLM loop decision after recon: {decision_1.action} — {decision_1.rationale}",
+            hint=decision_1.hint,
+        )
+
     _emit(events_out, "endpoints", "info", "phase 2: endpoints and insertion points")
     lib = library if library is not None else _library()
 
@@ -1069,6 +1090,25 @@ def scan_all_classes(
     scope = ScopeGuard.from_raw(in_scope, out_of_scope)
     from reachagent.recon.signal_dispatch import run_signal_tools
 
+    # Agentic-loop reassessment point 2 (after endpoints, before verification):
+    # with sinks/insertion points mapped, the LLM may re-prioritize which
+    # signal-gated tools matter or skip verification entirely when no
+    # preconditions exist.
+    decision_2 = reassess_after_phase(
+        graph,
+        "endpoints",
+        ("payloads", "verification"),
+        operator_prompt=operator_prompt,
+    )
+    if decision_2 is not None:
+        _emit(
+            events_out,
+            "endpoints",
+            "step",
+            f"LLM loop decision after endpoints: {decision_2.action} — {decision_2.rationale}",
+            hint=decision_2.hint,
+        )
+
     # LLM-driven signal-tool selection (flag-gated): after recon + surface
     # prioritization, the LLM reasons about which verification tools to invoke.
     # The signal-gated base still enforces has_signal() — this is a reasoning
@@ -1078,7 +1118,15 @@ def scan_all_classes(
 
     signal_choice = propose_signal_tools(graph, operator_prompt=operator_prompt)
     effective_signal_tools = planned_signal_tools
-    if signal_choice is not None:
+    if decision_2 is not None and decision_2.action == "skip":
+        _emit(
+            events_out,
+            "verification",
+            "info",
+            f"verification skipped by LLM loop decision: {decision_2.rationale}",
+        )
+        effective_signal_tools = ()
+    elif signal_choice is not None:
         _emit(
             events_out,
             "verification",
@@ -1220,6 +1268,25 @@ def scan_all_classes(
 
     findings = [fid for fid, _ in graph.findings()]
     _emit(events_out, "payloads", "info", "phase 3 done", findings=len(findings))
+
+    # Agentic-loop reassessment point 3 (after payloads, before report):
+    # with confirmed findings in hand, the LLM's closing note becomes part of
+    # the report context. Findings already exist; this cannot create one.
+    decision_3 = reassess_after_phase(
+        graph,
+        "payloads",
+        ("verification", "report"),
+        operator_prompt=operator_prompt,
+    )
+    if decision_3 is not None:
+        _emit(
+            events_out,
+            "report",
+            "step",
+            f"LLM loop assessment after payloads: {decision_3.action} — {decision_3.rationale}",
+            hint=decision_3.hint,
+        )
+
     driven_classes = {
         *_GENERIC_CLASSES,
         "clickjacking",
