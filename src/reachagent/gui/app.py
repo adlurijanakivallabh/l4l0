@@ -155,7 +155,24 @@ def test_provider(provider_id: str) -> JSONResponse:
 
 
 def _event_dict(e: ScanEvent) -> dict[str, Any]:
+    """Serialize one orchestrator event for the GUI (reasoning loop included)."""
     return {"phase": e.phase, "kind": e.kind, "message": e.message, "details": e.details}
+
+
+@app.get("/api/scan/{scan_id}/reasoning")
+def get_reasoning(scan_id: str) -> JSONResponse:
+    """The LLM reasoning stream: plan rationale, per-phase decisions, transport
+    and tool picks — every proposal the loop made and why, in order."""
+    data = _scans.get(scan_id)
+    if not data:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    events = data.get("events", [])
+    reasoning_events = [
+        _event_dict(e)
+        for e in events
+        if e.kind in ("plan", "step") or "LLM" in e.message or "decision" in e.message.lower()
+    ]
+    return JSONResponse({"scan_id": scan_id, "reasoning": reasoning_events})
 
 
 @app.get("/", response_class=HTMLResponse)

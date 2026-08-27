@@ -341,3 +341,34 @@ crAPI. Fix any regressions. Performance profiling. Security audit of our own cod
 - Reference A: MIT License (Copyright 2025 Development Team)
 - Reference B: Dual-licensed - MIT for agents directory, research-only for core
   (read-for-ideas only, nothing adapted from the restricted portion)
+### Phase 9 (inserted): GUI rebuild — own identity, four core views
+
+**Status: COMPLETE** (2026-08-27)
+
+Reference verification: only one reference project has a real GUI (React 19 +
+Vite + Tailwind + Apollo subscriptions over graphql-ws). Read in full: its
+package.json, app.tsx route tree, flow detail page (555L), flow-provider (453L,
+14 live subscriptions), central-tabs, dashboard overview (MetricCards: tasks /
+tool-calls / tokens / cost), automation messages, tools list, tasks with
+progress cards, report page (markdown prose, clipboard/MD/PDF export states),
+terminal (xterm.js) — 2,000+ lines total. The other references have no GUI.
+
+Built (own implementation, own visual identity, zero build tooling):
+- Visual identity "operations deck": dark/light themes, teal-violet accent
+  system, mono phase pills, CSS custom properties throughout.
+- Live reasoning view: plan rationale, per-phase LLM decisions (continue /
+  skip / revise with hints), tool selections streamed via the new
+  /api/scan/{id}/reasoning endpoint; tool rail with per-tool outcomes;
+  phase timeline distinguishing findings / errors / skips by dot color.
+- Surface map: Host → Service → Endpoint → Parameter tree from the live
+  graph, technologies and access-restricted markers inline; audit trail
+  panel beneath (fired/refused/ingested/errored color-coded).
+- Findings dashboard: oracle-confirmed only, severity-colored cards with
+  oracle/evidence/status metadata and chain visualization (enables vs
+  derived_credential edges styled distinctly).
+- Report viewer: markdown rendered client-side with code blocks/tables/
+  headings; Markdown/JSON/HTML download buttons appear on completion.
+- Providers panel preserved: named configs CRUD against providers.json,
+  test button; provider select feeds the launch form.
+- JS extracted to static/app.js (no inline script); single GET / endpoint +
+  static mount, no build step required.
