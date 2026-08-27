@@ -595,6 +595,7 @@ def run_sqli_blind(
             oob_domain = oob_collaborator._base_domain
             _emit(events, "payloads", "step", f"OOB collaborator active ({oob_domain})")
         else:
+
             def fire_oob() -> Any:
                 return None  # OOB dormant without a collaborator (honest)
 
@@ -1077,6 +1078,7 @@ def scan_all_classes(
     )
     if priority is not None:
         from reachagent.tools.coordinator_support import set_surface_priority
+
         set_surface_priority(priority.ranked_ids)
         _emit(
             events_out,
@@ -1164,16 +1166,27 @@ def scan_all_classes(
                 session_kind, token = token.split(":", 1)
             if not token and identities.credential(name):
                 try:
-                    _emit(events_out, "endpoints", "step",
-                          f"authenticating {name!r} against detected login surface")
-                    token = authenticate_identity(
-                        probe_firer, identities, name, base_url, graph=graph,
+                    _emit(
+                        events_out,
+                        "endpoints",
+                        "step",
+                        f"authenticating {name!r} against detected login surface",
                     )
-                    _emit(events_out, "endpoints", "step",
-                          f"authenticated {name!r} — session captured")
+                    token = authenticate_identity(
+                        probe_firer,
+                        identities,
+                        name,
+                        base_url,
+                        graph=graph,
+                    )
+                    _emit(
+                        events_out,
+                        "endpoints",
+                        "step",
+                        f"authenticated {name!r} — session captured",
+                    )
                 except LoginError as exc:
-                    _emit(events_out, "endpoints", "error",
-                          f"login failed for {name!r}: {exc}")
+                    _emit(events_out, "endpoints", "error", f"login failed for {name!r}: {exc}")
                     raise
             if not token:
                 continue

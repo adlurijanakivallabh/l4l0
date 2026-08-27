@@ -152,8 +152,11 @@ class TestAuthenticateIdentity:
         store = IdentityStore()
         store.add(
             Credential(
-                identity="testuser", username="admin", password="s3cret",
-                role="admin", auth_state=AuthState.ADMIN,
+                identity="testuser",
+                username="admin",
+                password="s3cret",
+                role="admin",
+                auth_state=AuthState.ADMIN,
             )
         )
         return store

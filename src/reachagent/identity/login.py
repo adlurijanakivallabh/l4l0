@@ -113,7 +113,7 @@ def _parse_html_login_form(html_body: str, page_url: str) -> DetectedLoginForm |
             continue
         action_m = _FORM_ACTION.search(block)
         method_m = _FORM_METHOD.search(block)
-        action = (action_m.group(1).rstrip("\"\'").strip() if action_m else "")
+        action = action_m.group(1).rstrip("\"'").strip() if action_m else ""
         method = (method_m.group(1).strip() if method_m else "post").upper()
         submit_url = urljoin(page_url, action) if action else page_url
 

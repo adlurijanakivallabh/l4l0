@@ -16,13 +16,16 @@ from __future__ import annotations
 import logging as _logging
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import NoReturn, Protocol
+from typing import TYPE_CHECKING, NoReturn, Protocol
 from urllib.parse import urlsplit
 
 from reachagent.execution.audit import AuditLog
 from reachagent.oracles import OracleMechanism
 from reachagent.tools import coordinator as _coordinator
 from reachagent.tools import coordinator_support as _coordinator_support
+
+if TYPE_CHECKING:
+    from reachagent.recon.payload_tuning import PayloadAttemptContext
 
 _log = _logging.getLogger(__name__)
 
@@ -371,7 +374,7 @@ def _maybe_reorder_payloads(
     vuln_class: str,
     sink_type: object,
     slot_kit: Mapping[str, object] | None,
-    prior_attempts: tuple = (),
+    prior_attempts: tuple[PayloadAttemptContext, ...] = (),
 ) -> list[Mapping[str, object]]:
     """Proposal-only reorder — flag-gated, dynamic-allowlist-validated.
 
@@ -446,6 +449,7 @@ def run_payload_chain(
     iteration. Empty catalogs, unresolved refs, unsupported oracle adapters, and
     exhausted budgets return explicit failed results; they never become clean.
     """
+
     def _ev(msg: str) -> None:
         if on_event:
             try:

@@ -780,25 +780,26 @@ def scan_target(
         # still confirms. When the flag is off, the default http path is used.
         from reachagent.recon.transport_tuning import propose_transport
 
-        transport = propose_transport(g, sel.endpoint_node)
-        if transport.transport != "http":
+        transport_choice = propose_transport(g, sel.endpoint_node)
+        if transport_choice.transport != "http":
             _log.info(
                 "transport=%s for %s: %s",
-                transport.transport,
+                transport_choice.transport,
                 sel.endpoint_node,
-                transport.rationale,
+                transport_choice.rationale,
             )
-        _ = transport  # advisory; the payload chain still uses http by default
+        _ = transport_choice  # advisory; the payload chain still uses http by default
 
         def _on_chain_event(msg: str) -> None:
             if events is not None:
                 from reachagent.scan.orchestrator import ScanEvent as SE
-                events.append(SE(phase='payloads', kind='step', message=msg))
+
+                events.append(SE(phase="payloads", kind="step", message=msg))
 
         # Iterate through the ranked vuln classes: try the LLM's first pick;
         # when it doesn't confirm, move to its second pick, etc. Stop on the
         # first confirmed finding (the oracle decided — not the LLM).
-        result = None
+        result: _pc.PayloadChainResult | None = None
         for vc in ranked_classes:
             _log.debug("trying vuln_class=%s on %s", vc, sel.endpoint_node)
             result = _pc.run_payload_chain(
@@ -813,7 +814,7 @@ def scan_target(
             )
             if result.confirmed and result.finding_node:
                 break
-        if result.confirmed and result.finding_node:
+        if result is not None and result.confirmed and result.finding_node:
             findings.append(result.finding_node)
             try:
                 solver.advance(result.finding_node, acting_identity=sel.identity_node)

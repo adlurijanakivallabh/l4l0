@@ -129,7 +129,8 @@ def test_propose_client_error_returns_none(monkeypatch: pytest.MonkeyPatch) -> N
             raise RuntimeError("LLM unavailable")
 
     result = propose_surface_priority(
-        _graph_with_endpoints(), client=BrokenClient()  # type: ignore[arg-type]
+        _graph_with_endpoints(),
+        client=BrokenClient(),  # type: ignore[arg-type]
     )
     assert result is None
 

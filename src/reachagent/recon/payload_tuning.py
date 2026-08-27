@@ -79,7 +79,7 @@ class AnthropicPayloadClient:
         cands = ", ".join(candidate_refs[:20])
         prompt = (
             "You are a payload-choice proposer for an AUTHORIZED"
-                "lab assessment. Given endpoint signals, "
+            "lab assessment. Given endpoint signals, "
             f"vuln_class={vuln_class}, and the candidate bucket, rank which "
             "payload_refs to try first for THIS target (e.g. WordPress sqli "
             "prefers WP-flavored). Respond as JSON "
@@ -131,9 +131,8 @@ class OpenAIPayloadClient:
                 f"  - {a.tried_ref}: {a.outcome} (status={a.status_code}) {a.detail}"
                 for a in prior_attempts[:5]
             ]
-            attempts_text = (
-                "\nPreviously tried (avoid repeating the same approach):\n"
-                + "\n".join(attempt_lines)
+            attempts_text = "\nPreviously tried (avoid repeating the same approach):\n" + "\n".join(
+                attempt_lines
             )
         prompt = (
             "You are a payload-choice proposer. Given endpoint signals, "
@@ -201,7 +200,9 @@ def propose_payload_choice(
             tuner = client
         else:
             compatible = build_openai_compatible_client()
-            tuner = OpenAIPayloadClient(client=compatible) if compatible else AnthropicPayloadClient()  # noqa: E501 — type annotation needed for mypy
+            tuner = (
+                OpenAIPayloadClient(client=compatible) if compatible else AnthropicPayloadClient()
+            )  # noqa: E501 — type annotation needed for mypy
         raw = tuner.propose(endpoint_signals, vuln_class, candidate_refs, prior_attempts)
         validated = _validate_choice(raw, candidate_refs)
         if validated is not None:

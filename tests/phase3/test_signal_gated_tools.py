@@ -484,9 +484,9 @@ def test_signal_gated_emitters_import_no_validator_or_finding_writer() -> None:
     # Finding is reconfirm_candidate's injected callables — never a tool's own import.
     import reachagent.recon.tools.commix as commix_mod
     import reachagent.recon.tools.dalfox as dalfox_mod
+    import reachagent.recon.tools.jwt_tool as jwt_tool_mod
     import reachagent.recon.tools.nikto as nikto_mod
     import reachagent.recon.tools.nuclei as nuclei_mod
-    import reachagent.recon.tools.jwt_tool as jwt_tool_mod
     import reachagent.recon.tools.sqlmap as sqlmap_mod
 
     banned = {"run_oracle", "write_finding", "mark_inconclusive"}

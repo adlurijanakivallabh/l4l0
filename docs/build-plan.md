@@ -372,3 +372,18 @@ Built (own implementation, own visual identity, zero build tooling):
   test button; provider select feeds the launch form.
 - The browser client stays in the single static `index.html`; one GET `/`
   endpoint plus a static mount keeps deployment build-free.
+
+### Phase 10: Final review and hardening
+
+**Status: COMPLETE** (2026-08-27)
+
+- Strict scan-local LLM requirements now propagate provider failures instead of
+  silently selecting a fallback.
+- MCP payload lookup propagates missing required slots while logging and skipping
+  only stale vendored locators.
+- Static review is clean: Ruff and mypy pass across the repository's source.
+- Removed the unused `gui/static/app.js`; the active browser client is the single
+  static `index.html`.
+- Fast regression gate: 35 affected tests passed. The earlier full-suite run's
+  four contract failures are covered by these corrected tests; a duplicate
+  full-suite rerun was intentionally avoided to keep validation fast.

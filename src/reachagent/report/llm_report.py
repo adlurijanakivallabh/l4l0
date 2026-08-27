@@ -60,7 +60,7 @@ class AnthropicReportClient:
         ctx_str = _json.dumps(findings, indent=2)[:4000]
         prompt = (
             "You are a pentest report writer for an AUTHORIZED"
-                "lab assessment. Given ONLY confirmed findings "
+            "lab assessment. Given ONLY confirmed findings "
             "(already validated via deterministic oracles), write a concise markdown "
             "report: what was tested, what was found, severity, and reproduction steps per "
             "finding_id. Do NOT invent new findings, do NOT claim unconfirmed vulns. "
