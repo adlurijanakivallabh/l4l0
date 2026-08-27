@@ -1,412 +1,663 @@
-# ReachAgent — Phase-by-Phase Build Plan
-
-**Date:** 2026-08-26. Based on full audit of 148 commits, 134 source files,
-23 detection classes, 26 tool wrappers, 6 oracle families, and deep read of
-reference project architectures (top-level flow, entrypoints, agent structure,
-tool registries - deep per-feature logic deferred to each phase).
-
-## Current state (what exists today)
-
-| Component | Status |
-|---|---|
-| LLM planner (26-tool catalog, fixer loop) | Built, verified on VAmPI |
-| Recon: 17 tool wrappers (nmap through wpscan) | Built, all scope-gated + audited |
-| Insertion-point discovery (arjun, paramspider, x8) | Built |
-| Signal-gated verification (sqlmap, nuclei, dalfox, commix, nikto, jwt-tool) | Built |
-| Payload library (36 hand-tagged plus ~14.5k vendored corpus) | Built |
-| 6 deterministic oracle families | All built and tested |
-| 23 attack classes in coverage matrix | Orchestrator dispatches all |
-| DOM XSS via headless browser taint-shim | Wired into orchestrator |
-| OOB collaborator for blind SQLi | Wired, env-gated |
-| Provider settings GUI panel | Built with test button |
-| Per-tool live activity panel | Built, streaming real runner results |
-| Markdown report renderer | Built (headings, tables, lists, code blocks) |
-| End-to-end scan verified on VAmPI | 4 findings, zero FP on secure target |
-| MCP server exposing Explorer+Validator tools | Built |
-| Identity/session store with per-identity isolation | Built |
-| Chain solver (spawn-and-requery over finding layer) | Built |
-| Eval gates (VAmPI, crAPI, Juice Shop, PortSwigger, DVGA) | Built |
-
-## What is missing (gap analysis from reference architecture reading)
-
-The reference projects solve fundamentally different problems: they let the
-LLM drive a terminal inside Docker, running arbitrary commands. ReachAgent
-wraps individual tools as scoped adapters. The useful techniques to extract
-are architectural patterns, not command-line invocations:
-
-1. Iterative LLM reasoning between tool calls — the LLM sees intermediate
-   results and adapts its next action. Currently our planner produces one plan
-   upfront and executes mechanically.
-2. Per-agent model configuration — different agents use different models.
-3. Rich terminal output streaming — every tool call streams partial output.
-4. Knowledge persistence across scans — successful techniques stored for reuse.
-5. Multi-provider failover — if one provider fails mid-scan, switch to another.
-6. Structured subtask decomposition — the LLM breaks the objective into
-   ordered subtasks before executing, rather than one flat plan.
-
-## Build phases (ordered by dependency, smallest first)
-
-### Phase 1: Recon deep-read and improvement
-
-Goal: Make recon produce richer graph facts by studying how the references
-structure their reconnaissance methodology.
-
-**Status: COMPLETE** (2026-08-26)
-
-Built:
-- 6 new recon tool wrappers: naabu, dnsx, shuffledns, waybackurls, gau,
-  wafw00f — each a scoped, audited, scope-gated ReconToolRunner with hermetic
-  fixture tests.
-- Per-tool capability descriptions in the planner catalog so the LLM can
-  reason about *why* to select each tool (32 total catalog entries).
-- Output-size cap in base.py (50k normal / 10k minified) to prevent large
-  tool stdout from flooding LLM context.
-- All new wrappers wired into the scan entrypoint's registry and URL-tools
-  set so LLM-planned scans can dispatch them.
-
-Reference files to read IN FULL during this phase:
-- Reference A (MIT): pkg/tools/terminal.go - command execution, output capture,
-  timeout handling, detach vs blocking modes
-- Reference A: backend/pkg/templates/prompts/pentester.tmpl lines 160-230 -
-  terminal protocol, CLI argument protocol, tool categories
-- Reference B (dual): tools/reconnaissance/generic_linux_command.py (879 lines)
-  - output truncation for minified content, session management
-- Reference B: tools/reconnaissance/nmap.py, curl.py - argument handling
-- Our own: all 28 files under src/reachagent/recon/tools/
-
-What to look for specifically:
-- How they handle tool output that exceeds context limits
-- How they detect and handle interactive commands
-- How they categorize tools by purpose (recon/web/password/post-exploit)
-- How they chain tools (output of nmap feeds gobuster target list)
-
-Build: Add missing tool wrappers (dnsx, shuffledns, naabu, waybackurls, gau),
-improve existing wrappers flag sets, add inter-tool data passing (nmap
-discovered ports feed targeted probing), improve planner prompt with per-tool
-capability descriptions.
-
-### Phase 2: Endpoint mapping and insertion-point discovery improvement
-
-Goal: Find more real parameters and endpoints by improving discovery logic.
-
-**Status: COMPLETE** (2026-08-26)
-
-Built:
-- LLM-driven surface prioritization layer (recon/surface_tuning.py): after
-  recon completes, the discovered surface (endpoints, parameters, inferred
-  sinks, technologies, auth hints) is sent to the LLM which ranks which
-  endpoints to attack first with real reasoning. The ranking is validated
-  against actual graph node ids (invented ids dropped) and wired into the
-  Coordinator scoring as a flat +2 bonus that breaks ties without overriding
-  the deterministic object-sensitivity or sink-weight signals.
-- Stale-priority reset between scans prevents cross-run contamination.
-- Flag-gated via REACHAGENT_SURFACE_TUNING (off by default); never crashes
-  the scan; never fires a request, calls an oracle, or writes a finding.
-
-Reference files to read IN FULL:
-- Reference B: tools/web/headers.py - HTTP header probing
-- Reference A: pentester.tmpl methodology section on web app testing
-- Our own: recon/api_discovery.py, recon/mapper.py, insertion-point wrappers
-
-What to look for:
-- How they discover hidden APIs beyond OpenAPI/Swagger
-- How they handle GraphQL introspection
-- How they map authentication flows
-
-Build: Improve api_discovery to probe GraphQL, common framework routes.
-Add GraphQL introspection as a first-class discovery path. Improve parameter
-inference from response body analysis.
-
-### Phase 3: Payload selection and firing improvements
-
-Goal: Better payload selection based on discovered endpoint characteristics;
-better evidence collection during payload execution.
-
-**Status: COMPLETE** (2026-08-26)
-
-Built:
-- Upgraded vuln-class targeting from a single-class pick to a RANKED LIST
-  per insertion point. The LLM reasons about which classes fit the shape
-  and why (login form gets sqli before xss; URL param gets ssrf; file path
-  gets traversal before command injection), using method, path, param
-  location, inferred sink, host tech, and operator objective as context.
-- The payload chain loop now iterates through the ranked list when earlier
-  classes fail to confirm — stopping on the first oracle-confirmed finding,
-  never on an LLM opinion. Sink-compatibility filtering is preserved so a
-  SQL-sink parameter never receives a traversal payload.
-
-Reference files to read IN FULL:
-- Reference A: performer.go (1151 lines) - retry loop, reflector pattern,
-  summarization awareness, mentor protocol
-- Reference A: input_toolcall_fixer.tmpl - how validation errors are fed back
-- Reference B: tools/common.py and tools/executor.py - shell session management,
-  output compression, binary content detection
-- Our own: tools/payload_chain.py, payloads/payload_resolver.py,
-  payloads/encoding.py, payloads/corpus.py
-
-What to look for:
-- The retry-with-error-feedback loop (verify completeness)
-- How they detect WAF blocks and auto-adjust payloads
-- How they compress/minimize tool output for LLM context efficiency
-- Session management for multi-request attacks
-
-Build: Add WAF detection and payload auto-adjustment, add response
-diffing for parameter value injection, improve encoding variants.
-
-### Phase 4: Verification phase - signal-gated tools and oracle improvements
-
-Goal: Make signal-gated tools actually fire when their preconditions are met,
-and ensure their output is properly routed through oracles.
-
-**Status: COMPLETE** (2026-08-26)
-
-Built:
-- Wired expand_encoding_variants into explorer.get_payloads — this was dead
-  code (the variant cache was checked in resolve() but never populated).
-  Now a WAF-filtered base payload automatically gets url-encoded and
-  double-url-encoded variants in the same bucket (bounded at 2/entry).
-- Added PayloadAttemptContext dataclass for failure-context mutation
-  reasoning. The payload-tuning prompt now accepts prior attempt outcomes
-  (no_reflection, waf_blocked, error_response, timeout) so the LLM prefers
-  encoding variants or different techniques when earlier payloads failed.
-
-Reference files to read IN FULL:
-- Reference A: pentester.tmpl sections on msfconsole, network_recon, web_testing
-- Reference B: all exploitation-related tool files
-- Our own: recon/tools/signal_gated.py, recon/signal_dispatch.py,
-  recon/tools/sqlmap.py, recon/tools/nuclei.py, etc.
-
-What to look for:
-- How they decide which exploitation tools to invoke
-- How they parse structured output from security tools
-- How they handle tool timeouts and partial results
-
-Build: Wire signal-gated tools to actually fire during scans (currently built
-but not dispatched). Ensure their candidate findings route through oracles.
-Add missing signal-gated tools (dirsearch, wafw00f).
-
-### Phase 5: Iterative LLM orchestration (the big change)
-
-Goal: Replace the single-plan-upfront approach with iterative LLM reasoning
-between phases - the LLM sees what recon found, then decides what to do next.
-
-**Status: COMPLETE** (2026-08-26)
-
-Built:
-- Login detection + session capture (identity/login.py): probes graph POST
-  endpoints with auth-shaped paths AND HTML pages with password-type inputs;
-  submits credentials in form-encoded or JSON format based on what was
-  detected; captures session material into IdentityStore.open_session.
-- Orchestrator wiring: each seeded identity attempts login before scanning;
-  fail-loud on wrong credentials, CAPTCHA/challenge markers, or rate-limiting.
-- Each credential set binds as a separate identity, enabling cross-identity
-  BOLA/IDOR differential oracles across roles.
-
-Reference files to read IN FULL:
-- Reference A: provider.go (1010 lines) - GenerateSubtasks, RefineSubtasks,
-  PerformAgentChain, PrepareAgentChain
-- Reference A: performer.go - the actual chain executor with retry/reflector
-- Reference A: primary_agent.tmpl (277 lines) - team orchestration prompt
-- Reference A: subtasks_generator.tmpl - how subtasks are generated
-- Reference B: sdk/agents/run.py - the ReAct loop implementation
-- Reference B: agents/orchestration_agent.py - how agent handoffs work
-
-What to look for:
-- How subtask decomposition works (LLM generates ordered subtasks)
-- How results feed back into the next decision
-- How the system handles stuck/failed subtasks (reflector pattern)
-- How different agent types are selected for different subtasks
-- How budget/cost tracking works across the chain
-
-Build: After recon completes, send the discovered graph facts back to the
-LLM and ask it to generate a targeted attack plan. After payloads run, send
-results back and ask what to try next. This is the biggest architectural change
-but has the highest impact on finding rate.
-
-### Phase 6: Report generation and GUI polish
-
-Goal: Professional-quality reports; GUI that shows everything the operator needs.
-
-### Phase 6.5 (inserted): Signal-gated tool layer - LLM-driven selection
-
-**Status: COMPLETE** (2026-08-26)
-
-Built:
-- recon/signal_tuning.py: LLM reads the discovered surface and reasons
-  about which signal-gated verification tools to invoke (sqlmap for SQL
-  sinks, dalfox for html_reflection, nuclei for tech fingerprints,
-  jwt-tool for auth paths, etc.). The signal-gated base's own has_signal()
-  gate still enforces its precondition — this is a reasoning filter on
-  top of the safety boundary, never a bypass of it.
-- Extended the AST boundary test to cover ALL six emitters (was only
-  sqlmap/nuclei/nikto; now also dalfox/commix/jwt_tool). The test proves
-  via AST import scanning that NO emitter module imports run_oracle,
-  write_finding, mark_inconclusive, or reachagent.tools.validator.
-
-Oracle-boundary proof (structural, stated plainly):
-The ONLY path from a tool-sourced candidate to a Finding is
-reconfirm_candidate() in signal_gated.py, which takes run_oracle and
-write_finding as INJECTED callables (never imported). The AST scan in
-tests/phase3/test_signal_gated_tools.py::test_signal_gated_emitters_
-import_no_validator_or_finding_writer parses every emitter module's source,
-walks all ImportFrom and Import nodes, and asserts none references
-"run_oracle", "write_finding", "mark_inconclusive", or "validator".
-This boundary has not moved since Phase 1 and is now proven across all
-six wrappers.
-
-Reference files to read IN FULL:
-- Reference A: frontend/src/pages/flows/flow-report.tsx - report rendering
-- Reference A: frontend report export (PDF generation)
-- Reference A: server/services/analytics.go - what metrics they track
-- Our own: report/renderer.py, report/llm_report.py, gui/app.py
-
-Build: Proper severity-colored markdown tables, PoC reproduction steps
-with curl commands, executive summary section, remediation guidance.
-GUI: real-time cost tracking, scan history comparison.
-
-### Phase 7: Hardening, eval gates, and end-to-end verification
-
-Goal: Everything works reliably together; precision/recall targets met.
-
-### Phase 7.5 (inserted): MCP browser + proxy firing mechanisms
-
-**Status: COMPLETE** (2026-08-27)
-
-Built:
-- recon/transport_tuning.py: LLM reasons about which firing mechanism to use
-  per insertion point — http (default), browser (CSRF-protected forms,
-  JS-rendered SPAs, click flows), or proxy (header manipulation: auth-bypass
-  via X-Forwarded-For tampering, CORS origin probing). Advisory only; the
-  deterministic oracle remains the sole confirmation authority.
-- fire_proxy_request MCP tool: repeater-style custom-header requests through
-  the gated RequestFirer. Scope, read-only-first, and audit gates all hold;
-  the response goes through the fire_ref handle so only run_oracle can
-  confirm anything from it.
-- fire_browser_form MCP tool: Playwright form fill+submit for browser-only
-  insertion points. Scope-enforced before launch; hidden CSRF inputs submit
-  natively; returns JSON-safe data (status, final_url, session cookie) for
-  the oracle — never a finding itself.
-
-Boundary verification:
-- test_mcp_server.py role-boundary tests re-verified passing with the two
-  new tools registered on the Explorer side (no write_finding/run_oracle
-  reachable from either).
-- AST scan in test_transport_tuning.py proves neither new tool's body calls
-  run_oracle() or write_finding() directly.
-
-### Phase 8 (inserted): bounded agentic re-planning loop
-
-**Status: COMPLETE** (2026-08-27)
-
-Built:
-- scan/agentic_loop.py: after each phase completes (recon / endpoints /
-  payloads), the LLM receives a compact deterministic summary of what that
-  phase produced and issues one validated decision:
-    * continue - run the next phase as planned
-    * skip - a remaining phase cannot apply for this target (honestly
-      reported as an event; never silently dropped)
-    * revise - re-prioritize via a hint (e.g. revisit a sibling insertion
-      point after blind SQLi confirmed elsewhere suggests it is worth a
-      second look)
-- Three reassessment points wired into scan_all_classes: after recon,
-  after endpoints (can skip verification tools when no preconditions),
-  and after payloads (closing assessment included in report context).
-- Safety bounds: validation refuses unknown actions rather than guessing;
-  the advisor failing or returning garbage means "continue as planned";
-  MAX_REASSESSMENTS=8 caps total LLM loop calls; plan and report phases
-  are deterministic and never reassessed.
-- Phase decisions never touch fire/oracle/finding authority — they only
-  gate which deterministic engine stages run.
-
-Loop structure informed by reference architecture reading (performer.go's
-reflector/monitor patterns and run.py's NextStep state machine), implemented
-in this project's own propose->validate->emit style consistent with every
-other LLM tuning layer.
-
-Build: Full eval suite re-run across VAmPI vulnerable/secure, Juice Shop,
-crAPI. Fix any regressions. Performance profiling. Security audit of our own code.
-
-## Rules for every phase
-
-1. Read ALL reference files listed for that phase, fully, line by line
-2. Extract techniques, compare against ours, identify gaps
-3. Build in our own architecture/style - never copy verbatim
-4. Ponytail review after building
-5. Run only phase-relevant tests
-6. Update docs, commit
-7. Stop and wait for go-ahead
-
-## License notes
-
-- Reference A: MIT License (Copyright 2025 Development Team)
-- Reference B: Dual-licensed - MIT for agents directory, research-only for core
-  (read-for-ideas only, nothing adapted from the restricted portion)
-### Phase 9 (inserted): GUI rebuild — own identity, four core views
-
-**Status: COMPLETE** (2026-08-27)
-
-Reference verification: only one reference project has a real GUI (React 19 +
-Vite + Tailwind + Apollo subscriptions over graphql-ws). Read in full: its
-package.json, app.tsx route tree, flow detail page (555L), flow-provider (453L,
-14 live subscriptions), central-tabs, dashboard overview (MetricCards: tasks /
-tool-calls / tokens / cost), automation messages, tools list, tasks with
-progress cards, report page (markdown prose, clipboard/MD/PDF export states),
-terminal (xterm.js) — 2,000+ lines total. The other references have no GUI.
-
-Built (own implementation, own visual identity, zero build tooling):
-- Visual identity "operations deck": dark/light themes, teal-violet accent
-  system, mono phase pills, CSS custom properties throughout.
-- Live reasoning view: plan rationale, per-phase LLM decisions (continue /
-  skip / revise with hints), tool selections streamed via the new
-  /api/scan/{id}/reasoning endpoint; tool rail with per-tool outcomes;
-  phase timeline distinguishing findings / errors / skips by dot color.
-- Surface map: Host → Service → Endpoint → Parameter tree from the live
-  graph, technologies and access-restricted markers inline; audit trail
-  panel beneath (fired/refused/ingested/errored color-coded).
-- Findings dashboard: oracle-confirmed only, severity-colored cards with
-  oracle/evidence/status metadata and chain visualization (enables vs
-  derived_credential edges styled distinctly).
-- Report viewer: markdown rendered client-side with code blocks/tables/
-  headings; Markdown/JSON/HTML download buttons appear on completion.
-- Providers panel preserved: named configs CRUD against providers.json,
-  test button; provider select feeds the launch form.
-- The browser client stays in the single static `index.html`; one GET `/`
-  endpoint plus a static mount keeps deployment build-free.
-
-### Phase 10: Final review and hardening
-
-**Status: COMPLETE** (2026-08-27)
-
-- Strict scan-local LLM requirements now propagate provider failures instead of
-  silently selecting a fallback.
-- MCP payload lookup propagates missing required slots while logging and skipping
-  only stale vendored locators; the autonomous chain opts into an explicit
-  best-effort skip so a missing OOB slot can fall through to its safe adapter.
-- Static review is clean: Ruff and mypy pass across the repository's source.
-- Removed the unused `gui/static/app.js`; the active browser client is the single
-  static `index.html`.
-- Fast regression gate: 35 affected tests passed, followed by the slot-contract
-  fix and four focused external-gate reruns (all passed). The fresh whole-tree
-  run recorded 1,154 passed, 3 skipped, and 5 failures: one local payload-slot
-  contract regression (fixed) and four external service startup races. All five
-  now pass in focused reruns; no deterministic local failure remains.
-
-### Portal validation — Playwright (2026-08-27)
-
-- `reachagent-gui --host 127.0.0.1 --port 8000` served the portal with HTTP 200;
-  provider listing and connection test also returned HTTP 200.
-- Browser testing found and fixed the missing `renderReport` client renderer and
-  the named-provider preflight path that discarded saved base URL/model values.
-- Proposal prompts now describe defensive coverage/configuration work only, and
-  output budgets are bounded for responsive Responses-API calls. Empty model
-  output falls back to an allowlisted proposal or deterministic report; real
-  provider/configuration/network failures still surface in strict mode.
-- The generic payload chain now treats a class-specific fingerprint rejection as
-  an audited non-applicable result and continues with the next ranked class.
-- The final scoped Python gate passed 102 tests (one dependency deprecation
-  warning); Playwright found no browser errors beyond Chrome's non-blocking
-  password-form accessibility notice.
-- The configured Responses-compatible model then produced a valid plan/profile;
-  the live page displayed tool activity, reasoning events, mapped graph nodes,
-  and audit entries for `http://127.0.0.1:5000`.
-- Screenshots are retained locally under `output/playwright/` (ignored from git).
+# ReachAgent — Evidence-Driven Build Plan
+
+**Plan date:** 2026-08-27
+**Scope:** authorized web/API assessment targets and intentionally vulnerable
+laboratories only.
+**Rule:** this document is a plan, not an implementation. Every implementation
+phase stops after its focused review, test gate, commit, and documentation update.
+
+## 0. Confirmed baseline
+
+### 0.1 Repository facts
+
+These facts were verified from the complete repository history, the locked
+architecture plan, source inventory, and current checkout:
+
+- 175 commits; current commit `174bfaf` (`fix gui provider default routing`).
+- 144 Python modules under `src/`; 89 Python test files.
+- 23 orchestrated detection classes.
+- 32 LLM-selectable tool adapters: 26 recon/insertion adapters and 6
+  signal-gated claim adapters.
+- 6 deterministic oracle families.
+- NetworkX is the default graph store; a Neo4j-through-MCP parity backend exists.
+- FastAPI/static web GUI is the primary entrypoint.
+- MCP server exposes Explorer and Validator capabilities; Coordinator tools remain
+  internal to the autonomous loop.
+- Last recorded fresh whole-tree run: 1,154 passed, 3 skipped, 5 failures.
+  The one local payload-slot regression was fixed, and the four external-service
+  startup races passed in focused reruns. No deterministic local failure remains.
+- The latest focused GUI gate passed 8 tests. The latest transport-focused gate
+  passed 10 tests.
+- No source files or project files are deleted by this plan.
+
+### 0.2 Detection inventory
+
+The current orchestrator names these classes:
+
+`sqli`, `sqli_blind`, `nosqli`, `ldap_injection`,
+`command_injection`, `xss_reflected`, `xss_stored`, `xss_dom`,
+`ssti`, `ssrf`, `path_traversal`, `file_upload`, `jwt_forgery`,
+`bola`, `bfla`, `mass_assignment`, `idor`, `business_logic`,
+`clickjacking`, `cors_misconfig`, `csrf_missing_protection`,
+`graphql`, and `race`.
+
+Coverage is not claimed merely because a string appears in this list. A class is
+credited only when its current deterministic evidence path can produce a
+`confirmed_violation` verdict and a Validator-gated finding. Current honest
+limits remain:
+
+- blind SQLi, blind NoSQLi, LDAP extraction, DOM XSS, CSRF, race conditions,
+  and novel business logic are partial or statistically bounded;
+- request smuggling, cache poisoning, and generic insecure-deserialization
+  exploitation do not yet have a safe generic confirmation path;
+- the API-only Juice Shop gate is 6/9, not the historical browser-capable 7/9
+  target.
+
+### 0.3 Tool inventory
+
+Recon/fact adapters:
+
+- `nmap`, `masscan`, `rustscan`, `naabu`
+- `subfinder`, `amass`, `shuffledns`, `dnsx`, `theHarvester`
+- `whatweb`, `httpx`, `katana`
+- `gobuster`, `ffuf`, `feroxbuster`, `dirb`
+- `waybackurls`, `gau`, `wafw00f`
+- `testssl`, `sslscan`, `sslyze`, `wpscan`
+- `arjun`, `paramspider`, `x8`
+
+Signal-gated claim adapters:
+
+- `sqlmap`, `nuclei`, `nikto`, `dalfox`, `commix`, `jwt-tool`
+
+The first group emits only graph facts. The second group can emit only inert
+claims, and every claim must still pass the existing deterministic oracle gate.
+
+### 0.4 Confirmation inventory
+
+The registered mechanisms are:
+
+1. `differential`
+2. `execution_confirmation`
+3. `oob_callback`
+4. `timing_statistical`
+5. `structural`
+6. `business_rule_invariant`
+
+The invariant is fixed across all phases:
+
+`LLM proposal → allowlist validation → execution evidence →
+deterministic oracle → Validator write`.
+
+The LLM never confirms a finding. A tool's own “vulnerable” output is never a
+finding. A missing or ambiguous signal is reported as inconclusive or
+not-applicable.
+
+## 1. Reference-reading map (licenses recorded before code review)
+
+The repository intentionally uses neutral aliases so reference names do not
+appear in project code, comments, docs, or commits.
+
+| Alias | License | Top-level architecture files already read | Role in later phases |
+|---|---|---|---|
+| **R1** | MIT | Go server entrypoint/router; React/Vite entrypoint and route tree | service lifecycle, provider persistence, GraphQL API, GUI state/layout |
+| **R2** | dual: MIT for the agent-origin subtree; research-use-only for the authored core | FastAPI application/server; agent factory; orchestration agent | API/SSE lifecycle, provider selection, agent cloning, handoffs, MCP/session plumbing |
+| **R3** | MIT | legacy entrypoint; unified agent, task, tool server, normalized types | backend-neutral agent loop, event normalization, sandbox and MCP process boundaries |
+| **R4** | MIT | ReAct agent entrypoint, reasoning layer, standalone engine, local server launcher | iterative observe/think/act loop, working memory, retries, tool summaries, JSONL history |
+| **R5** | MIT | Flask server initialization/main; FastMCP client setup/main | large tool catalog, async jobs, cache/recovery, proxy/repeater transport, health endpoints |
+| **R6** | Apache-2.0 | scan interface, top-level runner/coordinator, React viewer entrypoint/app | scan preflight, model warm-up, bounded agent coordination, polling viewer, reports |
+| **R7** | MIT | vendored payload corpus metadata and machine-readable files | payload breadth and provenance; never a confirmation authority |
+| **R8** | MIT | vendored wordlist metadata and machine-readable files | discovery wordlists only; never an exploit verdict |
+
+**Reading rule for every implementation phase:** before editing, enumerate every
+file in the selected reference subtree that touches that phase, read it fully
+including called helpers, and record the exact files in that phase's decision
+document. The aliases above are only the scope map; they are not permission to
+skim.
+
+## 2. Current top-level architecture findings
+
+- **R1:** a long-lived service initializes configuration, telemetry, database,
+  provider/controller services, subscriptions, and HTTP routing before serving;
+  the frontend is a lazy-loaded React route tree with context providers and a
+  GraphQL client. This is a useful lifecycle and GUI-state pattern, not a
+  detection design.
+- **R2:** the API factory owns session state and command execution in
+  application state, exposes health/catalog/session/inference routes, and uses
+  SSE for both hook-level and token-level live updates. Agent factories clone
+  a base agent with a selected model and optional registry/MCP tools.
+- **R3:** one task envelope is rendered per backend; one normalized event model
+  folds assistant text, tool calls, file changes, usage, and errors; a stdio MCP
+  tool server is launched identically for each backend.
+- **R4:** the fallback ReAct loop explicitly keeps working memory, a bounded raw
+  observation window, a findings log, loop detection, and a persisted session
+  file. Tool summaries are fed back into the next model turn.
+- **R5:** the server is a large HTTP façade around subprocess tools and an async
+  process manager. It adds retries, caches, health/resource metrics, recovery
+  suggestions, and a separate MCP client that forwards bounded tool calls.
+- **R6:** preflight/model warm-up is separated from the interactive UI; the runner
+  coordinates child agents, budget hooks, persistent run state, and a React viewer
+  that polls a run, transcript, and vulnerability endpoints.
+- No top-level source was treated as a reusable detection oracle. The plan keeps
+  all confirmation in ReachAgent's six-family deterministic registry.
+
+## 3. Web research findings (2026-08-27)
+
+The following current primary documentation was checked before planning:
+
+### Asset discovery and enrichment
+
+- Passive URL collection should support multiple sources, URL/field scope,
+  source-level rate limits, JSONL output, and bounded run time.
+- ASN/range discovery, exposed-host search, DNS permutation generation, DNS
+  resolution, wildcard testing, TLS metadata, HTTP probing, and JS-aware
+  crawling form a useful enrichment chain.
+- Crawlers need explicit host and URL scope plus an out-of-scope policy; modern
+  crawlers can extract XHR and form data, not only anchor links.
+- Directory fuzzers benefit from per-host calibration. A robust calibration
+  compares negative probes by response size, word count, and line count, and
+  only installs a filter when the negative probes would otherwise match.
+- API route discovery is materially different from file discovery. Schema-derived
+  route dictionaries can preserve method, headers, parameters, and example
+  values; depth-based baselines help detect virtual routing and wildcard paths.
+
+### API and stateful testing
+
+- OpenAPI/Swagger and GraphQL should be consumed as first-class surface sources.
+- Property-based API testing can generate many schema-valid cases, validate status
+  and response contracts, and adapt values from prior responses.
+- Stateful API fuzzing learns producer/consumer dependencies so later requests use
+  identifiers created by earlier requests; this is the right model for deeper
+  authorization and business-logic paths.
+- GraphQL testing should model fields, argument types, aliases/batches, introspection
+  state, depth, and response-time curves rather than only probing `/graphql`.
+
+### Evidence and integrations
+
+- Structured template engines separate requests, matchers, extractors, workflows,
+  dynamic values, and output. ReachAgent may borrow this separation only for
+  candidate evidence; its own oracle remains authoritative.
+- OOB systems require unique per-request correlation and channel-aware evidence.
+- Browser MCPs expose accessibility-tree actions and persistent/isolated browser
+  contexts; browser automation is not itself a security boundary.
+- Current proxy MCPs can send/replay HTTP/1.1 and HTTP/2 messages, inspect/filter
+  history, create repeater requests, and poll collaborator interactions. They
+  should be treated as transports and evidence sources, not scanners whose
+  verdicts are trusted.
+- MCP security guidance requires explicit consent, input validation, access
+  control, rate limits, output sanitization, timeout handling, audit logging,
+  tool-name disambiguation, and audience-bound authorization tokens.
+- Large or long-running results should use progress notifications, task handles,
+  or resource links instead of flooding the model context.
+
+## 4. Phase plan
+
+### Phase 1 — Recon graph completeness and adaptive enumeration
+
+**Status:** substantially implemented; next improvement phase.
+
+**Goal:** turn target-type-aware recon into a bounded, LLM-selected evidence
+graph with useful inter-tool handoff.
+
+**Read during this phase:** R1 terminal/tool execution and server lifecycle
+files; R2 reconnaissance/tool execution modules; R3 task/event/tool-server
+files; R4 recon dispatcher, summary, and loop-memory files; R5 HTTP/process
+manager and recon endpoint files; R6 input/preflight files; R7/R8 corpus and
+wordlist metadata.
+
+**Look for:** output truncation, structured result schemas, timeout/retry
+semantics, progress events, rate controls, scope checks, wildcard/depth
+calibration, and how one tool's output becomes the next tool's input.
+
+**Build:**
+
+- add schema-aware API route discovery using a bounded route dictionary;
+- add passive URL/source collection and subdomain permutation capability only when
+  the LLM selects it and the scope guard permits it;
+- add target-aware depth and per-host negative calibration;
+- preserve Host/Service/Endpoint/Parameter provenance and tool outcome events;
+- pass discovered hosts, ports, URLs, technologies, and API specs as bounded facts
+  into the next planning turn;
+- keep all subprocesses argument-array based, timeout-bounded, optional, and
+  audited.
+
+**Focused gate:** recon parser, calibration, target classification, planner
+catalog, scope, and event tests only.
+
+**Exit criterion:** every selected adapter produces either validated graph facts,
+an explicit audited skip/refusal, or an explicit error; no adapter can write a
+candidate or finding.
+
+### Phase 2 — Endpoint, form, and insertion-point mapping
+
+**Goal:** discover the real callable surface and every safe insertion location.
+
+**Read during this phase:** R1 route/API import and browser-flow files; R2 API
+session/command and web-agent files; R3 task/tool schemas; R4 parameter and
+JS-analysis dispatch; R5 HTTP testing framework and browser-agent endpoints; R6
+viewer/run-input and API-spec utilities; all current ReachAgent
+`recon/api_discovery.py`, `recon/mapper.py`, and insertion wrappers.
+
+**Look for:** OpenAPI/Swagger import, GraphQL schema recovery, route dictionaries,
+HTML form extraction, JSON/form/multipart inference, XHR/fetch extraction,
+cookie/header insertion points, and response-shape normalization.
+
+**Build:**
+
+- represent query, path, JSON, form, header, cookie, multipart, and GraphQL
+  fields as distinct Parameter locations;
+- extract HTML forms, hidden fields, CSRF fields, JSON examples, and XHR calls;
+- mine JS bundles for endpoint literals and parameter names with bounded output;
+- add route-schema replay with method/header/body examples;
+- preserve source, confidence, and evidence references on every graph fact;
+- let the LLM rank endpoints and insertion points while deterministic compatibility
+  checks reject impossible combinations.
+
+**Focused gate:** API discovery, mapper, browser/form parsing, and surface-ranking
+tests.
+
+**Exit criterion:** a mapped insertion point cannot reach payload firing until it
+has a completed benign fingerprint and a concrete location/serialization plan.
+
+### Phase 3 — Identity, authentication, and session binding
+
+**Goal:** make authenticated coverage reliable across multiple identities.
+
+**Read during this phase:** R1 auth/provider/session service files; R2 API auth,
+session manager, and agent context files; R3 backend auth/error event files; R4
+cookie/bearer handling and session persistence; R5 proxy session/history files; R6
+auth preflight/session files; current ReachAgent `identity/login.py`,
+`identity/store.py`, and orchestration identity wiring.
+
+**Look for:** login surface detection, form vs JSON vs GraphQL submission,
+redirect/cookie/token capture, refresh/expiry, per-role contexts, CAPTCHA/2FA
+failure reporting, and secret redaction.
+
+**Build:**
+
+- retain graph-auth POST and password-form detection;
+- add OAuth/OIDC discovery, bearer refresh/expiry, cookie jar isolation, and
+  GraphQL login mutation handling;
+- bind each credential set to a separate identity and session;
+- record only token references in the graph and audit metadata;
+- make failed authentication a visible blocked phase, never an unauthenticated
+  continuation;
+- support owner/non-owner role pairs for differential BOLA/BFLA/IDOR checks.
+
+**Focused gate:** identity store, login detection, cookie/bearer binding, expiry,
+and fail-loud tests.
+
+**Exit criterion:** every request after authentication carries exactly the
+selected identity's isolated session material, and no secret enters graph,
+browser, audit, or model context.
+
+### Phase 4 — LLM planning and adaptive control loop
+
+**Goal:** replace a mostly upfront plan with a bounded, resumable reasoning loop.
+
+**Read during this phase:** R1 controller/provider orchestration; R2 orchestration
+agent, handoffs, model factory, and API streaming; R3 `UnifiedAgent`,
+`Task`, `Runner`, normalized events; R4 ReAct loop, loop detector, memory
+refresh, and watchdog; R6 core runner, coordinator, budget hooks, and session
+manager; current ReachAgent `llm/planner.py`, `scan/agentic_loop.py`, and
+`scan/orchestrator.py`.
+
+**Look for:** observe→think→act sequencing, context compaction, retries with
+error feedback, handoffs/subtasks, budget accounting, cancellation, resume, and
+event normalization.
+
+**Build:**
+
+- keep the strict allowlisted plan schema as the admission boundary;
+- make each phase emit a compact deterministic state snapshot;
+- let the LLM choose continue, skip, revise, or revisit with a bounded budget;
+- carry tool outcomes, graph deltas, failed payload context, and auth state into
+  the next turn;
+- add loop detection, idle timeout, cancellation, and resumable phase state;
+- separate model/provider failures from target/tool failures in the event stream;
+- never let an LLM response directly alter oracle status or finding state.
+
+**Focused gate:** planner validation, adaptive decisions, compaction, cancellation,
+and resume tests.
+
+**Exit criterion:** the loop demonstrably changes its next action from observed
+graph/audit state while all execution and confirmation permissions remain fixed.
+
+### Phase 5 — Payload library, context selection, and mutation
+
+**Goal:** maximize useful payload breadth without losing sink/oracle provenance.
+
+**Read during this phase:** R1 tool argument/terminal and prompt files; R2
+web-pentester and payload/tool registry files; R3 shared MCP tool schemas; R4
+payload builder, WAF encoder, and response summarizers; R5 HTTP framework
+match/replace and fuzzing functions; R7/R8 payload/wordlist files; current
+ReachAgent payload library, corpus, resolver, encoding, and payload-chain files.
+
+**Look for:** tagged payload metadata, source locators, dynamic slots, encoding
+variants, WAF response classification, retry ordering, and mutation limits.
+
+**Build:**
+
+- retain source/line provenance and dynamic slot validation;
+- add context dimensions for content type, method, framework, auth state, and
+  parameter location;
+- let the LLM rank only existing tagged payload references;
+- allow small parent-preserving mutations (encoding, delimiter, casing, wrapper)
+  with a strict per-parent limit;
+- feed prior outcomes such as reflection, WAF block, timeout, status change, and
+  body delta into the next selection;
+- add semantic payload checks so a payload cannot be routed to an incompatible
+  sink or oracle.
+
+**Focused gate:** corpus ingest, resolver, encoding, mutation, and payload-chain
+tests.
+
+**Exit criterion:** every fired payload has a valid library reference, sink,
+oracle family, slot kit, and audited attempt number.
+
+### Phase 6 — Deterministic evidence and oracle hardening
+
+**Goal:** improve confirmation quality without expanding authority to the LLM.
+
+**Read during this phase:** R1/R2/R3/R4/R5/R6 validator, reporting, and error
+paths; current six oracle implementations, registry, Validator, MCP evidence
+adapters, and all detector seams.
+
+**Look for:** evidence schemas, baseline/control requirements, matcher/extractor
+separation, statistical controls, replay invariants, and false-positive handling.
+
+**Build:**
+
+- keep the six-family registry fixed unless a written architecture decision
+  proves a new family is necessary;
+- add typed evidence fields inside existing families only when the shape is
+  deterministic and independently testable;
+- strengthen baseline/control requirements and invalid-evidence errors;
+- attach request/response handles, timing samples, body projections, headers, and
+  OOB channel metadata without exposing secrets;
+- add explicit inconclusive reasons and negative-result audit records;
+- verify by AST and runtime tests that no detector constructs a verdict or finding.
+
+**Focused gate:** every oracle family, registry parity, Validator gate, AST boundary,
+and negative-result tests.
+
+**Exit criterion:** same evidence always yields the same verdict; only
+`confirmed_violation` can create a finding.
+
+### Phase 7 — Stateful API and property-based exploration
+
+**Goal:** discover deeper producer/consumer paths and contract failures.
+
+**Read during this phase:** R1 GraphQL/API service and task-flow files; R2 API
+commands/session state; R3 task/event/MCP interfaces; R4 API fuzz/param tools; R5
+HTTP testing framework; R6 API-spec utilities; current GraphQL, business-logic,
+ChainSolver, and mapper modules.
+
+**Look for:** schema-derived value generation, producer-consumer dependency graphs,
+state-machine transitions, operation ordering, response-derived identifiers,
+invalid-input classification, and replayability.
+
+**Build:**
+
+- derive request templates from OpenAPI, GraphQL, and observed traffic;
+- learn producer→consumer identifier edges from response JSON and headers;
+- generate schema-valid boundary cases and safe negative controls;
+- map state transitions without assuming endpoint order;
+- feed discovered dependencies into `enables`/resource graph edges;
+- route all generated requests through scope, read-only-first, audit, and
+  deterministic confirmation.
+
+**Focused gate:** stateful sequence, producer-consumer, GraphQL, and business-rule
+tests.
+
+**Exit criterion:** a deeper sequence is represented as graph evidence and can be
+replayed deterministically; no generated sequence bypasses safety gates.
+
+### Phase 8 — Signal-gated external adapters
+
+**Goal:** make optional scanners useful as evidence sources while never trusting
+their verdicts.
+
+**Read during this phase:** R1/R2/R3/R4/R5 tool registries and error/recovery
+modules; R6 tool/report state; current signal-gated base, six adapters, signal
+selector, and reconfirmation seam.
+
+**Look for:** structured output parsing, template/workflow dependencies, timeout
+and retry policy, tool health, result normalization, and claim provenance.
+
+**Build:**
+
+- add only adapters whose output can be independently re-fired and confirmed;
+- keep `has_signal()` as a hard precondition before spawning;
+- parse claims into inert candidates with endpoint, parameter, source, and
+  suggested oracle;
+- expose tool version, command policy, duration, exit status, and partial-output
+  state in audit events;
+- add explicit allowlisted template/workflow selectors instead of arbitrary
+  command strings;
+- send every candidate through the existing Validator oracle bridge.
+
+**Focused gate:** signal gate, parser, missing-binary, timeout, claim-reconfirm, and
+AST no-validator-import tests.
+
+**Exit criterion:** an external tool can accelerate discovery but can never create
+a finding without independent ReachAgent evidence.
+
+### Phase 9 — Browser and proxy firing transports
+
+**Goal:** make LLM transport selection real, scoped, and observable.
+
+**Read during this phase:** R1 frontend/browser/network providers; R2 SSE/MCP
+session handling; R3 tool-server process lifecycle; R4 browser/recon streaming;
+R5 HTTP testing framework, repeater, match/replace, and proxy handling; R6 proxy
+client/viewer; current `browser/shim.py`, `browser/playwright_driver.py`,
+`mcp/server.py`, and `recon/transport_tuning.py`.
+
+**Look for:** persistent vs isolated browser contexts, actual response status,
+cookie/session capture, header rewriting, request history, proxy error handling,
+MCP tool annotations, progress, and resource-link handling.
+
+**Build:**
+
+- wire `http`, `browser`, and `proxy` selection into actual firing dispatch;
+- capture real browser response status, redirects, cookies, and final URL;
+- bind browser-captured sessions into the selected IdentityStore identity;
+- keep proxy repeater requests behind the same scope/read-only-first/audit gates;
+- add per-tool read-only/idempotent/destructive annotations;
+- add progress and cancellation for long browser/proxy operations;
+- return opaque handles for bodies, headers, and verdicts.
+
+**Focused gate:** browser/form, DOM marker, proxy/header, cookie binding, scope,
+MCP registration, and transport-selection tests.
+
+**Exit criterion:** a selected transport changes only how evidence is collected;
+the deterministic oracle remains the sole confirmation path.
+
+### Phase 10 — Multi-hop chaining and durable resume
+
+**Goal:** finish chains from real dependencies and survive interruption.
+
+**Read during this phase:** R1 controller/task persistence; R2 session/context
+persistence; R3 resume/events; R4 JSON session and finding history; R5 cache/recovery;
+R6 run/session manager and report state; current ChainSolver, graph persistence,
+Neo4j parity, coordinator support, and GUI state endpoints.
+
+**Look for:** checkpoint atomicity, bounded histories, derived identities, chain
+edge semantics, cancellation, recovery, and idempotent re-entry.
+
+**Build:**
+
+- preserve `enables` only for proven data/control dependencies;
+- preserve `derived_credential` only when a deterministic finding produced a
+  usable session/identity node;
+- persist graph facts, solver budgets, audit tail, and phase state atomically;
+- never persist token values, fire handles, or verdict handles;
+- resume as continue-not-replay: confirmed and inconclusive decisions are not
+  replayed; errored work can retry;
+- render chain paths from graph edges, not report prose.
+
+**Focused gate:** chain linking, derived identity, persistence round-trip, resume,
+recovery, and backend parity tests.
+
+**Exit criterion:** at least one multi-class path is represented as connected graph
+evidence and resumes without duplicating findings or leaking secrets.
+
+### Phase 11 — GUI production workspace
+
+**Goal:** provide a polished GUI grounded entirely in real ReachAgent state.
+
+**Read during this phase:** R1 full GUI frontend source and its live-data
+providers; R2 API/SSE frontend contract; R3 normalized event model; R4 live log
+and session presentation; R5 health/progress dashboards; R6 full viewer frontend
+and report components; current GUI HTML/CSS/JS and API slices.
+
+**Look for:** route structure, theme tokens, responsive layout, live updates,
+loading/error/empty states, scan history, agent graph rendering, severity cards,
+report export, and accessibility.
+
+**Build:**
+
+- keep the current four grounded views:
+  1. launch/provider configuration,
+  2. live reasoning/tool/audit scan view,
+  3. Host→Service→Endpoint→Parameter surface map and findings/chains,
+  4. report viewer/export;
+- add explicit scan lifecycle states: queued, running, paused, blocked,
+  completed, failed, cancelled;
+- show the selected plan, rationale, tool status, budgets, retries, and last
+  event without exposing secrets;
+- use polling or SSE with backoff, heartbeat, stale-data indicators, and bounded
+  tails;
+- make provider selection/configuration obvious and auto-select only an
+  unambiguous saved provider;
+- add keyboard navigation, responsive layout, accessible labels, and safe
+  markdown rendering;
+- keep all displayed counts, findings, chain paths, and reports sourced from the
+  real graph/audit state.
+
+**Focused gate:** GUI API slices plus Playwright smoke checks for launch,
+provider test, live events, surface, findings, report, export, refresh, and error
+states.
+
+**Exit criterion:** a user can observe a running assessment and understand what
+the LLM proposed, what actually ran, what the oracle confirmed, and why anything
+was skipped.
+
+### Phase 12 — Reporting, evidence export, and operational history
+
+**Goal:** make every result reviewable and reusable.
+
+**Read during this phase:** R1 report/export/analytics; R2 result/session history;
+R3 normalized result/usage; R4 findings/report/chains output; R5 analytics and
+health endpoints; R6 report writer, SARIF/PDF/viewer; current
+`report/renderer.py`, `report/llm_report.py`, GUI exports, and persistence.
+
+**Look for:** deterministic report fields, severity summaries, evidence links,
+chain diagrams, machine-readable formats, redaction, and export failure modes.
+
+**Build:**
+
+- keep deterministic tables as the source of truth;
+- add evidence index pages that link findings to opaque request/oracle handles;
+- add SARIF or equivalent machine-readable export only after schema mapping is
+  specified;
+- include scope, identity, tool, payload reference, oracle, evidence, timing,
+  and chain precondition metadata;
+- redact credentials, bearer values, cookies, raw secrets, and sensitive bodies;
+- allow report generation to fail independently without changing findings;
+- add scan history comparison using persisted graph/audit snapshots.
+
+**Focused gate:** renderer, redaction, export content-disposition, report failure,
+and history comparison tests.
+
+**Exit criterion:** exported reports are deterministic, provenance-complete, and
+cannot contain an unconfirmed finding.
+
+### Phase 13 — Race and asynchronous behavior
+
+**Goal:** validate concurrency only when sequential evidence is inconclusive.
+
+**Read during this phase:** R1 HTTP/2/server task execution; R2 async command
+execution; R3 cancellation/events; R4 race tool dispatch; R5 concurrent process
+manager; R6 runner budget/interrupt code; current `race/module.py`,
+`business_logic/runner.py`, and timing oracle.
+
+**Look for:** sequential-first policy, barriers, HTTP/2 multiplexing, duplicate
+request validation, cancellation, and response correlation.
+
+**Build:**
+
+- keep the sequential replay as the first attempt;
+- require a fresh disposable resource for concurrent escalation;
+- verify all concurrent requests are identical and state-changing only after
+  read-only clearance;
+- correlate every response by request label and reject incomplete batches;
+- use the existing business-rule oracle; do not add a race-specific finding
+  shortcut;
+- expose concurrency mode, count, and evidence completeness in the audit log.
+
+**Focused gate:** race delivery, barrier/cancellation, HTTP/2 precondition, and
+oracle evidence tests.
+
+**Exit criterion:** concurrency cannot turn an incomplete batch or ambiguous
+response into a finding.
+
+### Phase 14 — Full hardening and evaluation
+
+**Goal:** re-run all gates together and establish a releasable baseline.
+
+**Read during this phase:** R1–R6 final lifecycle/error/report paths; current full
+source tree, test tree, compose files, CI configuration, and all phase decision
+documents.
+
+**Build:**
+
+- run focused gates for every changed phase;
+- run the one authorized fresh whole-tree test suite;
+- run the VAmPI vulnerable/secure numeric gate;
+- run crAPI ownership/chain gate when provisioned;
+- run the Juice Shop clean-container gate;
+- run GraphQL and blind-SQLi lab gates when provisioned;
+- perform a fresh scope/audit/oracle-boundary review;
+- run Playwright against the portal and preserve screenshots outside git;
+- document every skip, failure, setup issue, and environment dependency.
+
+**Exit criterion:** all provisioned gates pass simultaneously, unprovisioned gates
+are honestly marked skipped, no deterministic local failure remains, and the
+release report contains the exact test command/results and commit hash.
+
+## 5. Optional post-plan capabilities (proposal checkpoint only)
+
+After Phase 10, reassess these separately instead of silently adding them:
+
+1. **Request-smuggling evidence** — requires a raw-socket or trusted proxy
+   evidence shape and a deterministic desynchronization oracle.
+2. **Cache-poisoning evidence** — requires cache-key/variant modeling and a
+   deterministic cross-request cache persistence oracle.
+3. **Insecure-deserialization evidence** — requires language-specific safe
+   canaries and structural confirmation without gadget execution.
+4. **WebSocket/API event-surface mapping** — requires a bounded handshake/message
+   model and identity-aware replay.
+5. **Continuous monitoring** — requires diffable graph snapshots, alert policy,
+   and a non-destructive scheduler.
+
+These are not part of the current implementation and must not be claimed as
+built until each receives its own read, design decision, focused tests, review,
+commit, and documentation update.
+
+## 6. Per-phase completion contract
+
+Every implementation phase follows this exact sequence:
+
+1. Restate the invariants and authorization boundary.
+2. Inventory and fully read every relevant reference file and every ReachAgent
+   caller/helper it touches.
+3. Record the reference technique, current gap, and smallest safe design.
+4. Implement only that phase.
+5. Run only phase-relevant tests.
+6. Self-review with Ponytail; fix findings.
+7. Check for reference-name leakage in changed code/docs/commit text.
+8. Commit the phase.
+9. Update this plan and the relevant decision/audit document.
+10. Report files read, techniques learned, files changed/deleted, tests, commit
+    hash, and remaining weakness.
+11. Stop and wait for explicit approval.
