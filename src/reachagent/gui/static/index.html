@@ -3,133 +3,385 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark light">
 <link rel="icon" href="data:,">
-<title>ReachAgent — Assessment Console</title>
+<title>ReachAgent — security workspace</title>
 <style>
-:root{
-  --bg:#070b0e;--deck:#0b1116;--card:#0f1720;--card-2:#121c26;--field:#0c141c;
-  --line:#1b2836;--line2:#28394c;--txt:#dfe9f2;--mut:#7f93a5;--dim:#4a5c6d;
-  --teal:#2dd4bf;--teal-deep:#14b8a6;--amber:#fbbf24;
-  --red:#f87171;--green:#4ade80;--violet:#a78bfa;
-  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
-}
-[data-theme=light]{
-  --bg:#f3f6f8;--deck:#ffffff;--card:#ffffff;--card-2:#f6f9fb;--field:#eef3f6;
-  --line:#dde6ec;--line2:#c8d5de;--txt:#15242f;--mut:#5b6e7d;--dim:#8ba0af;
-  --teal:#0d9488;--teal-deep:#0f766e;--amber:#b45309;
-  --red:#dc2626;--green:#16a34a;--violet:#7c3aed;
-}
-*{box-sizing:border-box;margin:0}
-body{background:var(--bg);color:var(--txt);font:13px/1.55 system-ui,-apple-system,'Segoe UI',sans-serif}
-button,input,select,textarea{font:inherit;color:inherit}
-a{color:inherit;text-decoration:none}
-.deck{display:grid;grid-template-columns:216px minmax(0,1fr);min-height:100vh}
-.side{position:sticky;top:0;height:100vh;display:flex;flex-direction:column;background:var(--deck);border-right:1px solid var(--line);padding:18px 12px 14px}
-.brand{display:flex;align-items:center;gap:10px;padding:2px 8px 20px}
-.brand-glyph{width:30px;height:30px;border-radius:8px;background:conic-gradient(from 210deg,var(--teal),var(--violet),var(--teal));display:grid;place-items:center;color:#04141f;font-weight:800;font-family:var(--mono);font-size:15px}
-.brand-name{font-weight:700;font-size:15px;letter-spacing:-.02em}
-.brand-sub{display:block;color:var(--dim);font-size:9.5px;letter-spacing:.16em;text-transform:uppercase;font-weight:600}
-.navlab{color:var(--dim);font-size:9.5px;font-weight:700;letter-spacing:.15em;text-transform:uppercase;padding:10px 10px 7px}
-.nav{display:flex;flex-direction:column;gap:2px}
-.nav a{display:flex;align-items:center;gap:10px;padding:8px 11px;border-radius:8px;color:var(--mut);font-size:12.5px;border-left:2px solid transparent;transition:.15s}
-.nav a:hover{background:var(--card-2);color:var(--txt)}
-.nav a.on{background:linear-gradient(90deg,rgba(45,212,191,.10),transparent);color:var(--txt);border-left-color:var(--teal)}
-.side-foot{margin-top:auto;padding:12px 10px 0;border-top:1px solid var(--line)}
-.tgt{font:11px var(--mono);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:block;margin-top:6px}
-.dot{width:7px;height:7px;border-radius:50%;background:var(--dim);display:inline-block;margin-right:6px}
-.dot.live{background:var(--green);box-shadow:0 0 0 3px rgba(74,222,128,.14)}
-.dot.done{background:var(--teal)}.dot.err{background:var(--red)}
+  :root{
+    --bg:#090c11;--sidebar:#0c1016;--panel:#111720;--panel-raised:#151d28;
+    --field:#0c121a;--line:#202b39;--line-strong:#2d3b4d;--text:#e7edf5;
+    --muted:#8290a3;--faint:#526174;--indigo:#7c83ff;--indigo-strong:#6670ff;
+    --cyan:#48d6c6;--green:#63df9a;--amber:#f2b866;--red:#ff7181;
+    --shadow:0 22px 50px rgba(0,0,0,.22);--radius:14px;
+  }
+  [data-theme="light"]{
+    --bg:#f5f7fb;--sidebar:#ffffff;--panel:#ffffff;--panel-raised:#f8faff;
+    --field:#f5f7fb;--line:#e2e7ef;--line-strong:#cbd5e1;--text:#172033;
+    --muted:#637187;--faint:#8b98ab;--indigo:#555de6;--indigo-strong:#454dce;
+    --cyan:#079c91;--green:#138a55;--amber:#af6c09;--red:#cf334b;
+    --shadow:0 18px 38px rgba(39,54,77,.08);
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+  button,input,select,textarea{font:inherit}
+  button{cursor:pointer}
+  a{color:inherit;text-decoration:none}
+  .app-shell{display:grid;grid-template-columns:248px minmax(0,1fr);min-height:100vh}
+  .sidebar{position:sticky;top:0;height:100vh;display:flex;flex-direction:column;padding:25px 16px 18px;background:var(--sidebar);border-right:1px solid var(--line)}
+  .brand{display:flex;align-items:center;gap:11px;padding:0 10px 27px;font-weight:750;letter-spacing:-.02em}
+  .brand-mark{display:grid;place-items:center;width:31px;height:31px;border-radius:9px;background:linear-gradient(145deg,var(--indigo),var(--cyan));box-shadow:0 8px 20px rgba(102,112,255,.25);color:#fff}
+  .brand-mark svg{width:18px;height:18px}
+  .brand-name{font-size:16px}.brand-tag{display:block;color:var(--faint);font-size:10px;font-weight:550;letter-spacing:.1em;text-transform:uppercase;margin-top:1px}
+  .nav-label,.eyebrow{display:block;color:var(--faint);font-size:10px;font-weight:750;letter-spacing:.13em;text-transform:uppercase}
+  .nav-label{padding:0 11px 9px}
+  .nav{display:flex;flex-direction:column;gap:3px}
+  .nav-link{display:flex;align-items:center;gap:11px;padding:10px 11px;border-radius:9px;color:var(--muted);font-size:13px;transition:background .16s,color .16s}
+  .nav-link:hover{background:var(--panel-raised);color:var(--text)}
+  .nav-link.active{background:rgba(124,131,255,.12);color:var(--text);box-shadow:inset 2px 0 var(--indigo)}
+  .nav-icon{display:grid;place-items:center;width:16px;color:var(--faint)}.nav-link.active .nav-icon{color:var(--indigo)}
+  .nav-icon svg{width:16px;height:16px;stroke:currentColor}
+  .nav-link kbd{margin-left:auto;color:var(--faint);font-size:10px;font-family:inherit}
+  .sidebar-spacer{flex:1}
+  .side-target{padding:14px;margin:0 5px 13px;border:1px solid var(--line);border-radius:11px;background:var(--panel-raised)}
+  .side-target .eyebrow{margin-bottom:8px}.target-name{display:block;overflow:hidden;color:var(--text);font:12px ui-monospace,SFMono-Regular,Menlo,monospace;text-overflow:ellipsis;white-space:nowrap}
+  .side-state{display:flex;align-items:center;gap:7px;margin-top:10px;color:var(--muted);font-size:11px}.status-dot{width:7px;height:7px;border-radius:50%;background:var(--faint)}.status-dot.live{background:var(--green);box-shadow:0 0 0 4px rgba(99,223,154,.1)}
+  .theme-toggle{display:flex;align-items:center;gap:9px;margin:0 5px;padding:9px 10px;border:0;border-radius:9px;background:transparent;color:var(--muted);text-align:left;font-size:12px}.theme-toggle:hover{background:var(--panel-raised);color:var(--text)}
+  .sidebar-foot{padding:17px 10px 0;color:var(--faint);font-size:10px}
+  .main{min-width:0;max-width:1600px;padding:0 34px 56px}
+  .topbar{display:flex;align-items:center;justify-content:space-between;gap:20px;min-height:70px;border-bottom:1px solid var(--line)}
+  .crumb{display:flex;align-items:center;gap:10px;color:var(--muted);font-size:12px}.crumb strong{color:var(--text);font-weight:650}.crumb-sep{color:var(--faint)}
+  .top-actions{display:flex;align-items:center;gap:12px}.top-status{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:12px}.top-status .status-dot{width:6px;height:6px}
+  .phase-pill{display:inline-flex;align-items:center;gap:7px;padding:6px 10px;border:1px solid rgba(124,131,255,.35);border-radius:999px;background:rgba(124,131,255,.09);color:var(--indigo);font:11px ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.02em}
+  .hero{display:grid;grid-template-columns:minmax(260px,.84fr) minmax(500px,1.16fr);gap:30px;padding:48px 0 40px;align-items:center}
+  .hero h1{margin:10px 0 14px;font-size:clamp(30px,4vw,52px);line-height:1.05;letter-spacing:-.055em;font-weight:760}.hero h1 span{color:var(--indigo)}
+  .hero-copy p{max-width:510px;margin:0;color:var(--muted);font-size:15px;line-height:1.65}.hero-meta{display:flex;flex-wrap:wrap;gap:9px;margin-top:24px}.hero-chip{display:inline-flex;align-items:center;gap:7px;padding:7px 10px;border:1px solid var(--line);border-radius:8px;background:var(--panel);color:var(--muted);font-size:11px}.hero-chip b{color:var(--text);font-weight:650}
+  .launch-card{padding:20px;border:1px solid var(--line-strong);border-radius:var(--radius);background:linear-gradient(145deg,var(--panel-raised),var(--panel));box-shadow:var(--shadow)}
+  .launch-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:18px}.launch-head h2{margin:5px 0 0;font-size:16px;letter-spacing:-.02em}.launch-head p{margin:5px 0 0;color:var(--muted);font-size:12px}.launch-icon{display:grid;place-items:center;width:34px;height:34px;border:1px solid rgba(72,214,198,.25);border-radius:10px;background:rgba(72,214,198,.08);color:var(--cyan)}.launch-icon svg{width:17px}
+  .launch-grid{display:grid;grid-template-columns:1fr 1fr;gap:13px}.field{min-width:0}.field.span-2{grid-column:span 2}.field label{display:block;margin:0 0 6px;color:var(--muted);font-size:11px;font-weight:600}.field input,.field textarea,.field select{width:100%;border:1px solid var(--line);border-radius:8px;background:var(--field);color:var(--text);outline:0;padding:10px 11px;transition:border .16s,box-shadow .16s}.field input:focus,.field textarea:focus,.field select:focus{border-color:var(--indigo);box-shadow:0 0 0 3px rgba(124,131,255,.12)}.field textarea{min-height:70px;resize:vertical}.field select{appearance:auto}.field input::placeholder,.field textarea::placeholder{color:var(--faint)}
+  .launch-footer{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:16px}.llm-toggle{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:12px}.llm-toggle input{accent-color:var(--indigo)}.launch-hint{color:var(--faint);font-size:10px;line-height:1.4}.primary-btn{display:inline-flex;align-items:center;gap:9px;border:0;border-radius:8px;padding:10px 15px;background:var(--indigo);color:#fff;font-weight:700;font-size:12px;box-shadow:0 8px 18px rgba(102,112,255,.25);transition:background .16s,transform .16s}.primary-btn:hover{background:var(--indigo-strong);transform:translateY(-1px)}.primary-btn:disabled{cursor:wait;opacity:.65;transform:none}.primary-btn svg{width:14px}
+  .section{scroll-margin-top:24px;margin-top:12px}.section-heading{display:flex;align-items:end;justify-content:space-between;gap:15px;margin:28px 0 13px}.section-heading h2{margin:4px 0 0;font-size:18px;letter-spacing:-.025em}.section-heading p{margin:4px 0 0;color:var(--muted);font-size:12px}.section-count{color:var(--muted);font:11px ui-monospace,SFMono-Regular,Menlo,monospace}
+  .metric-grid{display:grid;grid-template-columns:repeat(5,minmax(110px,1fr));gap:11px}.metric{position:relative;overflow:hidden;padding:16px 17px;border:1px solid var(--line);border-radius:11px;background:var(--panel)}.metric::after{content:"";position:absolute;right:-16px;bottom:-24px;width:70px;height:70px;border-radius:50%;background:rgba(124,131,255,.08)}.metric-label{color:var(--muted);font-size:11px}.metric-value{display:block;margin-top:7px;color:var(--text);font-size:25px;font-weight:720;letter-spacing:-.04em}.metric-value.indigo{color:var(--indigo)}.metric-value.green{color:var(--green)}
+  .workspace-grid{display:grid;grid-template-columns:minmax(0,1.2fr) minmax(290px,.8fr);gap:13px}.panel{min-width:0;border:1px solid var(--line);border-radius:12px;background:var(--panel)}.panel-head{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:15px 17px;border-bottom:1px solid var(--line)}.panel-head h3{margin:0;font-size:12px;font-weight:700;letter-spacing:.01em}.panel-head p{margin:3px 0 0;color:var(--muted);font-size:11px}.panel-body{padding:15px 17px}.panel-tag{padding:4px 7px;border-radius:6px;background:var(--field);color:var(--muted);font:10px ui-monospace,SFMono-Regular,Menlo,monospace}
+  #timeline{display:flex;flex-direction:column;gap:0;max-height:290px;overflow:auto}.ev{position:relative;display:grid;grid-template-columns:82px 10px 1fr;gap:9px;min-height:40px;padding:0 0 13px;color:var(--muted);font-size:12px}.ev:last-child{padding-bottom:0}.ev::before{content:"";position:absolute;left:86px;top:11px;bottom:-2px;width:1px;background:var(--line)}.ev:last-child::before{display:none}.ev .ph{padding-top:1px;color:var(--faint);font:10px ui-monospace,SFMono-Regular,Menlo,monospace;text-transform:uppercase}.ev .ev-dot{position:relative;z-index:1;width:9px;height:9px;margin-top:3px;border:2px solid var(--indigo);border-radius:50%;background:var(--panel)}.ev.finding .ev-dot{border-color:var(--green);background:var(--green)}.ev.error .ev-dot{border-color:var(--red)}.ev .ev-copy{line-height:1.45}.ev .ev-kind{display:block;margin-bottom:2px;color:var(--text);font-size:10px;font-weight:700;letter-spacing:.08em;text-transform:uppercase}.ev .ev-detail{display:block;color:var(--muted)}
+  .decision{display:flex;flex-direction:column;gap:13px}.decision-profile{padding:14px;border:1px solid rgba(124,131,255,.24);border-radius:10px;background:linear-gradient(145deg,rgba(124,131,255,.1),rgba(124,131,255,.03))}.decision-profile .eyebrow{color:var(--indigo)}.decision-name{margin:8px 0 4px;font:700 16px ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--text)}.decision-reason{color:var(--muted);font-size:12px;line-height:1.5}.decision-signals{margin-top:10px;color:var(--faint);font:10px ui-monospace,SFMono-Regular,Menlo,monospace}.decision-list{display:grid;gap:8px}.decision-row{display:flex;align-items:center;justify-content:space-between;gap:10px;color:var(--muted);font-size:11px}.decision-row b{color:var(--text);font-weight:600}.decision-row .check{color:var(--green)}
+  .content-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(330px,.86fr);gap:13px}.panel-tall .panel-body{max-height:480px;overflow:auto}.surface-empty,.empty{padding:12px 0;color:var(--muted);font-size:12px}.surface-host{border:1px solid var(--line);border-radius:9px;margin-bottom:8px;overflow:hidden}.surface-host summary,.surface-endpoint summary{cursor:pointer;list-style:none}.surface-host summary::-webkit-details-marker,.surface-endpoint summary::-webkit-details-marker{display:none}.surface-host summary{display:flex;align-items:center;justify-content:space-between;padding:11px 12px;background:var(--field);font:12px ui-monospace,SFMono-Regular,Menlo,monospace}.surface-host summary::after,.surface-endpoint summary::after{content:"+";color:var(--faint);font-size:15px}.surface-host[open]>summary::after,.surface-endpoint[open]>summary::after{content:"−"}.surface-host .node-meta,.surface-endpoint .node-meta{padding:8px 12px 0;color:var(--muted);font-size:10px}.surface-endpoint{margin:8px 10px;border-left:2px solid var(--line-strong)}.surface-endpoint summary{padding:7px 10px;color:var(--indigo);font:11px ui-monospace,SFMono-Regular,Menlo,monospace}.surface-endpoint ul{margin:5px 10px 10px;padding:0;list-style:none}.surface-endpoint li{padding:4px 0;color:var(--muted);font:10px ui-monospace,SFMono-Regular,Menlo,monospace}.surface-endpoint li::before{content:"↳ ";color:var(--cyan)}
+  #findings{display:flex;flex-direction:column;gap:9px;max-height:480px;overflow:auto}.fcard{padding:13px;border:1px solid var(--line);border-left:3px solid var(--muted);border-radius:9px;background:var(--field)}.fcard.critical{border-left-color:var(--red)}.fcard.high{border-left-color:var(--red)}.fcard.medium{border-left-color:var(--amber)}.fcard.low{border-left-color:var(--green)}.fhead{display:flex;align-items:center;justify-content:space-between;gap:10px}.fclass{color:var(--text);font:700 12px ui-monospace,SFMono-Regular,Menlo,monospace}.fsev{padding:3px 6px;border-radius:5px;color:var(--muted);font-size:9px;font-weight:750;letter-spacing:.08em;text-transform:uppercase;background:var(--panel)}.fcard.high .fsev,.fcard.critical .fsev{color:var(--red)}.fcard.medium .fsev{color:var(--amber)}.fcard.low .fsev{color:var(--green)}.fmeta{display:grid;gap:5px;margin-top:10px;color:var(--muted);font-size:10px}.fmeta-row{display:grid;grid-template-columns:55px 1fr;gap:7px}.fmeta-row b{color:var(--faint);font-size:9px;letter-spacing:.07em;text-transform:uppercase}.fmeta-row span{overflow:hidden;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;text-overflow:ellipsis}.chain{display:flex;align-items:center;flex-wrap:wrap;gap:5px;margin-top:10px}.cn{padding:3px 6px;border:1px solid rgba(124,131,255,.4);border-radius:5px;color:var(--indigo);font:10px ui-monospace,SFMono-Regular,Menlo,monospace}.ce{color:var(--faint);font-size:10px}.ce.derived{color:var(--green)}
+  .report-panel .panel-body{padding:0}.report-toolbar{display:flex;align-items:center;gap:7px;padding:12px 17px;border-bottom:1px solid var(--line)}.dl{display:inline-flex;align-items:center;padding:5px 8px;border:1px solid var(--line-strong);border-radius:6px;color:var(--muted);font-size:10px}.dl:hover{border-color:var(--indigo);color:var(--indigo)}#report{max-height:430px;overflow:auto;padding:17px;color:var(--muted);font-size:12px}.report-view h1,.report-view h2,.report-view h3{color:var(--text);margin:0 0 9px}.report-view h1{font-size:19px}.report-view h2{font-size:15px;margin-top:19px}.report-view h3{font-size:13px;margin-top:15px}.report-view p{margin:0 0 9px;line-height:1.65}.report-view hr{border:0;border-top:1px solid var(--line);margin:15px 0}.report-view table{width:100%;border-collapse:collapse;margin:11px 0;font-size:10px}.report-view th,.report-view td{padding:8px;border:1px solid var(--line);text-align:left}.report-view th{color:var(--faint);font-weight:700;text-transform:uppercase}.report-view code.inline-code{padding:2px 5px;border-radius:4px;background:var(--field);color:var(--cyan);font:11px ui-monospace,monospace}.report-view ul{margin:0 0 9px;padding-left:18px;color:var(--muted)}.report-view li{margin:3px 0;line-height:1.5}.report-view pre{background:var(--field);border:1px solid var(--line);border-radius:6px;padding:10px;margin:9px 0;overflow-x:auto}.report-view pre code{font:11px ui-monospace,monospace;color:var(--text)}
+  .audit-panel .panel-body{padding:0}.audit{max-height:340px;overflow:auto;padding:12px 17px;background:var(--field);font:10px/1.75 ui-monospace,SFMono-Regular,Menlo,monospace}.al{display:grid;grid-template-columns:65px 55px 42px minmax(100px,1fr) auto;gap:8px;align-items:baseline;white-space:nowrap}.al+.al{border-top:1px solid rgba(32,43,57,.6)}.al .ts,.al .muted{color:var(--faint)}.al .id{color:var(--indigo)}.out-fired{color:var(--green)}.out-refused{color:var(--red)}.out-error{color:var(--amber)}.out-ingested{color:var(--cyan)}
+  .muted{color:var(--muted)}
+  /* reasoning stream (agentic loop) */
+  #reasoning-stream{max-height:420px;overflow:auto;font-size:12px}
+  .r-row{display:grid;grid-template-columns:82px 12px 1fr;gap:9px;padding:7px 0;border-bottom:1px dashed rgba(45,214,198,.14)}
+  .r-row:last-child{border-bottom:none}
+  .r-ph{color:var(--faint);font:10px ui-monospace,SFMono-Regular,Menlo,monospace;text-transform:uppercase;padding-top:2px}
+  .r-dot{width:9px;height:9px;border-radius:50%;border:2px solid var(--violet);margin-top:3px}
+  .r-row.plan .r-dot{border-color:var(--cyan);background:rgba(72,214,198,.25)}
+  .r-row.decision .r-dot{border-color:var(--amber);background:rgba(242,184,102,.3)}
+  .r-msg{color:var(--text)}
+  .r-hint{color:var(--muted);font-size:11px;margin-top:2px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+  .t-name{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--cyan);min-width:96px;display:inline-block}
+  @media (max-width:1100px){.app-shell{grid-template-columns:210px minmax(0,1fr)}.main{padding:0 24px 45px}.hero{grid-template-columns:1fr}.hero-copy p{max-width:680px}.launch-card{max-width:760px}.content-grid{grid-template-columns:1fr}.workspace-grid{grid-template-columns:1fr}}
+  @media (max-width:760px){.app-shell{display:block}.sidebar{position:static;height:auto;padding:15px 14px;border-right:0;border-bottom:1px solid var(--line)}.brand{padding:0 6px 14px}.nav{display:grid;grid-template-columns:repeat(4,1fr)}.nav-label,.nav-link kbd,.sidebar-spacer,.side-target,.theme-toggle,.sidebar-foot{display:none}.nav-link{justify-content:center;padding:9px 4px;font-size:10px}.nav-link .nav-icon{display:none}.main{padding:0 15px 35px}.topbar{min-height:58px}.top-status{display:none}.hero{padding:31px 0 26px;gap:23px}.hero h1{font-size:34px}.launch-grid{grid-template-columns:1fr}.field.span-2{grid-column:auto}.launch-footer{align-items:flex-start;flex-direction:column}.primary-btn{width:100%;justify-content:center}.metric-grid{grid-template-columns:repeat(2,1fr)}.metric:last-child{grid-column:span 2}.section-heading{align-items:flex-start;flex-direction:column}.al{grid-template-columns:56px 45px 38px minmax(80px,1fr);font-size:9px}.al>span:last-child{grid-column:4}.ev{grid-template-columns:74px 10px 1fr}.ev::before{left:78px}}
 </style>
 </head>
 <body>
-<div class="deck">
-  <aside class="side">
+<div class="app-shell">
+  <aside class="sidebar">
     <div class="brand">
-      <span class="brand-glyph">R</span>
-      <span><span class="brand-name">ReachAgent</span><span class="brand-sub">Assessment console</span></span>
+      <span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3 20 7.5v9L12 21l-8-4.5v-9L12 3Z"/><path d="m8 12 2.5 2.5L16.5 9"/></svg></span>
+      <span><span class="brand-name">ReachAgent</span><span class="brand-tag">security workspace</span></span>
     </div>
-    <span class="navlab">Live view</span>
-    <nav class="nav">
-      <a href="#view-run" class="on">Run &amp; reasoning</a>
-      <a href="#view-surface">Attack surface</a>
-      <a href="#view-findings">Findings</a>
-      <a href="#view-report">Report</a>
+    <span class="nav-label">Workspace</span>
+    <nav class="nav" aria-label="Workspace navigation">
+      <a class="nav-link active" data-nav="launch" href="#launch"><span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke-width="1.8"><path d="M4 5h16v14H4z"/><path d="m8 9 3 3-3 3M13 15h3"/></svg></span>Run assessment<kbd>R</kbd></a>
+      <a class="nav-link" data-nav="overview" href="#overview"><span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke-width="1.8"><path d="M4 13h6V4H4v9ZM14 20h6v-9h-6v9ZM14 8h6V4h-6v4ZM4 20h6v-3H4v3Z"/></svg></span>Overview</a>
+      <a class="nav-link" data-nav="surface-panel" href="#surface-panel"><span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke-width="1.8"><circle cx="6" cy="6" r="2"/><circle cx="18" cy="6" r="2"/><circle cx="12" cy="18" r="2"/><path d="M8 7.2 10.8 16M16 7.2 13.2 16M8 6h8"/></svg></span>Attack surface</a>
+      <a class="nav-link" data-nav="findings-panel" href="#findings-panel"><span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke-width="1.8"><path d="M12 3 20 7v5c0 4.5-3 7.7-8 9-5-1.3-8-4.5-8-9V7l8-4Z"/><path d="M12 8v4M12 16h.01"/></svg></span>Findings</a>
+      <a class="nav-link" data-nav="report-panel" href="#report-panel"><span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke-width="1.8"><path d="M6 3h9l3 3v15H6z"/><path d="M14 3v4h4M9 12h6M9 16h6"/></svg></span>Report</a>
+      <a class="nav-link" data-nav="audit-panel" href="#audit-panel"><span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke-width="1.8"><path d="M5 5h14v14H5z"/><path d="M8 9h8M8 12h8M8 15h5"/></svg></span>Audit trail</a>
+      <a class="nav-link" data-nav="settings-panel" href="#settings-panel"><span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke-width="1.8"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.01a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.01a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z"/></svg></span>Settings</a>
     </nav>
-    <span class="navlab">Configuration</span>
-    <nav class="nav">
-      <a href="#view-providers">LLM providers</a>
-    </nav>
-    <div class="side-foot">
-      <span style="color:var(--dim);font-size:10px;text-transform:uppercase;letter-spacing:.12em;font-weight:700">Target</span>
-      <span id="tgt" class="tgt">no target</span>
-      <span style="color:var(--mut);font-size:11px;margin-top:5px;display:block"><i id="dot" class="dot"></i><span id="state">idle</span></span>
+    <div class="sidebar-spacer"></div>
+    <div class="side-target">
+      <span class="eyebrow">Active target</span>
+      <span id="side-target" class="target-name">No target selected</span>
+      <span class="side-state"><i id="side-dot" class="status-dot"></i><span id="side-state">Idle</span></span>
     </div>
+    <button id="theme-toggle" class="theme-toggle" type="button"><span>◐</span><span>Toggle appearance</span></button>
+    <div class="sidebar-foot">v2.0 · oracle-gated execution</div>
   </aside>
-  <main style="min-width:0;padding:0 26px 60px">
-    <header style="display:flex;align-items:center;justify-content:space-between;gap:16px;padding:14px 0;border-bottom:1px solid var(--line)">
-      <div style="color:var(--mut);font-size:12px"><b style="color:var(--txt)">Console</b> / <span id="phase">idle</span></div>
-      <span id="pill" class="pill">standby</span>
+
+  <main class="main">
+    <header class="topbar">
+      <div class="crumb"><strong>Workspace</strong><span class="crumb-sep">/</span><span>Autonomous assessment</span></div>
+      <div class="top-actions"><span class="top-status"><i id="top-dot" class="status-dot"></i><span id="status">Enter a target and start.</span></span><span id="phase" class="phase-pill">Idle</span></div>
     </header>
-    <section id="view-run" class="views">
-      <h2>Run &amp; reasoning</h2><p>Watch the loop decide: plan rationale, per-phase decisions, tool picks.</p>
-      <div class="cards">
-        <div class="stat t"><span>Hosts</span><b id="c-hosts">0</b></div>
-        <div class="stat"><span>Endpoints</span><b id="c-eps">0</b></div>
-        <div class="stat v"><span>Insertion points</span><b id="c-par">0</b></div>
-        <div class="stat g"><span>Confirmed</span><b id="c-fin">0</b></div>
+
+    <section id="launch" class="hero section">
+      <div class="hero-copy">
+        <span class="eyebrow">LLM-driven security workspace</span>
+        <h1>Map the surface.<br><span>Prove the impact.</span></h1>
+        <p>ReachAgent turns one objective into a traceable assessment: recon, endpoint mapping, payload selection, oracle confirmation, and a report grounded in the live graph.</p>
+        <div class="hero-meta"><span class="hero-chip"><b>01</b> Recon</span><span class="hero-chip"><b>02</b> Endpoints</span><span class="hero-chip"><b>03</b> Payloads</span><span class="hero-chip"><b>04</b> Report</span></div>
       </div>
-      <div class="duo">
-        <div class="panel"><header><h3>Reasoning stream</h3><span class="tag">live</span></header><div class="pbody"><div id="reasoning"><p class="empty">Start an assessment to see the reasoning loop.</p></div></div></div>
-        <div>
-          <div class="panel"><header><h3>Tool rail</h3><span class="tag">per-tool outcomes</span></header><div class="pbody"><div id="tools"><p class="empty">No tools dispatched.</p></div></div></div>
-          <div class="panel"><header><h3>Phase timeline</h3><span class="tag">1s poll</span></header><div class="pbody"><div id="timeline"><p class="empty">—</p></div></div></div>
+      <div class="launch-card">
+        <div class="launch-head"><div><span class="eyebrow">New assessment</span><h2>Configure a target</h2><p>Scope is enforced before every request.</p></div><span class="launch-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3v18M3 12h18"/></svg></span></div>
+        <div class="launch-grid">
+          <div class="field span-2"><label for="target">Target URL</label><input id="target" type="text" placeholder="http://localhost:5000" autocomplete="url"></div>
+          <div class="field"><label for="scope">In-scope hosts</label><input id="scope" type="text" placeholder="localhost, 127.0.0.1"></div>
+          <div class="field"><label for="outscope">Out-of-scope (optional)</label><input id="outscope" type="text" placeholder="admin.localhost"></div>
+          <div class="field span-2"><label for="prompt">Operator objective</label><textarea id="prompt" rows="2" placeholder="e.g. prioritize authenticated API abuse and chained impact"></textarea></div>
+          <div class="field"><label for="idents">Identities file (optional YAML)</label><input id="idents" type="text" placeholder="config/identities.yaml"></div>
+          <div class="field"><label for="attempts">Max payload attempts</label><input id="attempts" type="number" value="20" min="5" max="200"></div>
+          <div class="field"><label for="llm-provider">LLM provider</label><select id="llm-provider"><option value="">Server default</option><option value="openai-compatible">Custom OpenAI-compatible</option><option value="deepseek">DeepSeek / compatible</option><option value="openai">OpenAI / compatible</option><option value="anthropic">Anthropic</option></select></div>
         </div>
-      </div>
-      <div class="panel"><header><h3>New assessment</h3><span class="tag">scope enforced on every fire</span></header><div class="pbody">
-        <form class="launch" id="f">
-          <div class="full"><label>Target URL</label><input id="target" placeholder="http://localhost:5000"></div>
-          <div><label>In-scope hosts</label><input id="scope" placeholder="localhost,127.0.0.1"></div>
-          <div><label>Out-of-scope (optional)</label><input id="outscope" placeholder=""></div>
-          <div class="full"><label>Operator objective</label><textarea id="prompt" placeholder="what should the loop focus on?"></textarea></div>
-          <div><label>Provider</label><select id="prov"></select></div>
-          <div><label>Max payload attempts</label><input id="att" type="number" value="20" min="1" max="200"></div>
-          <div class="go"><span class="hint">Findings are written only by deterministic oracles on confirmed violations. The LLM plans and prioritizes; it never confirms.</span><button type="button" class="btn" id="go">Launch assessment</button></div>
-        </form>
-      </div></div>
-    </section>
-    <section id="view-surface" class="views">
-      <h2>Attack surface</h2><p>Host → service → endpoint → insertion point, from the live graph.</p>
-      <div class="panel"><div class="pbody"><div id="surface"><p class="empty">No surface mapped yet.</p></div></div></div>
-      <div class="panel"><header><h3>Audit trail</h3><span class="tag">every fired / refused request</span></header><div class="pbody"><div id="audit" class="audit"><span class="empty">—</span></div></div></div>
-    </section>
-    <section id="view-findings" class="views">
-      <h2>Findings</h2><p>Oracle-confirmed violations only, with chain paths where a multi-hop exists.</p>
-      <div id="findings"><p class="empty">No confirmed findings yet.</p></div>
-    </section>
-    <section id="view-report" class="views">
-      <h2>Report</h2><p>Narrative over confirmed findings.</p>
-      <div class="panel">
-        <header><h3>Generated report</h3><div class="rep-bar" id="exports" hidden>
-          <a class="dl" id="dl-md" download>Markdown</a><a class="dl" id="dl-json" download>JSON</a><a class="dl" id="dl-html" download>HTML</a>
-        </div></header>
-        <div class="pbody"><div id="report"><p class="empty">No report yet.</p></div></div>
+        <div class="launch-footer"><span class="llm-toggle">LLM execution required</span><button id="go" class="primary-btn" type="button">Start assessment<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m5 12 14 0M13 6l6 6-6 6"/></svg></button></div>
+        <div class="launch-hint">The selected provider must be configured on the server. Only deterministic oracles can confirm findings; API keys remain server-side.</div>
       </div>
     </section>
-    <section id="view-providers" class="views">
-      <h2>LLM providers</h2><p>Named configs stored server-side in config/providers.json (gitignored).</p>
-      <div class="panel"><header><h3>Configured</h3><button class="mini" id="prov-new">+ add</button></header><div class="pbody"><div id="provs"><p class="empty">loading…</p></div></div></div>
-      <div class="panel" id="prov-form" hidden><header><h3 id="pf-title">New provider</h3></header><div class="pbody launch">
-        <div><label>Name</label><input id="pf-name"></div>
-        <div><label>Type</label><select id="pf-type"><option value="openai-compatible">OpenAI-compatible</option><option value="deepseek">DeepSeek</option><option value="openai">OpenAI</option></select></div>
-        <div><label>Base URL</label><input id="pf-base" placeholder="https://host/v1"></div>
-        <div><label>Model</label><input id="pf-model"></div>
-        <div><label>API shape</label><select id="pf-shape"><option value="chat_completions">/chat/completions</option><option value="responses">/responses</option></select></div>
-        <div><label>API key (blank = keep existing)</label><input id="pf-key" type="password"></div>
-        <div class="go"><span id="pf-msg" style="color:var(--dim);font-size:10.5px"></span><button class="btn" id="pf-save">Save</button></div>
-      </div></div>
+
+    <section id="overview" class="section">
+      <div class="section-heading"><div><span class="eyebrow">Live workspace</span><h2>Assessment overview</h2><p>Graph, events, and audit state update as the worker runs.</p></div><span class="section-count" id="overview-count">waiting for scan</span></div>
+      <div class="metric-grid">
+        <div class="metric"><span class="metric-label">Hosts</span><strong id="c-hosts" class="metric-value indigo">0</strong></div>
+        <div class="metric"><span class="metric-label">Services</span><strong id="c-services" class="metric-value">0</strong></div>
+        <div class="metric"><span class="metric-label">Endpoints</span><strong id="c-endpoints" class="metric-value">0</strong></div>
+        <div class="metric"><span class="metric-label">Parameters</span><strong id="c-params" class="metric-value">0</strong></div>
+        <div class="metric"><span class="metric-label">Confirmed findings</span><strong id="c-findings" class="metric-value green">0</strong></div>
+      </div>
+      <article class="panel" style="margin-top:13px"><div class="panel-head"><div><h3>Tool activity</h3><p>Per-tool recon + verification outcomes, streamed live.</p></div><span class="panel-tag">real runner results</span></div><div class="panel-body"><div id="tool-activity"><span class="empty">No tools dispatched yet.</span></div></div></article>
+      <article class="panel" style="margin-top:13px"><div class="panel-head"><div><h3>Reasoning stream</h3><p>Plan rationale and every loop decision, streamed as the LLM makes them.</p></div><span class="panel-tag">agentic loop</span></div><div class="panel-body"><div id="reasoning-stream"><span class="empty">Start an assessment to watch the reasoning loop.</span></div></div></article>
+      <article class="panel" style="margin-top:13px"><div class="panel-head"><div><h3>Live console</h3><p>Every fingerprint, payload fire, oracle verdict, and finding as it happens.</p></div><span class="panel-tag">real-time</span></div><div class="panel-body" style="padding:0"><div id="live-console" style="max-height:350px;overflow-y:auto;padding:12px 15px;background:var(--field);font:11px/1.7 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--muted)"><span class="empty">Console output appears here during a scan.</span></div></div></article>
+      <div class="workspace-grid">
+        <article class="panel"><div class="panel-head"><div><h3>Phase timeline</h3><p>Append-only orchestrator events</p></div><span class="panel-tag">1s poll</span></div><div class="panel-body"><div id="timeline"><span class="empty">No assessment yet.</span></div></div></article>
+        <article class="panel"><div class="panel-head"><div><h3>Agent decision</h3><p>Why this assessment path was chosen</p></div><span class="panel-tag">proposal</span></div><div class="panel-body decision"><div class="decision-profile"><span class="eyebrow">Recon profile</span><div id="profile-name" class="decision-name">No assessment yet</div><div id="profile-reason" class="decision-reason">The selected profile and its signals will appear here.</div><div id="profile-signals" class="decision-signals">Awaiting live events</div></div><div class="decision-list"><div class="decision-row"><span>Scope guard</span><b class="check">● enforced</b></div><div class="decision-row"><span>Read-only first</span><b class="check">● enforced</b></div><div class="decision-row"><span>Oracle confirmation</span><b class="check">● required</b></div></div></div></article>
+      </div>
+    </section>
+
+    <section id="surface-panel" class="section">
+      <div class="section-heading"><div><span class="eyebrow">Phase 02 · mapping</span><h2>Attack surface</h2><p>Host → service → endpoint → insertion point, taken from the live graph.</p></div><span class="section-count" id="surface-count">0 endpoints</span></div>
+      <div class="content-grid"><article class="panel panel-tall"><div class="panel-head"><div><h3>Discovered surface</h3><p>Expand a host to inspect its real parameters.</p></div><span class="panel-tag">graph nodes</span></div><div class="panel-body"><div id="surface"><span class="empty">No endpoints yet.</span></div></div></article><article id="findings-panel" class="panel panel-tall"><div class="panel-head"><div><h3>Confirmed findings</h3><p>Only oracle-confirmed violations appear here.</p></div><span class="panel-tag">severity + evidence</span></div><div class="panel-body"><div id="findings"><span class="empty">No findings yet.</span></div></div></article></div>
+    </section>
+
+    <section id="report-panel" class="section">
+      <div class="section-heading"><div><span class="eyebrow">Phase 04 · evidence</span><h2>Report</h2><p>Readable narrative plus deterministic finding data.</p></div></div>
+      <article class="panel report-panel"><div class="report-toolbar"><span class="panel-tag">phase 4 output</span><span style="flex:1"></span><div id="exports" style="display:none"><a id="dl-md" class="dl" download href="#">Markdown</a><a id="dl-json" class="dl" download href="#">JSON</a><a id="dl-html" class="dl" download href="#">HTML</a></div></div><div class="panel-body"><div id="report" class="report-view"><span class="empty">No report yet.</span></div></div></article>
+    </section>
+
+    <section id="audit-panel" class="section">
+      <div class="section-heading"><div><span class="eyebrow">Execution trail</span><h2>Audit log</h2><p>Every fired, refused, ingested, and errored request.</p></div><span class="section-count">bounded live tail</span></div>
+      <article class="panel audit-panel"><div class="panel-head"><div><h3>Request activity</h3><p>Real execution-layer entries, not simulated terminal output.</p></div><span class="panel-tag">last 200</span></div><div class="panel-body"><div id="audit" class="audit"><span class="empty">Waiting for an assessment.</span></div></div></article>
+    </section>
+
+    <section id="settings-panel" class="section">
+      <div class="section-heading"><div><span class="eyebrow">Configuration</span><h2>LLM providers</h2><p>Add, test, and switch named provider configs. Keys stay server-side.</p></div><button id="prov-new" class="dl" type="button">+ Add provider</button></div>
+      <article class="panel"><div class="panel-head"><div><h3>Configured providers</h3><p>Used by the launch form"s provider dropdown.</p></div></div><div class="panel-body"><div id="prov-list"><span class="empty">Loading&#8230;</span></div></div></article>
+      <article id="prov-form-card" class="panel" style="display:none;margin-top:13px">
+        <div class="panel-head"><div><h3 id="prov-form-title">New provider</h3><p>API keys are stored server-side in config/providers.json (gitignored).</p></div></div>
+        <div class="panel-body launch-grid">
+          <div class="field"><label for="pf-name">Name</label><input id="pf-name" type="text" placeholder="e.g. opencode-free"></div>
+          <div class="field"><label for="pf-provider">Type</label><select id="pf-provider"><option value="openai-compatible">Custom OpenAI-compatible</option><option value="deepseek">DeepSeek / compatible</option><option value="openai">OpenAI / compatible</option></select></div>
+          <div class="field span-2"><label for="pf-base-url">Base URL</label><input id="pf-base-url" type="text" placeholder="https://opencode.ai/zen/v1/responses"></div>
+          <div class="field"><label for="pf-model">Model</label><input id="pf-model" type="text" placeholder="muse-spark-1.2-contributor-free"></div>
+          <div class="field"><label for="pf-api-style">API endpoint shape</label><select id="pf-api-style"><option value="responses">/responses</option><option value="chat_completions">/chat/completions</option></select></div>
+          <div class="field span-2"><label for="pf-api-key">API key</label><input id="pf-api-key" type="password" placeholder="(leave empty to keep existing key when editing)"></div>
+          <div class="launch-footer span-2"><span id="prov-form-error" style="color:var(--red);font-size:11px"></span><div><button id="prov-test" class="dl" type="button">Test connection</button> <button id="prov-save" class="primary-btn" type="button">Save provider</button></div></div>
+        </div>
+      </article>
     </section>
   </main>
 </div>
-<script src="/static/app.js"></script>
+<script>
+const $=id=>document.getElementById(id);
+let scanId=null,timer=null;
+const KIND_BADGE={info:"info",step:"step",finding:"finding","not-applicable":"skipped",error:"error"};
+const PHASE_STEP={plan:"00 · PLAN",recon:"01 · RECON",surface:"02 · SURFACE",endpoints:"02 · ENDPOINTS", "insertion-points":"02 · INSERTION",payloads:"03 · PAYLOADS",verification:"03 · VERIFY",chains:"03 · CHAINS",tools:"TOOLS",report:"04 · REPORT"};
+const OUT_CLASS={fired:"out-fired",refused:"out-refused",error:"out-error",ingested:"out-ingested"};
+
+function setBusy(busy){
+  $("go").disabled=busy;
+  $("go").firstChild.textContent=busy?"Assessment running":"Start assessment";
+  $("side-dot").classList.toggle("live",busy); $("top-dot").classList.toggle("live",busy);
+}
+function renderProfile(events){
+  const ev=(events||[]).find(e=>e.phase==="recon"&&e.kind==="step"&&e.details&&e.details.profile)||(events||[]).find(e=>e.phase==="recon"&&e.kind==="step");
+  if(!ev){$("profile-name").textContent="No assessment yet";$("profile-reason").textContent="The selected profile and its signals will appear here.";$("profile-signals").textContent="Awaiting live events";return;}
+  const d=ev.details||{}, plan=(events||[]).find(e=>e.kind==="plan"&&e.details&&e.details.rationale), planText=plan?" · plan: "+String(plan.details.rationale).slice(0,180):""; $("profile-name").textContent=d.profile||"default"; $("profile-reason").textContent=(ev.message||"Deterministic profile selected.")+planText; $("profile-signals").textContent=d.signals?"signals: "+d.signals:"signals: no explicit override";
+}
+function esc(s){return String(s==null?"":s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");}
+function renderReasoningStream(events){
+  const box=$("reasoning-stream");if(!box)return;
+  const rows=(events||[]).filter(e=>e.kind==="plan"||e.kind==="step"||/LLM|decision/i.test(e.message||""));
+  if(!rows.length){box.innerHTML='<span class="empty">Start an assessment to watch the reasoning loop.</span>';return;}
+  box.innerHTML=rows.map(e=>{
+    const cls=e.kind==="plan"?"plan":/decision/i.test(e.message||"")?"decision":"";
+    const d=e.details||{};
+    const hintBits=[["hint",d.hint],["selected",d.selected],["ranked",d.ranked_ids],["tools",d.tools],["profile",d.profile]]
+      .filter(([k,v])=>v!=null&&v!=="").map(([k,v])=>k+": "+JSON.stringify(v)).join(" · ");
+    return '<div class="r-row '+cls+'"><span class="r-ph">'+esc(PHASE_STEP[e.phase]||e.phase)+'</span><span class="r-dot"></span><span><div class="r-msg">'+esc(e.message)+'</div>'+(hintBits?'<div class="r-hint">'+esc(hintBits)+"</div>":"")+"</span></div>";
+  }).join("");
+  box.scrollTop=box.scrollHeight;
+}
+function renderCounts(g){
+  const c=(g&&g.counts)||{}; $("c-hosts").textContent=c.hosts||0; $("c-services").textContent=c.services||0; $("c-endpoints").textContent=c.endpoints||0; $("c-params").textContent=c.parameters||0; $("c-findings").textContent=c.findings||0; $("overview-count").textContent=c.endpoints?`${c.endpoints} endpoints mapped`:"waiting for scan"; $("surface-count").textContent=`${c.endpoints||0} endpoints`;
+}
+function renderTimeline(events){
+  const tl=$("timeline");tl.innerHTML="";if(!events||!events.length){tl.innerHTML='<span class="empty">No assessment yet.</span>';return;}
+  events.forEach(e=>{const div=document.createElement("div");div.className=`ev ${e.kind||""}`;const ph=document.createElement("span");ph.className="ph";ph.textContent=PHASE_STEP[e.phase]||e.phase;const dot=document.createElement("span");dot.className="ev-dot";const copy=document.createElement("span");copy.className="ev-copy";const kind=document.createElement("span");kind.className="ev-kind";kind.textContent=KIND_BADGE[e.kind]||e.kind;const msg=document.createElement("span");msg.className="ev-detail";msg.textContent=e.message||"";copy.append(kind,msg);div.append(ph,dot,copy);tl.appendChild(div);});tl.scrollTop=tl.scrollHeight;
+}
+function renderTools(events){
+  const box=$("tool-activity");box.innerHTML="";
+  const toolEvents=(events||[]).filter(e=>e.phase==="tools");
+  if(!toolEvents.length){box.innerHTML='<span class="empty">No tools dispatched yet.</span>';return;}
+  const OUT_COLOR={starting:"var(--indigo)",ingested:"var(--green)",errored:"var(--red)","no-fixture":"var(--faint)",skipped_missing_binary:"var(--amber)",refused_out_of_scope:"var(--red)"};
+  toolEvents.forEach(e=>{
+    const d=e.details||{},tool=d.tool||"—",outcome=d.outcome||e.kind;
+    const row=document.createElement("div");row.className="ev";row.style.gridTemplateColumns="10px 110px 1fr auto";
+    const icon=document.createElement("span");icon.className="ev-dot";icon.style.borderColor=OUT_COLOR[outcome]||"var(--line-strong)";
+    if(outcome==="ingested")icon.style.background="var(--green)";
+    if(outcome==="errored")icon.style.background="var(--red)";
+    const name=document.createElement("span");name.style.cssText="font-family:ui-monospace,monospace;font-size:11px;color:var(--text);padding-top:2px";name.textContent=tool;
+    const msg=document.createElement("span");msg.style.cssText="color:var(--muted);font-size:11px;line-height:1.6";msg.textContent=(d.detail?d.detail+" · ":"")+(d.nodes!==undefined&&d.nodes!==null?d.nodes+" nodes":"");
+    const st=document.createElement("span");st.style.cssText="font-size:9px;color:var(--faint);font-family:ui-monospace,monospace;text-transform:uppercase;padding-top:2px";st.textContent=String(outcome).replace(/_/g," ");
+    row.append(icon,name,msg,st);box.appendChild(row);
+  });
+  box.scrollTop=box.scrollHeight;
+}
+function renderConsole(events){
+  const box=document.getElementById("live-console");if(!box)return;
+  if(!events||!events.length){box.innerHTML='<span class="empty">Waiting...</span>';return;}
+  box.innerHTML="";
+  events.forEach(function(e){
+    var d=document.createElement("div");
+    d.textContent="["+e.phase+"] "+e.message;
+    if(e.kind==="finding"){d.style.color="var(--green)";}
+    else if(e.kind==="error"){d.style.color="var(--red)";}
+    else if(e.kind==="not-applicable"){d.style.color="var(--faint)";}
+    box.appendChild(d);
+  });
+  box.scrollTop=box.scrollHeight;
+}
+function renderAudit(rows){
+  const a=$("audit");a.innerHTML="";if(!rows||!rows.length){a.innerHTML='<span class="empty">Waiting for an assessment.</span>';return;}
+  rows.forEach(r=>{const div=document.createElement("div");div.className="al";const ts=document.createElement("span");ts.className="ts";ts.textContent=(r.timestamp||"").slice(11,19);const id=document.createElement("span");id.className="id";id.textContent=r.identity||"—";const m=document.createElement("span");m.className="muted";m.textContent=r.method||"—";const tgt=document.createElement("span");tgt.className="muted";tgt.textContent=r.target||"—";const key=(r.outcome||"").split(":")[0];const out=document.createElement("span");out.className=OUT_CLASS[key]||"";out.textContent=r.outcome||"—";div.append(ts,id,m,tgt,out);a.appendChild(div);});a.scrollTop=a.scrollHeight;
+}
+function mdToHtml(md){
+  const esc=s=>String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+  const fmt=t=>esc(t).replace(/\*\*(.+?)\*\*/g,"<b>$1</b>").replace(/`([^`]+)`/g,'<code class="inline-code">$1</code>');
+  const lines=md.split("\n"),out=[];let inTable=false,rows=[],inList=false,inCode=false,codeBuf=[];
+  function flushTable(){if(!rows.length)return;out.push("<table>"+rows.map((r,i)=>"<tr>"+r.map(c=>"<"+(i?"td":"th")+">"+c+"</"+(i?"td":"th")+">").join("")+"</tr>").join("")+"</table>");rows=[];}
+  function flushList(){if(!inList)return;out.push("</ul>");inList=false;}
+  function flushCode(){if(!inCode)return;out.push("<pre><code>"+esc(codeBuf.join("\n"))+"</code></pre>");codeBuf=[];inCode=false;}
+  lines.forEach(line=>{
+    if(inCode){if(line.trim().startsWith("```")){flushCode();}else{codeBuf.push(line);}return;}
+    if(line.trim().startsWith("```")){flushTable();flushList();inCode=true;codeBuf=[];return;}
+    const t=line.trim();
+    if(t.startsWith("|")&&t.endsWith("|")){flushList();const cells=t.slice(1,-1).split("|").map(c=>fmt(c.trim()));if(!inTable){inTable=true;rows=[cells];}else if(!cells.every(c=>/^:?-{2,}:?$/.test(c)))rows.push(cells);return;}
+    if(inTable){inTable=false;flushTable();}
+    if(/^- /.test(t)){if(!inList){flushTable();out.push("<ul>");inList=true;}out.push("<li>"+fmt(t.slice(2))+"</li>");return;}
+    if(inList)flushList();
+    if(/^#{1,4} /.test(t)){flushTable();const level=t.indexOf(" ");out.push("<h"+level+">"+fmt(t.replace(/^#+\s*/,""))+"</h"+level+">");}
+    else if(t==="---")out.push("<hr>");
+    else if(t)out.push("<p>"+fmt(t)+"</p>");
+  });
+  if(inTable)flushTable();flushList();flushCode();
+  return out.join("\n");
+}
+function renderExports(id,done){const box=$("exports");if(!done){box.style.display="none";return;}box.style.display="flex";$("dl-md").href="/api/scan/"+id+"/export?format=markdown";$("dl-json").href="/api/scan/"+id+"/export?format=json";$("dl-html").href="/api/scan/"+id+"/export?format=html";}
+function addMetaRow(parent,label,value){const row=document.createElement("div");row.className="fmeta-row";const b=document.createElement("b");b.textContent=label;const v=document.createElement("span");v.textContent=value||"—";row.append(b,v);parent.appendChild(row);}
+function renderFindings(findings){
+  const box=$("findings");box.innerHTML="";if(!findings||!findings.length){box.innerHTML='<span class="empty">No oracle-confirmed findings yet.</span>';return;}
+  findings.forEach(f=>{const card=document.createElement("div");card.className="fcard "+(f.severity||"");const head=document.createElement("div");head.className="fhead";const cls=document.createElement("span");cls.className="fclass";cls.textContent=f.vuln_class||"finding";const sev=document.createElement("span");sev.className="fsev";sev.textContent=f.severity||"unknown";head.append(cls,sev);card.appendChild(head);const meta=document.createElement("div");meta.className="fmeta";addMetaRow(meta,"Oracle",f.oracle_used);addMetaRow(meta,"Evidence",f.evidence_ref);addMetaRow(meta,"Status",f.status);if(f.chain_precondition)addMetaRow(meta,"Chain",f.chain_precondition);card.appendChild(meta);(f.chains||[]).forEach(ch=>{const row=document.createElement("div");row.className="chain";ch.nodes.forEach((n,i)=>{const cn=document.createElement("span");cn.className="cn";cn.textContent=n;row.appendChild(cn);if(i<ch.kinds.length){const edge=document.createElement("span");edge.className="ce "+(ch.kinds[i]==="derived_credential"?"derived":"");edge.textContent=ch.kinds[i]==="derived_credential"?"→ credential":"→ enables";row.appendChild(edge);}});card.appendChild(row);});box.appendChild(card);});
+}
+function renderSurface(surface){
+  const box=$("surface");box.innerHTML="";const hosts=(surface&&surface.hosts)||[],orphan=(surface&&surface.orphan_endpoints)||[];if(!hosts.length&&!orphan.length){box.innerHTML='<span class="empty">No endpoints yet.</span>';return;}
+  const endpoint=ep=>{const d=document.createElement("details");d.className="surface-endpoint";const s=document.createElement("summary");s.textContent=(ep.method||"GET")+" "+(ep.path||"");d.appendChild(s);const m=document.createElement("div");m.className="node-meta";m.textContent=(ep.access_restricted?"restricted "+ep.access_restricted+" · ":"")+(ep.technology||ep.content_type||"endpoint");d.appendChild(m);const ul=document.createElement("ul");(ep.parameters||[]).forEach(p=>{const li=document.createElement("li");li.textContent=(p.location||"query")+" "+(p.name||"")+(p.inferred_sink_type?" → "+p.inferred_sink_type:"");ul.appendChild(li);});if(ul.children.length)d.appendChild(ul);return d;};
+  hosts.forEach(h=>{const d=document.createElement("details");d.className="surface-host";d.open=true;const s=document.createElement("summary");s.textContent=h.address||h.hostname||h.id;d.appendChild(s);const m=document.createElement("div");m.className="node-meta";m.textContent=h.technology||h.source||"host";d.appendChild(m);(h.services||[]).forEach(svc=>{const x=document.createElement("div");x.className="node-meta";x.textContent="service "+svc.port+"/"+svc.protocol+(svc.service_name?" "+svc.service_name:"");d.appendChild(x);});(h.endpoints||[]).forEach(ep=>d.appendChild(endpoint(ep)));box.appendChild(d);});orphan.forEach(ep=>box.appendChild(endpoint(ep)));
+}
+function setTarget(target,scanStatus){$("side-target").textContent=target||"No target selected";$("side-state").textContent=scanStatus||"Idle";}
+async function poll(){
+  if(!scanId)return;
+  try{const r=await fetch("/api/scan/"+scanId);const j=await r.json();$("status").textContent=j.status+(j.phase?" — "+j.phase:"");$("side-state").textContent=j.status||"running";if(j.phase)$("phase").textContent=PHASE_STEP[j.phase]||j.phase;renderProfile(j.events);renderReasoningStream(j.events);renderCounts(j.graph);renderTimeline(j.events);renderTools(j.events);renderConsole(j.events);renderAudit(j.audit);renderFindings(j.findings);try{const sr=await fetch("/api/scan/"+scanId+"/surface");renderSurface(await sr.json());}catch(_e){}renderReport(j.report_md);renderExports(scanId,j.status==="done");if(j.status==="done"||j.status==="error"){clearInterval(timer);timer=null;setBusy(false);if(j.status==="error")$("report").textContent="Error: "+(j.error||"unknown");$("status").textContent=j.status+" — "+scanId;}}
+  catch(err){clearInterval(timer);timer=null;setBusy(false);$("status").textContent="connection error";$("side-state").textContent="offline";$("report").textContent=String(err);}
+}
+$("go").onclick=async()=>{
+  const target=$("target").value.trim(),scope=$("scope").value.trim()||target;if(!target){$("status").textContent="target required";$("target").focus();return;}
+  if(timer)clearInterval(timer);setBusy(true);setTarget(target,"starting");$("status").textContent="starting…";$("phase").textContent=PHASE_STEP.recon;renderProfile([]);renderCounts(null);renderTimeline([]);renderAudit([]);renderFindings([]);renderSurface(null);renderReport("");renderExports(null,false);
+  const body={target,in_scope:scope,out_of_scope:$("outscope").value.trim()||null,prompt:$("prompt").value.trim()||null,max_attempts:parseInt($("attempts").value,10)||20,use_llm:true,llm_provider:$("llm-provider").value||null,identities_path:$("idents").value.trim()||null};
+  try{const r=await fetch("/api/scan",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)}),j=await r.json();if(j.error)throw new Error(j.error);scanId=j.scan_id;$("status").textContent="running "+scanId;timer=setInterval(poll,1000);poll();}catch(err){setBusy(false);$("status").textContent=String(err);$("side-state").textContent="error";}
+};
+$("theme-toggle").onclick=()=>{const next=document.documentElement.dataset.theme==="dark"?"light":"dark";document.documentElement.dataset.theme=next;localStorage.setItem("reachagent-theme",next);};
+const savedTheme=localStorage.getItem("reachagent-theme");if(savedTheme)document.documentElement.dataset.theme=savedTheme;
+
+let provEditing=null;
+async function loadProviders(){
+  try{const r=await fetch("/api/providers");const j=await r.json();renderProvList(j);renderProvOptions(j);}catch(e){$("prov-list").innerHTML='<span class="empty">Failed to load.</span>';}
+}
+function renderProvList(j){
+  const box=$("prov-list");box.innerHTML="";
+  const d=j.default||{};
+  const dRow=document.createElement("div");dRow.className="decision-row";dRow.style.padding="8px 0";
+  dRow.textContent=""; const b=document.createElement("b"); b.style.color="var(--text)"; b.textContent="Server default"; const sp=document.createElement("span"); sp.className="muted"; sp.textContent=(d.provider||"unset")+(d.model?" · "+d.model:""); const tag=document.createElement("span"); tag.className="panel-tag"; tag.textContent=d.has_key?"key set":"no key"; dRow.append(b,sp,tag);
+  box.appendChild(dRow);
+  (j.providers||[]).forEach(p=>{
+    const row=document.createElement("div");row.className="decision-row";row.style.padding="10px 0";row.style.borderTop="1px solid var(--line)";
+    const info=document.createElement("span");
+  info.textContent=""; const ib=document.createElement("b"); ib.style.color="var(--text)"; ib.textContent=p.name; const im=document.createElement("span"); im.className="muted"; im.textContent=p.provider+" · "+(p.model||p.base_url||"")+" · "+p.api_style; info.append(ib,im);
+    info.querySelector("b").textContent=p.name;
+    const actions=document.createElement("div");actions.style.cssText="display:flex;gap:6px";
+    const testBtn=document.createElement("button");testBtn.className="dl";testBtn.textContent="Test";
+    testBtn.onclick=async()=>{testBtn.textContent="…";try{const tr=await fetch("/api/providers/"+p.id+"/test",{method:"POST"});const tj=await tr.json();testBtn.textContent=tj.ok?"✓ ok":"✗ fail";testBtn.title=tj.error||(tj.reply||"");}catch(e){testBtn.textContent="✗";}setTimeout(()=>{testBtn.textContent="Test";},3000);};
+    const editBtn=document.createElement("button");editBtn.className="dl";editBtn.textContent="Edit";
+    editBtn.onclick=()=>{openProvForm(p);};
+    const delBtn=document.createElement("button");delBtn.className="dl";delBtn.style.color="var(--red)";delBtn.textContent="Delete";
+    delBtn.onclick=async()=>{if(!confirm("Delete "+p.name+"?"))return;await fetch("/api/providers/"+p.id,{method:"DELETE"});loadProviders();};
+    actions.append(testBtn,editBtn,delBtn);
+    row.append(info,actions);box.appendChild(row);
+  });
+}
+function renderProvOptions(j){
+  const sel=$("llm-provider");
+  const current=sel.value;
+  sel.innerHTML='<option value="">Server default</option>';
+  (j.providers||[]).forEach(p=>{const o=document.createElement("option");o.value="named:"+p.id;o.textContent=p.name;sel.appendChild(o);});
+  [["deepseek","DeepSeek / compatible"],["openai","OpenAI / compatible"]].forEach(([v,t])=>{const o=document.createElement("option");o.value=v;o.textContent=t;sel.appendChild(o);});
+  if(current)sel.value=current;
+}
+function openProvForm(p){
+  provEditing=p?p.id:null;
+  $("prov-form-title").textContent=p?("Edit: "+p.name):"New provider";
+  $("pf-name").value=p?p.name:"";
+  $("pf-provider").value=p?p.provider:"openai-compatible";
+  $("pf-base-url").value=p?(p.base_url||""):"";
+  $("pf-model").value=p?(p.model||""):"";
+  $("pf-api-style").value=p?(p.api_style||"chat_completions"):"chat_completions";
+  $("pf-api-key").value="";
+  $("prov-form-error").textContent="";
+  $("prov-form-card").style.display="block";
+  $("prov-form-card").scrollIntoView({behavior:"smooth"});
+}
+$("prov-new").onclick=()=>openProvForm(null);
+$("prov-save").onclick=async()=>{
+  const body={id:provEditing,name:$("pf-name").value.trim(),provider:$("pf-provider").value,base_url:$("pf-base-url").value.trim(),model:$("pf-model").value.trim(),api_style:$("pf-api-style").value,api_key:$("pf-api-key").value.trim()};
+  $("prov-form-error").textContent="";
+  try{const r=await fetch("/api/providers",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});const j=await r.json();if(j.error){$("prov-form-error").textContent=j.error;return;}$("prov-form-card").style.display="none";loadProviders();}catch(e){$("prov-form-error").textContent=String(e);}
+};
+$("prov-test").onclick=async()=>{
+  $("prov-form-error").textContent="testing…";
+  const body={name:$("pf-name").value.trim()||"test",provider:$("pf-provider").value,base_url:$("pf-base-url").value.trim(),model:$("pf-model").value.trim(),api_style:$("pf-api-style").value,api_key:$("pf-api-key").value.trim()};
+  try{
+    if(!provEditing){const sr=await fetch("/api/providers",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});const sj=await sr.json();if(sj.error){$("prov-form-error").textContent=sj.error;return;}provEditing=sj.id;}
+    const r=await fetch("/api/providers/"+provEditing+"/test",{method:"POST"});
+    const j=await r.json();
+    $("prov-form-error").style.color=j.ok?"var(--green)":"var(--red)";
+    $("prov-form-error").textContent=j.ok?("ok — reply: "+(j.reply||"")):j.error;
+    $("prov-form-error").style.color="";
+  }catch(e){$("prov-form-error").textContent=String(e);}
+};
+loadProviders();
+
+document.querySelectorAll("[data-nav]").forEach(link=>link.addEventListener("click",()=>{document.querySelectorAll("[data-nav]").forEach(x=>x.classList.remove("active"));link.classList.add("active");}));
+</script>
 </body>
 </html>
