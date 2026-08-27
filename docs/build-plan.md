@@ -387,5 +387,6 @@ Built (own implementation, own visual identity, zero build tooling):
   static `index.html`.
 - Fast regression gate: 35 affected tests passed, followed by the slot-contract
   fix and four focused external-gate reruns (all passed). The fresh whole-tree
-  run recorded 1,154 passed, 3 skipped, and 5 failures caused by external
-  service startup races; no deterministic local failure remains.
+  run recorded 1,154 passed, 3 skipped, and 5 failures: one local payload-slot
+  contract regression (fixed) and four external service startup races. All five
+  now pass in focused reruns; no deterministic local failure remains.
