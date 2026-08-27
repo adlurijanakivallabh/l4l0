@@ -112,7 +112,7 @@ class DefaultLoopAdvisor:
             "You are the reasoning loop of an authorized security assessment."
             f" The {completed_phase} phase just completed. Summary: {phase_summary}."
             f" Remaining phases: {', '.join(remaining_phases)}."
-            f" Operator objective: {goal}\\n"
+            f" Operator objective: {goal}\n"
             "Decide how to proceed: 'continue' (run next phase as planned),"
             " 'skip' (a remaining phase cannot apply — say why), or"
             " 'revise' (prioritize something specific in hint, e.g. revisit an"
