@@ -294,6 +294,35 @@ Boundary verification:
 - AST scan in test_transport_tuning.py proves neither new tool's body calls
   run_oracle() or write_finding() directly.
 
+### Phase 8 (inserted): bounded agentic re-planning loop
+
+**Status: COMPLETE** (2026-08-27)
+
+Built:
+- scan/agentic_loop.py: after each phase completes (recon / endpoints /
+  payloads), the LLM receives a compact deterministic summary of what that
+  phase produced and issues one validated decision:
+    * continue - run the next phase as planned
+    * skip - a remaining phase cannot apply for this target (honestly
+      reported as an event; never silently dropped)
+    * revise - re-prioritize via a hint (e.g. revisit a sibling insertion
+      point after blind SQLi confirmed elsewhere suggests it is worth a
+      second look)
+- Three reassessment points wired into scan_all_classes: after recon,
+  after endpoints (can skip verification tools when no preconditions),
+  and after payloads (closing assessment included in report context).
+- Safety bounds: validation refuses unknown actions rather than guessing;
+  the advisor failing or returning garbage means "continue as planned";
+  MAX_REASSESSMENTS=8 caps total LLM loop calls; plan and report phases
+  are deterministic and never reassessed.
+- Phase decisions never touch fire/oracle/finding authority — they only
+  gate which deterministic engine stages run.
+
+Loop structure informed by reference architecture reading (performer.go's
+reflector/monitor patterns and run.py's NextStep state machine), implemented
+in this project's own propose->validate->emit style consistent with every
+other LLM tuning layer.
+
 Build: Full eval suite re-run across VAmPI vulnerable/secure, Juice Shop,
 crAPI. Fix any regressions. Performance profiling. Security audit of our own code.
 
