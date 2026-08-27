@@ -1,5 +1,6 @@
 /* ReachAgent console — vanilla JS, no build step. */
 const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 let scanId = null, timer = null;
 
 const PHASE_LABEL = {
@@ -22,16 +23,15 @@ document.querySelectorAll(".nav a").forEach((a) =>
 );
 
 function mdToHtml(md) {
-  const esc = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
   const inline = (t) => esc(t)
     .replace(/\*\*(.+?)\*\*/g, "<b>$1</b>")
     .replace(/`([^`]+)`/g, "<code>$1</code>");
   const lines = String(md || "").split("\n");
   let out = [], inCode = false, buf = [], listOpen = false;
   const closeList = () => { if (listOpen) { out.push("</ul>"); listOpen = false; } };
-  const flushCode = () => { if (inCode) { out.push("<pre><code>" + esc(buf.join("\n")) + "</code></pre>"); buf = []; inCode = false; } };
+  const emitCode = () => { if (buf.length || inCode) { out.push("<pre><code>" + esc(buf.join("\n")) + "</code></pre>"); buf = []; } };
   for (const line of lines) {
-    if (line.trim().startsWith("```")) { flushCode(); inCode = !inCode ? true : inCode; if (!inCode) continue; continue; }
+    if (line.trim().startsWith("```")) { emitCode(); inCode = !inCode; continue; }
     if (inCode) { buf.push(line); continue; }
     const t = line.trim();
     if (/^- /.test(t)) { if (!listOpen) { out.push("<ul>"); listOpen = true; } out.push("<li>" + inline(t.slice(2)) + "</li>"); continue; }
@@ -40,7 +40,7 @@ function mdToHtml(md) {
     else if (t === "---") out.push("<hr>");
     else if (t) out.push("<p>" + inline(t) + "</p>");
   }
-  flushCode(); closeList();
+  emitCode(); closeList();
   return out.join("\n");
 }
 
@@ -57,7 +57,7 @@ function renderReasoning(events) {
       ? Object.entries({ hint: d.hint, selected: d.selected, ranked: d.ranked_ids })
           .filter(([, v]) => v != null && v !== "").map(([k, v]) => k + ": " + JSON.stringify(v)).join(" · ")
       : "";
-    return `<div class="r-row ${cls}"><span class="r-ph">${PHASE_LABEL[e.phase] || e.phase}</span><span class="r-dot"></span><span><div class="r-msg">${(e.message || "").replace(/</g, "&lt;")}</div>${hint ? `<div class="r-hint">${hint.replace(/</g, "&lt;")}</div>` : ""}</span></div>`;
+    return `<div class="r-row ${cls}"><span class="r-ph">${esc(PHASE_LABEL[e.phase] || e.phase)}</span><span class="r-dot"></span><span><div class="r-msg">${esc(e.message)}</div>${hint ? `<div class="r-hint">${esc(hint)}</div>` : ""}</span></div>`;
   }).join("");
   box.scrollTop = box.scrollHeight;
 }
@@ -70,7 +70,7 @@ function renderTools(events) {
   box.innerHTML = rows.map((e) => {
     const d = e.details || {};
     const outcome = d.outcome || e.kind;
-    return `<div class="t-row"><span class="t-name">${d.tool || "?"}</span><span style="color:var(--mut)">${d.detail || ""} ${d.nodes ? "· " + d.nodes + " nodes" : ""}</span><span class="t-out ${cls[outcome] || ""}">${String(outcome).replace(/_/g, " ")}</span></div>`;
+    return `<div class="t-row"><span class="t-name">${esc(d.tool || "?")}</span><span style="color:var(--mut)">${esc(d.detail || "")} ${d.nodes ? "· " + d.nodes + " nodes" : ""}</span><span class="t-out ${cls[outcome] || ""}">${esc(String(outcome).replace(/_/g, " "))}</span></div>`;
   }).join("");
   box.scrollTop = box.scrollHeight;
 }
@@ -81,7 +81,7 @@ function renderTimeline(events) {
   const skipMark = (m) => /skip/i.test(m);
   box.innerHTML = events.map((e) => {
     const cls = e.kind === "finding" ? "finding" : e.kind === "error" ? "error" : skipMark(e.message) ? "skipped" : "";
-    return `<div class="tl ${cls}"><span class="ph">${PHASE_LABEL[e.phase] || e.phase}</span><span class="dot2"></span><span class="m">${(e.message || "").replace(/</g, "&lt;")}</span></div>`;
+    return `<div class="tl ${cls}"><span class="ph">${esc(PHASE_LABEL[e.phase] || e.phase)}</span><span class="dot2"></span><span class="m">${esc(e.message)}</span></div>`;
   }).join("");
   box.scrollTop = box.scrollHeight;
 }
@@ -99,13 +99,17 @@ function renderSurface(surface) {
   const orphan = (surface && surface.orphan_endpoints) || [];
   const box = $("surface");
   if (!hosts.length && !orphan.length) { box.innerHTML = '<p class="empty">No surface mapped yet.</p>'; return; }
-  const epHtml = (ep) =>
-    `<div class="ep"><span class="mth">${ep.method || "GET"}</span> ${ep.path}${ep.access_restricted ? ` <span class="res">restricted ${ep.access_restricted}</span>` : ""}${(ep.parameters || []).length ? " · " + ep.parameters.map((p) => p.name + "(" + p.location + ")" + (p.inferred_sink_type ? ` <span class="sink">→${p.inferred_sink_type}</span>` : "")).join(", ") : ""}</div>`;
+  const epHtml = (ep) => {
+    const params = (ep.parameters || [])
+      .map((p) => esc(p.name) + "(" + esc(p.location) + ")" + (p.inferred_sink_type ? ` <span class="sink">→${esc(p.inferred_sink_type)}</span>` : ""))
+      .join(", ");
+    return `<div class="ep"><span class="mth">${esc(ep.method || "GET")}</span> ${esc(ep.path)}${ep.access_restricted ? ` <span class="res">restricted ${esc(ep.access_restricted)}</span>` : ""}${params ? " · " + params : ""}</div>`;
+  };
   box.innerHTML =
     hosts.map((h) => {
       const svcs = (h.services || []).map((s) => `<div class="sv">${s.port}/${s.protocol} ${s.service_name || ""} ${s.banner || ""}</div>`).join("");
       const eps = (h.endpoints || []).map(epHtml).join("");
-      return `<details class="surf" open><summary>${h.address || h.hostname} <span class="h-tech">${h.technology || h.source || ""}</span></summary>${svcs}${eps}</details>`;
+      return `<details class="surf" open><summary>${esc(h.address || h.hostname)} <span class="h-tech">${esc(h.technology || h.source || "")}</span></summary>${svcs}${eps}</details>`;
     }).join("") + orphan.map(epHtml).join("");
 }
 
@@ -114,7 +118,7 @@ function renderAudit(rows) {
   if (!rows || !rows.length) { box.innerHTML = '<span class="empty">—</span>'; return; }
   const cls = (o) => (o.startsWith("fired") ? "o-fired" : o.startsWith("refused") ? "o-refused" : o.startsWith("errored") ? "o-errored" : o.startsWith("ingested") ? "o-ingested" : "");
   box.innerHTML = rows.map((r) =>
-    `<div class="arow"><span>${(r.timestamp || "").slice(11, 19)}</span><span class="id">${r.identity || "—"}</span><span>${r.method || "—"}</span><span>${(r.target || "—").slice(0, 60)}</span><span class="${cls(r.outcome)}">${r.outcome.split(":")[0]}</span></div>`
+    `<div class="arow"><span>${esc((r.timestamp || "").slice(11, 19))}</span><span class="id">${esc(r.identity || "—")}</span><span>${esc(r.method || "—")}</span><span>${esc((r.target || "—").slice(0, 60))}</span><span class="${cls(r.outcome)}">${esc(r.outcome.split(":")[0])}</span></div>`
   ).join("");
   box.scrollTop = box.scrollHeight;
 }
@@ -126,11 +130,11 @@ function renderFindings(findings) {
     const chain = (f.chains || []).map((ch) =>
       ch.nodes.map((n, i) => {
         const edge = i < ch.kinds.length ? `<span class="edge ${ch.kinds[i] === "derived_credential" ? "cred" : ""}">${ch.kinds[i] === "derived_credential" ? "→ credential" : "→ enables"}</span>` : "";
-        return `<span class="node">${n}</span>` + edge;
+        return `<span class="node">${esc(n)}</span>` + edge;
       }).join("")
     ).join("<br>");
-    return `<div class="find ${f.severity || ""}"><div class="find-head"><span class="find-class">${f.vuln_class || "finding"}</span><span class="sev">${f.severity || "?"}</span></div>
-      <div class="kv"><b>Oracle</b><span>${f.oracle_used || "—"}</span><b>Evidence</b><span>${f.evidence_ref || "—"}</span><b>Status</b><span>${f.status || "—"}</span></div>
+    return `<div class="find ${esc(f.severity || "")}"><div class="find-head"><span class="find-class">${esc(f.vuln_class || "finding")}</span><span class="sev">${esc(f.severity || "?")}</span></div>
+      <div class="kv"><b>Oracle</b><span>${esc(f.oracle_used || "—")}</span><b>Evidence</b><span>${esc(f.evidence_ref || "—")}</span><b>Status</b><span>${esc(f.status || "—")}</span></div>
       ${chain ? `<div class="chain">${chain}</div>` : ""}</div>`;
   }).join("");
 }
@@ -195,7 +199,6 @@ async function loadProviders() {
     const o = document.createElement("option");
     o.value = "named:" + p.id; o.textContent = p.name; sel.appendChild(o);
   });
-  ["deepseek", "openai"].forEach(([v, t]) => {}); // legacy aliases covered by named configs
   [["deepseek","DeepSeek"],["openai","OpenAI"]].forEach(([v,t])=>{
     const o=document.createElement("option");o.value=v;o.textContent=t+" (env default)";sel.appendChild(o);});
   if (cur) sel.value = cur;
