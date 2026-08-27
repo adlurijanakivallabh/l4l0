@@ -59,6 +59,7 @@ from reachagent.graph.store import ReachabilityGraph
 from reachagent.oracles import OracleMechanism
 from reachagent.payloads import (
     PayloadLibrary,
+    UnknownPayloadRefError,
     build_library,
     mint_fire_kit,
     resolve_entry,
@@ -483,9 +484,10 @@ def register_tools(mcp: FastMCP, session: _Session) -> None:
 
         A fresh kit is minted for each entry, so per-fire correlators are unique even
         when one lookup returns multiple payloads. Caller-supplied values (for example
-        an OOB collaborator domain or timing delay) override minted defaults. Resolver
-        errors propagate: dead refs and missing required slots never become empty
-        payloads.
+        an OOB collaborator domain or timing delay) override minted defaults.
+        Missing required slots propagate as configuration errors. Stale vendored
+        locators are logged and skipped so one bad corpus row cannot suppress
+        usable entries.
         """
         sink = _nodes.SinkType(sink_type) if sink_type is not None else None
         entries = _explorer.get_payloads(ctx, vuln_class, sink)
@@ -494,8 +496,13 @@ def register_tools(mcp: FastMCP, session: _Session) -> None:
             kit = mint_fire_kit(**(slot_kit or {}))
             try:
                 resolved = resolve_entry(e, **kit)
-            except Exception:  # noqa: BLE001, S112 — unresolvable payload is skipped
+            except UnknownPayloadRefError as exc:
+                # A stale vendored locator is excluded, with an audit log, so
+                # one bad corpus row cannot hide otherwise usable payloads.
+                _log.warning("skipping unresolvable payload %r: %s", e.payload_ref, exc)
                 continue
+            # Missing required slots are caller configuration errors. They
+            # propagate instead of silently narrowing the payload set.
             outputs.append(
                 PayloadEntryOut(
                     vuln_class=e.vuln_class,

@@ -370,5 +370,5 @@ Built (own implementation, own visual identity, zero build tooling):
   headings; Markdown/JSON/HTML download buttons appear on completion.
 - Providers panel preserved: named configs CRUD against providers.json,
   test button; provider select feeds the launch form.
-- JS extracted to static/app.js (no inline script); single GET / endpoint +
-  static mount, no build step required.
+- The browser client stays in the single static `index.html`; one GET `/`
+  endpoint plus a static mount keeps deployment build-free.

@@ -22,6 +22,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from reachagent.llm.client import OpenAICompatibleClient, build_openai_compatible_client
+from reachagent.llm.runtime import llm_required
 
 _log = logging.getLogger(__name__)
 
@@ -306,8 +307,9 @@ def propose_recon_tuning(
 
     Model-agnostic entry: ``client`` is swappable (Anthropic now, OpenAI later).
     When ``client`` is None, an :class:`AnthropicTunerClient` is built from env.
-    Any failure, timeout, or non-allowlisted response falls back to safe default
-    and logs why — never trusts raw API output.
+    In compatibility mode, failures and non-allowlisted responses fall back to
+    the safe default and log why; a strict scan-local LLM requirement re-raises
+    provider failures. Raw API output is never trusted.
     """
     try:
         if client is not None:
@@ -322,6 +324,8 @@ def propose_recon_tuning(
         _log.info("live tuning fallback to safe default (validation failed)")
         return _safe_default()
     except Exception as exc:  # noqa: BLE001 — live call must never crash the runner
+        if llm_required():
+            raise
         _log.warning("tuning LLM call failed: %s", exc)
         _log.warning("live tuning failed (%s); fallback to safe default", exc)
         return _safe_default()
@@ -371,7 +375,7 @@ class AnthropicProfileClient:
         )
         prompt = (
             "You are a recon profile picker for an AUTHORIZED"
-                "lab assessment. Given target signals, pick ONE "
+            "lab assessment. Given target signals, pick ONE "
             "profile name FROM the allowlist that best fits "
             "(api_target for /api/swagger, cms_target for wp-content, "
             "spa_target for JS-heavy, quiet/aggressive for stealth/speed). "
@@ -450,8 +454,9 @@ def propose_recon_profile(
 ) -> ReconProfile:
     """Pick ONE recon profile from RECON_PROFILES, allowlist-validated.
 
-    Any failure, timeout, or non-allowlisted name falls back to
-    RECON_PROFILES[_SAFE_DEFAULT_PROFILE] and logs why.
+    In compatibility mode, failures and non-allowlisted names fall back to
+    RECON_PROFILES[_SAFE_DEFAULT_PROFILE] and log why; strict scan-local LLM
+    requirements re-raise provider failures.
     """
     try:
         if client is not None:
@@ -468,6 +473,8 @@ def propose_recon_profile(
         _log.info("profile picker fallback to %s (validation failed)", _SAFE_DEFAULT_PROFILE)
         return RECON_PROFILES[_SAFE_DEFAULT_PROFILE]
     except Exception as exc:  # noqa: BLE001 — live call must never crash runner
+        if llm_required():
+            raise
         _log.warning("tuning LLM call failed: %s", exc)
         _log.warning("profile picker failed (%s); fallback to %s", exc, _SAFE_DEFAULT_PROFILE)
         return RECON_PROFILES[_SAFE_DEFAULT_PROFILE]
@@ -571,6 +578,8 @@ def profile_decision(
             "signals": signal_summary,
         }
     except Exception as exc:  # noqa: BLE001 — must never crash the scan
+        if llm_required():
+            raise
         _log.warning("tuning LLM call failed: %s", exc)
         _log.debug("profile lookup fallback: %s", exc)
         return {

@@ -22,6 +22,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from reachagent.llm.client import OpenAICompatibleClient, build_openai_compatible_client
+from reachagent.llm.runtime import llm_required
 
 _log = logging.getLogger(__name__)
 
@@ -214,8 +215,9 @@ def propose_vuln_targets(
     """Propose vuln classes for an endpoint shape, allowlist-validated.
 
     Model-agnostic entry — ``client`` swappable (Anthropic now, OpenAI later).
-    Any failure, timeout, or non-allowlisted/invented string falls back to safe
-    default (current sink-matched ordering) and logs why.
+    In compatibility mode, failures and non-allowlisted/invented strings fall
+    back to the safe default and log why; strict scan-local LLM requirements
+    re-raise provider failures.
     """
     try:
         if client is not None:
@@ -230,6 +232,8 @@ def propose_vuln_targets(
         _log.info("vuln targeting fallback to safe default (validation failed)")
         return _safe_default()
     except Exception as exc:  # noqa: BLE001 — live call must never crash caller
+        if llm_required():
+            raise
         _log.warning("tuning LLM call failed: %s", exc)
         _log.warning("vuln targeting failed (%s); fallback to safe default", exc)
         return _safe_default()

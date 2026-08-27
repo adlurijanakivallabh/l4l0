@@ -191,7 +191,9 @@ Same propose→validate→execute, now LLM picks ONE named `ReconProfile` from
 `RECON_PROFILES` (6 profiles: api/cms/static/spa/aggressive/quiet each
 bundling wordlist+flags+status+tool hint, all drawn from `RECON_ALLOWLIST`).
 Validated `profile_name in RECON_PROFILES` before use; outside→fallback
-`static_site` and log why. Wiring: `GobusterRunner` + `FfufRunner` +
+`static_site` and log why. Compatibility callers also fall back on provider
+errors; strict scan-local LLM mode re-raises those errors instead of masking a
+required provider failure. Wiring: `GobusterRunner` + `FfufRunner` +
 `FeroxbusterRunner` + `DirbRunner` + `X8Runner` (flags-only for x8, wordlist
 stays param list) when `REACHAGENT_RECON_PROFILE=1` (default OFF); second
 allowlist check `profile.wordlist in allowed_wl` etc. before argv. Facts-only
