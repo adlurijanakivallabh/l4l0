@@ -483,6 +483,7 @@ def run_payload_chain(
                     "vuln_class": vuln_class,
                     "sink_type": sink_type,
                     "slot_kit": dict(slot_kit or {}),
+                    "skip_unresolvable": True,
                 },
             )
         )

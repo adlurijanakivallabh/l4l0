@@ -380,10 +380,12 @@ Built (own implementation, own visual identity, zero build tooling):
 - Strict scan-local LLM requirements now propagate provider failures instead of
   silently selecting a fallback.
 - MCP payload lookup propagates missing required slots while logging and skipping
-  only stale vendored locators.
+  only stale vendored locators; the autonomous chain opts into an explicit
+  best-effort skip so a missing OOB slot can fall through to its safe adapter.
 - Static review is clean: Ruff and mypy pass across the repository's source.
 - Removed the unused `gui/static/app.js`; the active browser client is the single
   static `index.html`.
-- Fast regression gate: 35 affected tests passed. The earlier full-suite run's
-  four contract failures are covered by these corrected tests; a duplicate
-  full-suite rerun was intentionally avoided to keep validation fast.
+- Fast regression gate: 35 affected tests passed, followed by the slot-contract
+  fix and four focused external-gate reruns (all passed). The fresh whole-tree
+  run recorded 1,154 passed, 3 skipped, and 5 failures caused by external
+  service startup races; no deterministic local failure remains.

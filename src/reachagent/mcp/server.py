@@ -58,6 +58,7 @@ from reachagent.graph import nodes as _nodes
 from reachagent.graph.store import ReachabilityGraph
 from reachagent.oracles import OracleMechanism
 from reachagent.payloads import (
+    MissingSlotError,
     PayloadLibrary,
     UnknownPayloadRefError,
     build_library,
@@ -479,6 +480,7 @@ def register_tools(mcp: FastMCP, session: _Session) -> None:
         vuln_class: str,
         sink_type: str | None = None,
         slot_kit: dict[str, Any] | None = None,
+        skip_unresolvable: bool = False,
     ) -> list[PayloadEntryOut]:
         """Return sink-matched entries with resolved, fireable values (§9).
 
@@ -487,7 +489,9 @@ def register_tools(mcp: FastMCP, session: _Session) -> None:
         an OOB collaborator domain or timing delay) override minted defaults.
         Missing required slots propagate as configuration errors. Stale vendored
         locators are logged and skipped so one bad corpus row cannot suppress
-        usable entries.
+        usable entries. The internal chain may set ``skip_unresolvable`` to
+        continue past a missing-slot entry; direct callers remain strict by
+        default.
         """
         sink = _nodes.SinkType(sink_type) if sink_type is not None else None
         entries = _explorer.get_payloads(ctx, vuln_class, sink)
@@ -500,6 +504,11 @@ def register_tools(mcp: FastMCP, session: _Session) -> None:
                 # A stale vendored locator is excluded, with an audit log, so
                 # one bad corpus row cannot hide otherwise usable payloads.
                 _log.warning("skipping unresolvable payload %r: %s", e.payload_ref, exc)
+                continue
+            except MissingSlotError:
+                if not skip_unresolvable:
+                    raise
+                _log.warning("skipping payload with missing slot %r", e.payload_ref)
                 continue
             # Missing required slots are caller configuration errors. They
             # propagate instead of silently narrowing the payload set.
