@@ -401,6 +401,11 @@ Built (own implementation, own visual identity, zero build tooling):
   output budgets are bounded for responsive Responses-API calls. Empty model
   output falls back to an allowlisted proposal or deterministic report; real
   provider/configuration/network failures still surface in strict mode.
+- The generic payload chain now treats a class-specific fingerprint rejection as
+  an audited non-applicable result and continues with the next ranked class.
+- The final scoped Python gate passed 102 tests (one dependency deprecation
+  warning); Playwright found no browser errors beyond Chrome's non-blocking
+  password-form accessibility notice.
 - The configured Responses-compatible model then produced a valid plan/profile;
   the live page displayed tool activity, reasoning events, mapped graph nodes,
   and audit entries for `http://127.0.0.1:5000`.
