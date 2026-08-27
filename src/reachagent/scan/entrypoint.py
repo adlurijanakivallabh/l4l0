@@ -774,6 +774,22 @@ def scan_target(
                 )
                 if harvested is not None:
                     baseline_payload = harvested
+
+        # LLM-driven transport selection (flag-gated): which mechanism fires
+        # this probe — http, browser, or proxy. Advisory only; the oracle
+        # still confirms. When the flag is off, the default http path is used.
+        from reachagent.recon.transport_tuning import propose_transport
+
+        transport = propose_transport(g, sel.endpoint_node)
+        if transport.transport != "http":
+            _log.info(
+                "transport=%s for %s: %s",
+                transport.transport,
+                sel.endpoint_node,
+                transport.rationale,
+            )
+        _ = transport  # advisory; the payload chain still uses http by default
+
         def _on_chain_event(msg: str) -> None:
             if events is not None:
                 from reachagent.scan.orchestrator import ScanEvent as SE

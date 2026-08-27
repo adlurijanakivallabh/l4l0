@@ -561,6 +561,61 @@ def register_tools(mcp: FastMCP, session: _Session) -> None:
         )
 
     @mcp.tool()
+    async def fire_browser_form(
+        identity: str, url: str, field_values: dict[str, str] | None = None
+    ) -> dict[str, object]:
+        """Fill and submit a form via Playwright for browser-only insertion points.
+
+        CSRF-protected forms, JS-rendered SPAs, click-dependent flows. Fields
+        are filled by their name attribute; the form submits natively so
+        hidden CSRF inputs are included. Scope gate holds; the response is
+        JSON-safe data for the oracle to evaluate (never a finding itself).
+        """
+        ctx.firer.scope.enforce(url)
+
+        from playwright.async_api import async_playwright
+
+        fields = field_values or {}
+
+        async def _run() -> dict[str, object]:
+            async with async_playwright() as pw:
+                browser = await pw.chromium.launch(headless=True)
+                try:
+                    page = await browser.new_page()
+                    await page.goto(url, wait_until="load")
+                    for name, value in fields.items():
+                        selector = f"[name={name!r}]"
+                        el = page.locator(selector)
+                        if await el.count() > 0:
+                            tag = await el.first.evaluate("el => el.tagName.toLowerCase()")
+                            if tag == "input" and await el.first.get_attribute("type") in (
+                                "checkbox",
+                                "radio",
+                            ):
+                                await el.first.check()
+                            else:
+                                await el.first.fill(value)
+                    async with page.expect_navigation(wait_until="load", timeout=15000):
+                        await page.locator("[type=submit]").first.click()
+                    cookies = await page.context.cookies()
+                    session_cookie = next(
+                        (c["value"] for c in cookies if "session" in c["name"].lower()), ""
+                    )
+                    return {
+                        "url": url,
+                        "identity": identity,
+                        "status": 200,
+                        "final_url": page.url,
+                        "body_length": len(await page.content()),
+                        "session_cookie": session_cookie[:80],
+                        "title": await page.title(),
+                    }
+                finally:
+                    await browser.close()
+
+        return await _run()
+
+    @mcp.tool()
     def classify_response(
         fire_ref: str,
         identity: str,
@@ -887,6 +942,41 @@ def register_tools(mcp: FastMCP, session: _Session) -> None:
                 for f in result.flows
             ],
         }
+
+    # -- fire_proxy_request: repeater-style header manipulation (§13, Task 7) --
+
+    @mcp.tool()
+    def fire_proxy_request(
+        identity: str,
+        url: str,
+        method: str = "GET",
+        headers: dict[str, str] | None = None,
+        body: str | None = None,
+    ) -> FireResultOut:
+        """Fire a request with custom headers through the firer — proxy-style.
+
+        For header-manipulation probes: auth bypass via X-Forwarded-For /
+        X-Original-URL tampering, Host header injection, CORS probing with a
+        crafted Origin. The scope and read-only-first gates still hold; the
+        response goes through the same fire_ref handle as fire_request so
+        only run_oracle can confirm anything from it.
+        """
+        result = ctx.firer.fire(
+            identity,
+            method.upper(),
+            url,
+            state_changing=method.upper() not in ("GET", "HEAD", "OPTIONS"),
+            headers=dict(headers or {}),
+            data=body.encode("utf-8") if body else None,
+        )
+        ref = session.put_fire(result)
+        return FireResultOut(
+            fire_ref=ref,
+            status_code=result.status_code,
+            elapsed_seconds=result.elapsed_seconds,
+            body_length=len(result.body),
+            content_type=result.headers.get("content-type"),
+        )
 
 
 def build_server(

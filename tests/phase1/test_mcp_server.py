@@ -38,6 +38,8 @@ EXPLORER_TOOLS = {
     "fire_request",
     "classify_response",
     "fire_browser",
+    "fire_proxy_request",
+    "fire_browser_form",
 }
 VALIDATOR_TOOLS = {"run_oracle", "write_finding", "mark_inconclusive"}
 COORDINATOR_TOOLS = {"query_graph", "score_and_select", "check_budget"}
