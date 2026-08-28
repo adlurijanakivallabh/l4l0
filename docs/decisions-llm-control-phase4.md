@@ -97,3 +97,4 @@ and safe discovery-event handling in `src/reachagent/scan/entrypoint.py`, and
 phase snapshots/adaptive scheduling in `src/reachagent/scan/orchestrator.py`.
 The focused gate passed 37 tests across the control loop, planner, and adaptive
 recon suites. The whole repository suite is intentionally deferred to Phase 10.
+Feature commit: `97a54f7`; cancellation persistence follow-up: `a95de3d`.
