@@ -1199,6 +1199,10 @@ def scan_all_classes(
             audit=audit,
             cancel_check=cancel_check,
         )
+    except ScanCancelled:
+        control_state.cancel()
+        _emit(events_out, "recon", "cancelled", "scan cancelled by operator")
+        raise
     finally:
         if own_plan_client and plan_client is not None and hasattr(plan_client, "close"):
             plan_client.close()
@@ -1355,6 +1359,7 @@ def scan_all_classes(
 
     # Phase 3 — the classes the sink loop does not drive.
     _emit(events_out, "payloads", "info", "phase 3: structural + authz + advanced classes")
+    check_cancel(cancel_check)
     run_structural_headers(
         graph=graph,
         firer=firer,
@@ -1364,6 +1369,7 @@ def scan_all_classes(
         seam=seam,
         events=events_out,
     )
+    check_cancel(cancel_check)
     run_file_upload(
         graph=graph,
         firer=firer,
@@ -1373,6 +1379,7 @@ def scan_all_classes(
         seam=seam,
         events=events_out,
     )
+    check_cancel(cancel_check)
     run_jwt_forgery(
         graph=graph,
         firer=firer,
@@ -1382,6 +1389,7 @@ def scan_all_classes(
         seam=seam,
         events=events_out,
     )
+    check_cancel(cancel_check)
     run_sqli_blind(
         graph=graph,
         firer=firer,
@@ -1392,6 +1400,7 @@ def scan_all_classes(
         library=lib,
     )
     if identities is not None:
+        check_cancel(cancel_check)
         run_authz_bola(
             graph=graph,
             base_url=base_url,
@@ -1399,6 +1408,7 @@ def scan_all_classes(
             events=events_out,
             transport=transport,
         )
+    check_cancel(cancel_check)
     run_graphql(
         graph=graph,
         firer=firer,
@@ -1408,6 +1418,7 @@ def scan_all_classes(
         events=events_out,
         identities=identities,
     )
+    check_cancel(cancel_check)
     run_business_logic(
         graph=graph,
         firer=firer,
@@ -1419,6 +1430,7 @@ def scan_all_classes(
 
     from reachagent.scan.xss_dom import run_xss_dom
 
+    check_cancel(cancel_check)
     run_xss_dom(
         graph=graph,
         firer=firer,
