@@ -49,7 +49,7 @@ Full files read (including called helpers) were:
   `sdk/agents/models/chatcompletions/auto_compactor.py`, and
   `api/streaming.py`.
 - **R3:** `unified_agent/{agent,task,types,events}.py` and
-  `pentest_agent/{plan,execution,agents,trial}.py`.
+  `pentest_agent/{plan,execution,agents,trial,loop}.py`.
 - **R4:** `agent.py`, the planning/watchdog sections of `brain.py`,
   `memory/schemas.py`, `tools/auth_session.py`, `tools/_spray_http_form.py`,
   `tools/_spray_oauth.py`, and `tools/credential_store.py`.
