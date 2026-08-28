@@ -11,7 +11,7 @@ The user prompt drives the plan; the deterministic engine confirms. Core phases:
   4. REPORT    — LLM narrative over ``CONFIRMED_VIOLATION`` findings + chain paths.
 
 Confirmation is role-bounded and deterministic. The orchestrator is a **Validator-side
-caller** — the same documented seam as ``eval/portswigger_blind_sqli.py``: it injects
+caller** — the documented validator seam injects
 ``validator.run_oracle`` / ``validator.write_finding`` into the per-class detectors. No
 LLM proposer ever fires a request, calls an oracle, or writes a finding. Six oracle
 families held; ``ScopeGuard`` + read-only-first + audit hold on every fire.
@@ -120,7 +120,7 @@ def _emit(events: list[ScanEvent], phase: str, kind: str, message: str, **detail
 
 
 class _ValidatorSeam:
-    """Validator-side seam (portswigger precedent): real run_oracle / write_finding.
+    """Validator-side seam: real run_oracle / write_finding.
 
     Detectors get ``seam.run`` as their ``oracle_runner`` (duck-compatible with
     ``OracleOutcome``: ``OracleVerdict`` exposes ``is_violation``/``confirmed``/``status``).
