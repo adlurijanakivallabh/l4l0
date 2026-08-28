@@ -829,14 +829,13 @@ class SurfaceMapper:
         return None
 
     def _auth_headers(self, identity: str) -> dict[str, str]:
-        """Bearer header from the identity's isolated token store, if it has one.
+        """Live headers from the identity's isolated session store, if present.
 
         Reads only the owning identity's store (§10 isolation) — an identity with
         no seeded session probes unauthenticated, which is itself a valid
         ``can_call`` signal (unauth → typically ``confirmed_denied``).
         """
-        token = self._identities.token_store(identity).get_token()
-        return {"Authorization": f"Bearer {token}"} if token else {}
+        return self._identities.auth_headers(identity)
 
     def _resolve_path(self, ep: EndpointSpec) -> str | None:
         """Fill ``{placeholders}`` from sample/default values; ``None`` if any remain."""

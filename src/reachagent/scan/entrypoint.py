@@ -428,10 +428,16 @@ def scan_target(
     identity_headers: dict[str, dict[str, str]] = {}
     if identities is not None:
         for name in identities.names():
-            token = identities.token_store(name).get_token()
-            if token:
-                identity_headers[name] = {"Authorization": f"Bearer {token}"}
-    firer = RequestFirer(client, firer_scope, a, identity_headers=identity_headers)
+            headers = identities.auth_headers(name)
+            if headers:
+                identity_headers[name] = headers
+    firer = RequestFirer(
+        client,
+        firer_scope,
+        a,
+        identity_headers=identity_headers,
+        identity_stores=identities,
+    )
 
     def _tool_event(
         tool_name: str,
@@ -462,6 +468,43 @@ def scan_target(
         except Exception:  # noqa: BLE001 — event emission must never break the scan
             _log.debug("tool event emission failed for %s", tool_name, exc_info=True)
 
+    def _authenticate_configured() -> None:
+        """Bind every configured identity before authenticated mapping/firing."""
+        if identities is None:
+            return
+        from reachagent.identity.login import LoginError, authenticate_identity
+
+        for name in identities.names():
+            if not identities.auth_headers(name):
+                _tool_event(
+                    "authentication",
+                    "starting",
+                    phase="auth",
+                    identity=name,
+                    detail="locating login surface",
+                )
+                try:
+                    authenticate_identity(firer, identities, name, base_url, graph=g)
+                except LoginError as exc:
+                    _tool_event(
+                        "authentication",
+                        "blocked",
+                        phase="auth",
+                        identity=name,
+                        detail=f"{exc.code}: {exc}",
+                    )
+                    raise
+                _tool_event(
+                    "authentication",
+                    "authenticated",
+                    phase="auth",
+                    identity=name,
+                    detail="opaque session reference bound",
+                )
+            session_node = identities.ensure_session(name)
+            if session_node is not None:
+                g.add_session(session_node)
+
     if not resumed and surface_path is not None:
         # Optional --surface seeding (Task 27): materialize a declared surface
         # (endpoints/parameters/objects) BEFORE cold-start recon, so recon then
@@ -471,7 +514,7 @@ def scan_target(
         from reachagent.identity.store import IdentityStore
         from reachagent.recon.mapper import SurfaceMapper, SurfaceSpec
 
-        SurfaceMapper(g, firer, IdentityStore(), base_url).map_structure(
+        SurfaceMapper(g, firer, identities or IdentityStore(), base_url).map_structure(
             SurfaceSpec.from_file(surface_path)
         )
 
@@ -744,6 +787,11 @@ def scan_target(
             if stop:
                 break
 
+        # Bind configured identities before spec/API mapping so every subsequent
+        # endpoint probe carries the selected isolated session.
+        if not dry_run:
+            _authenticate_configured()
+
         # Spec-first API discovery (Task 27, live only — it fires read-only GET
         # probes). After --surface seeding and cold-start recon, before the
         # Coordinator loop: probe for OpenAPI/GraphQL specs, parse into
@@ -763,9 +811,20 @@ def scan_target(
                 forms=discovery.forms_found,
             )
 
+    # On resume there is no cold-start block above; authenticate before the
+    # coordinator replays any unexplored endpoint. Dry runs never submit creds.
+    if resumed and not dry_run:
+        _authenticate_configured()
+
     from reachagent.tools.explorer_context import ExplorerContext
 
-    ctx = ExplorerContext(graph=g, firer=firer, library=lib, base_url=base_url)
+    ctx = ExplorerContext(
+        graph=g,
+        firer=firer,
+        library=lib,
+        base_url=base_url,
+        identities=identities,
+    )
 
     if resumed and not dry_run:
         # RECOVER pass (D3): re-surface unexplored pairs for persisted derived

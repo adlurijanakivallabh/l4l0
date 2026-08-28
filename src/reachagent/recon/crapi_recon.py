@@ -87,9 +87,9 @@ def _onboard(
     """Log each seeded identity into crAPI and store its bearer token (setup).
 
     Direct HTTP, out of band from recon — this is the onboarding step the
-    ownership recipe's ``requires_session`` waits on. Returns the names that
-    onboarded successfully; an identity whose login fails simply has no session,
-    and ownership discovery will skip it (empirical-or-absent), never fabricate.
+    ownership recipe's ``requires_session`` waits on. Every configured identity
+    must authenticate; a partial identity set would silently turn ownership
+    checks into anonymous data, so failures stop the run loudly.
     """
     owns_client = client is None
     http = client or httpx.Client(timeout=_HTTP_TIMEOUT)
@@ -101,11 +101,26 @@ def _onboard(
                 f"{base_url.rstrip('/')}{_LOGIN_PATH}",
                 json={"email": cred.username, "password": cred.password},
             )
-            if resp.status_code == 200:
+            from reachagent.identity.login import LoginError
+
+            if resp.status_code == 429:
+                raise LoginError(f"identity {name!r} rate-limited (HTTP 429)", code="rate_limited")
+            if not 200 <= resp.status_code < 300:
+                raise LoginError(
+                    f"identity {name!r} rejected by login (HTTP {resp.status_code})",
+                    code="rejected",
+                )
+            try:
                 token = resp.json().get("token")
-                if isinstance(token, str) and token:
-                    identities.open_session(name, token)
-                    onboarded.append(name)
+            except (TypeError, ValueError):
+                token = None
+            if not isinstance(token, str) or not token:
+                raise LoginError(
+                    f"identity {name!r} login returned no session material",
+                    code="no_session_material",
+                )
+            identities.open_session(name, token)
+            onboarded.append(name)
     finally:
         if owns_client:
             http.close()

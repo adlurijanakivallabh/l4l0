@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from reachagent.execution.firer import RequestFirer
     from reachagent.graph.store import ReachabilityGraph
+    from reachagent.identity.store import IdentityStore
     from reachagent.payloads import PayloadLibrary
 
 
@@ -63,6 +64,7 @@ class ExplorerContext:
     firer: RequestFirer
     library: PayloadLibrary
     base_url: str
+    identities: IdentityStore | None = None
     canary: str = "reachagent-canary-7f3a2b"
     # Parameter node ids that have been fingerprinted. Tracked explicitly rather
     # than inferred from ``inferred_sink_type`` because a legitimate fingerprint

@@ -85,6 +85,15 @@ _ENV_SCOPE_HOSTS = "REACHAGENT_SCOPE_HOSTS"
 _DEFAULT_BASE_URL = "http://127.0.0.1:5000"
 
 
+def _safe_target_url(value: str) -> str:
+    """Return an URL suitable for model/UI output without query credentials."""
+    try:
+        parsed = httpx.URL(value)
+        return str(parsed.copy_with(query=None, fragment=None))
+    except Exception:  # noqa: BLE001
+        return "<target>"
+
+
 @dataclass
 class _Session:
     """Server-side state bridging the stateless MCP calls into the tool objects.
@@ -162,12 +171,24 @@ def _build_context(
         scope_hosts = [host] if host else []
 
     scope = ScopeGuard.from_hosts(scope_hosts)
-    firer = RequestFirer(httpx.Client(), scope, AuditLog())
+    identities = None
+    try:
+        from reachagent.identity.store import IdentityStore
+
+        identities = IdentityStore.from_env()
+    except Exception:  # noqa: BLE001 - anonymous MCP context is valid
+        identities = None
+    firer = RequestFirer(httpx.Client(), scope, AuditLog(), identity_stores=identities)
+    graph = ReachabilityGraph()
+    if identities is not None:
+        for name in identities.names():
+            graph.add_identity(name, identities.identity(name))
     return ExplorerContext(
-        graph=ReachabilityGraph(),
+        graph=graph,
         firer=firer,
         library=_load_library(),
         base_url=resolved_base,
+        identities=identities,
     )
 
 
@@ -592,12 +613,32 @@ def register_tools(mcp: FastMCP, session: _Session) -> None:
         from playwright.async_api import async_playwright
 
         fields = field_values or {}
+        if any(
+            any(marker in name.lower() for marker in ("password", "passwd", "token", "secret"))
+            for name in fields
+        ):
+            raise ValueError(
+                "credential fields must be bound by the identity session, not sent by the model"
+            )
+        identity_key = identity.split(":", 1)[1] if identity.startswith("identity:") else identity
+        identities = ctx.identities
+        if identities is not None and identity_key in identities:
+            credential = identities.credential(identity_key)
+            if any(value == credential.password for value in fields.values()):
+                raise ValueError("password values must stay in the server-side identity store")
+        # Establish an audited, in-scope read-only baseline before the browser
+        # can submit a form. This preserves read-only-first for browser-only
+        # insertion points just as it does for HTTP payload fires.
+        ctx.firer.fire(identity_key, "GET", url, state_changing=False)
+        extra_headers = identities.auth_headers(identity_key) if identities is not None else {}
 
         async def _run() -> dict[str, object]:
             async with async_playwright() as pw:
                 browser = await pw.chromium.launch(headless=True)
+                context = None
                 try:
-                    page = await browser.new_page()
+                    context = await browser.new_context(extra_http_headers=extra_headers or None)
+                    page = await context.new_page()
                     await page.goto(url, wait_until="load")
                     for name, value in fields.items():
                         selector = f"[name={name!r}]"
@@ -613,20 +654,30 @@ def register_tools(mcp: FastMCP, session: _Session) -> None:
                                 await el.first.fill(value)
                     async with page.expect_navigation(wait_until="load", timeout=15000):
                         await page.locator("[type=submit]").first.click()
-                    cookies = await page.context.cookies()
-                    session_cookie = next(
-                        (c["value"] for c in cookies if "session" in c["name"].lower()), ""
-                    )
+                    cookies = await context.cookies()
+                    session_ref: str | None = None
+                    if identities is not None and identity_key in identities:
+                        identities.token_store(identity_key).merge_cookies(
+                            {str(c["name"]): str(c["value"]) for c in cookies if c.get("name")}
+                        )
+                        session_node = identities.ensure_session(identity_key)
+                        if session_node is not None:
+                            ctx.graph.add_session(session_node)
+                            session_ref = session_node.token_ref
                     return {
-                        "url": url,
+                        "url": _safe_target_url(url),
                         "identity": identity,
                         "status": 200,
-                        "final_url": page.url,
+                        "final_url": _safe_target_url(page.url),
                         "body_length": len(await page.content()),
-                        "session_cookie": session_cookie[:80],
-                        "title": await page.title(),
+                        "session_ref": session_ref,
+                        "title": identities.redact(identity_key, await page.title())
+                        if identities is not None and identity_key in identities
+                        else await page.title(),
                     }
                 finally:
+                    if context is not None:
+                        await context.close()
                     await browser.close()
 
         return await _run()
@@ -659,6 +710,13 @@ def register_tools(mcp: FastMCP, session: _Session) -> None:
             payload_ref=payload_ref,
             notes=tuple(notes or ()),
         )
+        identity_key = identity.split(":", 1)[1] if identity.startswith("identity:") else identity
+
+        def redact(value: str) -> str:
+            if ctx.identities is not None and identity_key in ctx.identities:
+                return ctx.identities.redact(identity_key, value)
+            return value
+
         return CandidateOut(
             identity=candidate.identity,
             endpoint_node=candidate.endpoint_node,
@@ -669,8 +727,8 @@ def register_tools(mcp: FastMCP, session: _Session) -> None:
             status_code=candidate.signal.status_code,
             body_length=candidate.signal.body_length,
             elapsed_seconds=candidate.signal.elapsed_seconds,
-            error_strings=list(candidate.signal.error_strings),
-            notes=list(candidate.notes),
+            error_strings=[redact(value) for value in candidate.signal.error_strings],
+            notes=[redact(value) for value in candidate.notes],
         )
 
     # -- Validator subset (the only side that confirms / writes findings) --
@@ -935,11 +993,18 @@ def register_tools(mcp: FastMCP, session: _Session) -> None:
         from reachagent.browser.playwright_driver import AsyncPlaywrightDriver
         from reachagent.browser.shim import BrowserFireResult, run_taint_shim_async
 
+        identity_key = identity.split(":", 1)[1] if identity.startswith("identity:") else identity
+        extra_headers = (
+            ctx.identities.auth_headers(identity_key) if ctx.identities is not None else {}
+        )
+        ctx.firer.fire(identity_key, "GET", url, state_changing=False)
+
         async def _run() -> BrowserFireResult:
             async with async_playwright() as pw:
                 browser = await pw.chromium.launch(headless=True)
                 try:
-                    page = await browser.new_page()
+                    context = await browser.new_context(extra_http_headers=extra_headers or None)
+                    page = await context.new_page()
                     driver = AsyncPlaywrightDriver(page)
                     return await run_taint_shim_async(
                         driver, identity, url, inject_shim=inject_shim
@@ -948,13 +1013,23 @@ def register_tools(mcp: FastMCP, session: _Session) -> None:
                     await browser.close()
 
         result = await _run()
+
+        def redact(value: str) -> str:
+            if ctx.identities is not None and identity_key in ctx.identities:
+                return ctx.identities.redact(identity_key, value)
+            return value
+
         return {
-            "url": result.url,
+            "url": _safe_target_url(redact(result.url)),
             "identity": result.identity,
             "shim_installed": result.shim_installed,
             "executed": result.executed,
             "flows": [
-                {"source": f.source, "sink": f.sink, "value_snippet": f.value_snippet}
+                {
+                    "source": redact(f.source),
+                    "sink": redact(f.sink),
+                    "value_snippet": redact(f.value_snippet),
+                }
                 for f in result.flows
             ],
         }

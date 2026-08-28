@@ -285,6 +285,12 @@ has a completed benign fingerprint and a concrete location/serialization plan.
 
 ### Phase 3 — Identity, authentication, and session binding
 
+**Status: implemented 2026-08-28.** Identity discovery, form/JSON/GraphQL
+submission, OIDC metadata discovery, isolated cookie/bearer material, expiry and
+refresh, fail-loud authentication events, and secret-free graph/MCP/UI boundaries
+are implemented. See `docs/decisions-identity-phase3.md` for the complete read
+inventory, design decisions, and deterministic-boundary proof.
+
 **Goal:** make authenticated coverage reliable across multiple identities.
 
 **Read during this phase:** R1 auth/provider/session service files; R2 API auth,
@@ -308,8 +314,12 @@ failure reporting, and secret redaction.
   continuation;
 - support owner/non-owner role pairs for differential BOLA/BFLA/IDOR checks.
 
-**Focused gate:** identity store, login detection, cookie/bearer binding, expiry,
-and fail-loud tests.
+**Focused gate:** `tests/recon/test_identity_phase3.py`,
+`tests/phase1/test_login_detection.py`, `tests/phase1/test_identity_store.py`,
+`tests/phase1/test_execution_layer.py`, `tests/phase2/test_crapi_recon.py`,
+`tests/phase2/test_mapper_ownership.py`, `tests/phase2/test_crapi_bola_gate.py`,
+and `tests/phase4/test_graphql.py` (live-container cases are skipped when the
+target is not provisioned).
 
 **Exit criterion:** every request after authentication carries exactly the
 selected identity's isolated session material, and no secret enters graph,

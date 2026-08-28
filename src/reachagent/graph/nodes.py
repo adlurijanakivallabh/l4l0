@@ -80,6 +80,11 @@ class Session:
     token_ref: str
     identity_ref: str
     live: bool = True
+    # Non-secret session metadata.  The token/cookie value remains exclusively
+    # in the owning IdentityStore; these fields are safe for graph persistence
+    # and UI snapshots.
+    auth_kind: str = "bearer"
+    expires_at: str | None = None
 
 
 @dataclass

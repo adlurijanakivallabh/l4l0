@@ -13,6 +13,7 @@ binding. Target config (base_url, host, surface) stays in the caller.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from itertools import count
 from typing import TYPE_CHECKING
@@ -57,6 +58,7 @@ def session_as(
     token_or_shared: str | None | SharedState = None,
     shared_or_transport: SharedState | httpx.BaseTransport | None = None,
     transport: httpx.BaseTransport | None = None,
+    auth_headers: Mapping[str, str] | None = None,
 ) -> server._Session:
     """Bound MCP session whose firer authenticates as one identity (§10, §13).
 
@@ -81,7 +83,7 @@ def session_as(
         host = host_or_token or ""
         token = token_or_shared  # type: ignore[assignment]
         shared = shared_or_transport  # type: ignore[assignment]
-    headers = {"Authorization": f"Bearer {token}"} if token else {}
+    headers = dict(auth_headers or ({"Authorization": f"Bearer {token}"} if token else {}))
     client = httpx.Client(headers=headers, timeout=_HTTP_TIMEOUT, transport=transport)
     firer = RequestFirer(client, ScopeGuard.from_hosts([host]), AuditLog())
     ctx = ExplorerContext(

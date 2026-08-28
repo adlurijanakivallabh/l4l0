@@ -174,7 +174,8 @@ class TestAuthenticateIdentity:
 
         firer.fire = _fire  # type: ignore[assignment]
         store = self._store()
-        token = authenticate_identity(firer, store, "testuser", _BASE)
-        # The return value is prefixed with the kind so callers can distinguish.
-        assert "bearer:" in token
-        assert store.token_store("testuser").get_token() == token.split(":", 1)[1]
+        session_ref = authenticate_identity(firer, store, "testuser", _BASE)
+        # The return value is an opaque graph/session handle; raw token values
+        # remain inside the identity's isolated store.
+        assert session_ref == "token:testuser"
+        assert store.token_store("testuser").get_token() == "jwt-abc-123"

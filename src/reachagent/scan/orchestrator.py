@@ -184,11 +184,7 @@ def _identity_for_scan(
     """Pick the scan identity + its auth header mapping, or a seeded unauth identity."""
     if identities is not None and identities.names():
         name = identities.names()[0]
-        token = identities.token_store(name).get_token()
-        headers: dict[str, str] = {}
-        if token:
-            headers["Authorization"] = f"Bearer {token}"
-        return name, headers
+        return name, identities.auth_headers(name)
     _emit(events, "endpoints", "info", "no identities seeded — scanning unauth")
     return "seed", {}
 
@@ -444,7 +440,9 @@ def run_jwt_forgery(
         ("jwt_forgery/weak-secret", "weak-secret"),
     )
     found: list[str] = []
-    valid_token = next((v for v in auth_headers.values() if v), "")  # e.g. "Bearer x"
+    valid_token = auth_headers.get("Authorization", "")
+    if not valid_token.lower().startswith("bearer "):
+        valid_token = ""
     targets: list[str] = []
     for _, ep in graph.endpoints():
         low = ep.path.lower()
@@ -676,16 +674,24 @@ def run_authz_bola(
     owners = {src for src, _ in graph.owns_edges()}
     owner_tokens: dict[str, str] = {}
     non_owner_tokens: dict[str, str] = {}
+    owner_headers: dict[str, Mapping[str, str]] = {}
+    non_owner_headers: dict[str, Mapping[str, str]] = {}
     for name in names:
-        token = identities.token_store(name).get_token()
-        if not token:
+        headers = identities.auth_headers(name)
+        if not headers:
             continue
         id_ = identity_id(name)
         if id_ in owners:
-            owner_tokens[id_] = token
+            owner_headers[id_] = headers
+            token = identities.token_store(name).get_token()
+            if token:
+                owner_tokens[id_] = token
         else:
-            non_owner_tokens[id_] = token
-    if not owner_tokens or not non_owner_tokens:
+            non_owner_headers[id_] = headers
+            token = identities.token_store(name).get_token()
+            if token:
+                non_owner_tokens[id_] = token
+    if not owner_headers or not non_owner_headers:
         _emit(events, "payloads", "not-applicable", "bola/bfla: no owner+non-owner token pair")
         return []
     result = bola_detector.detect(
@@ -693,6 +699,8 @@ def run_authz_bola(
         base_url,
         owner_tokens=owner_tokens,
         non_owner_tokens=non_owner_tokens,
+        owner_headers=owner_headers,
+        non_owner_headers=non_owner_headers,
         transport=transport,
     )
     for hop in result.confirmed_hops:
@@ -751,18 +759,13 @@ def run_graphql(
         _emit(events, "payloads", "not-applicable", "graphql: introspection disabled/refused")
         return []
 
-    tokens: list[tuple[str, str]] = []
+    authenticated: list[str] = []
     if identities is not None:
-        tokens = [
-            (name, identities.token_store(name).get_token() or "")
-            for name in identities.names()
-            if identities.token_store(name).get_token()
-        ]
-    if len(tokens) < 2:
+        authenticated = [name for name in identities.names() if identities.auth_headers(name)]
+    if len(authenticated) < 2:
         _emit(events, "payloads", "not-applicable", "graphql: resolver-BOLA needs ≥2 identities")
         return []
-    owner_id = tokens[0][0]
-    non_owner_id = tokens[1][0]
+    owner_id, non_owner_id = authenticated[:2]
     found: list[str] = []
     for gql_field in schema.fields[:10]:
         if gql_field.public is not None:
@@ -1208,57 +1211,11 @@ def scan_all_classes(
         ),
         live_recon=live_recon,
     )
-    identity_headers: dict[str, dict[str, str]] = {}
-    if identities is not None:
-        # Attempt login for each seeded identity (fail loud per-identity).
-        from reachagent.identity.login import LoginError, authenticate_identity
-
-        probe_firer = RequestFirer(
-            httpx.Client(transport=transport) if transport is not None else httpx.Client(),
-            scope,
-            audit,
-        )
-        for name in identities.names():
-            token = identities.token_store(name).get_token()
-            session_kind = "bearer"
-            if token and ":" in token and token.split(":", 1)[0] in ("cookie", "bearer"):
-                session_kind, token = token.split(":", 1)
-            if not token and identities.credential(name):
-                try:
-                    _emit(
-                        events_out,
-                        "endpoints",
-                        "step",
-                        f"authenticating {name!r} against detected login surface",
-                    )
-                    token = authenticate_identity(
-                        probe_firer,
-                        identities,
-                        name,
-                        base_url,
-                        graph=graph,
-                    )
-                    _emit(
-                        events_out,
-                        "endpoints",
-                        "step",
-                        f"authenticated {name!r} — session captured",
-                    )
-                except LoginError as exc:
-                    _emit(events_out, "endpoints", "error", f"login failed for {name!r}: {exc}")
-                    raise
-            if not token:
-                continue
-            if session_kind == "cookie":
-                # A captured cookie goes in a Cookie header (not Authorization).
-                identity_headers[name] = {"Cookie": token}
-            else:
-                identity_headers[name] = {"Authorization": f"Bearer {token}"}
     firer = RequestFirer(
         httpx.Client(transport=transport) if transport is not None else httpx.Client(),
         scope,
         audit,
-        identity_headers=identity_headers,
+        identity_stores=identities,
     )
     seam = _ValidatorSeam(graph)
     identity, auth_headers = _identity_for_scan(identities, events_out)

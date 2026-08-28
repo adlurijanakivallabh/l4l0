@@ -412,7 +412,14 @@ async def _run_scan_body(
         )
         _scans[scan_id].update({"status": "done", "phase": "report", "report_md": md})
     except Exception as exc:  # noqa: BLE001 — a scan failure is surfaced, not swallowed
-        _scans[scan_id].update({"status": "error", "error": str(exc)})
+        from reachagent.identity.login import LoginError, redact_message
+
+        if isinstance(exc, LoginError):
+            _scans[scan_id].update(
+                {"status": "blocked", "phase": "auth", "error": redact_message(exc)}
+            )
+        else:
+            _scans[scan_id].update({"status": "error", "error": redact_message(exc)})
 
 
 def _audit_rows(audit: AuditLog | None) -> list[dict[str, Any]]:
@@ -442,8 +449,19 @@ def _graph_snapshot(graph: ReachabilityGraph | None) -> dict[str, Any]:
             "endpoints": len(graph.endpoints()),
             "parameters": sum(len(graph.parameters_of(ep)) for ep, _ in graph.endpoints()),
             "findings": len(graph.findings()),
+            "sessions": len(graph.sessions()),
         },
         "hosts": [h.address for h_id, h in graph.hosts()[:20]],
+        "sessions": [
+            {
+                "id": sid,
+                "identity": session.identity_ref,
+                "auth_kind": session.auth_kind,
+                "expires_at": session.expires_at,
+                "live": session.live,
+            }
+            for sid, session in graph.sessions()[:20]
+        ],
         "endpoints": [
             {
                 "method": ep.method,

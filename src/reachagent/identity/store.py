@@ -13,8 +13,9 @@ the owning identity's isolated store, so secrets never enter the graph.
 from __future__ import annotations
 
 import os
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TypeVar
 
@@ -23,6 +24,7 @@ import yaml
 from reachagent.graph.nodes import AuthState, Identity, Provenance, Session
 
 _T = TypeVar("_T")
+_DEFAULT_TOKEN_SCHEME = "Bearer"  # noqa: S105 - HTTP auth scheme, not a credential
 
 # Env schema (§10, §13):
 #   REACHAGENT_IDENTITIES="user_a,user_b,admin"
@@ -43,6 +45,71 @@ class IdentityConfigError(RuntimeError):
 
 class UnknownIdentityError(KeyError):
     """Raised when an operation names an identity that was never seeded."""
+
+
+@dataclass(frozen=True)
+class SessionMaterial:
+    """Private authentication material held by one identity's token store.
+
+    The object is deliberately safe to represent: its ``repr`` never contains
+    token, cookie, or refresh values.  Runtime callers use ``TokenStore`` to
+    obtain request headers; graph, audit, and model-facing code only receives a
+    session reference and the non-sensitive expiry/kind metadata.
+    """
+
+    kind: str = "bearer"
+    token: str | None = field(default=None, repr=False)
+    cookies: tuple[tuple[str, str], ...] = field(default=(), repr=False)
+    expires_at: datetime | None = None
+    refresh_token: str | None = field(default=None, repr=False)
+    refresh_url: str | None = None
+    token_type: str = _DEFAULT_TOKEN_SCHEME
+
+    def __post_init__(self) -> None:
+        if self.kind not in {"bearer", "cookie", "mixed"}:
+            raise ValueError("session kind must be bearer, cookie, or mixed")
+        object.__setattr__(
+            self, "cookies", tuple(sorted((str(k), str(v)) for k, v in self.cookies))
+        )
+
+    @property
+    def expired(self) -> bool:
+        return self.expires_at is not None and self.expires_at <= datetime.now(UTC)
+
+    def headers(self) -> dict[str, str]:
+        """Build headers for the owning identity without mutating shared state."""
+        out: dict[str, str] = {}
+        if self.token:
+            scheme = self.token_type.strip() or "Bearer"
+            out["Authorization"] = f"{scheme} {self.token}"
+        if self.cookies:
+            out["Cookie"] = "; ".join(f"{name}={value}" for name, value in self.cookies)
+        return out
+
+    def safe_dict(self) -> dict[str, object]:
+        """Non-secret metadata suitable for graph/audit/UI state."""
+        return {
+            "kind": self.kind,
+            "has_token": bool(self.token),
+            "cookie_names": [name for name, _ in self.cookies],
+            "expires_at": self.expires_at.isoformat() if self.expires_at else None,
+            "has_refresh": bool(self.refresh_token),
+        }
+
+
+RefreshCallback = Callable[[str], SessionMaterial | None]
+
+
+def _coerce_expiry(value: datetime | str | None) -> datetime | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
 
 
 @dataclass(frozen=True)
@@ -100,7 +167,8 @@ class TokenStore:
 
     def __init__(self, identity: str) -> None:
         self._identity = identity
-        self._token: str | None = None
+        self._material: SessionMaterial | None = None
+        self._refresh_callback: RefreshCallback | None = None
 
     @property
     def identity(self) -> str:
@@ -108,19 +176,139 @@ class TokenStore:
 
     @property
     def has_token(self) -> bool:
-        return self._token is not None
+        material = self._material
+        return material is not None and bool(material.token or material.cookies)
 
-    def set_token(self, token: str) -> None:
-        self._token = token
+    def set_token(
+        self,
+        token: str,
+        *,
+        kind: str = "bearer",
+        expires_at: datetime | str | None = None,
+        refresh_token: str | None = None,
+        refresh_url: str | None = None,
+        token_type: str = _DEFAULT_TOKEN_SCHEME,
+    ) -> None:
+        """Store one bearer/cookie token while retaining the old convenience API."""
+        self.set_material(
+            SessionMaterial(
+                kind=kind,
+                token=token if kind in {"bearer", "mixed"} else None,
+                expires_at=_coerce_expiry(expires_at),
+                refresh_token=refresh_token,
+                refresh_url=refresh_url,
+                token_type=token_type,
+            )
+        )
+
+    def set_material(self, material: SessionMaterial) -> None:
+        """Replace this identity's complete private session material."""
+        self._material = material
+
+    def merge_cookies(self, cookies: Mapping[str, str]) -> None:
+        """Merge browser cookies into this identity without dropping a bearer token."""
+        current = self._material
+        if current is None:
+            self._material = SessionMaterial(kind="cookie", cookies=tuple(cookies.items()))
+            return
+        merged = dict(current.cookies)
+        merged.update({str(k): str(v) for k, v in cookies.items()})
+        kind = "mixed" if current.token else "cookie"
+        self._material = SessionMaterial(
+            kind=kind,
+            token=current.token,
+            cookies=tuple(merged.items()),
+            expires_at=current.expires_at,
+            refresh_token=current.refresh_token,
+            refresh_url=current.refresh_url,
+            token_type=current.token_type,
+        )
+
+    def set_refresh_callback(self, callback: RefreshCallback | None) -> None:
+        """Install an in-memory refresh function; never persist the callback."""
+        self._refresh_callback = callback
 
     def get_token(self) -> str | None:
-        return self._token
+        material = self._live_material()
+        return material.token if material is not None else None
+
+    def get_material(self) -> SessionMaterial | None:
+        """Return private material for runtime callers (never graph/UI callers)."""
+        return self._live_material()
+
+    def headers(self) -> dict[str, str]:
+        material = self._live_material()
+        return material.headers() if material is not None else {}
+
+    @property
+    def expires_at(self) -> datetime | None:
+        return self._material.expires_at if self._material is not None else None
+
+    @property
+    def kind(self) -> str | None:
+        return self._material.kind if self._material is not None else None
+
+    def refresh_if_needed(self) -> bool:
+        """Refresh expired bearer material when a callback was supplied.
+
+        A missing/failed callback fails closed by clearing the material.  This
+        prevents an expired token from silently being reused on later requests.
+        """
+        material = self._material
+        if material is None or not material.expired:
+            return bool(material)
+        if not material.refresh_token or self._refresh_callback is None:
+            self.clear()
+            return False
+        try:
+            refreshed = self._refresh_callback(material.refresh_token)
+        except Exception:  # noqa: BLE001 - refresh failure is a closed session
+            refreshed = None
+        if refreshed is None:
+            self.clear()
+            return False
+        self.set_material(refreshed)
+        return True
+
+    def _live_material(self) -> SessionMaterial | None:
+        if self._material is None:
+            return None
+        if self._material.expired and not self.refresh_if_needed():
+            return None
+        return self._material
 
     def clear(self) -> None:
-        self._token = None
+        self._material = None
+        self._refresh_callback = None
+
+    def safe_summary(self) -> dict[str, object]:
+        material = self._material
+        return (
+            material.safe_dict()
+            if material is not None
+            else {
+                "kind": None,
+                "has_token": False,
+                "cookie_names": [],
+                "expires_at": None,
+                "has_refresh": False,
+            }
+        )
+
+    def redact(self, value: str) -> str:
+        """Replace this identity's private material in a model-facing string."""
+        text = str(value)
+        material = self._material
+        if material is None:
+            return text
+        for secret in (material.token, material.refresh_token, *(v for _, v in material.cookies)):
+            if secret:
+                text = text.replace(secret, "<redacted>")
+        return text
 
     def __repr__(self) -> str:  # never echo the token value
-        return f"TokenStore(identity={self._identity!r}, has_token={self.has_token})"
+        kind = self._material.kind if self._material is not None else None
+        return f"TokenStore(identity={self._identity!r}, has_token={self.has_token}, kind={kind!r})"
 
 
 class IdentityStore:
@@ -216,17 +404,60 @@ class IdentityStore:
 
     # -- sessions ----------------------------------------------------------
 
-    def open_session(self, identity: str, token: str, *, live: bool = True) -> Session:
-        """Store ``token`` in the identity's isolated store and bind a Session.
+    def open_session(
+        self,
+        identity: str,
+        token: str = "",
+        *,
+        kind: str = "bearer",
+        cookies: Mapping[str, str] | None = None,
+        expires_at: datetime | str | None = None,
+        refresh_token: str | None = None,
+        refresh_url: str | None = None,
+        token_type: str = _DEFAULT_TOKEN_SCHEME,
+        refresh_callback: RefreshCallback | None = None,
+        live: bool = True,
+    ) -> Session:
+        """Store private session material and bind a secret-free graph Session.
 
         The returned :class:`Session` carries only a ``token_ref`` — the value
         stays in the isolated store, never on the graph node (§6, §10).
         """
         store = self.token_store(identity)
-        store.set_token(token)
+        material = SessionMaterial(
+            kind=kind,
+            token=token or None if kind in {"bearer", "mixed"} else None,
+            cookies=tuple((str(k), str(v)) for k, v in (cookies or {}).items()),
+            expires_at=_coerce_expiry(expires_at),
+            refresh_token=refresh_token,
+            refresh_url=refresh_url,
+            token_type=token_type,
+        )
+        store.set_material(material)
+        store.set_refresh_callback(refresh_callback)
         session = Session(
             token_ref=self._token_ref(identity),
             identity_ref=identity,
+            auth_kind=material.kind,
+            expires_at=material.expires_at.isoformat() if material.expires_at else None,
+            live=live,
+        )
+        self._sessions[identity] = session
+        return session
+
+    def ensure_session(self, identity: str, *, live: bool = True) -> Session | None:
+        """Create a graph-safe Session for already-captured private material."""
+        existing = self._sessions.get(identity)
+        if existing is not None:
+            return existing
+        material = self.token_store(identity).get_material()
+        if material is None:
+            return None
+        session = Session(
+            token_ref=self._token_ref(identity),
+            identity_ref=identity,
+            auth_kind=material.kind,
+            expires_at=material.expires_at.isoformat() if material.expires_at else None,
             live=live,
         )
         self._sessions[identity] = session
@@ -242,6 +473,25 @@ class IdentityStore:
         Session for one identity can never yield another's token (§10).
         """
         return self.token_store(session.identity_ref).get_token()
+
+    def auth_headers(self, identity: str) -> dict[str, str]:
+        """Return the selected identity's live headers for a runtime request."""
+        store = self.token_store(identity)
+        headers = store.headers()
+        session = self._sessions.get(identity)
+        if session is not None:
+            session.live = bool(headers)
+            material = store.get_material()
+            if material is not None:
+                session.auth_kind = material.kind
+                session.expires_at = (
+                    material.expires_at.isoformat() if material.expires_at else None
+                )
+        return headers
+
+    def redact(self, identity: str, value: str) -> str:
+        """Redact private material for one identity from a model-facing value."""
+        return self.token_store(identity).redact(value)
 
     @staticmethod
     def _token_ref(identity: str) -> str:

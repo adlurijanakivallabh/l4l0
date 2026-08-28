@@ -12,6 +12,7 @@ from reachagent.identity.store import (
     Credential,
     IdentityConfigError,
     IdentityStore,
+    SessionMaterial,
     TokenStore,
     UnknownIdentityError,
 )
@@ -20,6 +21,7 @@ __all__ = [
     "Credential",
     "IdentityConfigError",
     "IdentityStore",
+    "SessionMaterial",
     "TokenStore",
     "UnknownIdentityError",
 ]

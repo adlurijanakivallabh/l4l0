@@ -305,11 +305,12 @@ task references are to `docs/phase2-tasks.md`.
   passed via env at run time, never hardcoded — same discipline as the live crAPI
   gate. Green both ways: skips cleanly with no Neo4j, runs when it is up.
 - **Secrets stay out of the graph on both backends, verified symmetrically.** A
-  `Session` node stores only `token_ref`/`identity_ref`/`live` — never a token
-  value — and values are passed as Cypher *parameters*, never interpolated into
-  the query string. The parity test reads the stored node's properties on each
-  backend (`vars(session)` for NetworkX, `properties(n)` for Neo4j) and asserts
-  the property set is a subset of the three secret-free fields.
+  `Session` node stores only `token_ref`/`identity_ref`/`live` plus non-secret
+  auth kind/expiry metadata — never a token value — and values are passed as
+  Cypher *parameters*, never interpolated into the query string. The parity test
+  reads the stored node's properties on each backend (`vars(session)` for
+  NetworkX, `properties(n)` for Neo4j) and asserts the property set contains no
+  secret material.
 - **Config refuses to guess a credential.** `MCPCypherExecutor` has no baked-in
   default password; an absent `NEO4J_PASSWORD` is a loud `CypherExecutionError`
   at `__enter__`, never a guessed default — the read-only-first "empirical or

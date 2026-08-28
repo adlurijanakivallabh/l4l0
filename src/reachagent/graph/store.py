@@ -24,7 +24,10 @@ relationship updates it in place rather than stacking a parallel edge.
 
 from __future__ import annotations
 
+import json
+import re
 from collections.abc import Iterator
+from dataclasses import replace
 
 import networkx as nx
 
@@ -47,6 +50,67 @@ from reachagent.graph.nodes import (
 # reconstructing the dataclass.
 _KIND = "kind"
 _DATA = "data"
+_SECRET_FIELD = re.compile(
+    r"(?i)(?:pass(?:word|wd)?|token|bearer|secret|authorization|cookie|csrf|"
+    r"api[_-]?key|access[_-]?token|id[_-]?token)"
+)
+
+
+def _redact_text(value: str | None) -> str | None:
+    """Redact sensitive JSON fields before examples enter graph state."""
+    if value is None:
+        return None
+    try:
+        parsed: object = json.loads(value)
+    except (TypeError, ValueError):
+        pattern = re.compile(
+            r"(?i)(?P<key>pass(?:word|wd)?|token|bearer|secret|authorization|cookie|csrf|"
+            r"api[_-]?key|access[_-]?token|id[_-]?token)"
+            r"\s*[=:]\s*(?P<raw>(?:Bearer\s+)?[^,;\s}]+)"
+        )
+
+        def redact_match(match: re.Match[str]) -> str:
+            raw = match.group("raw")
+            # GraphQL variable/type references are schema, not credentials.
+            if raw.startswith("$") or raw.rstrip("!)") in {
+                "String",
+                "Int",
+                "Float",
+                "Boolean",
+                "ID",
+            }:
+                return match.group(0)
+            return f"{match.group('key')}=<redacted>"
+
+        scrubbed = pattern.sub(redact_match, str(value))
+        return re.sub(r"(?i)\bBearer\s+[^\s,;}]+", "Bearer <redacted>", scrubbed)
+
+    def scrub(item: object) -> object:
+        if isinstance(item, dict):
+            return {
+                str(key): "<redacted>" if _SECRET_FIELD.search(str(key)) else scrub(child)
+                for key, child in item.items()
+            }
+        if isinstance(item, list):
+            return [scrub(child) for child in item]
+        return item
+
+    return json.dumps(scrub(parsed), sort_keys=True)
+
+
+def _sanitize_endpoint(endpoint: Endpoint) -> Endpoint:
+    headers = tuple(
+        (str(name), "<redacted>" if _SECRET_FIELD.search(str(name)) else str(value))
+        for name, value in endpoint.request_headers
+    )
+    return replace(
+        endpoint, request_headers=headers, request_body=_redact_text(endpoint.request_body)
+    )
+
+
+def _sanitize_parameter(parameter: Parameter) -> Parameter:
+    example = "<redacted>" if _SECRET_FIELD.search(parameter.name) else parameter.example
+    return replace(parameter, example=example)
 
 
 def endpoint_id(method: str, path: str) -> str:
@@ -221,6 +285,7 @@ class ReachabilityGraph:
 
     def add_endpoint(self, endpoint: Endpoint) -> str:
         """Add (or refresh) an ``Endpoint`` node; returns its stable id."""
+        endpoint = _sanitize_endpoint(endpoint)
         node = endpoint_id(endpoint.method, endpoint.path)
         existing = self._g.nodes.get(node)
         if existing is not None and existing.get(_KIND) == "endpoint":
@@ -235,6 +300,7 @@ class ReachabilityGraph:
         The parameter id is scoped to ``endpoint_node`` so the same parameter
         name on two endpoints stays distinct.
         """
+        parameter = _sanitize_parameter(parameter)
         node = parameter_id(endpoint_node, parameter.location, parameter.name)
         existing = self._g.nodes.get(node)
         if existing is not None and existing.get(_KIND) == "parameter":

@@ -23,6 +23,7 @@ target whose recon has populated ``owns`` edges.
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -284,14 +285,17 @@ def detect(
     graph: ReachabilityGraph,
     base_url: str,
     *,
-    owner_tokens: dict[str, str],
-    non_owner_tokens: dict[str, str],
+    owner_tokens: dict[str, str] | None = None,
+    non_owner_tokens: dict[str, str] | None = None,
+    owner_headers: Mapping[str, Mapping[str, str]] | None = None,
+    non_owner_headers: Mapping[str, Mapping[str, str]] | None = None,
     transport: httpx.BaseTransport | None = None,
 ) -> DetectionResult:
     """Run cross-identity BOLA detection over every sensitivity_tier ≥ 2 endpoint.
 
-    ``owner_tokens`` maps identity_id → bearer token for the resource owner.
-    ``non_owner_tokens`` maps identity_id → bearer token for a non-owner probe.
+    ``owner_tokens``/``non_owner_tokens`` map identity_id → bearer token for
+    compatibility.  ``owner_headers``/``non_owner_headers`` may carry a cookie
+    jar or another auth scheme; values remain in the in-memory firer.
     ``transport`` is an optional httpx transport override for hermetic testing.
 
     All detection goes through the MCP boundary. The Chain Solver links
@@ -314,23 +318,45 @@ def detect(
     consumed: dict[str, str | None] = {}
 
     for cand in _candidates(graph):
-        owner_token = owner_tokens.get(cand.owner_id)
-        if owner_token is None:
+        owner_token = (owner_tokens or {}).get(cand.owner_id)
+        owner_auth = (owner_headers or {}).get(cand.owner_id, {})
+        if owner_token is None and not owner_auth:
             continue
 
         # Pick any non-owner that has a token.
         probe_id: str | None = None
         probe_token: str | None = None
-        for pid, tok in non_owner_tokens.items():
+        for pid, tok in (non_owner_tokens or {}).items():
             if pid != cand.owner_id:
                 probe_id = pid
                 probe_token = tok
                 break
-        if probe_id is None or probe_token is None:
+        if probe_id is None:
+            for pid, auth in (non_owner_headers or {}).items():
+                if pid != cand.owner_id and auth:
+                    probe_id = pid
+                    break
+        if probe_id is None or (
+            probe_token is None and not (non_owner_headers or {}).get(probe_id, {})
+        ):
             continue
 
-        owner_sess = _session(base_url, host, owner_token, shared, transport)
-        probe_sess = _session(base_url, host, probe_token, shared, transport)
+        owner_sess = _session(
+            base_url,
+            host,
+            owner_token,
+            shared,
+            transport,
+            auth_headers=owner_auth,
+        )
+        probe_sess = _session(
+            base_url,
+            host,
+            probe_token,
+            shared,
+            transport,
+            auth_headers=(non_owner_headers or {}).get(probe_id, {}),
+        )
         owner_mcp = _mcp(owner_sess)
         probe_mcp = _mcp(probe_sess)
 

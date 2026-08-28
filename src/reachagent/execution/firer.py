@@ -78,6 +78,7 @@ class RequestFirer:
         scope: ScopeGuard,
         audit: AuditLog | None = None,
         identity_headers: Mapping[str, Mapping[str, str]] | None = None,
+        identity_stores: object | None = None,
     ) -> None:
         self._client = client
         self._scope = scope
@@ -87,6 +88,20 @@ class RequestFirer:
         self._identity_headers = {
             str(name): dict(headers) for name, headers in (identity_headers or {}).items()
         }
+        # Optional live stores let bearer tokens/cookie jars refresh or expire
+        # per identity.  Values stay in the store and are copied only into the
+        # in-memory request kwargs immediately before the packet is sent.
+        self._identity_stores: dict[str, object] = {}
+        if identity_stores is not None:
+            names = getattr(identity_stores, "names", None)
+            token_store = getattr(identity_stores, "token_store", None)
+            if callable(names) and callable(token_store):
+                for name in names():
+                    self._identity_stores[str(name)] = token_store(name)
+            elif isinstance(identity_stores, Mapping):
+                self._identity_stores = {
+                    str(name): store for name, store in identity_stores.items()
+                }
         # Endpoints whose read-only case has been confirmed safe, keyed by
         # identity plus scheme://host[:port]/path. Clearance cannot transfer
         # between test identities.
@@ -119,6 +134,18 @@ class RequestFirer:
 
     def _is_read_only(self, method: str, *, state_changing: bool) -> bool:
         return method.upper() in _READ_ONLY_METHODS and not state_changing
+
+    def _headers_for_identity(self, identity: str) -> dict[str, str]:
+        key = identity.split(":", 1)[1] if identity.startswith("identity:") else identity
+        store = self._identity_stores.get(key)
+        if store is not None:
+            headers = getattr(store, "headers", None)
+            if callable(headers):
+                return {str(k): str(v) for k, v in headers().items()}
+        configured = self._identity_headers.get(identity)
+        if configured is None:
+            configured = self._identity_headers.get(key, {})
+        return dict(configured)
 
     def _read_only_clears(self, method: str, status_code: int) -> bool:
         """Whether read-only response proves endpoint can be safely probed.
@@ -216,16 +243,20 @@ class RequestFirer:
 
         Raises :class:`OutOfScopeError` or :class:`ReadOnlyFirstError` before any
         network I/O if a gate fails.
+
+        ``authentication=True`` is reserved for the detected login endpoint.  A
+        login POST creates a session rather than changing target data, but still
+        remains an explicit, audited exception to read-only-first.  All other
+        state-changing requests retain the normal gate.
         """
         method = method.upper()
         parsed = httpx.URL(url)
         target = self._endpoint_key(parsed)
+        authentication = bool(kwargs.pop("authentication", False))
 
         # Merge configured identity headers first, allowing an explicit probe
         # header (for example Origin) to override one value for this request.
-        configured = self._identity_headers.get(identity, {})
-        if not configured and identity.startswith("identity:"):
-            configured = self._identity_headers.get(identity.split(":", 1)[1], {})
+        configured = self._headers_for_identity(identity)
         if configured:
             explicit = kwargs.get("headers")
             merged = dict(configured)
@@ -247,11 +278,14 @@ class RequestFirer:
         key = (identity, target)
         with self._clearance_lock:
             cleared = key in self._read_only_cleared
-        if not read_only and not cleared:
+        if not read_only and not cleared and not authentication:
             self._audit.record(identity, method, target, "refused_read_only_first")
             raise ReadOnlyFirstError(
                 f"read-only case not yet confirmed for {target}; fire a read-only request first"
             )
+        if authentication and method != "POST":
+            self._audit.record(identity, method, target, "refused_invalid_auth_setup")
+            raise ReadOnlyFirstError("authentication setup is limited to POST login requests")
 
         # Gate passed — send the packet. A state-changing request is NEVER
         # retried (a retried mutation could double-apply a side effect); a
