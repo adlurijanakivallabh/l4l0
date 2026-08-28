@@ -45,6 +45,7 @@ from reachagent.tools import validator
 if TYPE_CHECKING:
     from reachagent.identity.store import IdentityStore
     from reachagent.llm.planner import PlannerClient
+    from reachagent.scan.agentic_loop import LoopAdvisorClient
 
 _log = logging.getLogger(__name__)
 
@@ -889,6 +890,11 @@ def scan_all_classes(
     require_llm: bool = False,
     planner_client: PlannerClient | None = None,
     live_recon: bool = False,
+    cancel_check: object | None = None,
+    control_client: LoopAdvisorClient | None = None,
+    checkpoint_path: str | None = None,
+    resume_checkpoint: str | None = None,
+    idle_timeout: float = 900.0,
 ) -> dict[str, Any]:
     """Run the validated multi-phase LLM-driven loop over ALL attack classes.
 
@@ -899,9 +905,123 @@ def scan_all_classes(
     ``graph``/``audit`` may be injected so the caller holds live references to the state
     the scan is writing (the GUI streams them while the scan runs).
     """
+    from reachagent.scan.agentic_loop import (
+        AdaptiveControlLoop,
+        AdaptiveControlState,
+        ModelControlError,
+        PhaseDecision,
+        ScanCancelled,
+        check_cancel,
+    )
     from reachagent.scan.entrypoint import detect_target_type, scan_target
 
+    if checkpoint_path and resume_checkpoint:
+        raise ValueError("checkpoint_path and resume_checkpoint are mutually exclusive")
+    control_checkpoint = checkpoint_path or resume_checkpoint
+    if resume_checkpoint:
+        control_state = AdaptiveControlState.load(resume_checkpoint)
+    else:
+        control_state = AdaptiveControlState(
+            checkpoint_path=control_checkpoint,
+            idle_timeout=idle_timeout,
+        )
+    control = AdaptiveControlLoop(
+        control_state,
+        advisor=control_client,
+        operator_prompt=operator_prompt or "",
+        strict=require_llm,
+        cancel=cancel_check,
+        identities=identities,
+        audit=audit,
+    )
+
+    def _adapt(phase: str, remaining: tuple[str, ...]) -> PhaseDecision | None:
+        """Record a compact snapshot and apply scheduling-only model output."""
+        check_cancel(cancel_check)
+        try:
+            # A resumed or explicitly skipped phase is already represented in the
+            # checkpoint. Rebuild its snapshot for the GUI, but do not spend a
+            # second model turn or execute a phase the model marked inapplicable.
+            if phase in control_state.skipped:
+                _emit(events_out, phase, "not-applicable", f"{phase} skipped by adaptive control")
+                return None
+            # A resumed phase is already represented in the checkpoint.  Rebuild
+            # its snapshot for the GUI, but do not spend a second model turn.
+            if phase in control_state.completed:
+                from reachagent.scan.agentic_loop import build_phase_snapshot
+
+                snapshot = build_phase_snapshot(
+                    graph,
+                    phase,
+                    audit=audit,
+                    identities=identities,
+                    run_id=control_state.run_id,
+                    revision=control_state.revision,
+                )
+                _emit(
+                    events_out,
+                    phase,
+                    "snapshot",
+                    f"{phase} state restored from checkpoint",
+                    snapshot=snapshot.as_dict(),
+                    digest=snapshot.digest,
+                )
+                return None
+            control.state.phases = tuple(dict.fromkeys((*control.state.phases, *remaining)))
+            failed_payloads = [
+                {
+                    "phase": event.phase,
+                    "message": event.message,
+                    "category": event.details.get("error_category", "target"),
+                }
+                for event in events_out
+                if event.kind in {"error", "target-error"}
+            ][-20:]
+            snapshot, decision = control.after_phase(
+                graph,
+                phase,
+                failed_payloads=failed_payloads,
+            )
+            _emit(
+                events_out,
+                phase,
+                "snapshot",
+                f"{phase} compact state snapshot",
+                snapshot=snapshot.as_dict(),
+                digest=snapshot.digest,
+            )
+            if decision is not None:
+                if decision.action == "revise" and decision.hint:
+                    control.operator_prompt = (
+                        f"{control.operator_prompt[:1_000]}\nAdaptive focus: {decision.hint}"
+                    ).strip()
+                _emit(
+                    events_out,
+                    phase,
+                    "step",
+                    f"LLM loop decision after {phase}: {decision.action} — {decision.rationale}",
+                    hint=decision.hint,
+                    target_phase=decision.target_phase,
+                )
+            return decision
+        except ScanCancelled:
+            control_state.cancel()
+            _emit(events_out, phase, "cancelled", "scan cancelled by operator")
+            raise
+        except ModelControlError as exc:
+            _emit(
+                events_out,
+                phase,
+                "model-error",
+                f"adaptive control unavailable: {exc}",
+                error_category="model",
+            )
+            if require_llm:
+                raise
+            return None
+
     events_out = events if events is not None else []
+    check_cancel(cancel_check)
     execution_plan = None
     planned_recon_tools: tuple[str, ...] | None = None
     planned_signal_tools: tuple[str, ...] = ()
@@ -1055,26 +1175,6 @@ def scan_all_classes(
         signals=profile["signals"],
     )
 
-    # Agentic-loop reassessment point 1 (after recon, before endpoints):
-    # the LLM sees what recon discovered and may skip or re-focus the next
-    # phases. Bounded; advisory; never touches oracle/finding authority.
-    from reachagent.scan.agentic_loop import reassess_after_phase
-
-    decision_1 = reassess_after_phase(
-        graph,
-        "recon",
-        ("endpoints", "payloads", "verification"),
-        operator_prompt=operator_prompt,
-    )
-    if decision_1 is not None:
-        _emit(
-            events_out,
-            "recon",
-            "step",
-            f"LLM loop decision after recon: {decision_1.action} — {decision_1.rationale}",
-            hint=decision_1.hint,
-        )
-
     _emit(events_out, "endpoints", "info", "phase 2: endpoints and insertion points")
     lib = library if library is not None else _library()
 
@@ -1097,12 +1197,18 @@ def scan_all_classes(
             library=lib,
             graph=graph,
             audit=audit,
+            cancel_check=cancel_check,
         )
     finally:
         if own_plan_client and plan_client is not None and hasattr(plan_client, "close"):
             plan_client.close()
     graph = result["graph"] if graph is None else graph
     audit = result["audit"] if audit is None else audit
+    # Recon and endpoint mapping are performed by the same deterministic
+    # discovery entrypoint, but receive separate compact snapshots so the
+    # model can adapt before expensive payload work begins.
+    control.audit = audit
+    _adapt("recon", ("endpoints", "payloads", "verification", "report"))
     _emit(
         events_out,
         "endpoints",
@@ -1130,7 +1236,7 @@ def scan_all_classes(
     priority = propose_surface_priority(
         graph,
         target_type=detect_target_type(base_url),
-        operator_prompt=operator_prompt,
+        operator_prompt=control.operator_prompt,
     )
     if priority is not None:
         from reachagent.tools.coordinator_support import (
@@ -1151,27 +1257,48 @@ def scan_all_classes(
             ranked_parameter_ids=list(priority.ranked_parameter_ids[:20]),
         )
 
+    # A revisit request is bounded by AdaptiveControlState and is implemented
+    # as a fresh deterministic priority proposal over the observed surface.
+    # It does not replay a request or manufacture a verdict.
+    if decision_recon := next(
+        (
+            item
+            for item in reversed(control_state.decisions)
+            if item.get("phase") == "recon" and item.get("action") == "revisit"
+        ),
+        None,
+    ):
+        revisit_priority = propose_surface_priority(
+            graph,
+            target_type=detect_target_type(base_url),
+            operator_prompt=(
+                f"{control.operator_prompt}\nRevisit focus: "
+                f"{str(decision_recon.get('hint', ''))[:200]}"
+            ),
+        )
+        if revisit_priority is not None:
+            from reachagent.tools.coordinator_support import (
+                set_insertion_priority,
+                set_surface_priority,
+            )
+
+            set_surface_priority(revisit_priority.ranked_ids)
+            set_insertion_priority(revisit_priority.ranked_parameter_ids)
+            _emit(
+                events_out,
+                "endpoints",
+                "step",
+                "revisited surface priority from observed state",
+                ranked_count=len(revisit_priority.ranked_ids),
+            )
+
     scope = ScopeGuard.from_raw(in_scope, out_of_scope)
     from reachagent.recon.signal_dispatch import run_signal_tools
 
-    # Agentic-loop reassessment point 2 (after endpoints, before verification):
-    # with sinks/insertion points mapped, the LLM may re-prioritize which
-    # signal-gated tools matter or skip verification entirely when no
-    # preconditions exist.
-    decision_2 = reassess_after_phase(
-        graph,
-        "endpoints",
-        ("payloads", "verification"),
-        operator_prompt=operator_prompt,
-    )
-    if decision_2 is not None:
-        _emit(
-            events_out,
-            "endpoints",
-            "step",
-            f"LLM loop decision after endpoints: {decision_2.action} — {decision_2.rationale}",
-            hint=decision_2.hint,
-        )
+    # Endpoint state is now complete; the adaptive controller may suppress an
+    # optional verification pass or revise its evidence focus.  It only changes
+    # scheduling and priority inputs, never a fire or oracle call.
+    decision_2 = _adapt("endpoints", ("payloads", "verification", "report"))
 
     # LLM-driven signal-tool selection (flag-gated): after recon + surface
     # prioritization, the LLM reasons about which verification tools to invoke.
@@ -1180,9 +1307,14 @@ def scan_all_classes(
     # (or the LLM fails), the planner's upfront selection is used unchanged.
     from reachagent.recon.signal_tuning import propose_signal_tools
 
-    signal_choice = propose_signal_tools(graph, operator_prompt=operator_prompt)
+    signal_choice = propose_signal_tools(graph, operator_prompt=control.operator_prompt)
     effective_signal_tools = planned_signal_tools
-    if decision_2 is not None and decision_2.action == "skip":
+    decision_2_target = getattr(decision_2, "target_phase", None) if decision_2 else None
+    if (
+        decision_2 is not None
+        and decision_2.action == "skip"
+        and (decision_2_target in {None, "verification"})
+    ):
         _emit(
             events_out,
             "verification",
@@ -1211,6 +1343,7 @@ def scan_all_classes(
         ),
         live_recon=live_recon,
     )
+    _adapt("verification", ("payloads", "report"))
     firer = RequestFirer(
         httpx.Client(transport=transport) if transport is not None else httpx.Client(),
         scope,
@@ -1298,23 +1431,10 @@ def scan_all_classes(
     findings = [fid for fid, _ in graph.findings()]
     _emit(events_out, "payloads", "info", "phase 3 done", findings=len(findings))
 
-    # Agentic-loop reassessment point 3 (after payloads, before report):
-    # with confirmed findings in hand, the LLM's closing note becomes part of
-    # the report context. Findings already exist; this cannot create one.
-    decision_3 = reassess_after_phase(
-        graph,
-        "payloads",
-        ("verification", "report"),
-        operator_prompt=operator_prompt,
-    )
-    if decision_3 is not None:
-        _emit(
-            events_out,
-            "report",
-            "step",
-            f"LLM loop assessment after payloads: {decision_3.action} — {decision_3.rationale}",
-            hint=decision_3.hint,
-        )
+    # Findings now exist only if the deterministic oracle accepted them. The
+    # model receives a final bounded snapshot and may only schedule/report a
+    # follow-up; it cannot alter a finding already in the graph.
+    _adapt("payloads", ("report",))
 
     driven_classes = {
         *_GENERIC_CLASSES,
@@ -1344,6 +1464,7 @@ def scan_all_classes(
         "phase 4 ready — confirmed findings handed to report generation",
         findings=len(findings),
     )
+    _adapt("report", ())
     return {
         "graph": graph,
         "audit": audit,

@@ -357,6 +357,16 @@ and resume tests.
 **Exit criterion:** the loop demonstrably changes its next action from observed
 graph/audit state while all execution and confirmation permissions remain fixed.
 
+**Status (2026-08-28): complete.** `scan.agentic_loop` now owns bounded
+observe→propose→validate→apply state with compact graph/audit/tool/auth snapshots,
+graph deltas and SHA-256 revisions, four scheduling actions, loop/revisit limits,
+idle and cancellation guards, and atomic checkpoint resume. The orchestrator emits
+snapshot/model-error/cancellation events and applies only phase scheduling and
+priority hints; `scan_target` checks cancellation before discovery, selection, and
+payload classes. Focused gate: 37 passed (`tests/scan/test_phase4_control.py`,
+`tests/scan/test_agentic_loop.py`, `tests/recon/test_llm_planner.py`, and
+`tests/recon/test_recon_adaptive.py`). The full suite remains reserved for Phase 10.
+
 ### Phase 5 — Payload library, context selection, and mutation
 
 **Goal:** maximize useful payload breadth without losing sink/oracle provenance.

@@ -374,6 +374,7 @@ def scan_target(
     | None = None,
     live_recon: bool = False,
     events: list[Any] | None = None,
+    cancel_check: object | None = None,
 ) -> dict[str, Any]:
     """Generic autonomous scan entrypoint.
 
@@ -399,7 +400,15 @@ def scan_target(
     was interrupted). ``state_path`` persists the run state at the end of a live
     run (atomic JSON). On resume, cold-start fixtures are NOT re-ingested — the
     loaded graph already carries them.
+
+    ``cancel_check`` may be a ``threading.Event`` or a callable returning a
+    boolean. It is checked before recon tools, candidate selection, and every
+    payload class; cancellation raises ``ScanCancelled`` and stops without
+    opening another target request.
     """
+    from reachagent.scan.agentic_loop import check_cancel
+
+    check_cancel(cancel_check)
     scope = ScopeGuard.from_raw(in_scope, out_of_scope)
 
     resumed = resume_path is not None
@@ -454,6 +463,8 @@ def scan_target(
             from reachagent.scan.orchestrator import ScanEvent
 
             details: dict[str, Any] = {"tool": tool_name, "outcome": outcome}
+            if outcome.lower() in {"error", "failed", "timeout", "refused"}:
+                details["error_category"] = "target"
             if detail:
                 details["detail"] = detail
             details.update(extra)
@@ -684,6 +695,7 @@ def scan_target(
                 pending_names = []
 
         while pending_names:
+            check_cancel(cancel_check)
             name = pending_names.pop(0)
             if name in completed_names or name.lower() not in registry:
                 continue
@@ -800,16 +812,24 @@ def scan_target(
             from reachagent.recon.api_discovery import discover_api
 
             discovery = discover_api(g, firer, base_url)
-            _tool_event(
-                "surface-mapper",
-                discovery.report,
-                phase="endpoints",
-                endpoints=len(discovery.endpoints),
-                parameters=len(discovery.parameters),
-                pages=discovery.pages_crawled,
-                scripts=discovery.scripts_parsed,
-                forms=discovery.forms_found,
-            )
+            if discovery is None:
+                _tool_event(
+                    "surface-mapper",
+                    "unavailable",
+                    phase="endpoints",
+                    detail="discovery provider returned no result",
+                )
+            else:
+                _tool_event(
+                    "surface-mapper",
+                    discovery.report,
+                    phase="endpoints",
+                    endpoints=len(discovery.endpoints),
+                    parameters=len(discovery.parameters),
+                    pages=discovery.pages_crawled,
+                    scripts=discovery.scripts_parsed,
+                    forms=discovery.forms_found,
+                )
 
     # On resume there is no cold-start block above; authenticate before the
     # coordinator replays any unexplored endpoint. Dry runs never submit creds.
@@ -928,6 +948,7 @@ def scan_target(
     max_iterations = 40
     attempted_edges: set[tuple[str, str, str | None]] = set()
     while iterations < max_iterations and solver.budget_remaining("scan") > 0:
+        check_cancel(cancel_check)
         iterations += 1
         cands = _coordinator.query_graph(context)
         if resumed:
@@ -1031,6 +1052,7 @@ def scan_target(
         # first confirmed finding (the oracle decided — not the LLM).
         result: _pc.PayloadChainResult | None = None
         for vc in ranked_classes:
+            check_cancel(cancel_check)
             _log.debug("trying vuln_class=%s on %s", vc, sel.endpoint_node)
             result = _pc.run_payload_chain(
                 _caller,
