@@ -29,7 +29,7 @@ class FfufRunner(ReconToolRunner):
     binary = "ffuf"
 
     def command(self, target: str) -> list[str]:
-        """ffuf -u <target>/FUZZ -w <wordlist> -mc 200,204,301,302 -o <file> -of json."""
+        """Build a bounded, non-interactive JSON ffuf invocation."""
         import os as _os2
         import tempfile
 
@@ -46,6 +46,7 @@ class FfufRunner(ReconToolRunner):
                 profile.wordlist,
                 "-mc",
                 profile.status_codes,
+                "-noninteractive",
                 "-o",
                 path,
                 "-of",
@@ -57,8 +58,12 @@ class FfufRunner(ReconToolRunner):
                 argv += ["-t", threads]
             return argv
         wordlist = preferred_wordlist("REACHAGENT_FFUF_WORDLIST")
-        # 307 added; 401/403 left as audit TODO (ACL surface, not auto-match)
-        match_codes = os.environ.get("REACHAGENT_FFUF_MATCH_CODES", "200,204,301,302,307")
+        # Include ACL responses as facts (the parser marks 401/403 restricted);
+        # this never turns a response into a vulnerability verdict.
+        match_codes = os.environ.get(
+            "REACHAGENT_FFUF_MATCH_CODES",
+            "200,201,202,204,301,302,307,401,403,405",
+        )
         fd, path = tempfile.mkstemp(suffix=".json", prefix="ffuf-")  # noqa: S108 — mkstemp safe temp
         _os2.close(fd)
         argv: list[str] = [  # type: ignore[no-redef]
@@ -69,6 +74,7 @@ class FfufRunner(ReconToolRunner):
             wordlist,
             "-mc",
             match_codes,
+            "-noninteractive",
             "-o",
             path,
             "-of",
@@ -77,6 +83,18 @@ class FfufRunner(ReconToolRunner):
         threads = os.environ.get("REACHAGENT_FFUF_THREADS")
         if threads and threads.isdigit():
             argv += ["-t", threads]
+        rate = os.environ.get("REACHAGENT_FFUF_RATE")
+        if rate and rate.isdigit():
+            argv += ["-rate", rate]
+        timeout = os.environ.get("REACHAGENT_FFUF_TIMEOUT")
+        if timeout and timeout.isdigit():
+            argv += ["-timeout", timeout]
+        if os.environ.get("REACHAGENT_FFUF_AUTO_CALIBRATE", "").lower() in {
+            "1",
+            "true",
+            "yes",
+        }:
+            argv.append("-ac")
         return argv
 
     # Set by the scan entrypoint before ingest (D3 pass-through).

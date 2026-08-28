@@ -16,7 +16,7 @@ architecture plan, source inventory, and current checkout:
 - 175 commits; current commit `174bfaf` (`fix gui provider default routing`).
 - 144 Python modules under `src/`; 89 Python test files.
 - 23 orchestrated detection classes.
-- 32 LLM-selectable tool adapters: 26 recon/insertion adapters and 6
+- 35 LLM-selectable tool adapters: 29 recon/insertion adapters and 6
   signal-gated claim adapters.
 - 6 deterministic oracle families.
 - NetworkX is the default graph store; a Neo4j-through-MCP parity backend exists.
@@ -58,10 +58,10 @@ limits remain:
 Recon/fact adapters:
 
 - `nmap`, `masscan`, `rustscan`, `naabu`
-- `subfinder`, `amass`, `shuffledns`, `dnsx`, `theHarvester`
+- `subfinder`, `amass`, `bbot`, `dnsrecon`, `shuffledns`, `dnsx`, `theHarvester`
 - `whatweb`, `httpx`, `katana`
 - `gobuster`, `ffuf`, `feroxbuster`, `dirb`
-- `waybackurls`, `gau`, `wafw00f`
+- `waybackurls`, `gau`, `urlfinder`, `wafw00f`
 - `testssl`, `sslscan`, `sslyze`, `wpscan`
 - `arjun`, `paramspider`, `x8`
 
@@ -193,7 +193,7 @@ The following current primary documentation was checked before planning:
 
 ### Phase 1 — Recon graph completeness and adaptive enumeration
 
-**Status:** substantially implemented; next improvement phase.
+**Status:** implemented (2026-08-28); focused gate passed.
 
 **Goal:** turn target-type-aware recon into a bounded, LLM-selected evidence
 graph with useful inter-tool handoff.
@@ -210,15 +210,26 @@ calibration, and how one tool's output becomes the next tool's input.
 
 **Build:**
 
-- add schema-aware API route discovery using a bounded route dictionary;
-- add passive URL/source collection and subdomain permutation capability only when
-  the LLM selects it and the scope guard permits it;
-- add target-aware depth and per-host negative calibration;
-- preserve Host/Service/Endpoint/Parameter provenance and tool outcome events;
-- pass discovered hosts, ports, URLs, technologies, and API specs as bounded facts
-  into the next planning turn;
-- keep all subprocesses argument-array based, timeout-bounded, optional, and
-  audited.
+- added scoped, fact-only adapters for event-stream asset discovery, structured DNS
+  records, and passive source-attributed URL discovery;
+- expanded the catalog with capability/producer/passive/cost metadata so the LLM can
+  choose based on the evidence gap rather than a fixed sequence;
+- added an adaptive recon decision loop: after each selected adapter, bounded graph
+  and audit state is sent back to the LLM, which may add an unrun catalog tool or
+  stop; unknown, repeated, signal-gated, and incompatible choices are rejected;
+- preserved target-type dispatch, wildcard/depth calibration, Host/Service/Endpoint
+  provenance, and per-tool outcome events;
+- tightened content-discovery defaults with non-interactive execution, ACL status
+  coverage, optional rate/timeout/calibration controls, and purpose-aware wordlist
+  candidates;
+- kept every subprocess argument-array based, timeout-bounded, optional, scoped,
+  read-only-first, and audited. No candidate, oracle verdict, or finding can be
+  emitted by this tier.
+
+**Decision record:** `tests/recon/test_recon_adaptive.py` covers the adaptive
+selector, new parsers, scope refusals, and observed-state continuation. The
+selection callback is enabled by the strict LLM orchestrator; fixture callers
+retain deterministic parsing without a provider.
 
 **Focused gate:** recon parser, calibration, target classification, planner
 catalog, scope, and event tests only.

@@ -20,7 +20,7 @@ Validator confirms — payload_chain drives the public MCP contracts via McpCall
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable, Sequence
 from typing import TYPE_CHECKING, Any
 
 import httpx
@@ -119,6 +119,68 @@ def _filter_fixture_by_scope(raw: str, scope: ScopeGuard, runner_name: str) -> s
         if scope.is_in_scope(host):
             kept.append(line)
     return "\n".join(kept)
+
+
+def _recon_state_snapshot(
+    graph: ReachabilityGraph,
+    audit: AuditLog,
+    target: str,
+    target_type: str,
+    completed_tools: Sequence[str],
+    pending_tools: Sequence[str],
+) -> dict[str, str]:
+    """Return bounded, deterministic facts for the adaptive recon proposer."""
+
+    hosts = [
+        {
+            "address": host.address,
+            "hostname": host.hostname,
+            "technology": host.technology,
+            "version": host.detected_version,
+        }
+        for _, host in graph.hosts()
+    ][:40]
+    services = [
+        {
+            "port": service.port,
+            "protocol": service.protocol,
+            "name": service.service_name,
+            "version": service.detected_version,
+        }
+        for _, service in graph.services()
+    ][:80]
+    endpoints = [
+        {
+            "method": endpoint.method,
+            "path": endpoint.path,
+            "technology": endpoint.technology,
+            "restricted": endpoint.access_restricted,
+        }
+        for _, endpoint in graph.endpoints()
+    ][:100]
+    outcomes = [
+        {
+            "tool": entry.identity,
+            "outcome": entry.outcome,
+            "target": entry.target,
+        }
+        for entry in audit.entries[-40:]
+    ]
+    import json
+
+    return {
+        "target": target[:500],
+        "target_type": target_type,
+        "completed_tools": json.dumps(list(completed_tools)),
+        "pending_tools": json.dumps(list(pending_tools)),
+        "host_count": str(len(list(graph.hosts()))),
+        "service_count": str(len(list(graph.services()))),
+        "endpoint_count": str(len(list(graph.endpoints()))),
+        "hosts": json.dumps(hosts, sort_keys=True),
+        "services": json.dumps(services, sort_keys=True),
+        "endpoints": json.dumps(endpoints, sort_keys=True),
+        "recent_tool_outcomes": json.dumps(outcomes, sort_keys=True),
+    }
 
 
 # -- scan_target (Coordinator loop + fire path) --------------------------------
@@ -307,6 +369,9 @@ def scan_target(
     identities: IdentityStore | None = None,
     operator_prompt: str | None = None,
     recon_tools: Iterable[str] | None = None,
+    recon_candidates: Iterable[str] | None = None,
+    recon_selector: Callable[[dict[str, str], tuple[str, ...], tuple[str, ...]], object]
+    | None = None,
     live_recon: bool = False,
     events: list[Any] | None = None,
 ) -> dict[str, Any]:
@@ -320,6 +385,12 @@ def scan_target(
                    run_payload_chain via direct Explorer/Validator seam) until
                    score_and_select is None or budget exhausted. advance() on
                    confirmed finding to requery derived edges.
+
+    ``recon_selector`` is an optional LLM callback. When supplied, it receives
+    bounded graph/audit facts after each recon tool and may choose the next
+    allowlisted fact emitters or stop; it cannot change commands or confirmation
+    authority. ``recon_candidates`` bounds the names it may add beyond the
+    initial ``recon_tools`` sequence.
 
     Durable resume (D6/D2): ``resume_path`` loads a persisted graph + solver +
     audit and CONTINUES the loop (continue-not-replay — confirmed findings are
@@ -362,7 +433,14 @@ def scan_target(
                 identity_headers[name] = {"Authorization": f"Bearer {token}"}
     firer = RequestFirer(client, firer_scope, a, identity_headers=identity_headers)
 
-    def _tool_event(tool_name: str, outcome: str, *, detail: str = "", **extra: Any) -> None:
+    def _tool_event(
+        tool_name: str,
+        outcome: str,
+        *,
+        detail: str = "",
+        phase: str = "tools",
+        **extra: Any,
+    ) -> None:
         """Emit a per-tool event so the GUI tools panel streams real activity."""
         if events is None:
             return
@@ -375,7 +453,7 @@ def scan_target(
             details.update(extra)
             events.append(
                 ScanEvent(
-                    phase="tools",
+                    phase=phase,
                     kind="step",
                     message=f"{tool_name}: {outcome}",
                     details=details,
@@ -401,18 +479,17 @@ def scan_target(
         # Recon dispatch by target type (D2): host-shaped targets skip subdomain
         # enumeration; domain/url targets crawl + fingerprint; host:port targets
         # go straight to TLS probes. Scope gates still run before every ingest.
-        # Skipped entirely on resume — the loaded graph already carries the facts.
         target_type = detect_target_type(base_url)
         if target_type in ("ip", "cidr"):
             from reachagent.recon.tools.masscan import MasscanRunner
             from reachagent.recon.tools.nmap import NmapRunner
             from reachagent.recon.tools.rustscan import RustscanRunner
 
-            runner_types: list[type[Any]] = [NmapRunner, MasscanRunner, RustscanRunner]
+            default_types: list[type[Any]] = [NmapRunner, MasscanRunner, RustscanRunner]
         elif target_type == "host_port":
             from reachagent.recon.tools.tls_probe import SslscanRunner, SslyzeRunner
 
-            runner_types = [SslscanRunner, SslyzeRunner]
+            default_types = [SslscanRunner, SslyzeRunner]
         else:  # domain / url
             from reachagent.recon.tools.dirb import DirbRunner
             from reachagent.recon.tools.feroxbuster import FeroxbusterRunner
@@ -423,7 +500,7 @@ def scan_target(
             from reachagent.recon.tools.theharvester import TheHarvesterRunner
             from reachagent.recon.tools.whatweb import WhatWebRunner
 
-            runner_types = [
+            default_types = [
                 SubfinderRunner,
                 AmassRunner,
                 TheHarvesterRunner,
@@ -435,59 +512,82 @@ def scan_target(
                 DirbRunner,
             ]
 
-        # A validated LLM plan may choose a compatible subset (or add a
-        # registered adapter that the legacy target-type defaults did not use).
-        # The registry contains classes already implemented in this package;
-        # it never accepts a binary name or an arbitrary command from the model.
-        if recon_tools is not None:
-            from reachagent.recon.tools.arjun import ArjunRunner
-            from reachagent.recon.tools.dnsx import DnsxRunner
-            from reachagent.recon.tools.httpx_runner import HttpxRunner
-            from reachagent.recon.tools.masscan import MasscanRunner
-            from reachagent.recon.tools.naabu import NaabuRunner
-            from reachagent.recon.tools.nmap import NmapRunner
-            from reachagent.recon.tools.paramspider import ParamSpiderRunner
-            from reachagent.recon.tools.rustscan import RustscanRunner
-            from reachagent.recon.tools.shuffledns import ShuffleDnsRunner
-            from reachagent.recon.tools.tls_probe import TestsslRunner
-            from reachagent.recon.tools.url_discovery import GauRunner, WaybackUrlsRunner
-            from reachagent.recon.tools.wafw00f import Wafw00fRunner
-            from reachagent.recon.tools.wpscan_passive import WpscanPassiveRunner
-            from reachagent.recon.tools.x8 import X8Runner
+        # The registry contains only ReachAgent-owned adapters. The model can
+        # choose names from it, never a binary or arbitrary command string.
+        from reachagent.recon.tools.arjun import ArjunRunner
+        from reachagent.recon.tools.bbot import BbotRunner
+        from reachagent.recon.tools.dnsrecon import DnsreconRunner
+        from reachagent.recon.tools.dnsx import DnsxRunner
+        from reachagent.recon.tools.httpx_runner import HttpxRunner
+        from reachagent.recon.tools.masscan import MasscanRunner
+        from reachagent.recon.tools.naabu import NaabuRunner
+        from reachagent.recon.tools.nmap import NmapRunner
+        from reachagent.recon.tools.paramspider import ParamSpiderRunner
+        from reachagent.recon.tools.rustscan import RustscanRunner
+        from reachagent.recon.tools.shuffledns import ShuffleDnsRunner
+        from reachagent.recon.tools.tls_probe import TestsslRunner
+        from reachagent.recon.tools.url_discovery import GauRunner, WaybackUrlsRunner
+        from reachagent.recon.tools.urlfinder import UrlfinderRunner
+        from reachagent.recon.tools.wafw00f import Wafw00fRunner
+        from reachagent.recon.tools.wpscan_passive import WpscanPassiveRunner
+        from reachagent.recon.tools.x8 import X8Runner
 
-            registry: dict[str, type[Any]] = {rt.name: rt for rt in runner_types}
-            registry.update(
-                {
-                    cls.name: cls
-                    for cls in (
-                        ArjunRunner,
-                        DnsxRunner,
-                        GauRunner,
-                        HttpxRunner,
-                        MasscanRunner,
-                        NmapRunner,
-                        NaabuRunner,
-                        ParamSpiderRunner,
-                        RustscanRunner,
-                        ShuffleDnsRunner,
-                        TestsslRunner,
-                        WaybackUrlsRunner,
-                        Wafw00fRunner,
-                        WpscanPassiveRunner,
-                        X8Runner,
-                    )
-                }
+        registry: dict[str, type[Any]] = {rt.name.lower(): rt for rt in default_types}
+        registry.update(
+            {
+                cls.name.lower(): cls
+                for cls in (
+                    ArjunRunner,
+                    BbotRunner,
+                    DnsreconRunner,
+                    DnsxRunner,
+                    GauRunner,
+                    HttpxRunner,
+                    MasscanRunner,
+                    NmapRunner,
+                    NaabuRunner,
+                    ParamSpiderRunner,
+                    RustscanRunner,
+                    ShuffleDnsRunner,
+                    TestsslRunner,
+                    UrlfinderRunner,
+                    WaybackUrlsRunner,
+                    Wafw00fRunner,
+                    WpscanPassiveRunner,
+                    X8Runner,
+                )
+            }
+        )
+        default_names = tuple(rt.name for rt in default_types)
+        initial_names = (
+            tuple(
+                dict.fromkeys(
+                    registry[str(name).strip().lower()].name
+                    for name in recon_tools
+                    if str(name).strip().lower() in registry
+                )
             )
-            requested = tuple(dict.fromkeys(str(name).strip().lower() for name in recon_tools))
-            runner_types = [registry[name] for name in requested if name in registry]
-            selected_recon_tools = tuple(rt.name for rt in runner_types)
+            if recon_tools is not None
+            else default_names
+        )
+        candidate_names = tuple(
+            dict.fromkeys(
+                registry[str(name).strip().lower()].name
+                for name in (recon_candidates if recon_candidates is not None else initial_names)
+                if str(name).strip().lower() in registry
+            )
+        )
+        if not candidate_names:
+            candidate_names = initial_names
 
         # URL-shaped tools need the full base_url; host-line and port/TLS tools
         # take the bare host (or host:port) target.
         _URL_TOOLS = frozenset(
             {
                 "arjun",
+                "bbot",
                 "dirb",
+                "dnsrecon",
                 "feroxbuster",
                 "ffuf",
                 "gau",
@@ -495,6 +595,7 @@ def scan_target(
                 "httpx",
                 "katana",
                 "paramspider",
+                "urlfinder",
                 "wafw00f",
                 "waybackurls",
                 "whatweb",
@@ -502,27 +603,57 @@ def scan_target(
                 "x8",
             }
         )
-        scope_guard = scope
-        runners: list[Any] = [rt(graph=g, scope=scope_guard, audit=a) for rt in runner_types]
-        if not selected_recon_tools:
-            selected_recon_tools = tuple(runner.name for runner in runners)
-
-        # Wildcard calibration (D5, live only — it *fires* probes, so dry-run
-        # stays zero-fired). A catch-all makes content-discovery path facts
-        # untrustworthy; the four content wrappers suppress them (D2).
         content_discovery = frozenset({"gobuster", "ffuf", "feroxbuster", "dirb"})
-        subdomain_enum = frozenset({"subfinder", "amass", "theharvester", "theHarvester"})
+        subdomain_enum = frozenset(
+            {"subfinder", "amass", "theharvester", "theHarvester", "dnsrecon", "bbot"}
+        )
         cal_result = None
         dns_result = None
-        if not dry_run:
-            if any(r.name in content_discovery for r in runners):
+
+        pending_names = list(initial_names)
+        completed_names: list[str] = []
+        runners: dict[str, Any] = {}
+
+        def _selection_values(selection: object) -> tuple[tuple[str, ...], bool, str]:
+            """Read a validated callback result without importing planner types."""
+
+            names = tuple(str(name) for name in getattr(selection, "tools", ()))
+            stop = bool(getattr(selection, "stop", False))
+            rationale = str(getattr(selection, "rationale", ""))
+            return names, stop, rationale
+
+        if recon_selector is not None:
+            selection = recon_selector(
+                _recon_state_snapshot(g, a, base_url, target_type, completed_names, pending_names),
+                candidate_names,
+                tuple(completed_names),
+            )
+            selected_names, stop, rationale = _selection_values(selection)
+            pending_names = [name for name in selected_names if name in candidate_names]
+            _tool_event(
+                "recon-planner",
+                "selected" if pending_names else "stopped",
+                phase="recon",
+                tools=list(pending_names),
+                rationale=rationale,
+            )
+            if stop and not pending_names:
+                pending_names = []
+
+        while pending_names:
+            name = pending_names.pop(0)
+            if name in completed_names or name.lower() not in registry:
+                continue
+            if not dry_run and name in content_discovery and cal_result is None:
                 from reachagent.recon.calibration import CalibrationRunner
 
                 cal_result = CalibrationRunner(firer, base_url).run()
-            # DNS wildcard pre-check (D2, live only — DNS probes fire). A zone
-            # with a wildcard A record answers any random label with one IP; the
-            # three subdomain wrappers suppress hostnames that resolve to it.
-            if target_type in ("domain", "url") and any(r.name in subdomain_enum for r in runners):
+            if (
+                not dry_run
+                and target_type in ("domain", "url")
+                and name in subdomain_enum
+                and dns_result is None
+            ):
                 from reachagent.recon.calibration import DnsWildcardProber
 
                 prober = (
@@ -531,7 +662,6 @@ def scan_target(
                     else DnsWildcardProber(target_host)
                 )
                 dns_result = prober.run()
-                # The wildcard fact IS recorded on the root target Host (D2).
                 g.add_host(
                     Host(
                         address=target_host,
@@ -540,50 +670,79 @@ def scan_target(
                         technology=dns_result.shape_label,
                     )
                 )
-
-        for runner in runners:
-            if runner.name in content_discovery:
+            runner = runners.setdefault(
+                name,
+                registry[name.lower()](graph=g, scope=scope, audit=a),
+            )
+            if name in content_discovery:
                 runner.calibration = cal_result
-            if runner.name in subdomain_enum and dns_result is not None:
+            if name in subdomain_enum and dns_result is not None:
                 runner.dns_wildcard_ip = dns_result.wildcard_ip
                 if dns_resolve is not None:
                     runner.resolve = dns_resolve
-            target_arg = base_url if runner.name in _URL_TOOLS else target_host
-            _tool_event(runner.name, "starting")
+            target_arg = base_url if name in _URL_TOOLS else target_host
+            _tool_event(name, "starting")
             if fixtures is not None:
-                raw = fixtures.get(runner.name, "")
+                raw = fixtures.get(name, "")
                 if not raw:
-                    _tool_event(runner.name, "no-fixture", detail="skipped (no fixture data)")
-                    continue
-                allowed_raw = _filter_fixture_by_scope(raw, scope, runner.name)
-                ingest_result = runner.ingest(target_arg, allowed_raw)
-                _tool_event(
-                    runner.name,
-                    ingest_result.outcome.value,
-                    nodes=len(ingest_result.nodes),
-                    detail=ingest_result.detail,
-                )
-                # Audit any host lines that were dropped
-                for line in raw.splitlines():
-                    stripped = line.strip()
-                    if not stripped or stripped.startswith("#"):
-                        continue
-                    host = stripped.split()[0]
-                    if host and not scope.is_in_scope(host):
-                        # record the raw host token lowercased (matches prior audit shape)
-                        h = _host_of(host)
-                        a.record(runner.name, "RECON", h or host.lower(), "refused_out_of_scope")
+                    _tool_event(name, "no-fixture", detail="skipped (no fixture data)")
+                else:
+                    allowed_raw = _filter_fixture_by_scope(raw, scope, name)
+                    ingest_result = runner.ingest(target_arg, allowed_raw)
+                    _tool_event(
+                        name,
+                        ingest_result.outcome.value,
+                        nodes=len(ingest_result.nodes),
+                        detail=ingest_result.detail,
+                    )
             elif not dry_run:
                 run_result = runner.run(
                     target_arg,
                     environ={"REACHAGENT_RECON_LIVE": "1"} if live_recon else None,
                 )
                 _tool_event(
-                    runner.name,
+                    name,
                     run_result.outcome.value,
                     nodes=len(run_result.nodes),
                     detail=run_result.detail,
                 )
+            completed_names.append(name)
+            if name not in selected_recon_tools:
+                selected_recon_tools += (name,)
+
+            if recon_selector is None:
+                continue
+            remaining_candidates = tuple(
+                candidate
+                for candidate in candidate_names
+                if candidate not in completed_names and candidate not in pending_names
+            )
+            if not remaining_candidates:
+                continue
+            selection = recon_selector(
+                _recon_state_snapshot(
+                    g, a, base_url, target_type, completed_names, remaining_candidates
+                ),
+                remaining_candidates,
+                tuple(completed_names),
+            )
+            selected_names, stop, rationale = _selection_values(selection)
+            additions = [
+                candidate
+                for candidate in selected_names
+                if candidate in remaining_candidates and candidate not in pending_names
+            ]
+            pending_names.extend(additions)
+            _tool_event(
+                "recon-planner",
+                "selected" if additions else ("stopped" if stop else "no-new-tools"),
+                phase="recon",
+                tools=additions,
+                rationale=rationale,
+                completed=list(completed_names),
+            )
+            if stop:
+                break
 
         # Spec-first API discovery (Task 27, live only — it fires read-only GET
         # probes). After --surface seeding and cold-start recon, before the

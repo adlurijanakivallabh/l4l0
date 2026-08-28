@@ -87,6 +87,14 @@ class SubfinderRunner(_LineHostRunner):
         import os
 
         argv: list[str] = ["subfinder", "-silent", "-d", target]
+        if os.environ.get("REACHAGENT_SUBFINDER_ALL", "").lower() in {"1", "true", "yes"}:
+            argv.append("-all")
+        if os.environ.get("REACHAGENT_SUBFINDER_RECURSIVE", "").lower() in {
+            "1",
+            "true",
+            "yes",
+        }:
+            argv.append("-recursive")
         timeout = os.environ.get("REACHAGENT_SUBFINDER_TIMEOUT")
         if timeout and timeout.isdigit():
             argv += ["-timeout", timeout]

@@ -66,6 +66,15 @@ class FeroxbusterRunner(ReconToolRunner):
         threads = os.environ.get("REACHAGENT_FEROX_THREADS")
         if threads and threads.isdigit():
             argv += ["-t", threads]
+        status_codes = os.environ.get("REACHAGENT_FEROX_STATUS_CODES")
+        if status_codes and all(part.strip().isdigit() for part in status_codes.split(",")):
+            argv += ["--status-codes", status_codes]
+        timeout = os.environ.get("REACHAGENT_FEROX_TIMEOUT")
+        if timeout and timeout.isdigit():
+            argv += ["--timeout", timeout]
+        rate = os.environ.get("REACHAGENT_FEROX_RATE")
+        if rate and rate.isdigit():
+            argv += ["--rate-limit", rate]
         return argv
 
     # Set by the scan entrypoint before ingest (D3 pass-through).

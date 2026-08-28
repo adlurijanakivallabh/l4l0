@@ -33,13 +33,19 @@ class NmapRunner(ReconToolRunner):
         """``nmap -oX - -sV <target>`` [+ ``-T``/``--top-ports``]."""
         import os
 
-        argv: list[str] = ["nmap", "-oX", "-", "-sV"]
+        argv: list[str] = ["nmap", "-n", "-Pn", "--open", "-oX", "-", "-sV"]
         timing = os.environ.get("REACHAGENT_NMAP_TIMING")
         if timing in ("0", "1", "2", "3", "4", "5"):
             argv += ["-T", timing]
         top = os.environ.get("REACHAGENT_NMAP_TOP_PORTS")
         if top and top.isdigit():
             argv += ["--top-ports", top]
+        retries = os.environ.get("REACHAGENT_NMAP_MAX_RETRIES")
+        if retries and retries.isdigit():
+            argv += ["--max-retries", retries]
+        host_timeout = os.environ.get("REACHAGENT_NMAP_HOST_TIMEOUT")
+        if host_timeout and host_timeout.isdigit():
+            argv += ["--host-timeout", f"{host_timeout}s"]
         argv.append(target)
         return argv
 

@@ -95,13 +95,13 @@ RECON_PROFILES: dict[str, ReconProfile] = {
         wordlist="/usr/share/seclists/Discovery/Web-Content/api/api-seen-in-wild.txt",
         flags=("-t", "20"),
         status_codes="200,204,301,302",
-        tools=("gobuster", "ffuf", "httpx", "whatweb", "katana"),
+        tools=("gobuster", "ffuf", "httpx", "whatweb", "katana", "urlfinder"),
     ),
     "cms_target": ReconProfile(
         wordlist="/usr/share/seclists/Discovery/Web-Content/CMS/wordpress.fuzz.txt",
         flags=("-t", "20"),
         status_codes="200,204,301,302,307,401,403",
-        tools=("gobuster", "ffuf", "whatweb", "wpscan_passive"),
+        tools=("gobuster", "ffuf", "whatweb", "wpscan_passive", "dnsrecon"),
     ),
     "static_site": ReconProfile(
         wordlist="/usr/share/seclists/Discovery/Web-Content/raft-medium-directories.txt",
@@ -119,7 +119,18 @@ RECON_PROFILES: dict[str, ReconProfile] = {
         wordlist="/usr/share/seclists/Discovery/Web-Content/raft-medium-directories.txt",
         flags=("-t", "50"),
         status_codes="200,204,301,302,307,401,403",
-        tools=("gobuster", "ffuf", "feroxbuster", "masscan", "nmap", "subfinder", "amass"),
+        tools=(
+            "gobuster",
+            "ffuf",
+            "feroxbuster",
+            "masscan",
+            "nmap",
+            "subfinder",
+            "amass",
+            "bbot",
+            "dnsrecon",
+            "urlfinder",
+        ),
     ),
     "quiet_recon": ReconProfile(
         wordlist="/usr/share/wordlists/dirb/common.txt",
@@ -164,11 +175,12 @@ class ReconTunerClient(Protocol):
 class AnthropicTunerClient:
     """Anthropic-only implementation; OpenAI support is a different session/model."""
 
-    def __init__(
-        self, *, api_key: str | None = None, model: str = "claude-3-5-sonnet-20240620"
-    ) -> None:
+    def __init__(self, *, api_key: str | None = None, model: str | None = None) -> None:
         self._api_key = api_key or os.environ.get("ANTHROPIC_API_KEY", "")
-        self._model = model
+        self._model = model or os.environ.get(
+            "REACHAGENT_ANTHROPIC_MODEL",
+            os.environ.get("REACHAGENT_LLM_MODEL", "claude-3-5-sonnet-20240620"),
+        )
 
     def propose(
         self, target_signals: dict[str, str], allowlist: dict[str, object]
@@ -354,11 +366,12 @@ class ReconProfileClient(Protocol):
 class AnthropicProfileClient:
     """Anthropic-only profile picker."""
 
-    def __init__(
-        self, *, api_key: str | None = None, model: str = "claude-3-5-sonnet-20240620"
-    ) -> None:
+    def __init__(self, *, api_key: str | None = None, model: str | None = None) -> None:
         self._api_key = api_key or os.environ.get("ANTHROPIC_API_KEY", "")
-        self._model = model
+        self._model = model or os.environ.get(
+            "REACHAGENT_ANTHROPIC_MODEL",
+            os.environ.get("REACHAGENT_LLM_MODEL", "claude-3-5-sonnet-20240620"),
+        )
 
     def propose(
         self, target_signals: dict[str, str], allowed_profiles: tuple[str, ...]

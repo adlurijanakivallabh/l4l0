@@ -230,7 +230,7 @@ class ReconToolRunner:
         # path embedded in argv rather than stdout. Detect such file paths and
         # read them after spawn; otherwise fall back to stdout.
         file_output_arg: str | None = None
-        for flag in ("-oJ", "-o", "--json_out", "--jsonfile"):
+        for flag in ("-oJ", "-o", "-j", "--json_out", "--jsonfile"):
             if flag in argv:
                 idx = argv.index(flag)
                 if idx + 1 < len(argv):

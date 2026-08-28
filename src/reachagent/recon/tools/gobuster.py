@@ -136,7 +136,18 @@ class GobusterRunner(ReconToolRunner):
         from reachagent.recon.live_tuning import profile_argv  # ponytail: 5× copy → 1
 
         if (profile := profile_argv(target, [])) is not None:
-            return ["gobuster", "dir", "-q", "-u", target, "-w", profile.wordlist, *profile.flags]
+            return [
+                "gobuster",
+                "dir",
+                "-q",
+                "-u",
+                target,
+                "-w",
+                profile.wordlist,
+                "-s",
+                profile.status_codes,
+                *profile.flags,
+            ]
         # Live-reasoning tuning — default OFF so nothing existing breaks.
         # When REACHAGENT_GOBUSTER_LIVE_TUNING=1, Claude proposes a choice
         # FROM the allowlist (wordlist/flags/status) given target signals;
@@ -184,6 +195,9 @@ class GobusterRunner(ReconToolRunner):
         timeout = os.environ.get("REACHAGENT_GOBUSTER_TIMEOUT")
         if timeout and timeout.isdigit():
             argv += ["--timeout", f"{timeout}s"]
+        status_codes = os.environ.get("REACHAGENT_GOBUSTER_STATUS_CODES")
+        if status_codes and all(part.strip().isdigit() for part in status_codes.split(",")):
+            argv += ["-s", status_codes]
         return argv
 
     def parse(

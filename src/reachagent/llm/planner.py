@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import os
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Protocol
 
 from reachagent.llm.client import build_openai_compatible_client, extract_json_object
@@ -18,9 +18,11 @@ from reachagent.recon.live_tuning import RECON_PROFILES
 from reachagent.recon.tools import (
     AmassRunner,
     ArjunRunner,
+    BbotRunner,
     CommixRunner,
     DalfoxRunner,
     DirbRunner,
+    DnsreconRunner,
     DnsxRunner,
     FeroxbusterRunner,
     FfufRunner,
@@ -43,6 +45,7 @@ from reachagent.recon.tools import (
     SubfinderRunner,
     TestsslRunner,
     TheHarvesterRunner,
+    UrlfinderRunner,
     Wafw00fRunner,
     WaybackUrlsRunner,
     WhatWebRunner,
@@ -129,6 +132,10 @@ class ToolCatalogEntry:
     target_types: frozenset[str]
     description: str = ""
     signal_gated: bool = False
+    capabilities: tuple[str, ...] = ()
+    produces: tuple[str, ...] = ()
+    passive: bool = False
+    estimated_cost: int = 1
 
 
 @dataclass(frozen=True)
@@ -180,11 +187,25 @@ def _entry(
     *,
     description: str = "",
     signal_gated: bool = False,
+    capabilities: tuple[str, ...] = (),
+    produces: tuple[str, ...] = (),
+    passive: bool = False,
+    estimated_cost: int = 1,
 ) -> ToolCatalogEntry:
     name = getattr(runner, "name", "")
     if not isinstance(name, str) or not name:
         raise RuntimeError(f"runner {runner!r} has no catalog name")
-    return ToolCatalogEntry(name, phase, target_types, description, signal_gated)
+    return ToolCatalogEntry(
+        name,
+        phase,
+        target_types,
+        description,
+        signal_gated,
+        capabilities,
+        produces,
+        passive,
+        estimated_cost,
+    )
 
 
 def build_tool_catalog() -> tuple[ToolCatalogEntry, ...]:
@@ -223,6 +244,18 @@ def build_tool_catalog() -> tuple[ToolCatalogEntry, ...]:
         ),
         _entry(
             AmassRunner, "recon", web_targets, description="Deep subdomain enum (passive + active)."
+        ),
+        _entry(
+            BbotRunner,
+            "recon",
+            web_targets,
+            description="Event-stream asset discovery (DNS, certificates, HTTP).",
+        ),
+        _entry(
+            DnsreconRunner,
+            "recon",
+            web_targets,
+            description="Structured DNS record and service discovery.",
         ),
         _entry(
             ShuffleDnsRunner,
@@ -278,6 +311,12 @@ def build_tool_catalog() -> tuple[ToolCatalogEntry, ...]:
         ),
         _entry(
             GauRunner, "recon", web_targets, description="URL discovery: Crawl/URLScan/OTX/Wayback."
+        ),
+        _entry(
+            UrlfinderRunner,
+            "recon",
+            web_targets,
+            description="Passive URL discovery with source-attributed JSONL output.",
         ),
         _entry(Wafw00fRunner, "recon", web_targets, description="WAF fingerprinting."),
         _entry(
@@ -362,7 +401,71 @@ def build_tool_catalog() -> tuple[ToolCatalogEntry, ...]:
     )
     if len({entry.name for entry in entries}) != len(entries):
         raise RuntimeError("recon catalog has duplicate wrapper names")
-    return entries
+
+    # Keep the catalog descriptive enough for an LLM to choose a next tool from
+    # observed graph state, without exposing command strings or accepting model
+    # supplied flags. Defaults cover every existing adapter; the explicit map
+    # records the useful distinction between passive enrichment and active
+    # network/content discovery.
+    metadata: dict[str, tuple[tuple[str, ...], tuple[str, ...], bool, int]] = {
+        "nmap": (("port discovery", "service fingerprinting"), ("Host", "Service"), False, 3),
+        "masscan": (("fast port discovery",), ("Host", "Service"), False, 2),
+        "rustscan": (("fast port discovery",), ("Host", "Service"), False, 2),
+        "naabu": (("verified port discovery",), ("Host", "Service"), False, 2),
+        "subfinder": (("passive subdomain discovery",), ("Host",), True, 1),
+        "amass": (("passive/active subdomain discovery",), ("Host",), True, 3),
+        "bbot": (
+            ("event-driven asset discovery", "DNS", "certificates", "HTTP"),
+            ("Host", "Service", "Endpoint"),
+            True,
+            3,
+        ),
+        "dnsrecon": (("DNS records", "zone/service discovery"), ("Host",), True, 2),
+        "shuffledns": (("active DNS brute force",), ("Host",), False, 2),
+        "dnsx": (("DNS resolution",), ("Host",), True, 1),
+        "theHarvester": (("passive OSINT host discovery",), ("Host",), True, 2),
+        "whatweb": (("web technology fingerprinting",), ("Host", "Endpoint"), True, 1),
+        "httpx": (
+            ("HTTP reachability", "status/title/technology probing"),
+            ("Host", "Endpoint"),
+            True,
+            1,
+        ),
+        "katana": (("scoped crawling", "JavaScript/XHR discovery"), ("Host", "Endpoint"), False, 2),
+        "gobuster": (("directory/content discovery",), ("Host", "Endpoint"), False, 2),
+        "ffuf": (("calibrated path/content discovery",), ("Host", "Endpoint"), False, 2),
+        "feroxbuster": (("recursive content discovery",), ("Host", "Endpoint"), False, 2),
+        "dirb": (("legacy content discovery",), ("Host", "Endpoint"), False, 2),
+        "waybackurls": (("historical URL discovery",), ("Host", "Endpoint"), True, 1),
+        "gau": (("multi-source historical URL discovery",), ("Host", "Endpoint"), True, 1),
+        "urlfinder": (
+            ("passive URL discovery", "source attribution"),
+            ("Host", "Endpoint"),
+            True,
+            1,
+        ),
+        "wafw00f": (("WAF fingerprinting",), ("Host",), True, 1),
+        "testssl": (("TLS protocol/cipher inventory",), ("Host",), True, 2),
+        "sslscan": (("TLS protocol/cipher inventory",), ("Host",), True, 2),
+        "sslyze": (("TLS protocol/cipher inventory",), ("Host",), True, 2),
+        "wpscan": (("passive CMS fingerprinting",), ("Host", "Endpoint"), True, 2),
+    }
+    enriched: list[ToolCatalogEntry] = []
+    for entry in entries:
+        capabilities, produces, passive, estimated_cost = metadata.get(
+            entry.name,
+            ((entry.description,) if entry.description else ("recon facts",), ("Host",), False, 1),
+        )
+        enriched.append(
+            replace(
+                entry,
+                capabilities=capabilities,
+                produces=produces,
+                passive=passive,
+                estimated_cost=estimated_cost,
+            )
+        )
+    return tuple(enriched)
 
 
 def _bounded_facts(facts: Mapping[str, str]) -> dict[str, str]:
@@ -387,6 +490,10 @@ def planning_prompt(
             "target_types": sorted(entry.target_types),
             "description": entry.description,
             "signal_gated": entry.signal_gated,
+            "capabilities": list(entry.capabilities),
+            "produces": list(entry.produces),
+            "passive": entry.passive,
+            "estimated_cost": entry.estimated_cost,
         }
         for entry in entries
     ]
@@ -433,6 +540,163 @@ def planning_prompt(
         f"Context: {json.dumps(context_json, sort_keys=True)}\n"
         f"Response schema: {json.dumps(schema, sort_keys=True)}"
     )
+
+
+@dataclass(frozen=True)
+class ReconSelection:
+    """One bounded, allowlist-validated recon continuation decision."""
+
+    tools: tuple[str, ...]
+    rationale: str
+    stop: bool = False
+
+
+def recon_selection_prompt(
+    context: PlanningContext,
+    *,
+    state: Mapping[str, str],
+    available_tools: Sequence[str],
+    completed_tools: Sequence[str] = (),
+) -> str:
+    """Build a compact prompt for adaptive recon tool selection.
+
+    The model receives only bounded facts and catalog metadata. It chooses the
+    next fact-emitters; it never receives command strings or a way to alter the
+    execution/oracle boundary.
+    """
+
+    catalog = {
+        entry.name: {
+            "capabilities": list(entry.capabilities),
+            "produces": list(entry.produces),
+            "passive": entry.passive,
+            "estimated_cost": entry.estimated_cost,
+            "description": entry.description,
+        }
+        for entry in build_tool_catalog()
+        if entry.phase == "recon" and entry.name in set(available_tools)
+    }
+    schema = {
+        "tools": ["catalog names only; zero or more not-yet-completed tools"],
+        "rationale": "why these tools are the best next bounded fact sources",
+        "stop": "true only when additional recon has low expected value",
+    }
+    state_json = {
+        str(key)[:80]: str(value)[:2_000]
+        for key, value in sorted(state.items(), key=lambda pair: str(pair[0]))[:40]
+    }
+    return (
+        "You are the adaptive recon planner for an authorized web/API assessment. "
+        "Choose only fact-emitting recon tools from the supplied catalog. The next "
+        "decision must use the current bounded graph/audit state, avoid completed "
+        "tools, and stay within the remaining tool budget. Do not emit commands, "
+        "flags, URLs, payloads, exploit claims, or vulnerability verdicts. "
+        "Return exactly one JSON object matching the schema. Set stop=true only "
+        "when the marginal coverage of every remaining tool is low; otherwise "
+        "select one or more concrete next tools and explain the evidence gap.\n"
+        f"Target: {context.target[:500]}\n"
+        f"Target type: {context.target_type}\n"
+        f"Operator goal: {context.operator_prompt[:500]}\n"
+        f"Completed tools: {json.dumps(list(completed_tools))}\n"
+        f"Available tools: {json.dumps(list(available_tools))}\n"
+        f"Current state: {json.dumps(state_json, sort_keys=True)}\n"
+        f"Catalog: {json.dumps(catalog, sort_keys=True)}\n"
+        f"Remaining tool budget: {context.max_tool_budget}\n"
+        f"Response schema: {json.dumps(schema, sort_keys=True)}"
+    )
+
+
+def validate_recon_selection(
+    raw: Mapping[str, object],
+    *,
+    context: PlanningContext,
+    available_tools: Sequence[str],
+    completed_tools: Sequence[str] = (),
+    max_tools: int | None = None,
+) -> ReconSelection:
+    """Reject unknown, repeated, signal-gated, or incompatible selections."""
+
+    _reject_unknown_keys(raw, frozenset({"tools", "rationale", "stop"}), "recon selection")
+    rationale = _required_string(raw.get("rationale"), "recon selection rationale")
+    stop = raw.get("stop")
+    if not isinstance(stop, bool):
+        raise PlanValidationError("recon selection stop must be a boolean")
+    tools = _string_list(raw.get("tools"), "recon selection tools")
+    available = set(available_tools)
+    completed = set(completed_tools)
+    catalog = {entry.name: entry for entry in build_tool_catalog()}
+    selected: list[str] = []
+    for name in tools:
+        entry = catalog.get(name)
+        if entry is None or name not in available:
+            raise PlanValidationError(f"recon selection contains unavailable tool: {name!r}")
+        if entry.phase != "recon" or entry.signal_gated:
+            raise PlanValidationError(f"recon selection tool is not a fact emitter: {name!r}")
+        if context.target_type not in entry.target_types:
+            raise PlanValidationError(
+                f"recon selection tool {name!r} is incompatible with {context.target_type!r}"
+            )
+        if name in completed:
+            raise PlanValidationError(f"recon selection repeats completed tool: {name!r}")
+        selected.append(name)
+    limit = max_tools if max_tools is not None else context.max_tool_budget
+    if limit < 1:
+        raise PlanValidationError("recon selection tool limit must be positive")
+    if len(selected) > limit:
+        raise PlanValidationError("recon selection exceeds the remaining tool budget")
+    if not selected and not stop:
+        raise PlanValidationError("recon selection must choose a tool or set stop=true")
+    return ReconSelection(tuple(selected), rationale, stop)
+
+
+def select_recon_tools(
+    context: PlanningContext,
+    client: PlannerClient,
+    *,
+    state: Mapping[str, str],
+    available_tools: Sequence[str],
+    completed_tools: Sequence[str] = (),
+    max_tools: int | None = None,
+) -> ReconSelection:
+    """Ask the configured LLM for the next recon tools and validate its answer.
+
+    Validation-only failures get at most two bounded fixer turns; provider
+    failures still propagate immediately so a strict scan cannot silently
+    continue with an unreasoned sequence.
+    """
+
+    raw = client.propose_json(
+        recon_selection_prompt(
+            context,
+            state=state,
+            available_tools=available_tools,
+            completed_tools=completed_tools,
+        ),
+        max_tokens=1_024,
+    )
+    last_error: PlanValidationError | None = None
+    for _attempt in range(3):
+        try:
+            return validate_recon_selection(
+                raw,
+                context=context,
+                available_tools=available_tools,
+                completed_tools=completed_tools,
+                max_tools=max_tools,
+            )
+        except PlanValidationError as exc:
+            last_error = exc
+            if _attempt == 2:
+                break
+            raw = client.propose_json(
+                "The recon selection JSON was rejected by strict validation. "
+                f"VALIDATION ERROR: {exc}. Return one corrected JSON object only; "
+                "preserve the evidence-based intent, choose only available fact "
+                "emitters, and never include commands or vulnerability claims.\n"
+                f"Previous JSON: {json.dumps(raw, sort_keys=True)[:4_000]}",
+                max_tokens=1_024,
+            )
+    raise last_error or PlanValidationError("recon selection failed without a validation error")
 
 
 def _mapping(value: object, label: str) -> Mapping[str, object]:

@@ -22,7 +22,7 @@ class ShuffleDnsRunner(ReconToolRunner):
         """shuffledns -d <target> -w <wordlist> -r resolvers -o -."""
         from reachagent.recon.tools._wordlist import preferred_wordlist
 
-        wordlist = preferred_wordlist("REACHAGENT_SHUFFLEDNS_WORDLIST")
+        wordlist = preferred_wordlist("REACHAGENT_SHUFFLEDNS_WORDLIST", purpose="dns")
         return [
             "shuffledns",
             "-d",

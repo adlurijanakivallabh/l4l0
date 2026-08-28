@@ -70,8 +70,17 @@ def _plan() -> dict[str, object]:
 
 def test_catalog_is_built_from_all_existing_runner_names() -> None:
     catalog = {entry.name: entry for entry in build_tool_catalog()}
-    assert len(catalog) == 32  # 6 new wrappers added in the recon expansion
-    assert {"nmap", "httpx", "arjun", "jwt-tool", "testssl"} <= set(catalog)
+    assert len(catalog) == 35  # three passive/event-driven recon adapters added
+    assert {
+        "nmap",
+        "httpx",
+        "arjun",
+        "jwt-tool",
+        "testssl",
+        "bbot",
+        "dnsrecon",
+        "urlfinder",
+    } <= set(catalog)
     assert catalog["nuclei"].signal_gated
     assert catalog["arjun"].phase == "insertion-points"
 

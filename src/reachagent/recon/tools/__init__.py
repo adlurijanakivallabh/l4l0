@@ -26,9 +26,11 @@ from reachagent.recon.tools.base import (
     ReconResult,
     ReconToolRunner,
 )
+from reachagent.recon.tools.bbot import BbotRunner
 from reachagent.recon.tools.commix import CommixRunner
 from reachagent.recon.tools.dalfox import DalfoxRunner
 from reachagent.recon.tools.dirb import DirbRunner
+from reachagent.recon.tools.dnsrecon import DnsreconRunner
 from reachagent.recon.tools.dnsx import DnsxRunner
 from reachagent.recon.tools.feroxbuster import FeroxbusterRunner
 from reachagent.recon.tools.ffuf import FfufRunner
@@ -55,6 +57,7 @@ from reachagent.recon.tools.subdomains import AmassRunner, SubfinderRunner
 from reachagent.recon.tools.theharvester import TheHarvesterRunner
 from reachagent.recon.tools.tls_probe import SslscanRunner, SslyzeRunner, TestsslRunner
 from reachagent.recon.tools.url_discovery import GauRunner, WaybackUrlsRunner
+from reachagent.recon.tools.urlfinder import UrlfinderRunner
 from reachagent.recon.tools.wafw00f import Wafw00fRunner
 from reachagent.recon.tools.whatweb import WhatWebRunner
 from reachagent.recon.tools.wpscan_passive import WpscanPassiveRunner
@@ -64,9 +67,11 @@ __all__ = [
     "RECON_ENV_LIVE",
     "AmassRunner",
     "ArjunRunner",
+    "BbotRunner",
     "CommixRunner",
     "DalfoxRunner",
     "DnsxRunner",
+    "DnsreconRunner",
     "DirbRunner",
     "FeroxbusterRunner",
     "FfufRunner",
@@ -96,6 +101,7 @@ __all__ = [
     "TestsslRunner",
     "TheHarvesterRunner",
     "WaybackUrlsRunner",
+    "UrlfinderRunner",
     "Wafw00fRunner",
     "WhatWebRunner",
     "WpscanPassiveRunner",

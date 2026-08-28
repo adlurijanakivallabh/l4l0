@@ -37,6 +37,28 @@ class KatanaRunner(ReconToolRunner):
         ct = os.environ.get("REACHAGENT_KATANA_TIMEOUT")
         if ct and ct.isdigit():
             argv += ["-ct", ct]
+        for env_name, flag in (
+            ("REACHAGENT_KATANA_CONCURRENCY", "-c"),
+            ("REACHAGENT_KATANA_PARALLELISM", "-p"),
+            ("REACHAGENT_KATANA_RATE", "-rl"),
+            ("REACHAGENT_KATANA_MAX_PAGES", "-mdp"),
+            ("REACHAGENT_KATANA_TIMEOUT_PER_REQUEST", "-timeout"),
+        ):
+            value = os.environ.get(env_name)
+            if value and value.isdigit():
+                argv += [flag, value]
+        field_scope = os.environ.get("REACHAGENT_KATANA_FIELD_SCOPE")
+        if field_scope in {"dn", "rdn", "fqdn"}:
+            argv += ["-fs", field_scope]
+        extensions = os.environ.get("REACHAGENT_KATANA_EXTENSION_FILTER")
+        if extensions:
+            argv += ["-ef", extensions]
+        if os.environ.get("REACHAGENT_KATANA_HEADLESS", "").lower() in {
+            "1",
+            "true",
+            "yes",
+        }:
+            argv += ["-hl", "-xhr"]
         return argv
 
     def parse(self, target: str, raw_output: str) -> tuple[str, ...]:

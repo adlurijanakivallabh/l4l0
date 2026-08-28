@@ -902,6 +902,10 @@ def scan_all_classes(
     execution_plan = None
     planned_recon_tools: tuple[str, ...] | None = None
     planned_signal_tools: tuple[str, ...] = ()
+    recon_selector = None
+    recon_candidates: tuple[str, ...] | None = None
+    plan_client = None
+    own_plan_client = False
     scan_budget = max_attempts
     if require_llm:
         # The GUI path has one model-controlled plan boundary. Validation is
@@ -912,6 +916,7 @@ def scan_all_classes(
             build_planner_client,
             build_tool_catalog,
             plan_execution,
+            select_recon_tools,
         )
 
         lib_for_plan = library if library is not None else _library()
@@ -932,24 +937,66 @@ def scan_all_classes(
             max_request_budget=max(1, max_attempts),
             max_tool_budget=16,
         )
-        own_client = planner_client is None
+        own_plan_client = planner_client is None
         plan_client = planner_client or build_planner_client()
         try:
             execution_plan = plan_execution(context, plan_client)
-        finally:
-            if own_client and hasattr(plan_client, "close"):
+        except Exception:
+            if own_plan_client and hasattr(plan_client, "close"):
                 plan_client.close()
+            raise
         catalog_by_name = {entry.name: entry for entry in build_tool_catalog()}
         recon_names: list[str] = []
         signal_names: list[str] = []
         for phase in execution_plan.phases:
             for tool_name in phase.tools:
-                if catalog_by_name[tool_name].signal_gated:
+                entry = catalog_by_name[tool_name]
+                if entry.signal_gated:
                     signal_names.append(tool_name)
-                else:
+                elif entry.phase == "recon":
+                    # Insertion-point adapters are deliberately not executed
+                    # during cold-start recon; they run after the surface exists.
                     recon_names.append(tool_name)
         planned_recon_tools = tuple(dict.fromkeys(recon_names))
         planned_signal_tools = tuple(dict.fromkeys(signal_names))
+        recon_candidates = tuple(
+            entry.name
+            for entry in catalog_by_name.values()
+            if entry.phase == "recon" and target_type in entry.target_types
+        )
+
+        def _select_recon(
+            state: dict[str, str],
+            available: tuple[str, ...],
+            completed: tuple[str, ...],
+        ) -> object:
+            if plan_client is None:
+                raise RuntimeError("adaptive recon planner client is unavailable")
+            adaptive_context = PlanningContext(
+                target=context.target,
+                target_type=context.target_type,
+                in_scope=context.in_scope,
+                graph_facts=state,
+                operator_prompt=context.operator_prompt,
+                payload_refs=(),
+                max_request_budget=context.max_request_budget,
+                max_tool_budget=execution_plan.tool_budget,
+            )
+            remaining_budget = execution_plan.tool_budget - len(completed)
+            if remaining_budget <= 0:
+                from reachagent.llm.planner import ReconSelection
+
+                return ReconSelection((), "recon tool budget exhausted", True)
+            return select_recon_tools(
+                adaptive_context,
+                plan_client,
+                state=state,
+                available_tools=available,
+                completed_tools=completed,
+                max_tools=min(remaining_budget, len(available)),
+            )
+
+        recon_selector = _select_recon
         scan_budget = min(max_attempts, execution_plan.request_budget)
         _emit(
             events_out,
@@ -1028,23 +1075,29 @@ def scan_all_classes(
     _emit(events_out, "endpoints", "info", "phase 2: endpoints and insertion points")
     lib = library if library is not None else _library()
 
-    result = scan_target(
-        base_url=base_url,
-        in_scope=in_scope,
-        out_of_scope=out_of_scope,
-        dry_run=False,
-        max_attempts=scan_budget,
-        surface_path=surface_path,
-        identities=identities,
-        operator_prompt=operator_prompt,
-        recon_tools=planned_recon_tools,
-        live_recon=live_recon,
-        events=events_out,
-        transport=transport,
-        library=lib,
-        graph=graph,
-        audit=audit,
-    )
+    try:
+        result = scan_target(
+            base_url=base_url,
+            in_scope=in_scope,
+            out_of_scope=out_of_scope,
+            dry_run=False,
+            max_attempts=scan_budget,
+            surface_path=surface_path,
+            identities=identities,
+            operator_prompt=operator_prompt,
+            recon_tools=planned_recon_tools,
+            recon_candidates=recon_candidates,
+            recon_selector=recon_selector,
+            live_recon=live_recon,
+            events=events_out,
+            transport=transport,
+            library=lib,
+            graph=graph,
+            audit=audit,
+        )
+    finally:
+        if own_plan_client and plan_client is not None and hasattr(plan_client, "close"):
+            plan_client.close()
     graph = result["graph"] if graph is None else graph
     audit = result["audit"] if audit is None else audit
     _emit(
