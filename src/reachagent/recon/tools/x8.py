@@ -10,9 +10,9 @@ from __future__ import annotations
 
 import re
 
-from reachagent.graph.nodes import Endpoint, Host, Parameter
+from reachagent.graph.nodes import Host, Parameter
 from reachagent.recon.tools._wordlist import preferred_wordlist
-from reachagent.recon.tools.base import ReconToolRunner, _recon_host_of
+from reachagent.recon.tools.base import ReconToolRunner, _recon_host_of, _scope_url
 
 _REFLECT_RE = re.compile(
     r"param\s+['\"]?(?P<name>[A-Za-z0-9_\-]+)['\"]?\s+reflected", re.IGNORECASE
@@ -43,43 +43,46 @@ class X8Runner(ReconToolRunner):
     def parse(self, target: str, raw_output: str) -> tuple[str, ...]:
         """Parse X8 reflected-param lines into Parameter nodes. Facts only."""
         written: list[str] = []
-        param_names: list[str] = []
+        targets: dict[str, list[str]] = {}
+        current_target = target
         for line in raw_output.splitlines():
             stripped = line.strip()
             if not stripped or stripped.startswith("#"):
                 continue
             match = _REFLECT_RE.search(stripped)
             if match:
-                param_names.append(match.group("name"))
+                targets.setdefault(current_target, []).append(match.group("name"))
                 continue
             # Fallback: URL with query like https://host/path?foo=1&bar=2
             if "?" in stripped and "://" in stripped:
+                current_target = stripped.split()[0]
                 query = stripped.split("?", 1)[1].split("#", 1)[0].split()[0]
                 for kv in query.split("&"):
                     name = kv.split("=", 1)[0].strip().strip("\"'")
                     if name and " " not in name and len(name) < 64:
-                        param_names.append(name)
-        if not param_names:
+                        targets.setdefault(current_target, []).append(name)
+        if not any(targets.values()):
             return ()
-        seen: set[str] = set()
-        unique: list[str] = []
-        for p in param_names:
-            if p not in seen:
-                seen.add(p)
-                unique.append(p)
         host_addr = _host_of(target)
         host_node = self.graph.add_host(Host(address=host_addr, source=self.name))
         written.append(host_node)
-        endpoints = list(self.graph.endpoints())
-        if endpoints:
-            endpoint_node = endpoints[0][0]
-        else:
-            endpoint_node = self.graph.add_endpoint(Endpoint(method="GET", path="/"))
-            self.graph.add_resolves_to(host_node, endpoint_node)
-            written.append(endpoint_node)
-        for param_name in unique:
-            node = self.graph.add_parameter(
-                endpoint_node, Parameter(name=param_name, location="query")
-            )
-            written.append(node)
+        for endpoint_target, names in targets.items():
+            try:
+                self.scope.enforce(_scope_url(endpoint_target))
+            except Exception:  # noqa: BLE001 — raw tool lines can contain foreign URLs
+                self.audit.record(self.name, "RECON", endpoint_target, "refused_out_of_scope")
+                continue
+            endpoint_node = self.endpoint_for_target(endpoint_target)
+            for param_name in dict.fromkeys(names):
+                node = self.graph.add_parameter(
+                    endpoint_node,
+                    Parameter(
+                        name=param_name,
+                        location="query",
+                        serialization="application/x-www-form-urlencoded",
+                        source=self.name,
+                        confidence=0.75,
+                    ),
+                )
+                written.append(node)
         return tuple(written)

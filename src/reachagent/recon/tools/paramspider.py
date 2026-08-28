@@ -63,7 +63,9 @@ class ParamSpiderRunner(ReconToolRunner):
             ep_key = path
             endpoint_node = endpoint_cache.get(ep_key)
             if endpoint_node is None:
-                endpoint_node = self.graph.add_endpoint(Endpoint(method="GET", path=path))
+                endpoint_node = self.graph.add_endpoint(
+                    Endpoint(method="GET", path=path, source=self.name, confidence=0.75)
+                )
                 self.graph.add_resolves_to(host_node, endpoint_node)
                 endpoint_cache[ep_key] = endpoint_node
                 written.append(endpoint_node)
@@ -77,7 +79,14 @@ class ParamSpiderRunner(ReconToolRunner):
                     continue
                 seen_params.add(key)
                 param_node = self.graph.add_parameter(
-                    endpoint_node, Parameter(name=name, location="query")
+                    endpoint_node,
+                    Parameter(
+                        name=name,
+                        location="query",
+                        serialization="application/x-www-form-urlencoded",
+                        source=self.name,
+                        confidence=0.75,
+                    ),
                 )
                 written.append(param_node)
         return tuple(written)

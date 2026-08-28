@@ -18,6 +18,11 @@ from reachagent.recon.mapper import (
     SurfaceSpec,
     classify_can_call,
 )
+from reachagent.recon.surface import (
+    ParsedSurface,
+    parse_html_surface,
+    parse_javascript_surface,
+)
 
 __all__ = [
     "EndpointSpec",
@@ -29,5 +34,8 @@ __all__ = [
     "SurfaceMapper",
     "SurfaceSpec",
     "classify_can_call",
+    "ParsedSurface",
+    "parse_html_surface",
+    "parse_javascript_surface",
     "run_recon",
 ]

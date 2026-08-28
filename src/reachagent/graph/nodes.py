@@ -102,6 +102,16 @@ class Endpoint:
     # status string ("401"/"403"), None when unclassified. Never a finding, never
     # a bypass — recon-tier fact only.
     access_restricted: str | None = None
+    state_changing: bool = False
+    # Mapping provenance and replay material. These are facts copied from the
+    # discovery source; they never carry a verdict or authorize a request.
+    source: str | None = None
+    confidence: float | None = None
+    evidence_ref: str | None = None
+    request_headers: tuple[tuple[str, str], ...] = ()
+    request_body: str | None = None
+    response_content_type: str | None = None
+    response_shape: str | None = None
 
 
 @dataclass
@@ -111,6 +121,15 @@ class Parameter:
     name: str
     location: str
     inferred_sink_type: SinkType | None = None
+    # ``location`` is explicit (query/path/json/form/header/cookie/multipart/
+    # graphql). ``serialization`` records how a value is encoded so a later
+    # firing step cannot silently put a form field into a JSON request.
+    serialization: str | None = None
+    required: bool = False
+    example: str | None = None
+    source: str | None = None
+    confidence: float | None = None
+    evidence_ref: str | None = None
 
 
 @dataclass

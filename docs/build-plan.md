@@ -240,6 +240,8 @@ candidate or finding.
 
 ### Phase 2 — Endpoint, form, and insertion-point mapping
 
+**Status:** implemented (2026-08-28); focused gate passed.
+
 **Goal:** discover the real callable surface and every safe insertion location.
 
 **Read during this phase:** R1 route/API import and browser-flow files; R2 API
@@ -254,17 +256,29 @@ cookie/header insertion points, and response-shape normalization.
 
 **Build:**
 
-- represent query, path, JSON, form, header, cookie, multipart, and GraphQL
-  fields as distinct Parameter locations;
-- extract HTML forms, hidden fields, CSRF fields, JSON examples, and XHR calls;
-- mine JS bundles for endpoint literals and parameter names with bounded output;
-- add route-schema replay with method/header/body examples;
-- preserve source, confidence, and evidence references on every graph fact;
-- let the LLM rank endpoints and insertion points while deterministic compatibility
-  checks reject impossible combinations.
+- represent query, path, JSON/body, form, header, cookie, multipart, and GraphQL
+  fields as distinct `Parameter` locations with an explicit serialization plan;
+- parse OpenAPI/Swagger path-level and operation-level parameters, local schema
+  references, request/response examples, header/cookie fields, and body properties;
+- crawl bounded same-host HTML pages read-only, extracting links, hidden/CSRF/file
+  controls, form methods/enctypes, and script sources; never submit a form;
+- mine bounded JavaScript for fetch/XHR/axios routes, query keys, JSON body keys,
+  GraphQL fields/arguments, and content types;
+- preserve source, confidence, evidence handles, request headers/body examples, and
+  response-shape metadata on graph facts; merge repeated observations without loss;
+- make Arjun/X8 parameter facts attach to the reported endpoint rather than the
+  first endpoint in the graph;
+- let the LLM rank endpoint and parameter node ids while graph-backed validation
+  rejects unknown ids and incompatible locations; the Coordinator only receives a
+  bounded ordering bonus.
 
-**Focused gate:** API discovery, mapper, browser/form parsing, and surface-ranking
-tests.
+**Decision record:** `docs/decisions-endpoint-mapping-phase2.md` records the full
+reference read inventory, license posture, technique/gap decisions, web citations,
+and the deterministic boundary proof.
+
+**Focused gate:** `tests/recon/test_endpoint_mapping_phase2.py`,
+`tests/recon/test_api_discovery.py`, `tests/phase1/test_surface_mapper.py`,
+`tests/phase4/test_graphql.py`, and `tests/recon/test_surface_tuning.py`.
 
 **Exit criterion:** a mapped insertion point cannot reach payload firing until it
 has a completed benign fingerprint and a concrete location/serialization plan.

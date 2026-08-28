@@ -14,8 +14,8 @@ from __future__ import annotations
 
 import json
 
-from reachagent.graph.nodes import Endpoint, Host, Parameter
-from reachagent.recon.tools.base import ReconToolRunner, _recon_host_of
+from reachagent.graph.nodes import Host, Parameter
+from reachagent.recon.tools.base import ReconToolRunner, _recon_host_of, _scope_url
 
 _host_of = _recon_host_of  # ponytail: deduped to base helper
 
@@ -43,60 +43,66 @@ class ArjunRunner(ReconToolRunner):
         Deduplicated. Facts only.
         """
         written: list[str] = []
-        params: list[str] = []
+        by_target: dict[str, list[str]] = {}
         text = raw_output.strip()
         if not text:
             return ()
-        # Try JSON object with "param" or "parameters"
+        # Arjun output appears as a URL→parameter mapping, a single parameter
+        # object, or a plain list. Keep the URL association when it exists.
         try:
             parsed = json.loads(text)
             if isinstance(parsed, dict):
-                if "parameters" in parsed and isinstance(parsed["parameters"], list):
-                    params = [str(p).strip() for p in parsed["parameters"] if str(p).strip()]
-                elif "param" in parsed:
-                    val = parsed["param"]
-                    if isinstance(val, list):
-                        params = [str(p).strip() for p in val if str(p).strip()]
-                    elif isinstance(val, str) and val.strip():
-                        params = [val.strip()]
-                elif "params" in parsed and isinstance(parsed["params"], list):
-                    params = [str(p).strip() for p in parsed["params"] if str(p).strip()]
+                if any(key in parsed for key in ("parameters", "params", "param")):
+                    values = parsed.get("parameters", parsed.get("params", parsed.get("param")))
+                    values = values if isinstance(values, list) else [values]
+                    by_target[target] = [str(p).strip() for p in values if str(p).strip()]
+                else:
+                    for raw_url, values in parsed.items():
+                        if not isinstance(values, (list, tuple, str)):
+                            continue
+                        values_list = values if isinstance(values, (list, tuple)) else [values]
+                        by_target[str(raw_url)] = [
+                            str(p).strip() for p in values_list if str(p).strip()
+                        ]
             elif isinstance(parsed, list):
-                # Bare list of param names
-                params = [str(p).strip() for p in parsed if str(p).strip()]
+                by_target[target] = [str(p).strip() for p in parsed if str(p).strip()]
         except json.JSONDecodeError:
             pass
-        if not params:
+        if not by_target:
             # Fallback: line-per-param (one non-blank line per param name)
+            params: list[str] = []
             for line in raw_output.splitlines():
                 name = line.strip().strip("[]\"',")
                 if name and not name.startswith("#") and not name.startswith("{"):
                     # Heuristic: bare word, not URL
                     if "://" not in name and len(name) < 64 and " " not in name:
                         params.append(name)
-        if not params:
+            by_target[target] = params
+        if not any(by_target.values()):
             return ()
-        seen: set[str] = set()
-        unique: list[str] = []
-        for p in params:
-            if p not in seen:
-                seen.add(p)
-                unique.append(p)
         host_addr = _host_of(target)
         host_node = self.graph.add_host(Host(address=host_addr, source=self.name))
-        written.append(host_node)
-        # Target endpoint — prefer existing, else create GET /
-        endpoints = list(self.graph.endpoints())
-        if endpoints:
-            endpoint_node = endpoints[0][0]
-        else:
-            endpoint_node = self.graph.add_endpoint(Endpoint(method="GET", path="/"))
-            self.graph.add_resolves_to(host_node, endpoint_node)
-            written.append(endpoint_node)
-        for param_name in unique:
-            # Location heuristic: arjun --get → query
-            node = self.graph.add_parameter(
-                endpoint_node, Parameter(name=param_name, location="query")
-            )
-            written.append(node)
+        if host_node not in written:
+            written.append(host_node)
+        for endpoint_target, params in by_target.items():
+            if not params:
+                continue
+            try:
+                self.scope.enforce(_scope_url(endpoint_target))
+            except Exception:  # noqa: BLE001 — raw tool lines can contain foreign URLs
+                self.audit.record(self.name, "RECON", endpoint_target, "refused_out_of_scope")
+                continue
+            endpoint_node = self.endpoint_for_target(endpoint_target)
+            for param_name in dict.fromkeys(params):
+                node = self.graph.add_parameter(
+                    endpoint_node,
+                    Parameter(
+                        name=param_name,
+                        location="query",
+                        serialization="application/x-www-form-urlencoded",
+                        source=self.name,
+                        confidence=0.8,
+                    ),
+                )
+                written.append(node)
         return tuple(written)

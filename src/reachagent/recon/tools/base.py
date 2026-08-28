@@ -46,11 +46,13 @@ import subprocess  # noqa: S404 — argument-array only, shell=False, never a sh
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import ClassVar
+from urllib.parse import urlsplit
 
 import httpx
 
 from reachagent.execution.audit import AuditLog
 from reachagent.execution.scope import OutOfScopeError, ScopeGuard
+from reachagent.graph.nodes import Endpoint, Host
 from reachagent.graph.store import ReachabilityGraph
 from reachagent.recon.tools._net import (
     host_of as _recon_host_of,  # noqa: F401 — re-export for 8 callers
@@ -158,6 +160,29 @@ class ReconToolRunner:
         tests). Implemented per tool.
         """
         raise NotImplementedError
+
+    def endpoint_for_target(self, target: str, *, method: str = "GET") -> str:
+        """Return the matching endpoint node, creating a scoped route if needed."""
+        parsed = urlsplit(target if "://" in target else f"http://{target}")
+        path = parsed.path or "/"
+        verb = method.upper()
+        for node, endpoint in self.graph.endpoints():
+            if endpoint.method.upper() == verb and endpoint.path == path:
+                return node
+        host_address = _recon_host_of(target)
+        host_node = self.graph.add_host(
+            Host(address=host_address, hostname=host_address, source=self.name)
+        )
+        endpoint_node = self.graph.add_endpoint(
+            Endpoint(
+                method=verb,
+                path=path,
+                source=self.name,
+                confidence=0.7,
+            )
+        )
+        self.graph.add_resolves_to(host_node, endpoint_node)
+        return endpoint_node
 
     # -- the network-free entry point: parse a recorded fixture ------------
 

@@ -90,18 +90,57 @@ class Neo4jGraphStore:
 
     def add_endpoint(self, endpoint: Endpoint) -> str:
         node = endpoint_id(endpoint.method, endpoint.path)
+        props: dict[str, object] = {
+            "method": endpoint.method,
+            "path": endpoint.path,
+            "state_changing": endpoint.state_changing,
+            "protocol": endpoint.protocol.value,
+        }
+        for key, value in {
+            "content_type": endpoint.content_type,
+            "graphql_operation_type": endpoint.graphql_operation_type,
+            "technology": endpoint.technology,
+            "detected_version": endpoint.detected_version,
+            "access_restricted": endpoint.access_restricted,
+            "source": endpoint.source,
+            "confidence": endpoint.confidence,
+            "evidence_ref": endpoint.evidence_ref,
+            "request_body": endpoint.request_body,
+            "response_content_type": endpoint.response_content_type,
+            "response_shape": endpoint.response_shape,
+        }.items():
+            if value is not None:
+                props[key] = value
+        if endpoint.request_headers:
+            props["request_headers"] = dict(endpoint.request_headers)
         return self._merge_node(
             node,
             "endpoint",
-            {"method": endpoint.method, "path": endpoint.path},
+            props,
         )
 
     def add_parameter(self, endpoint_node: str, parameter: Parameter) -> str:
         node = parameter_id(endpoint_node, parameter.location, parameter.name)
+        props: dict[str, object] = {
+            "name": parameter.name,
+            "location": parameter.location,
+            "required": parameter.required,
+        }
+        for key, value in {
+            "serialization": parameter.serialization,
+            "example": parameter.example,
+            "source": parameter.source,
+            "confidence": parameter.confidence,
+            "evidence_ref": parameter.evidence_ref,
+        }.items():
+            if value is not None:
+                props[key] = value
+        if parameter.inferred_sink_type is not None:
+            props["inferred_sink_type"] = parameter.inferred_sink_type.value
         self._merge_node(
             node,
             "parameter",
-            {"name": parameter.name, "location": parameter.location},
+            props,
         )
         self._merge_edge(endpoint_node, node, StructuralEdge.ACCEPTS)
         return node

@@ -32,6 +32,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from enum import Enum, auto
 from pathlib import Path
+from typing import Any
 
 import yaml
 
@@ -71,6 +72,12 @@ class _OwnResult:
 # state-changing and gated by read-only-first (§10) — mirrors the firer's own
 # read-only set, kept here so recon refuses *before* even handing it to the firer.
 _READ_ONLY_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+
+# Keep the wire location explicit. ``body`` remains a compatibility alias for
+# older surface files; new discovery emits ``json`` for JSON request bodies.
+PARAMETER_LOCATIONS = frozenset(
+    {"query", "path", "json", "body", "form", "header", "cookie", "multipart", "graphql"}
+)
 
 # {placeholder} segments in a templated path (e.g. /users/v1/{username}).
 _PATH_PLACEHOLDER = re.compile(r"\{([^}]+)\}")
@@ -148,6 +155,39 @@ class ParameterSpec:
 
     name: str
     location: str
+    serialization: str | None = None
+    required: bool = False
+    example: str | None = None
+    source: str | None = None
+    confidence: float | None = None
+    evidence_ref: str | None = None
+
+    def __post_init__(self) -> None:
+        if not self.name.strip():
+            raise ValueError("parameter name must not be empty")
+        if self.location not in PARAMETER_LOCATIONS:
+            raise ValueError(
+                f"unsupported parameter location {self.location!r}; "
+                f"expected one of {sorted(PARAMETER_LOCATIONS)}"
+            )
+        if self.serialization is not None:
+            serialization = self.serialization.lower()
+            expected = {
+                "query": ("application/x-www-form-urlencoded", "query"),
+                "path": ("path",),
+                "header": ("header",),
+                "cookie": ("cookie",),
+                "json": ("application/json", "json"),
+                "body": ("application/json", "json", "body"),
+                "form": ("application/x-www-form-urlencoded", "form"),
+                "multipart": ("multipart/form-data", "multipart"),
+                "graphql": ("application/json", "graphql"),
+            }[self.location]
+            if not any(token in serialization for token in expected):
+                raise ValueError(
+                    f"serialization {self.serialization!r} is incompatible with "
+                    f"parameter location {self.location!r}"
+                )
 
 
 @dataclass(frozen=True)
@@ -161,6 +201,15 @@ class EndpointSpec:
     parameters: tuple[ParameterSpec, ...] = ()
     returns: tuple[ObjectSpec, ...] = ()
     sample_path_values: Mapping[str, str] = field(default_factory=dict)
+    protocol: Protocol = Protocol.REST
+    graphql_operation_type: str | None = None
+    source: str | None = None
+    confidence: float | None = None
+    evidence_ref: str | None = None
+    request_headers: tuple[tuple[str, str], ...] = ()
+    request_body: str | None = None
+    response_content_type: str | None = None
+    response_shape: str | None = None
 
     @property
     def is_read_only(self) -> bool:
@@ -193,19 +242,83 @@ class SurfaceSpec:
             if not isinstance(entry, Mapping):
                 raise ValueError("each endpoint entry must be a mapping")
             params = tuple(
-                ParameterSpec(name=p["name"], location=p["location"])
+                ParameterSpec(
+                    name=str(p["name"]),
+                    location=str(p["location"]),
+                    serialization=(
+                        str(p["serialization"]) if p.get("serialization") is not None else None
+                    ),
+                    required=bool(p.get("required", False)),
+                    example=(str(p["example"]) if p.get("example") is not None else None),
+                    source=(str(p["source"]) if p.get("source") is not None else None),
+                    confidence=(
+                        float(p["confidence"]) if p.get("confidence") is not None else None
+                    ),
+                    evidence_ref=(
+                        str(p["evidence_ref"]) if p.get("evidence_ref") is not None else None
+                    ),
+                )
                 for p in entry.get("parameters", [])
+                if isinstance(p, Mapping)
             )
             returns = tuple(cls._object_spec(o) for o in entry.get("returns", []))
+            raw_headers = entry.get("request_headers", {})
+            request_headers = (
+                tuple(sorted((str(k), str(v)) for k, v in raw_headers.items()))
+                if isinstance(raw_headers, Mapping)
+                else ()
+            )
+            raw_body = entry.get("request_body")
+            request_body = (
+                raw_body
+                if isinstance(raw_body, str)
+                else json.dumps(raw_body, sort_keys=True)
+                if raw_body is not None
+                else None
+            )
             endpoints.append(
                 EndpointSpec(
-                    method=entry["method"],
-                    path=entry["path"],
+                    method=str(entry["method"]),
+                    path=str(entry["path"]),
                     content_type=entry.get("content_type"),
                     state_changing=bool(entry.get("state_changing", False)),
                     parameters=params,
                     returns=returns,
-                    sample_path_values=dict(entry.get("sample_path_values", {})),
+                    sample_path_values={
+                        str(k): str(v)
+                        for k, v in (
+                            entry.get("sample_path_values", {})
+                            if isinstance(entry.get("sample_path_values", {}), Mapping)
+                            else {}
+                        ).items()
+                    },
+                    protocol=Protocol(str(entry.get("protocol", Protocol.REST.value))),
+                    graphql_operation_type=(
+                        str(entry["graphql_operation_type"])
+                        if entry.get("graphql_operation_type") is not None
+                        else None
+                    ),
+                    source=(str(entry["source"]) if entry.get("source") is not None else None),
+                    confidence=(
+                        float(entry["confidence"]) if entry.get("confidence") is not None else None
+                    ),
+                    evidence_ref=(
+                        str(entry["evidence_ref"])
+                        if entry.get("evidence_ref") is not None
+                        else None
+                    ),
+                    request_headers=request_headers,
+                    request_body=request_body,
+                    response_content_type=(
+                        str(entry["response_content_type"])
+                        if entry.get("response_content_type") is not None
+                        else None
+                    ),
+                    response_shape=(
+                        str(entry["response_shape"])
+                        if entry.get("response_shape") is not None
+                        else None
+                    ),
                 )
             )
         return cls(endpoints=tuple(endpoints))
@@ -324,12 +437,31 @@ class SurfaceMapper:
                     method=ep.method.upper(),
                     path=ep.path,
                     content_type=ep.content_type,
-                    protocol=Protocol.REST,
+                    state_changing=ep.state_changing,
+                    protocol=ep.protocol,
+                    graphql_operation_type=ep.graphql_operation_type,
+                    source=ep.source,
+                    confidence=ep.confidence,
+                    evidence_ref=ep.evidence_ref,
+                    request_headers=ep.request_headers,
+                    request_body=ep.request_body,
+                    response_content_type=ep.response_content_type,
+                    response_shape=ep.response_shape,
                 )
             )
             for param in ep.parameters:
                 self._graph.add_parameter(
-                    endpoint_node, Parameter(name=param.name, location=param.location)
+                    endpoint_node,
+                    Parameter(
+                        name=param.name,
+                        location=param.location,
+                        serialization=param.serialization,
+                        required=param.required,
+                        example=param.example,
+                        source=param.source,
+                        confidence=param.confidence,
+                        evidence_ref=param.evidence_ref,
+                    ),
                 )
             for obj in ep.returns:
                 object_node = self._graph.add_object(
@@ -369,13 +501,29 @@ class SurfaceMapper:
                     method=ep.method.upper(),
                     path=ep.path,
                     content_type=ep.content_type,
-                    protocol=Protocol.REST,
+                    state_changing=ep.state_changing,
+                    protocol=ep.protocol,
+                    graphql_operation_type=ep.graphql_operation_type,
+                    source=ep.source,
+                    confidence=ep.confidence,
+                    evidence_ref=ep.evidence_ref,
+                    request_headers=ep.request_headers,
+                    request_body=ep.request_body,
+                    response_content_type=ep.response_content_type,
+                    response_shape=ep.response_shape,
                 )
             )
             url = f"{self._base_url}{concrete}"
             for name in self._identities.names():
                 identity_node = self._graph.add_identity(name, self._identities.identity(name))
-                status = self._probe_one(name, identity_node, ep.method, endpoint_node, url)
+                status = self._probe_one(
+                    name,
+                    identity_node,
+                    ep.method,
+                    endpoint_node,
+                    url,
+                    **self._probe_kwargs(ep),
+                )
                 if status is not None:
                     probed += 1
 
@@ -456,6 +604,7 @@ class SurfaceMapper:
         method: str,
         endpoint_node: str,
         url: str,
+        **kwargs: Any,
     ) -> FindingStatus | None:
         """Fire one read-only probe and write the empirical ``can_call`` edge.
 
@@ -470,7 +619,13 @@ class SurfaceMapper:
         """
         headers = self._auth_headers(identity)
         try:
-            result = self._firer.fire(identity, method, url, headers=headers)
+            if kwargs.get("headers"):
+                merged_headers = dict(kwargs["headers"])
+                merged_headers.update(headers)
+                kwargs["headers"] = merged_headers
+            else:
+                kwargs["headers"] = headers
+            result = self._firer.fire(identity, method, url, **kwargs)
         except (OutOfScopeError, ReadOnlyFirstError):
             # Safety gate refused it — audited by the firer; nothing to record.
             return None
@@ -695,3 +850,68 @@ class SurfaceMapper:
                 return None
             resolved = resolved.replace(f"{{{name}}}", value)
         return resolved
+
+    def _probe_kwargs(self, ep: EndpointSpec) -> dict[str, object]:
+        """Build a benign, serialization-correct request shape for a read-only probe."""
+        if ep.method.upper() not in {"GET", "HEAD", "OPTIONS"}:
+            return {}
+        query: dict[str, str] = {}
+        headers = dict(ep.request_headers)
+        cookies: dict[str, str] = {}
+        form: dict[str, str] = {}
+        body: dict[str, object] = {}
+        if ep.request_body:
+            try:
+                seed_body = json.loads(ep.request_body)
+            except (json.JSONDecodeError, TypeError):
+                seed_body = None
+            if isinstance(seed_body, Mapping):
+                body.update(seed_body)
+        for param in ep.parameters:
+            raw_value = param.example if param.example is not None else _benign_value(param.name)
+            decoded_value = _json_value(raw_value)
+            value = (
+                str(decoded_value)
+                if isinstance(decoded_value, (str, int, float, bool))
+                else json.dumps(decoded_value, sort_keys=True)
+            )
+            if param.location == "query":
+                query[param.name] = value
+            elif param.location == "header":
+                headers[param.name] = value
+            elif param.location == "cookie":
+                cookies[param.name] = value
+            elif param.location == "form":
+                form[param.name] = value
+            elif param.location in {"json", "body"}:
+                body[param.name] = decoded_value
+        kwargs: dict[str, object] = {}
+        if query:
+            kwargs["params"] = query
+        if headers:
+            kwargs["headers"] = headers
+        if cookies:
+            kwargs["cookies"] = cookies
+        if form:
+            form.update({str(k): str(v) for k, v in body.items()})
+            kwargs["data"] = form
+        elif body:
+            kwargs["json"] = body
+        return kwargs
+
+
+def _benign_value(name: str) -> str:
+    """Return a stable non-invasive example when a schema gave none."""
+    lowered = name.lower()
+    if lowered.endswith(("id", "count", "page", "limit")):
+        return "1"
+    if "email" in lowered:
+        return "probe@example.invalid"
+    return "reachagent-probe"
+
+
+def _json_value(value: str) -> object:
+    try:
+        return json.loads(value)
+    except (json.JSONDecodeError, TypeError):
+        return value

@@ -24,6 +24,8 @@ the contract a human or the Phase 5 Coordinator calls is unchanged.
 
 from __future__ import annotations
 
+import json
+import re
 import urllib.parse
 from typing import TYPE_CHECKING
 
@@ -101,10 +103,14 @@ def _fire_with_value(
     Injection per ``location``:
 
     * ``query`` / ``header`` — single key/value in the query string or headers.
-    * ``body`` — a JSON object. ``extra_fields`` merges sibling keys so a body
+    * ``body`` / ``json`` — a JSON object. ``extra_fields`` merges sibling keys so a body
       that needs more than the one injected field (e.g. a feedback POST needing
       ``rating`` alongside ``comment``) can be formed; the injected ``{name: value}``
       always wins on key collision.
+    * ``form`` — an ``application/x-www-form-urlencoded`` body.
+    * ``cookie`` — one cookie value.
+    * ``graphql`` — a read-only GraphQL document; ``field.argument`` names inject
+      a JSON-string argument while a bare field is selected without arguments.
     * ``path`` — the payload is substituted into the ``{name}`` placeholder in the
       URL (percent-encoded), so a traversal/injection value actually lands in the
       path segment. A path with no matching placeholder fires unchanged (recon
@@ -132,14 +138,49 @@ def _fire_with_value(
         return ctx.firer.fire(
             identity, method, url, state_changing=state_changing, headers={name: value}
         )
-    if location == "body":
+    if location in {"body", "json"}:
         body: dict[str, object] = dict(extra_fields or {})
         body[name] = value
         return ctx.firer.fire(identity, method, url, state_changing=state_changing, json=body)
+    if location == "form":
+        body = {str(k): str(v) for k, v in (extra_fields or {}).items()}
+        body[name] = value
+        return ctx.firer.fire(identity, method, url, state_changing=state_changing, data=body)
+    if location == "cookie":
+        cookies = {str(k): str(v) for k, v in (extra_fields or {}).items()}
+        cookies[name] = value
+        return ctx.firer.fire(identity, method, url, state_changing=state_changing, cookies=cookies)
+    if location == "multipart":
+        files = {name: ("probe.txt", value.encode("utf-8"), "text/plain")}
+        return ctx.firer.fire(
+            identity,
+            method,
+            url,
+            state_changing=state_changing,
+            files=files,
+            data=dict(extra_fields or {}),
+        )
+    if location == "graphql":
+        field, _, argument = name.partition(".")
+        if not field or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", field):
+            raise ValueError(f"invalid GraphQL field insertion point: {name!r}")
+        if argument:
+            if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", argument):
+                raise ValueError(f"invalid GraphQL argument insertion point: {name!r}")
+            document = f"query ReachAgentProbe {{ {field}({argument}: {json.dumps(value)}) }}"
+        else:
+            document = f"query ReachAgentProbe {{ {field} }}"
+        return ctx.firer.fire(
+            identity,
+            method,
+            url,
+            state_changing=state_changing,
+            json={"query": document},
+        )
     if location == "path":
         injected = url.replace(f"{{{name}}}", urllib.parse.quote(value, safe=""))
         return ctx.firer.fire(identity, method, injected, state_changing=state_changing)
-    return ctx.firer.fire(identity, method, url, state_changing=state_changing)
+    raise ValueError(f"unsupported parameter location: {location!r}")
 
 
 def _match_sql_errors(body_lower: str) -> tuple[str, ...]:

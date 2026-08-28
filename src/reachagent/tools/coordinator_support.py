@@ -104,6 +104,7 @@ _ACTIVE_PATH_KEYS: dict[str, set[tuple[str, str]]] = {}
 # selection but LLM-prioritized endpoints win ties and near-ties first.
 _SURFACE_PRIORITY_BONUS = 2
 _surface_priority: dict[str, int] = {}  # endpoint_node_id -> rank (lower = higher)
+_insertion_priority: dict[str, int] = {}  # parameter_node_id -> rank
 
 
 def set_surface_priority(ranked_ids: tuple[str, ...]) -> None:
@@ -113,9 +114,17 @@ def set_surface_priority(ranked_ids: tuple[str, ...]) -> None:
         _surface_priority[ep_id] = rank
 
 
+def set_insertion_priority(ranked_ids: tuple[str, ...]) -> None:
+    """Record an LLM-ranked parameter order after graph validation."""
+    _insertion_priority.clear()
+    for rank, param_id in enumerate(ranked_ids):
+        _insertion_priority[param_id] = rank
+
+
 def clear_surface_priority() -> None:
     """Reset to default ordering (used between scans)."""
     _surface_priority.clear()
+    _insertion_priority.clear()
 
 
 def _registry_key(context: CoordinatorContext) -> tuple[str, str]:
@@ -249,6 +258,8 @@ def score(candidate: CoordinatorCandidate) -> Selection:
     # or a strong sink signal (max 6). The LLM reorders near-equals; the
     # deterministic formula still owns the outcome when evidence differs.
     priority_bonus = _SURFACE_PRIORITY_BONUS if candidate.endpoint_node in _surface_priority else 0
+    if candidate.parameter_node in _insertion_priority:
+        priority_bonus += _SURFACE_PRIORITY_BONUS
     total = object_tier * 3 + spawned * 5 + sink_weight + priority_bonus - prior
     return Selection(candidate, total, object_tier, spawned, sink_weight, prior)
 

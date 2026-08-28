@@ -207,10 +207,26 @@ def materialize_schema(
 ) -> tuple[str, dict[str, str]]:
     """Emit GraphQL facts using existing Endpoint/Parameter node types."""
     endpoint_node = graph.add_endpoint(
-        Endpoint(method="GET", path=endpoint_path, protocol=Protocol.GRAPHQL)
+        Endpoint(
+            method="GET",
+            path=endpoint_path,
+            protocol=Protocol.GRAPHQL,
+            graphql_operation_type="query",
+            source="graphql-introspection",
+            confidence=0.98,
+        )
     )
     parameter_nodes = {
-        field.name: graph.add_parameter(endpoint_node, Parameter(field.name, "body"))
+        field.name: graph.add_parameter(
+            endpoint_node,
+            Parameter(
+                field.name,
+                "graphql",
+                serialization="application/json",
+                source="graphql-introspection",
+                confidence=0.98,
+            ),
+        )
         for field in schema.fields
     }
     return endpoint_node, parameter_nodes

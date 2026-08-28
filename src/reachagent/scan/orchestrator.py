@@ -1130,9 +1130,13 @@ def scan_all_classes(
         operator_prompt=operator_prompt,
     )
     if priority is not None:
-        from reachagent.tools.coordinator_support import set_surface_priority
+        from reachagent.tools.coordinator_support import (
+            set_insertion_priority,
+            set_surface_priority,
+        )
 
         set_surface_priority(priority.ranked_ids)
+        set_insertion_priority(priority.ranked_parameter_ids)
         _emit(
             events_out,
             "endpoints",
@@ -1140,6 +1144,8 @@ def scan_all_classes(
             f"LLM surface prioritization: {priority.rationale}",
             ranked_count=len(priority.ranked_ids),
             ranked_ids=list(priority.ranked_ids[:10]),
+            ranked_parameter_count=len(priority.ranked_parameter_ids),
+            ranked_parameter_ids=list(priority.ranked_parameter_ids[:20]),
         )
 
     scope = ScopeGuard.from_raw(in_scope, out_of_scope)

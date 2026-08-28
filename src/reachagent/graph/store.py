@@ -37,6 +37,7 @@ from reachagent.graph.nodes import (
     Identity,
     Object,
     Parameter,
+    Protocol,
     Service,
     Session,
     SinkType,
@@ -152,6 +153,58 @@ def _merge_csv(existing: str | None, incoming: str | None) -> str | None:
     return ", ".join(seen) or None
 
 
+def _merge_pairs(
+    existing: tuple[tuple[str, str], ...], incoming: tuple[tuple[str, str], ...]
+) -> tuple[tuple[str, str], ...]:
+    """Union replay headers without losing the first observed value."""
+    merged: dict[str, str] = dict(existing)
+    for key, value in incoming:
+        merged.setdefault(str(key), str(value))
+    return tuple(sorted(merged.items()))
+
+
+def _max_confidence(existing: float | None, incoming: float | None) -> float | None:
+    values = [value for value in (existing, incoming) if value is not None]
+    return max(values) if values else None
+
+
+def _merge_endpoint(existing: Endpoint, incoming: Endpoint) -> Endpoint:
+    """Enrich an endpoint with later source evidence; facts never shrink."""
+    return Endpoint(
+        method=existing.method,
+        path=existing.path,
+        content_type=existing.content_type or incoming.content_type,
+        protocol=(incoming.protocol if existing.protocol is Protocol.REST else existing.protocol),
+        graphql_operation_type=existing.graphql_operation_type or incoming.graphql_operation_type,
+        technology=_merge_csv(existing.technology, incoming.technology),
+        detected_version=existing.detected_version or incoming.detected_version,
+        access_restricted=existing.access_restricted or incoming.access_restricted,
+        state_changing=existing.state_changing or incoming.state_changing,
+        source=_merge_csv(existing.source, incoming.source),
+        confidence=_max_confidence(existing.confidence, incoming.confidence),
+        evidence_ref=_merge_csv(existing.evidence_ref, incoming.evidence_ref),
+        request_headers=_merge_pairs(existing.request_headers, incoming.request_headers),
+        request_body=existing.request_body or incoming.request_body,
+        response_content_type=existing.response_content_type or incoming.response_content_type,
+        response_shape=existing.response_shape or incoming.response_shape,
+    )
+
+
+def _merge_parameter(existing: Parameter, incoming: Parameter) -> Parameter:
+    """Enrich a parameter with replay/provenance facts without clearing a sink."""
+    return Parameter(
+        name=existing.name,
+        location=existing.location,
+        inferred_sink_type=existing.inferred_sink_type or incoming.inferred_sink_type,
+        serialization=existing.serialization or incoming.serialization,
+        required=existing.required or incoming.required,
+        example=existing.example or incoming.example,
+        source=_merge_csv(existing.source, incoming.source),
+        confidence=_max_confidence(existing.confidence, incoming.confidence),
+        evidence_ref=_merge_csv(existing.evidence_ref, incoming.evidence_ref),
+    )
+
+
 class ReachabilityGraph:
     """The shared graph — every confirmed finding writes structured facts here (§2).
 
@@ -169,7 +222,11 @@ class ReachabilityGraph:
     def add_endpoint(self, endpoint: Endpoint) -> str:
         """Add (or refresh) an ``Endpoint`` node; returns its stable id."""
         node = endpoint_id(endpoint.method, endpoint.path)
-        self._g.add_node(node, **{_KIND: "endpoint", _DATA: endpoint})
+        existing = self._g.nodes.get(node)
+        if existing is not None and existing.get(_KIND) == "endpoint":
+            self._g.nodes[node][_DATA] = _merge_endpoint(existing[_DATA], endpoint)
+        else:
+            self._g.add_node(node, **{_KIND: "endpoint", _DATA: endpoint})
         return node
 
     def add_parameter(self, endpoint_node: str, parameter: Parameter) -> str:
@@ -179,7 +236,11 @@ class ReachabilityGraph:
         name on two endpoints stays distinct.
         """
         node = parameter_id(endpoint_node, parameter.location, parameter.name)
-        self._g.add_node(node, **{_KIND: "parameter", _DATA: parameter})
+        existing = self._g.nodes.get(node)
+        if existing is not None and existing.get(_KIND) == "parameter":
+            self._g.nodes[node][_DATA] = _merge_parameter(existing[_DATA], parameter)
+        else:
+            self._g.add_node(node, **{_KIND: "parameter", _DATA: parameter})
         self._g.add_edge(endpoint_node, node, key=StructuralEdge.ACCEPTS)
         return node
 

@@ -751,7 +751,17 @@ def scan_target(
         if not dry_run:
             from reachagent.recon.api_discovery import discover_api
 
-            discover_api(g, firer, base_url)
+            discovery = discover_api(g, firer, base_url)
+            _tool_event(
+                "surface-mapper",
+                discovery.report,
+                phase="endpoints",
+                endpoints=len(discovery.endpoints),
+                parameters=len(discovery.parameters),
+                pages=discovery.pages_crawled,
+                scripts=discovery.scripts_parsed,
+                forms=discovery.forms_found,
+            )
 
     from reachagent.tools.explorer_context import ExplorerContext
 
@@ -795,9 +805,11 @@ def scan_target(
             Identity(role="user", auth_state=AuthState.USER, provenance=Provenance.SEEDED),
         )
 
-    if not list(g.endpoints()):
+    if dry_run and not list(g.endpoints()):
         from reachagent.graph.nodes import Endpoint, Parameter
 
+        # Dry-run retains the historical planning placeholder so the UI can
+        # render an empty-target plan. Live scans never invent an endpoint.
         ep = g.add_endpoint(Endpoint(method="GET", path="/items"))
         g.add_parameter(ep, Parameter(name="id", location="query"))
 
@@ -968,6 +980,7 @@ def scan_target(
                 param_node=param_node,
                 vuln_class=vc,
                 baseline_payload=baseline_payload,
+                method=g.endpoint(sel.endpoint_node).method,
                 max_attempts=max_attempts,
                 on_event=_on_chain_event,
             )
