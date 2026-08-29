@@ -58,7 +58,7 @@ Files read in full for this phase were:
   template.
 - **R2:** `agents/web_pentester.py`, `agents/available_tools.py`,
   `tool_registry.py`, `sdk/agents/tool.py`, `tools/executor.py`, and web
-  request/header helpers.
+  `tools/web/fetch_url.py`, `tools/web/headers.py`.
 - **R3:** `unified_agent/tools.py` and `unified_agent/tool_server.py`.
 - **R4:** `tools/hai_payload_builder.py`, `tools/waf_encoder.py`, and
   `tools/waf_response_analyzer.py`.

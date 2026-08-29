@@ -1051,18 +1051,27 @@ def scan_target(
         # when it doesn't confirm, move to its second pick, etc. Stop on the
         # first confirmed finding (the oracle decided — not the LLM).
         result: _pc.PayloadChainResult | None = None
+        selected_endpoint = g.endpoint(sel.endpoint_node)
+        selected_parameter = g.parameter(param_node) if param_node else None
+        identity_data = next(
+            (data for node, data in g.identities() if node == sel.identity_node),
+            None,
+        )
+        auth_state = getattr(
+            getattr(identity_data, "auth_state", None),
+            "value",
+            getattr(identity_data, "auth_state", None),
+        )
+        payload_context = {
+            "method": selected_endpoint.method,
+            "content_type": selected_endpoint.content_type,
+            "framework": selected_endpoint.technology,
+            "auth_state": str(auth_state) if auth_state else None,
+            "location": selected_parameter.location if selected_parameter else None,
+        }
         for vc in ranked_classes:
             check_cancel(cancel_check)
             _log.debug("trying vuln_class=%s on %s", vc, sel.endpoint_node)
-            identity_data = next(
-                (data for node, data in g.identities() if node == sel.identity_node),
-                None,
-            )
-            auth_state = getattr(
-                getattr(identity_data, "auth_state", None),
-                "value",
-                getattr(identity_data, "auth_state", None),
-            )
             result = _pc.run_payload_chain(
                 _caller,
                 identity=sel.identity_node,
@@ -1070,14 +1079,8 @@ def scan_target(
                 param_node=param_node,
                 vuln_class=vc,
                 baseline_payload=baseline_payload,
-                method=g.endpoint(sel.endpoint_node).method,
-                payload_context={
-                    "method": g.endpoint(sel.endpoint_node).method,
-                    "content_type": g.endpoint(sel.endpoint_node).content_type,
-                    "framework": g.endpoint(sel.endpoint_node).technology,
-                    "auth_state": str(auth_state) if auth_state else None,
-                    "location": g.parameter(param_node).location if param_node else None,
-                },
+                method=selected_endpoint.method,
+                payload_context=payload_context,
                 # Mutations are opt-in from the LLM payload proposal; the
                 # default chain remains one parent reference per bucket.
                 mutation_limit=0,

@@ -445,10 +445,15 @@ def _maybe_reorder_payloads(
                 if not isinstance(ref, str) or ref not in requested:
                     continue
                 try:
+                    item_class = str(item.get("vuln_class", vuln_class))
+                    if item_class != vuln_class:
+                        continue
                     raw_sink = item.get("inferred_sink_type")
+                    if raw_sink is not None and str(raw_sink) != str(sink_type):
+                        continue
                     sink = SinkType(str(raw_sink)) if raw_sink is not None else None
                     parent = PayloadEntry(
-                        vuln_class=str(item.get("vuln_class", vuln_class)),
+                        vuln_class=item_class,
                         context=str(item.get("context", "")),
                         inferred_sink_type=sink,
                         oracle_type=OracleMechanism(str(item.get("oracle_type"))),
