@@ -17,7 +17,14 @@ from reachagent.payloads.corpus import (
     load_corpus_entries,
     load_corpus_report,
 )
+from reachagent.payloads.encoding import (
+    MAX_MUTATIONS_PER_PARENT,
+    MutationCompatibilityError,
+    expand_payload_mutations,
+    validate_mutation,
+)
 from reachagent.payloads.library import (
+    PayloadContext,
     PayloadEntry,
     PayloadLibrary,
     PayloadLibraryError,
@@ -37,12 +44,16 @@ from reachagent.payloads.payload_resolver import (
 __all__ = [
     "CorpusIngestReport",
     "MissingSlotError",
+    "MAX_MUTATIONS_PER_PARENT",
+    "MutationCompatibilityError",
     "PayloadEntry",
+    "PayloadContext",
     "PayloadLibrary",
     "PayloadLibraryError",
     "UnknownPayloadRefError",
     "build_library",
     "expected_execution_output",
+    "expand_payload_mutations",
     "load_corpus_entries",
     "load_corpus_report",
     "mint_fire_kit",
@@ -51,4 +62,5 @@ __all__ = [
     "resolve_entry",
     "resolves",
     "template_refs",
+    "validate_mutation",
 ]

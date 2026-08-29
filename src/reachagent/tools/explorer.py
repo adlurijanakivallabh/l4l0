@@ -7,7 +7,7 @@ real functions, routing through Task 1's firer and Task 4's payload library:
 
 The pipeline only ever produces a :class:`~reachagent.tools.candidate.Candidate`
 — an inert lead. The Explorer generates candidates; it can never confirm one and
-has no ``write_finding`` under any circumstance (§13, CLAUDE.md non-negotiable).
+has no ``write_finding`` under any circumstance (§13 safety invariant).
 Confirmation is the Validator's ``run_oracle``/``write_finding`` alone (§7, §13).
 
 **Module surface is load-bearing.** ``tests/phase1/test_tool_boundaries.py``
@@ -27,6 +27,7 @@ from __future__ import annotations
 import json
 import re
 import urllib.parse
+from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
 # Imported as modules, never as names: the role-boundary test asserts this module
@@ -322,19 +323,29 @@ def get_payloads(
     ctx: _ctx.ExplorerContext,
     vuln_class: str,
     sink_type: SinkType | None,
+    *,
+    context: Mapping[str, object] | None = None,
+    max_mutations: int = 0,
+    slot_kit: Mapping[str, object] | None = None,
 ) -> list[PayloadEntry]:
     """Sink-matched lookup from the tagged library, ordered by oracle confidence (§9, §13).
 
-    A thin routing layer over Task 4's :class:`PayloadLibrary`: it returns only
+    A thin routing layer over :class:`PayloadLibrary`: it returns only
     entries whose ``inferred_sink_type`` matches ``sink_type`` exactly, so a
     parameter fingerprinted as ``html_reflection`` never receives a SQL payload
     and vice versa. ``sink_type`` should be the value ``fingerprint_parameter``
     wrote — read it from the graph via :meth:`ReachabilityGraph.parameter_sink`.
+    Context dimensions are filtered before bounded parent-preserving mutations
+    are expanded.
     """
-    entries = ctx.library.get_payloads(vuln_class, sink_type)
-    from reachagent.payloads.encoding import expand_encoding_variants
+    entries = ctx.library.get_payloads(vuln_class, sink_type, context=context)
+    from reachagent.payloads.encoding import expand_payload_mutations
 
-    return expand_encoding_variants(entries)
+    return expand_payload_mutations(
+        entries,
+        max_per_parent=max_mutations,
+        slot_kit=slot_kit,
+    )
 
 
 def fire_request(

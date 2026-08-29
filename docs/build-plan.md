@@ -399,6 +399,17 @@ tests.
 **Exit criterion:** every fired payload has a valid library reference, sink,
 oracle family, slot kit, and audited attempt number.
 
+**Status (2026-08-28): complete.** Payload entries now carry optional
+content-type/method/framework/auth/location context plus parent/mutation metadata;
+context filtering remains sink-exact. Bounded URL, double-URL, delimiter, casing,
+and wrapper mutations preserve parent tags and are capped at four children per
+parent. LLM payload ordering accepts only bucket references and bounded mutation
+descriptors, receives prior attempt outcomes, and never supplies raw payload text.
+The resolver caches source lines and MCP binds generated variants to one per-fire
+slot kit. Focused gate: 153 passed across corpus, resolver, MCP, payload-chain,
+mutation, tuning, and flag-gating suites. The full suite remains reserved for
+Phase 10.
+
 ### Phase 6 — Deterministic evidence and oracle hardening
 
 **Goal:** improve confirmation quality without expanding authority to the LLM.

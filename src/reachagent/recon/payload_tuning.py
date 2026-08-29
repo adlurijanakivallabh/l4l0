@@ -1,7 +1,7 @@
 """Live-reasoning payload choice — propose/validate/execute (proposal-only).
 
 Third layer of docs/live-reasoning-design.md §4b: given endpoint shape +
-vuln_class + the sink-matched bucket get_payloads already returned, Claude
+vuln_class + the sink-matched bucket get_payloads already returned, the model
 ranks which *existing* payload_ref to try first. Dynamic allowlist is the
 exact bucket set — no invented string, value in tagging + oracle wiring.
 
@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import os
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -27,10 +28,19 @@ _log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
+class MutationRequest:
+    """A bounded request to derive a child from an existing parent ref."""
+
+    parent_ref: str
+    kind: str
+
+
+@dataclass(frozen=True)
 class PayloadChoice:
     """Validated ordering of payload_refs — every ref is from the bucket."""
 
     payload_refs: tuple[str, ...]
+    mutations: tuple[MutationRequest, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -53,7 +63,7 @@ class PayloadTunerClient(Protocol):
         candidate_refs: list[str],
         prior_attempts: tuple[PayloadAttemptContext, ...] = (),
     ) -> dict[str, object]:
-        """Return raw proposal dict with key ``payload_refs`` (list of strings)."""
+        """Return refs plus optional parent-preserving mutation descriptors."""
         ...
 
 
@@ -90,7 +100,10 @@ class AnthropicPayloadClient:
             "from the supplied bucket. Respond as JSON "
             '{"payload_refs": ["reference_from_bucket"]}. '
             f"Signals: {sig_str}. Bucket: {cands}. "
-            "Return bucket labels verbatim, most relevant first."
+            "Return bucket labels verbatim, most relevant first. You may also return "
+            "`mutations`: up to four objects `{parent_ref, kind}` where kind is one "
+            "of `url`, `double-url`, `delimiter`, `casing`, or `wrapper`; never emit "
+            "payload text."
         )
         resp = client.messages.create(
             model=self._model,
@@ -112,7 +125,10 @@ class AnthropicPayloadClient:
             if not m:
                 raise ValueError(f"no JSON in model response: {text[:500]!r}") from exc
             data = _json.loads(m.group(0))
-        return {"payload_refs": data.get("payload_refs", [])}
+        return {
+            "payload_refs": data.get("payload_refs", []),
+            "mutations": data.get("mutations", []),
+        }
 
 
 class OpenAIPayloadClient:
@@ -148,13 +164,25 @@ class OpenAIPayloadClient:
             '{"payload_refs": ["reference_from_bucket"]}. '
             f"Signals: {sig_str}. Bucket: {cands}. "
             f"{attempts_text}"
+            "You may request up to four parent-preserving mutations with objects "
+            "{parent_ref,kind}; kind must be url, double-url, delimiter, casing, or wrapper. "
             "Return bucket labels verbatim, most relevant first."
         )
         data = self._client.propose_json(prompt, max_tokens=1024)
-        return {"payload_refs": data.get("payload_refs", [])}
+        return {
+            "payload_refs": data.get("payload_refs", []),
+            "mutations": data.get("mutations", []),
+        }
+
+
+_MUTATION_KINDS = frozenset({"url", "double-url", "delimiter", "casing", "wrapper"})
+_MAX_MUTATIONS_PER_PARENT = 4
 
 
 def _validate_choice(raw: dict[str, object], candidate_refs: list[str]) -> PayloadChoice | None:
+    if set(raw) - {"payload_refs", "mutations"}:
+        _log.warning("payload tuning contains unsupported fields: %s", sorted(set(raw)))
+        return None
     val = raw.get("payload_refs")
     if not isinstance(val, list):
         _log.warning("payload tuning not a list: %r", val)
@@ -174,7 +202,35 @@ def _validate_choice(raw: dict[str, object], candidate_refs: list[str]) -> Paylo
     if not cleaned:
         _log.warning("payload tuning empty after validation")
         return None
-    return PayloadChoice(payload_refs=tuple(cleaned))
+    requests: list[MutationRequest] = []
+    raw_mutations = raw.get("mutations", [])
+    if raw_mutations is None:
+        raw_mutations = []
+    if not isinstance(raw_mutations, list):
+        _log.warning("payload tuning mutations not a list: %r", raw_mutations)
+        return None
+    by_parent: dict[str, int] = {}
+    for item in raw_mutations:
+        if not isinstance(item, Mapping) or set(item) != {"parent_ref", "kind"}:
+            _log.warning("payload tuning mutation malformed: %r", item)
+            return None
+        parent = item.get("parent_ref")
+        kind = item.get("kind")
+        if not isinstance(parent, str) or parent not in allowed:
+            _log.warning("payload tuning mutation parent not in bucket: %r", parent)
+            return None
+        if not isinstance(kind, str) or kind.strip().lower() not in _MUTATION_KINDS:
+            _log.warning("payload tuning mutation kind unsupported: %r", kind)
+            return None
+        normalized_kind = kind.strip().lower()
+        by_parent[parent] = by_parent.get(parent, 0) + 1
+        if by_parent[parent] > _MAX_MUTATIONS_PER_PARENT:
+            _log.warning("payload tuning mutation parent limit exceeded: %r", parent)
+            return None
+        request = MutationRequest(parent_ref=parent, kind=normalized_kind)
+        if request not in requests:
+            requests.append(request)
+    return PayloadChoice(payload_refs=tuple(cleaned), mutations=tuple(requests))
 
 
 def _safe_default(candidate_refs: list[str]) -> PayloadChoice:

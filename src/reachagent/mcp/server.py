@@ -1,15 +1,15 @@
 """``reachagent-mcp`` — the Explorer + Validator tools as an MCP server (plan §13).
 
-Phase 1 ships the tool contracts as MCP tools "from the start" so a human can
-drive them by hand from Claude Desktop/Code before the autonomous Coordinator
-exists (§13, Phase 1 plan). The same contracts the Phase 5 Coordinator will call
+Phase 1 ships the tool contracts as MCP tools "from the start" so an MCP client
+can exercise them before the autonomous Coordinator exists (§13, Phase 1 plan).
+The same contracts the Phase 5 Coordinator will call
 are exposed here unchanged — *nothing changes when it takes over* (§13). So this
 module adds no logic: it binds runtime collaborators and re-exports the existing
 tool functions under their bare §13 signatures.
 
 Three invariants shape the design, and every one is load-bearing:
 
-* **Role boundary (CLAUDE.md non-negotiable, §13).** Only the Explorer subset
+* **Role boundary (project safety policy, §13).** Only the Explorer subset
   (``fingerprint_parameter``, ``get_payloads``, ``fire_request``,
   ``classify_response``) and the Validator subset (``run_oracle``,
   ``write_finding``, ``mark_inconclusive``) are registered — never a Coordinator
@@ -374,6 +374,14 @@ class PayloadEntryOut:
     graph_edge_on_success: str
     resolved_value: str
     slot_kit: dict[str, Any]
+    content_type: str | None = None
+    method: str | None = None
+    framework: str | None = None
+    auth_state: str | None = None
+    location: str | None = None
+    parent_ref: str | None = None
+    mutation_kind: str | None = None
+    mutation_index: int | None = None
 
 
 @dataclass
@@ -502,6 +510,8 @@ def register_tools(mcp: FastMCP, session: _Session) -> None:
         sink_type: str | None = None,
         slot_kit: dict[str, Any] | None = None,
         skip_unresolvable: bool = False,
+        context: dict[str, Any] | None = None,
+        max_mutations: int = 0,
     ) -> list[PayloadEntryOut]:
         """Return sink-matched entries with resolved, fireable values (§9).
 
@@ -510,43 +520,73 @@ def register_tools(mcp: FastMCP, session: _Session) -> None:
         an OOB collaborator domain or timing delay) override minted defaults.
         Missing required slots propagate as configuration errors. Stale vendored
         locators are logged and skipped so one bad corpus row cannot suppress
-        usable entries. The internal chain may set ``skip_unresolvable`` to
-        continue past a missing-slot entry; direct callers remain strict by
-        default.
+        usable entries. ``context`` contains optional content-type/method/
+        framework/auth/location dimensions; ``max_mutations`` is capped by the
+        typed parent-preserving mutation guard. The internal chain may set
+        ``skip_unresolvable`` to continue past a missing-slot entry; direct
+        callers remain strict by default.
         """
         sink = _nodes.SinkType(sink_type) if sink_type is not None else None
-        entries = _explorer.get_payloads(ctx, vuln_class, sink)
+        entries = _explorer.get_payloads(
+            ctx,
+            vuln_class,
+            sink,
+            context=context,
+            # Expand after minting a per-entry kit below. This keeps variant
+            # correlators (nonce/canary) bound to the same fire and avoids a
+            # process-global cached value leaking between entries.
+            max_mutations=0,
+        )
         outputs = []
         for e in entries:
             kit = mint_fire_kit(**(slot_kit or {}))
-            try:
-                resolved = resolve_entry(e, **kit)
-            except UnknownPayloadRefError as exc:
-                # A stale vendored locator is excluded, with an audit log, so
-                # one bad corpus row cannot hide otherwise usable payloads.
-                _log.warning("skipping unresolvable payload %r: %s", e.payload_ref, exc)
-                continue
-            except MissingSlotError:
-                if not skip_unresolvable:
-                    raise
-                _log.warning("skipping payload with missing slot %r", e.payload_ref)
-                continue
-            # Missing required slots are caller configuration errors. They
-            # propagate instead of silently narrowing the payload set.
-            outputs.append(
-                PayloadEntryOut(
-                    vuln_class=e.vuln_class,
-                    context=e.context,
-                    inferred_sink_type=(
-                        e.inferred_sink_type.value if e.inferred_sink_type is not None else None
-                    ),
-                    oracle_type=e.oracle_type.value,
-                    payload_ref=e.payload_ref,
-                    graph_edge_on_success=e.graph_edge_on_success,
-                    resolved_value=resolved,
+            expanded_entries = [e]
+            if max_mutations:
+                from reachagent.payloads.encoding import expand_payload_mutations
+
+                expanded_entries = expand_payload_mutations(
+                    [e],
+                    max_per_parent=max_mutations,
                     slot_kit=kit,
                 )
-            )
+            for expanded in expanded_entries:
+                e = expanded
+                try:
+                    resolved = resolve_entry(e, **kit)
+                except UnknownPayloadRefError as exc:
+                    # A stale vendored locator is excluded, with an audit log,
+                    # so one bad corpus row cannot hide otherwise usable payloads.
+                    _log.warning("skipping unresolvable payload %r: %s", e.payload_ref, exc)
+                    continue
+                except MissingSlotError:
+                    if not skip_unresolvable:
+                        raise
+                    _log.warning("skipping payload with missing slot %r", e.payload_ref)
+                    continue
+                # Missing required slots are caller configuration errors. They
+                # propagate instead of silently narrowing the payload set.
+                outputs.append(
+                    PayloadEntryOut(
+                        vuln_class=e.vuln_class,
+                        context=e.context,
+                        inferred_sink_type=(
+                            e.inferred_sink_type.value if e.inferred_sink_type is not None else None
+                        ),
+                        oracle_type=e.oracle_type.value,
+                        payload_ref=e.payload_ref,
+                        graph_edge_on_success=e.graph_edge_on_success,
+                        resolved_value=resolved,
+                        slot_kit=kit,
+                        content_type=e.content_type,
+                        method=e.method,
+                        framework=e.framework,
+                        auth_state=e.auth_state,
+                        location=e.location,
+                        parent_ref=e.parent_ref,
+                        mutation_kind=e.mutation_kind,
+                        mutation_index=e.mutation_index,
+                    )
+                )
         return outputs
 
     @mcp.tool()
@@ -1094,7 +1134,7 @@ def build_server(
 def main() -> None:
     """Console-script entry point (``reachagent-mcp``): serve over stdio (§13).
 
-    Stdio is the transport Claude Desktop/Code drive by hand in Phase 1; the tool
+    Stdio is the transport an MCP client can drive in Phase 1; the tool
     contracts are identical to what the Phase 5 Coordinator will call, so this
     entry point does not change at that handoff.
     """

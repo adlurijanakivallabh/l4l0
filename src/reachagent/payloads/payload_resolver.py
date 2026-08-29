@@ -51,7 +51,7 @@ per-target/per-challenge tuned and must stay so — routing them through generic
 templates would regress Task 1 coverage. This module adds a resolution path; it
 never fires and never confirms (no oracle logic, no Validator import).
 
-Vendored + network-free for the same reason as the corpus subset (CLAUDE.md §9):
+Vendored + network-free for the same reason as the corpus subset (project §9):
 templates are in-tree and reviewable, not fetched at runtime.
 """
 
@@ -77,6 +77,7 @@ _SNAPSHOT_DIRS: dict[str, Path] = {
 # emits). ``source`` is the first path segment; ``relpath`` the rest; ``n`` the
 # 1-based line number in the vendored file.
 _LINE_LOCATOR = re.compile(r"^(?P<source>[^/]+)/(?P<relpath>.+)#L(?P<line>\d+)$")
+_SOURCE_LINES_CACHE: dict[Path, tuple[str, ...]] = {}
 
 # Fixed slot vocabulary. A template's *required* slots are exactly the members of
 # this set that appear as ``{name}`` in it (minus any with a default) — so literal
@@ -377,7 +378,10 @@ def _read_source_line(payload_ref: str) -> str | None:
     if not path.is_file():
         raise UnknownPayloadRefError(f"line-locator ref {payload_ref!r}: no vendored file {path}")
     line_no = int(match.group("line"))
-    lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    lines = _SOURCE_LINES_CACHE.get(path)
+    if lines is None:
+        lines = tuple(path.read_text(encoding="utf-8", errors="replace").splitlines())
+        _SOURCE_LINES_CACHE[path] = lines
     if not 1 <= line_no <= len(lines):
         raise UnknownPayloadRefError(
             f"line-locator ref {payload_ref!r}: line {line_no} out of range (file has {len(lines)})"

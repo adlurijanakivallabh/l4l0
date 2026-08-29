@@ -79,11 +79,65 @@ def _coerce_oracle(value: object) -> OracleMechanism:
 
 
 @dataclass(frozen=True)
+class PayloadContext:
+    """Optional insertion-point dimensions used for safe bucket filtering."""
+
+    content_type: str | None = None
+    method: str | None = None
+    framework: str | None = None
+    auth_state: str | None = None
+    location: str | None = None
+
+    @classmethod
+    def from_value(cls, value: PayloadContext | Mapping[str, object] | None) -> PayloadContext:
+        if value is None:
+            return cls()
+        if isinstance(value, cls):
+            return value
+        if not isinstance(value, Mapping):
+            raise TypeError("payload context must be PayloadContext or a mapping")
+        return cls(
+            content_type=_context_value(value.get("content_type")),
+            method=_context_value(value.get("method")),
+            framework=_context_value(value.get("framework")),
+            auth_state=_context_value(value.get("auth_state")),
+            location=_context_value(value.get("location")),
+        )
+
+
+def _context_value(value: object) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _context_matches(entry: PayloadEntry, context: PayloadContext) -> bool:
+    """Treat an untagged entry as a safe wildcard; tagged values must match."""
+    dimensions = (
+        (entry.content_type, context.content_type),
+        (entry.method, context.method),
+        (entry.framework, context.framework),
+        (entry.auth_state, context.auth_state),
+        (entry.location, context.location),
+    )
+    for tagged, requested in dimensions:
+        if tagged is None or requested is None:
+            continue
+        left = tagged.split(";", 1)[0].strip().casefold()
+        right = requested.split(";", 1)[0].strip().casefold()
+        if left != right:
+            return False
+    return True
+
+
+@dataclass(frozen=True)
 class PayloadEntry:
-    """One tagged payload — the full §9 schema, exactly six fields.
+    """One tagged payload — six required routing fields plus optional context.
 
     Frozen so an entry handed to the Explorer can't be mutated out from under the
-    library's ``(vuln_class, sink)`` index.
+    library's ``(vuln_class, sink)`` index. Mutation metadata is copied from a
+    parent and never changes its routing contract.
     """
 
     vuln_class: str
@@ -92,6 +146,14 @@ class PayloadEntry:
     oracle_type: OracleMechanism
     payload_ref: str
     graph_edge_on_success: str
+    content_type: str | None = None
+    method: str | None = None
+    framework: str | None = None
+    auth_state: str | None = None
+    location: str | None = None
+    parent_ref: str | None = None
+    mutation_kind: str | None = None
+    mutation_index: int | None = None
 
     @property
     def confidence_rank(self) -> int:
@@ -119,6 +181,11 @@ class PayloadEntry:
             oracle_type=_coerce_oracle(raw["oracle_type"]),
             payload_ref=str(raw["payload_ref"]),
             graph_edge_on_success=str(raw["graph_edge_on_success"]),
+            content_type=_context_value(raw.get("content_type")),
+            method=_context_value(raw.get("method")),
+            framework=_context_value(raw.get("framework")),
+            auth_state=_context_value(raw.get("auth_state")),
+            location=_context_value(raw.get("location")),
         )
 
 
@@ -153,7 +220,11 @@ class PayloadLibrary:
         return self._entries
 
     def get_payloads(
-        self, vuln_class: str, sink_type: SinkType | None = None
+        self,
+        vuln_class: str,
+        sink_type: SinkType | None = None,
+        *,
+        context: PayloadContext | Mapping[str, object] | None = None,
     ) -> list[PayloadEntry]:
         """Return sink-matched entries for a vuln class, ordered by confidence (§9).
 
@@ -175,10 +246,13 @@ class PayloadLibrary:
         firing the template first means the definitive payload fires at attempt 1
         within a tight budget, not after N corpus variants (the live-VAmPI gap).
         """
+        requested_context = PayloadContext.from_value(context)
         matched = [
             e
             for e in self._entries
-            if e.vuln_class == vuln_class and e.inferred_sink_type == sink_type
+            if e.vuln_class == vuln_class
+            and e.inferred_sink_type == sink_type
+            and _context_matches(e, requested_context)
         ]
         # Lazy import: payload_resolver imports library, so a module-top import
         # here would be circular.

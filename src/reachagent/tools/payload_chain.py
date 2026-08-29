@@ -112,6 +112,9 @@ def run_selected_payload_chain(
     vuln_class: str,
     baseline_payload: str,
     slot_kit: Mapping[str, object] | None = None,
+    payload_context: Mapping[str, object] | None = None,
+    mutation_limit: int = 0,
+    prior_attempts: tuple[PayloadAttemptContext, ...] = (),
     max_attempts: int = 40,
     evidence_prefix: str = "generic/payload-chain",
     budget_check: Callable[[], bool] | None = None,
@@ -137,6 +140,9 @@ def run_selected_payload_chain(
         vuln_class=vuln_class,
         baseline_payload=baseline_payload,
         slot_kit=slot_kit,
+        payload_context=payload_context,
+        mutation_limit=mutation_limit,
+        prior_attempts=prior_attempts,
         max_attempts=max_attempts,
         evidence_prefix=evidence_prefix,
         budget_check=budget_check,
@@ -151,6 +157,9 @@ def run_coordinator_payload_step(
     vuln_class: str,
     baseline_payload: str,
     slot_kit: Mapping[str, object] | None = None,
+    payload_context: Mapping[str, object] | None = None,
+    mutation_limit: int = 0,
+    prior_attempts: tuple[PayloadAttemptContext, ...] = (),
     max_attempts: int = 40,
     evidence_prefix: str = "generic/payload-chain",
     audit_failure: Callable[[str], None] | None = None,
@@ -175,6 +184,9 @@ def run_coordinator_payload_step(
         vuln_class=vuln_class,
         baseline_payload=baseline_payload,
         slot_kit=slot_kit,
+        payload_context=payload_context,
+        mutation_limit=mutation_limit,
+        prior_attempts=prior_attempts,
         max_attempts=max_attempts,
         evidence_prefix=evidence_prefix,
         budget_check=budget_check,
@@ -375,6 +387,7 @@ def _maybe_reorder_payloads(
     sink_type: object,
     slot_kit: Mapping[str, object] | None,
     prior_attempts: tuple[PayloadAttemptContext, ...] = (),
+    payload_context: Mapping[str, object] | None = None,
 ) -> list[Mapping[str, object]]:
     """Proposal-only reorder — flag-gated, dynamic-allowlist-validated.
 
@@ -404,12 +417,92 @@ def _maybe_reorder_payloads(
         # Surface slot_kit tech hint if present (WordPress/API etc.)
         if slot_kit and isinstance(slot_kit.get("tech"), str):
             signals["tech"] = str(slot_kit["tech"])[:80]
+        for key in ("content_type", "method", "framework", "auth_state", "location"):
+            value = payload_context.get(key) if payload_context else None
+            if value is not None:
+                signals[key] = str(value)[:80]
         choice = propose_payload_choice(
             signals, vuln_class, candidate_refs, prior_attempts=prior_attempts
         )
-        # Defense in depth: second allowlist check even after proposer validates.
+        # Defense in depth: the exact bucket is the only admissible parent/ref
+        # set, even if the proposer implementation changes later.
         allowed = set(candidate_refs)
-        ordered = [r for r in choice.payload_refs if r in allowed]
+        mutated_refs: list[str] = []
+        mutation_requests = getattr(choice, "mutations", ())
+        if mutation_requests:
+            from reachagent.graph.nodes import SinkType
+            from reachagent.payloads.encoding import expand_payload_mutations, variant_value
+            from reachagent.payloads.library import PayloadEntry
+
+            requested: dict[str, list[str]] = {}
+            for request in mutation_requests:
+                if request.parent_ref in allowed:
+                    requested.setdefault(request.parent_ref, []).append(request.kind)
+            parents: list[PayloadEntry] = []
+            source_by_ref: dict[str, Mapping[str, object]] = {}
+            for item in entries:
+                ref = item.get("payload_ref")
+                if not isinstance(ref, str) or ref not in requested:
+                    continue
+                try:
+                    raw_sink = item.get("inferred_sink_type")
+                    sink = SinkType(str(raw_sink)) if raw_sink is not None else None
+                    parent = PayloadEntry(
+                        vuln_class=str(item.get("vuln_class", vuln_class)),
+                        context=str(item.get("context", "")),
+                        inferred_sink_type=sink,
+                        oracle_type=OracleMechanism(str(item.get("oracle_type"))),
+                        payload_ref=ref,
+                        graph_edge_on_success=str(item.get("graph_edge_on_success", "enables")),
+                        content_type=(
+                            str(item["content_type"]) if item.get("content_type") else None
+                        ),
+                        method=(str(item["method"]) if item.get("method") else None),
+                        framework=(str(item["framework"]) if item.get("framework") else None),
+                        auth_state=(str(item["auth_state"]) if item.get("auth_state") else None),
+                        location=(str(item["location"]) if item.get("location") else None),
+                    )
+                except Exception as exc:  # noqa: BLE001 - malformed metadata is skipped
+                    _log.debug("payload mutation metadata skipped: %s", exc)
+                    continue
+                parents.append(parent)
+                source_by_ref[ref] = item
+            generated = []
+            for parent in parents:
+                source = source_by_ref.get(parent.payload_ref, {})
+                kit = source.get("slot_kit")
+                generated.extend(
+                    expand_payload_mutations(
+                        [parent],
+                        requested={parent.payload_ref: requested[parent.payload_ref]},
+                        slot_kit=kit if isinstance(kit, Mapping) else None,
+                    )
+                )
+            known = {str(item.get("payload_ref")) for item in entries}
+            for child in generated:
+                if child.payload_ref in known or child.parent_ref is None:
+                    continue
+                parent_item = source_by_ref.get(child.parent_ref)
+                value = variant_value(child.payload_ref)
+                if parent_item is None or value is None:
+                    continue
+                child_item = dict(parent_item)
+                child_item.update(
+                    {
+                        "payload_ref": child.payload_ref,
+                        "context": child.context,
+                        "resolved_value": value,
+                        "parent_ref": child.parent_ref,
+                        "mutation_kind": child.mutation_kind,
+                        "mutation_index": child.mutation_index,
+                    }
+                )
+                entries.append(child_item)
+                candidate_refs.append(child.payload_ref)
+                allowed.add(child.payload_ref)
+                mutated_refs.append(child.payload_ref)
+                known.add(child.payload_ref)
+        ordered = [r for r in (*choice.payload_refs, *mutated_refs) if r in allowed]
         if not ordered:
             return entries
         by_ref = {str(e.get("payload_ref")): e for e in entries}
@@ -434,6 +527,9 @@ def run_payload_chain(
     baseline_payload: str,
     method: str = "GET",
     slot_kit: Mapping[str, object] | None = None,
+    payload_context: Mapping[str, object] | None = None,
+    mutation_limit: int = 0,
+    prior_attempts: tuple[PayloadAttemptContext, ...] = (),
     max_attempts: int = 40,
     evidence_prefix: str = "generic/payload-chain",
     budget_check: Callable[[], bool] | None = None,
@@ -490,6 +586,8 @@ def run_payload_chain(
                     "sink_type": sink_type,
                     "slot_kit": dict(slot_kit or {}),
                     "skip_unresolvable": True,
+                    "context": dict(payload_context or {}),
+                    "max_mutations": mutation_limit,
                 },
             )
         )
@@ -506,10 +604,21 @@ def run_payload_chain(
     # REACHAGENT_PAYLOAD_TUNING=1 or REACHAGENT_RECON_LIVE_TUNING=1, ranks
     # which existing bucket payload_ref to try first for this endpoint shape.
     # Dynamic allowlist is the exact bucket set — no invented string.
-    entries = _maybe_reorder_payloads(entries, vuln_class, sink_type, slot_kit)
+    prior_context = tuple(prior_attempts)
+    entries = _maybe_reorder_payloads(
+        entries,
+        vuln_class,
+        sink_type,
+        slot_kit,
+        prior_attempts=prior_context,
+        payload_context=payload_context,
+    )
 
     attempted = 0
-    for entry in entries:
+    attempt_contexts = list(prior_context)
+    position = 0
+    while position < len(entries):
+        entry = entries[position]
         if attempted >= max_attempts:
             failure = f"payloads exhausted after {attempted} attempts (budget cap)"
             _record_failure(audit_failure, failure)
@@ -556,6 +665,7 @@ def run_payload_chain(
             failure = f"skipped {payload_ref!r}: {exc}"
             _record_failure(audit_failure, failure)
             _ev(f"skipped {payload_ref}: no safe evidence adapter ({oracle_type})")
+            position += 1
             continue
 
         try:
@@ -623,6 +733,36 @@ def run_payload_chain(
 
         attempted += 1
         if verdict.get("is_violation") is not True:
+            from reachagent.recon.payload_tuning import PayloadAttemptContext
+
+            status = verdict.get("status")
+            outcome = "no_signal" if status in {"confirmed_allowed", "inconclusive"} else "blocked"
+            probe_status = verdict.get("probe_status", 0)
+            if not isinstance(probe_status, int):
+                probe_status = 0
+            attempt_contexts.append(
+                PayloadAttemptContext(
+                    tried_ref=payload_ref,
+                    outcome=outcome,
+                    status_code=probe_status,
+                    detail=str(status or "inconclusive")[:120],
+                )
+            )
+            from reachagent.llm.runtime import flag_enabled
+
+            if flag_enabled("REACHAGENT_PAYLOAD_TUNING") or flag_enabled(
+                "REACHAGENT_RECON_LIVE_TUNING"
+            ):
+                remaining = _maybe_reorder_payloads(
+                    entries[position + 1 :],
+                    vuln_class,
+                    sink_type,
+                    slot_kit,
+                    prior_attempts=tuple(attempt_contexts),
+                    payload_context=payload_context,
+                )
+                entries = entries[: position + 1] + remaining
+            position += 1
             continue
         verdict_ref = verdict.get("verdict_ref")
         if not isinstance(verdict_ref, str) or not verdict_ref:

@@ -1054,6 +1054,15 @@ def scan_target(
         for vc in ranked_classes:
             check_cancel(cancel_check)
             _log.debug("trying vuln_class=%s on %s", vc, sel.endpoint_node)
+            identity_data = next(
+                (data for node, data in g.identities() if node == sel.identity_node),
+                None,
+            )
+            auth_state = getattr(
+                getattr(identity_data, "auth_state", None),
+                "value",
+                getattr(identity_data, "auth_state", None),
+            )
             result = _pc.run_payload_chain(
                 _caller,
                 identity=sel.identity_node,
@@ -1062,6 +1071,16 @@ def scan_target(
                 vuln_class=vc,
                 baseline_payload=baseline_payload,
                 method=g.endpoint(sel.endpoint_node).method,
+                payload_context={
+                    "method": g.endpoint(sel.endpoint_node).method,
+                    "content_type": g.endpoint(sel.endpoint_node).content_type,
+                    "framework": g.endpoint(sel.endpoint_node).technology,
+                    "auth_state": str(auth_state) if auth_state else None,
+                    "location": g.parameter(param_node).location if param_node else None,
+                },
+                # Mutations are opt-in from the LLM payload proposal; the
+                # default chain remains one parent reference per bucket.
+                mutation_limit=0,
                 max_attempts=max_attempts,
                 on_event=_on_chain_event,
             )
