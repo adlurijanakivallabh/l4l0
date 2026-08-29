@@ -17,12 +17,17 @@ Same evidence in, same verdict out, every time.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from reachagent.browser.shim import TaintFlow
 from reachagent.graph.nodes import FindingStatus
 from reachagent.oracles import OracleMechanism
-from reachagent.oracles.base import Oracle, OracleVerdict
+from reachagent.oracles.base import Oracle, OracleVerdict, decision_reason
+from reachagent.oracles.evidence import (
+    EvidenceMetadata,
+    validate_evidence_metadata,
+    validate_evidence_ref,
+)
 
 
 @dataclass(frozen=True)
@@ -50,6 +55,31 @@ class ExecutionConfirmationEvidence:
     expected_output: str = ""
     template_expression: str = ""
     evidence_ref: str = ""
+    metadata: EvidenceMetadata = field(default_factory=EvidenceMetadata)
+
+
+def _validate_evidence(evidence: ExecutionConfirmationEvidence) -> None:
+    validate_evidence_ref(evidence.evidence_ref)
+    validate_evidence_metadata(evidence.metadata)
+    if not isinstance(evidence.response_body, str):
+        raise TypeError("response_body must be a string")
+    if len(evidence.response_body) > 1_000_000:
+        raise ValueError("response_body exceeds 1000000 characters")
+    for name in ("payload_tag", "expected_output", "template_expression"):
+        value = getattr(evidence, name)
+        if not isinstance(value, str):
+            raise TypeError(f"{name} must be a string")
+        if len(value) > 16_384:
+            raise ValueError(f"{name} exceeds 16384 characters")
+    for index, flow in enumerate(evidence.flows):
+        for name in ("source", "sink", "value_snippet", "url"):
+            value = getattr(flow, name, None)
+            if not isinstance(value, str):
+                raise TypeError(f"flows[{index}].{name} must be a string")
+            if len(value) > 4_096:
+                raise ValueError(f"flows[{index}].{name} exceeds 4096 characters")
+            if any(ord(char) < 32 or ord(char) == 127 for char in value):
+                raise ValueError(f"flows[{index}].{name} contains a control character")
 
 
 def decide(evidence: ExecutionConfirmationEvidence) -> FindingStatus:
@@ -71,6 +101,7 @@ def decide(evidence: ExecutionConfirmationEvidence) -> FindingStatus:
     HTTP path: payload_tag non-empty and present verbatim in response_body → CONFIRMED_VIOLATION.
     Neither signal present → INCONCLUSIVE.
     """
+    _validate_evidence(evidence)
     if evidence.flows or evidence.executed:
         return FindingStatus.CONFIRMED_VIOLATION
     if evidence.expected_output and evidence.expected_output in evidence.response_body:
@@ -78,6 +109,18 @@ def decide(evidence: ExecutionConfirmationEvidence) -> FindingStatus:
     if evidence.payload_tag and evidence.payload_tag in evidence.response_body:
         return FindingStatus.CONFIRMED_VIOLATION
     return FindingStatus.INCONCLUSIVE
+
+
+def _reason(evidence: ExecutionConfirmationEvidence, status: FindingStatus) -> str:
+    if status is FindingStatus.CONFIRMED_VIOLATION:
+        detail = (
+            "execution_marker_or_sink_flow"
+            if (evidence.flows or evidence.executed)
+            else "reflection_tag_observed"
+        )
+    else:
+        detail = "execution_or_reflection_not_observed"
+    return decision_reason(OracleMechanism.EXECUTION_CONFIRMATION, status, detail)
 
 
 class ExecutionConfirmationOracle(Oracle):
@@ -102,4 +145,6 @@ class ExecutionConfirmationOracle(Oracle):
             mechanism=self.mechanism,
             status=status,
             evidence_ref=evidence.evidence_ref,
+            reason=_reason(evidence, status),
+            evidence_metadata=validate_evidence_metadata(evidence.metadata),
         )

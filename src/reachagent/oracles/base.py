@@ -12,10 +12,16 @@ in code (§7, §13).
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from reachagent.graph.nodes import FindingStatus
 from reachagent.oracles import OracleMechanism
+from reachagent.oracles.evidence import (
+    EvidenceMetadata,
+    validate_evidence_metadata,
+    validate_evidence_ref,
+    validate_reason,
+)
 
 # The deterministic verdicts that count as "confirmed" — anything a scripted
 # oracle could positively decide. INCONCLUSIVE is the only non-confirmed status.
@@ -40,6 +46,19 @@ class OracleVerdict:
     mechanism: OracleMechanism
     status: FindingStatus
     evidence_ref: str
+    reason: str = ""
+    evidence_metadata: EvidenceMetadata = field(default_factory=EvidenceMetadata)
+
+    def __post_init__(self) -> None:
+        """Keep provenance and explanations bounded and secret-free.
+
+        The status is still selected by a concrete oracle before this object is
+        created.  These checks only protect the evidence boundary; they never
+        change a verdict.
+        """
+        validate_evidence_ref(self.evidence_ref)
+        validate_reason(self.reason)
+        validate_evidence_metadata(self.evidence_metadata)
 
     @property
     def confirmed(self) -> bool:
@@ -55,6 +74,29 @@ class OracleVerdict:
         about a ``can_call`` edge (§6), not a finding.
         """
         return self.status is FindingStatus.CONFIRMED_VIOLATION
+
+
+def decision_reason(
+    mechanism: OracleMechanism,
+    status: FindingStatus,
+    detail: str = "",
+) -> str:
+    """Return a stable, secret-free explanation for an oracle status."""
+    family = mechanism.value
+    if status is FindingStatus.CONFIRMED_VIOLATION:
+        outcome = "confirmed_violation"
+        default_detail = "security_invariant_broken"
+    elif status is FindingStatus.CONFIRMED_ALLOWED:
+        outcome = "confirmed_allowed"
+        default_detail = "expected_access_observed"
+    elif status is FindingStatus.CONFIRMED_DENIED:
+        outcome = "confirmed_denied"
+        default_detail = "security_invariant_held"
+    else:
+        outcome = "inconclusive"
+        default_detail = "deterministic_signal_absent"
+    safe_detail = validate_reason(str(detail)[:200], field="reason_detail")
+    return f"{family}:{outcome}:{safe_detail or default_detail}"
 
 
 class Oracle:

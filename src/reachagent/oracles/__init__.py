@@ -15,6 +15,8 @@ from __future__ import annotations
 
 from enum import StrEnum
 
+from reachagent.oracles.evidence import EvidenceMetadata, EvidenceValidationError
+
 
 class OracleMechanism(StrEnum):
     """The six deterministic families (§7). Not extended without a plan change."""
@@ -25,3 +27,6 @@ class OracleMechanism(StrEnum):
     TIMING_STATISTICAL = "timing_statistical"  # time-based blind, GraphQL complexity regression
     STRUCTURAL = "structural"  # JWT forgeries, file upload / path traversal
     BUSINESS_RULE_INVARIANT = "business_rule_invariant"  # 4-template library + race conditions
+
+
+__all__ = ["EvidenceMetadata", "EvidenceValidationError", "OracleMechanism"]

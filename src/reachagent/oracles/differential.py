@@ -42,12 +42,18 @@ The axis is provenance only; the expectation drives the decision, so the same
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 
 from reachagent.graph.nodes import FindingStatus
 from reachagent.oracles import OracleMechanism
-from reachagent.oracles.base import Oracle, OracleVerdict
+from reachagent.oracles.base import Oracle, OracleVerdict, decision_reason
+from reachagent.oracles.evidence import (
+    EvidenceMetadata,
+    validate_evidence_metadata,
+    validate_evidence_ref,
+    validate_status_code,
+)
 
 
 class DiffAxis(StrEnum):
@@ -123,6 +129,32 @@ class DifferentialEvidence:
     probe: Observation
     evidence_ref: str = ""
     error_signatures: tuple[str, ...] = ()
+    metadata: EvidenceMetadata = field(default_factory=EvidenceMetadata)
+
+
+def _validate_evidence(evidence: DifferentialEvidence) -> None:
+    """Reject malformed observations before comparison can manufacture a signal."""
+    validate_evidence_ref(evidence.evidence_ref)
+    validate_evidence_metadata(evidence.metadata)
+    for name, observation in (("baseline", evidence.baseline), ("probe", evidence.probe)):
+        if not isinstance(observation.label, str) or not observation.label.strip():
+            raise ValueError(f"{name}.label must be a non-empty string")
+        if len(observation.label) > 256:
+            raise ValueError(f"{name}.label exceeds 256 characters")
+        if not isinstance(observation.body, str):
+            raise TypeError(f"{name}.body must be a string")
+        if len(observation.body) > 1_000_000:
+            raise ValueError(f"{name}.body exceeds 1000000 characters")
+        validate_status_code(observation.status_code, field=f"{name}.status_code")
+    if not isinstance(evidence.error_signatures, (tuple, list)):
+        raise TypeError("error_signatures must be a list or tuple of strings")
+    if len(evidence.error_signatures) > 64:
+        raise ValueError("error_signatures exceeds 64 entries")
+    for index, signature in enumerate(evidence.error_signatures):
+        if not isinstance(signature, str) or not signature.strip():
+            raise ValueError(f"error_signatures[{index}] must be a non-empty string")
+        if len(signature) > 512:
+            raise ValueError(f"error_signatures[{index}] exceeds 512 characters")
 
 
 def _outcome(status_code: int) -> _AccessOutcome:
@@ -168,6 +200,7 @@ def decide(evidence: DifferentialEvidence) -> FindingStatus:
     a free function so the decision table can be exhaustively tested independently
     of oracle/verdict plumbing.
     """
+    _validate_evidence(evidence)
     baseline_outcome = _outcome(evidence.baseline.status_code)
     probe_outcome = _outcome(evidence.probe.status_code)
     equivalent = _access_equivalent(evidence.baseline, evidence.probe)
@@ -233,6 +266,36 @@ def decide(evidence: DifferentialEvidence) -> FindingStatus:
     return FindingStatus.INCONCLUSIVE
 
 
+def _reason(evidence: DifferentialEvidence, status: FindingStatus) -> str:
+    if status is not FindingStatus.INCONCLUSIVE:
+        return decision_reason(OracleMechanism.DIFFERENTIAL, status)
+    baseline = _outcome(evidence.baseline.status_code)
+    probe = _outcome(evidence.probe.status_code)
+    if evidence.expectation is DiffExpectation.RESPONSES_INVARIANT:
+        detail = (
+            "control_not_served"
+            if baseline is not _AccessOutcome.GRANTED or probe is not _AccessOutcome.GRANTED
+            else "responses_equivalent"
+        )
+    elif evidence.expectation is DiffExpectation.AUTH_BYPASS:
+        detail = (
+            "baseline_not_refused"
+            if baseline is not _AccessOutcome.REFUSED
+            else "probe_not_decisive"
+        )
+    elif evidence.expectation is DiffExpectation.DATABASE_ERROR:
+        detail = (
+            "baseline_not_served"
+            if baseline is not _AccessOutcome.GRANTED
+            else "database_error_signal_absent"
+        )
+    elif baseline is not _AccessOutcome.GRANTED:
+        detail = "baseline_not_granted"
+    else:
+        detail = "probe_access_difference_ambiguous"
+    return decision_reason(OracleMechanism.DIFFERENTIAL, status, detail)
+
+
 class DifferentialOracle(Oracle):
     """Confirms via cross-identity/request/condition diff — one of the six §7 families."""
 
@@ -255,4 +318,6 @@ class DifferentialOracle(Oracle):
             mechanism=self.mechanism,
             status=status,
             evidence_ref=evidence.evidence_ref,
+            reason=_reason(evidence, status),
+            evidence_metadata=validate_evidence_metadata(evidence.metadata),
         )

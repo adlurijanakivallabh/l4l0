@@ -45,6 +45,7 @@ from reachagent.graph.nodes import (
     Session,
     SinkType,
 )
+from reachagent.oracles import evidence as _evidence
 
 # Node-kind tags stored on every node so a query can filter by type without
 # reconstructing the dataclass.
@@ -615,6 +616,8 @@ class ReachabilityGraph:
                 "refusing to persist a Finding without a confirmed_violation status "
                 f"(got {finding.status.value!r}) — only a confirmed violation is a finding"
             )
+        finding.evidence_ref = _evidence.validate_evidence_ref(finding.evidence_ref)
+        finding.metadata = _evidence.validate_metadata_dict(finding.metadata)
         node = finding_id(finding.vuln_class, finding.evidence_ref)
         self._g.add_node(node, **{_KIND: "finding", _DATA: finding})
         return node

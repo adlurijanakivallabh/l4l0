@@ -439,6 +439,20 @@ and negative-result tests.
 **Exit criterion:** same evidence always yields the same verdict; only
 `confirmed_violation` can create a finding.
 
+**Status (2026-08-29): complete.** The six-family registry remains unchanged.
+Each evidence family now carries an optional bounded metadata projection for
+opaque request/response handles, body-projection labels, non-sensitive headers,
+timing samples, and OOB channel labels. Invalid status, latency, flow, nonce,
+body, and secret-bearing metadata fail closed. Verdicts carry deterministic
+reasons; inconclusive decisions can be recorded as negative audit entries; raw
+bodies, cookies, and authorization values stay server-side. The Validator and
+graph store stamp only safe oracle provenance and reject unconfirmed findings.
+Focused AST/runtime checks prove six verdict constructors remain confined to the
+oracle modules and detector packages construct neither verdicts nor findings.
+The Phase 6 focused gate passed 240 tests with two pre-existing environment
+skips; no files were deleted. Full-suite validation remains reserved for the
+plan's final release gate.
+
 ### Phase 7 — Stateful API and property-based exploration
 
 **Goal:** discover deeper producer/consumer paths and contract failures.

@@ -19,11 +19,16 @@ this one.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from reachagent.graph.nodes import FindingStatus
 from reachagent.oracles import OracleMechanism
-from reachagent.oracles.base import Oracle, OracleVerdict
+from reachagent.oracles.base import Oracle, OracleVerdict, decision_reason
+from reachagent.oracles.evidence import (
+    EvidenceMetadata,
+    validate_evidence_metadata,
+    validate_evidence_ref,
+)
 
 
 @dataclass(frozen=True)
@@ -46,6 +51,28 @@ class OOBCallbackEvidence:
     observed_nonces: frozenset[str] = field(default_factory=frozenset)
     observed_channels: frozenset[tuple[str, str]] = frozenset()
     evidence_ref: str = ""
+    metadata: EvidenceMetadata = field(default_factory=EvidenceMetadata)
+
+
+def _validate_evidence(evidence: OOBCallbackEvidence) -> None:
+    validate_evidence_ref(evidence.evidence_ref)
+    validate_evidence_metadata(evidence.metadata)
+    if not isinstance(evidence.probe_nonce, str):
+        raise TypeError("probe_nonce must be a string")
+    validate_evidence_ref(evidence.probe_nonce, field="probe_nonce")
+    if not isinstance(evidence.observed_nonces, (frozenset, set, tuple, list)):
+        raise TypeError("observed_nonces must be a set-like collection of strings")
+    if len(evidence.observed_nonces) > 2_000:
+        raise ValueError("observed_nonces exceeds 2000 entries")
+    for index, nonce in enumerate(evidence.observed_nonces):
+        validate_evidence_ref(nonce, field=f"observed_nonces[{index}]")
+    if not isinstance(evidence.observed_channels, (frozenset, set, tuple, list)):
+        raise TypeError("observed_channels must be a set-like collection of pairs")
+    for index, pair in enumerate(evidence.observed_channels):
+        if not isinstance(pair, (tuple, list)) or len(pair) != 2:
+            raise ValueError(f"observed_channels[{index}] must be a nonce/channel pair")
+        validate_evidence_ref(pair[0], field=f"observed_channels[{index}].nonce")
+        validate_evidence_ref(pair[1], field=f"observed_channels[{index}].channel")
 
 
 def decide(evidence: OOBCallbackEvidence) -> FindingStatus:
@@ -61,11 +88,19 @@ def decide(evidence: OOBCallbackEvidence) -> FindingStatus:
     empty observed set — a probe with no nonce is a caller error, but confirming
     on it would be worse (it would match any bare callback), so it never confirms.
     """
+    _validate_evidence(evidence)
     if not evidence.probe_nonce:
         return FindingStatus.INCONCLUSIVE
     if evidence.probe_nonce in evidence.observed_nonces:
         return FindingStatus.CONFIRMED_VIOLATION
     return FindingStatus.INCONCLUSIVE
+
+
+def _reason(evidence: OOBCallbackEvidence, status: FindingStatus) -> str:
+    if status is FindingStatus.CONFIRMED_VIOLATION:
+        return decision_reason(OracleMechanism.OOB_CALLBACK, status, "probe_nonce_observed")
+    detail = "probe_nonce_missing" if not evidence.probe_nonce else "probe_nonce_not_observed"
+    return decision_reason(OracleMechanism.OOB_CALLBACK, status, detail)
 
 
 class OOBCallbackOracle(Oracle):
@@ -84,8 +119,16 @@ class OOBCallbackOracle(Oracle):
                 f"OOBCallbackOracle needs OOBCallbackEvidence, got {type(evidence).__name__}"
             )
         status = decide(evidence)
+        metadata = validate_evidence_metadata(evidence.metadata)
+        if evidence.observed_channels and not metadata.oob_channels:
+            metadata = replace(
+                metadata,
+                oob_channels=tuple(evidence.observed_channels),
+            ).validated()
         return OracleVerdict(
             mechanism=self.mechanism,
             status=status,
             evidence_ref=evidence.evidence_ref,
+            reason=_reason(evidence, status),
+            evidence_metadata=metadata,
         )

@@ -23,11 +23,18 @@ inconclusive — a mis-wired caller is a bug, not an ambiguous result.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 
 from reachagent.graph.nodes import FindingStatus
 from reachagent.oracles import OracleMechanism
-from reachagent.oracles.base import Oracle, OracleVerdict
+from reachagent.oracles.base import Oracle, OracleVerdict, decision_reason
+from reachagent.oracles.evidence import (
+    EvidenceMetadata,
+    EvidenceValidationError,
+    validate_evidence_metadata,
+    validate_evidence_ref,
+    validate_nonnegative_samples,
+)
 
 # Minimum trials per arm — fewer is not a paired trial, it's a guess.
 _MIN_TRIALS = 10
@@ -60,6 +67,7 @@ class PairedTrialEvidence:
     baseline_latencies_ms: tuple[float, ...]
     threshold_multiplier: float = 3.0
     evidence_ref: str = ""
+    metadata: EvidenceMetadata = field(default_factory=EvidenceMetadata)
 
 
 def _mean(xs: tuple[float, ...]) -> float:
@@ -70,6 +78,23 @@ def _std(xs: tuple[float, ...]) -> float:
     """Population standard deviation — deterministic, no sampling."""
     m = _mean(xs)
     return math.sqrt(sum((x - m) ** 2 for x in xs) / len(xs))
+
+
+def _validate_evidence(evidence: PairedTrialEvidence) -> None:
+    validate_evidence_ref(evidence.evidence_ref)
+    validate_evidence_metadata(evidence.metadata)
+    try:
+        validate_nonnegative_samples(evidence.probe_latencies_ms, field="probe_latencies_ms")
+        validate_nonnegative_samples(evidence.baseline_latencies_ms, field="baseline_latencies_ms")
+    except EvidenceValidationError as exc:
+        raise ValidationError(str(exc)) from exc
+    if isinstance(evidence.threshold_multiplier, bool) or not isinstance(
+        evidence.threshold_multiplier, (int, float)
+    ):
+        raise ValidationError("threshold_multiplier must be numeric")
+    multiplier = float(evidence.threshold_multiplier)
+    if not math.isfinite(multiplier) or multiplier <= 0:
+        raise ValidationError("threshold_multiplier must be finite and greater than zero")
 
 
 def decide(evidence: PairedTrialEvidence) -> FindingStatus:
@@ -90,6 +115,7 @@ def decide(evidence: PairedTrialEvidence) -> FindingStatus:
     collapses to probe_mean > baseline_mean, which is correct: any probe
     latency above a perfectly stable baseline is a real signal.
     """
+    _validate_evidence(evidence)
     if len(evidence.baseline_latencies_ms) < _MIN_TRIALS:
         raise ValidationError(
             f"baseline requires ≥{_MIN_TRIALS} trials, "
@@ -111,6 +137,15 @@ def decide(evidence: PairedTrialEvidence) -> FindingStatus:
     return FindingStatus.INCONCLUSIVE
 
 
+def _reason(status: FindingStatus) -> str:
+    detail = (
+        "probe_mean_exceeded_control_threshold"
+        if status is FindingStatus.CONFIRMED_VIOLATION
+        else "probe_mean_below_control_threshold"
+    )
+    return decision_reason(OracleMechanism.TIMING_STATISTICAL, status, detail)
+
+
 class TimingStatisticalOracle(Oracle):
     """Confirms via paired-trial timing — one of the six §7 families."""
 
@@ -129,8 +164,19 @@ class TimingStatisticalOracle(Oracle):
                 f"TimingStatisticalOracle needs PairedTrialEvidence, got {type(evidence).__name__}"
             )
         status = decide(evidence)
+        metadata = validate_evidence_metadata(evidence.metadata)
+        if not metadata.timing_samples_ms:
+            metadata = replace(
+                metadata,
+                timing_samples_ms=(
+                    tuple(evidence.baseline_latencies_ms[:1000])
+                    + tuple(evidence.probe_latencies_ms[:1000])
+                ),
+            ).validated()
         return OracleVerdict(
             mechanism=self.mechanism,
             status=status,
             evidence_ref=evidence.evidence_ref,
+            reason=_reason(status),
+            evidence_metadata=metadata,
         )

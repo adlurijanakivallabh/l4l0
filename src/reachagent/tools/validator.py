@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING
 
 from reachagent.graph import nodes as _nodes
 from reachagent.oracles import OracleMechanism as _OracleMechanism
+from reachagent.oracles import evidence as _evidence
 from reachagent.oracles import registry as _registry
 from reachagent.tools import validator_support as _support
 
@@ -36,7 +37,14 @@ if TYPE_CHECKING:
     from reachagent.oracles.base import OracleVerdict
 
 
-def run_oracle(mechanism: str | _OracleMechanism, evidence: object) -> OracleVerdict:
+def run_oracle(
+    mechanism: str | _OracleMechanism,
+    evidence: object,
+    *,
+    audit: object | None = None,
+    identity: str = "validator",
+    target: str = "oracle",
+) -> OracleVerdict:
     """Execute one deterministic oracle family (§7) — the only path to a confirmed result.
 
     Resolves ``mechanism`` to its registered :class:`~reachagent.oracles.base.Oracle`
@@ -50,7 +58,12 @@ def run_oracle(mechanism: str | _OracleMechanism, evidence: object) -> OracleVer
     mistyped family fails loudly rather than passing as a silent inconclusive.
     """
     mech = _OracleMechanism(mechanism) if not isinstance(mechanism, _OracleMechanism) else mechanism
-    return _registry.get_oracle(mech).run(evidence)
+    verdict = _registry.get_oracle(mech).run(evidence)
+    if audit is not None and verdict.status is _nodes.FindingStatus.INCONCLUSIVE:
+        record = getattr(audit, "record_oracle_result", None)
+        if callable(record):
+            record(identity, target, verdict.reason, evidence_ref=verdict.evidence_ref)
+    return verdict
 
 
 def write_finding(
@@ -92,6 +105,8 @@ def write_finding(
             f"{verdict.status.value!r}, not a confirmed_violation "
             "(confirmed_allowed/confirmed_denied are facts about the edge, not findings)"
         )
+    _evidence.validate_evidence_ref(finding.evidence_ref)
+    clean_metadata = _evidence.validate_metadata_dict(metadata or {})
     # Stamp the finding with the confirmed status and its oracle provenance, so the
     # persisted node reflects the verdict rather than whatever the caller defaulted.
     finding.status = _nodes.FindingStatus.CONFIRMED_VIOLATION
@@ -99,11 +114,15 @@ def write_finding(
         finding.oracle_used = verdict.mechanism.value
     if not finding.evidence_ref:
         finding.evidence_ref = verdict.evidence_ref
-    if metadata:
+    if verdict.reason:
+        finding.metadata.setdefault("oracle_reason", verdict.reason)
+    if verdict.evidence_metadata.as_dict():
+        finding.metadata.setdefault("evidence_metadata", verdict.evidence_metadata.as_json())
+    if clean_metadata:
         # Provenance the confirmation itself established (e.g. how a chained hop's
         # consumed identifier is obtained — disclosed vs enumerable). Never LLM
         # judgment: the caller derives it deterministically from the fired evidence.
-        finding.metadata.update(metadata)
+        finding.metadata.update(clean_metadata)
     return graph.add_finding(finding)
 
 
@@ -113,6 +132,8 @@ def mark_inconclusive(
     endpoint_node: str,
     *,
     evidence: str = "",
+    reason: str = "caller_marked_inconclusive",
+    audit: object | None = None,
 ) -> None:
     """Write a negative result back to a ``can_call`` edge so it isn't retested (§13).
 
@@ -122,4 +143,15 @@ def mark_inconclusive(
     by re-query: :meth:`ReachabilityGraph.can_call_status` returns ``inconclusive``
     afterward.
     """
-    graph.mark_edge_inconclusive(identity_node, endpoint_node, evidence=evidence)
+    safe_evidence = _evidence.validate_evidence_ref(evidence, field="inconclusive_evidence")
+    safe_reason = _evidence.validate_reason(reason, field="inconclusive_reason")
+    graph.mark_edge_inconclusive(identity_node, endpoint_node, evidence=safe_evidence)
+    if audit is not None:
+        record = getattr(audit, "record_oracle_result", None)
+        if callable(record):
+            record(
+                identity_node,
+                endpoint_node,
+                f"inconclusive:{safe_reason}",
+                evidence_ref=safe_evidence,
+            )

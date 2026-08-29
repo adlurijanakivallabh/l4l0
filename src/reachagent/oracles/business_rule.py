@@ -25,12 +25,18 @@ that race-condition escalation is the deferred Phase 6 module, §7/§15).
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 
 from reachagent.graph.nodes import FindingStatus
 from reachagent.oracles import OracleMechanism
-from reachagent.oracles.base import Oracle, OracleVerdict
+from reachagent.oracles.base import Oracle, OracleVerdict, decision_reason
+from reachagent.oracles.evidence import (
+    EvidenceMetadata,
+    validate_evidence_metadata,
+    validate_evidence_ref,
+    validate_status_code,
+)
 
 
 class BusinessRule(StrEnum):
@@ -87,6 +93,22 @@ class BusinessRuleEvidence:
     baseline: ReplayObservation
     violating: ReplayObservation
     evidence_ref: str = ""
+    metadata: EvidenceMetadata = field(default_factory=EvidenceMetadata)
+
+
+def _validate_evidence(evidence: BusinessRuleEvidence) -> None:
+    validate_evidence_ref(evidence.evidence_ref)
+    validate_evidence_metadata(evidence.metadata)
+    for name, observation in (("baseline", evidence.baseline), ("violating", evidence.violating)):
+        if not isinstance(observation.label, str) or not observation.label.strip():
+            raise ValueError(f"{name}.label must be a non-empty string")
+        if len(observation.label) > 256:
+            raise ValueError(f"{name}.label exceeds 256 characters")
+        if not isinstance(observation.body, str):
+            raise TypeError(f"{name}.body must be a string")
+        if len(observation.body) > 1_000_000:
+            raise ValueError(f"{name}.body exceeds 1000000 characters")
+        validate_status_code(observation.status_code, field=f"{name}.status_code")
 
 
 def _outcome(status_code: int) -> _Outcome:
@@ -117,6 +139,7 @@ def decide(evidence: BusinessRuleEvidence) -> FindingStatus:
       * Anything else (3xx/5xx/gate-refused) carries no trustworthy signal →
         ``inconclusive``.
     """
+    _validate_evidence(evidence)
     if _outcome(evidence.baseline.status_code) is not _Outcome.GRANTED:
         return FindingStatus.INCONCLUSIVE
 
@@ -126,6 +149,17 @@ def decide(evidence: BusinessRuleEvidence) -> FindingStatus:
     if violating is _Outcome.REFUSED:
         return FindingStatus.CONFIRMED_DENIED
     return FindingStatus.INCONCLUSIVE
+
+
+def _reason(evidence: BusinessRuleEvidence, status: FindingStatus) -> str:
+    if status is not FindingStatus.INCONCLUSIVE:
+        return decision_reason(OracleMechanism.BUSINESS_RULE_INVARIANT, status)
+    detail = (
+        "baseline_not_accepted"
+        if _outcome(evidence.baseline.status_code) is not _Outcome.GRANTED
+        else "violating_action_ambiguous"
+    )
+    return decision_reason(OracleMechanism.BUSINESS_RULE_INVARIANT, status, detail)
 
 
 class BusinessRuleOracle(Oracle):
@@ -149,4 +183,6 @@ class BusinessRuleOracle(Oracle):
             mechanism=self.mechanism,
             status=status,
             evidence_ref=evidence.evidence_ref,
+            reason=_reason(evidence, status),
+            evidence_metadata=validate_evidence_metadata(evidence.metadata),
         )

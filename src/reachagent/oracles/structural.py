@@ -55,12 +55,18 @@ same verdict out, every time.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 
 from reachagent.graph.nodes import FindingStatus
 from reachagent.oracles import OracleMechanism
-from reachagent.oracles.base import Oracle, OracleVerdict
+from reachagent.oracles.base import Oracle, OracleVerdict, decision_reason
+from reachagent.oracles.evidence import (
+    EvidenceMetadata,
+    validate_evidence_metadata,
+    validate_evidence_ref,
+    validate_status_code,
+)
 
 
 class StructuralCheckType(StrEnum):
@@ -149,6 +155,38 @@ class StructuralEvidence:
     set_cookie: str = ""
     csrf_token_present: bool = False
     evidence_ref: str = ""
+    metadata: EvidenceMetadata = field(default_factory=EvidenceMetadata)
+
+
+def _validate_evidence(evidence: StructuralEvidence) -> None:
+    validate_evidence_ref(evidence.evidence_ref)
+    validate_evidence_metadata(evidence.metadata)
+    for name, value in (
+        ("baseline_status", evidence.baseline_status),
+        ("probe_status", evidence.probe_status),
+    ):
+        validate_status_code(value, field=name)
+    for name in (
+        "sentinel",
+        "union_sentinel",
+        "response_body",
+        "x_frame_options",
+        "csp",
+        "acao",
+        "acac",
+        "probe_origin",
+        "set_cookie",
+    ):
+        value = getattr(evidence, name)
+        if not isinstance(value, str):
+            raise TypeError(f"{name} must be a string")
+        limit = 1_000_000 if name == "response_body" else 16_384
+        if len(value) > limit:
+            raise ValueError(f"{name} exceeds its evidence size limit")
+        if any(ord(char) < 32 and char not in "\t\n\r" for char in value):
+            raise ValueError(f"{name} contains a control character")
+    if not isinstance(evidence.csrf_token_present, bool):
+        raise TypeError("csrf_token_present must be a boolean")
 
 
 def _xfo_is_effective(xfo: str) -> bool:
@@ -208,6 +246,7 @@ def decide(evidence: StructuralEvidence) -> FindingStatus:
     Pure and total: every valid input returns exactly one FindingStatus.
     No LLM anywhere in the path.
     """
+    _validate_evidence(evidence)
     if evidence.check_type is StructuralCheckType.FILE_UPLOAD_BYPASS:
         # Baseline must be accepted to confirm the endpoint is functional.
         if not (200 <= evidence.baseline_status < 300):
@@ -306,6 +345,22 @@ def decide(evidence: StructuralEvidence) -> FindingStatus:
     return FindingStatus.INCONCLUSIVE
 
 
+def _reason(evidence: StructuralEvidence, status: FindingStatus) -> str:
+    if status is not FindingStatus.INCONCLUSIVE:
+        return decision_reason(OracleMechanism.STRUCTURAL, status)
+    detail = {
+        StructuralCheckType.FILE_UPLOAD_BYPASS: "baseline_or_probe_not_decisive",
+        StructuralCheckType.PATH_TRAVERSAL: "sentinel_not_observed",
+        StructuralCheckType.UNION_EXTRACTION: "union_sentinel_not_observed",
+        StructuralCheckType.SSRF_RESPONSE: "internal_response_marker_not_observed",
+        StructuralCheckType.JWT_FORGERY: "baseline_or_forged_token_not_decisive",
+        StructuralCheckType.CLICKJACKING: "header_evidence_missing",
+        StructuralCheckType.CORS_MISCONFIG: "credentialed_origin_reflection_absent",
+        StructuralCheckType.CSRF_MISSING_PROTECTION: "same_site_or_token_control_unknown",
+    }.get(evidence.check_type, "unknown_structural_check")
+    return decision_reason(OracleMechanism.STRUCTURAL, status, detail)
+
+
 class StructuralOracle(Oracle):
     """Confirms structural input-handling violations — sixth §7 family."""
 
@@ -322,8 +377,24 @@ class StructuralOracle(Oracle):
                 f"StructuralOracle needs StructuralEvidence, got {type(evidence).__name__}"
             )
         status = decide(evidence)
+        metadata = validate_evidence_metadata(evidence.metadata)
+        if not metadata.headers:
+            headers = tuple(
+                (name, value)
+                for name, value in (
+                    ("x-frame-options", evidence.x_frame_options),
+                    ("content-security-policy", evidence.csp),
+                    ("access-control-allow-origin", evidence.acao),
+                    ("access-control-allow-credentials", evidence.acac),
+                )
+                if value
+            )
+            if headers:
+                metadata = replace(metadata, headers=headers).validated()
         return OracleVerdict(
             mechanism=self.mechanism,
             status=status,
             evidence_ref=evidence.evidence_ref,
+            reason=_reason(evidence, status),
+            evidence_metadata=metadata,
         )

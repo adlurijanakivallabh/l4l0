@@ -45,7 +45,7 @@ from __future__ import annotations
 import json
 import logging
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from itertools import count
 from typing import TYPE_CHECKING, Any
 
@@ -57,6 +57,7 @@ from reachagent.execution.scope import ScopeGuard
 from reachagent.graph import nodes as _nodes
 from reachagent.graph.store import ReachabilityGraph
 from reachagent.oracles import OracleMechanism
+from reachagent.oracles.evidence import EvidenceMetadata
 from reachagent.payloads import (
     MissingSlotError,
     PayloadLibrary,
@@ -253,6 +254,7 @@ class DifferentialEvidenceInput:
     baseline_select: str | None = None
     probe_select: str | None = None
     error_signatures: tuple[str, ...] = ()
+    metadata: EvidenceMetadata = field(default_factory=EvidenceMetadata)
 
     def to_evidence(self) -> object:
         """Rebuild the oracle's own evidence dataclass from this flat MCP input.
@@ -268,13 +270,19 @@ class DifferentialEvidenceInput:
             Observation,
         )
 
+        metadata = _metadata_from(self.metadata)
+        if self.baseline_fire_ref and not metadata.baseline_response_ref:
+            metadata = replace(metadata, baseline_response_ref=self.baseline_fire_ref)
+        if self.probe_fire_ref and not metadata.probe_response_ref:
+            metadata = replace(metadata, probe_response_ref=self.probe_fire_ref)
         return DifferentialEvidence(
             axis=DiffAxis(self.axis),
             expectation=DiffExpectation(self.expectation),
             baseline=Observation(self.baseline_label, self.baseline_status, self.baseline_body),
             probe=Observation(self.probe_label, self.probe_status, self.probe_body),
             evidence_ref=self.evidence_ref,
-            error_signatures=self.error_signatures,
+            error_signatures=tuple(self.error_signatures),
+            metadata=metadata.validated(),
         )
 
 
@@ -348,6 +356,68 @@ def _find_field(obj: object, field_name: str) -> object:
             if hit is not None:
                 return hit
     return None
+
+
+def _metadata_from(value: object) -> EvidenceMetadata:
+    """Decode the bounded, secret-free metadata projection at the MCP boundary."""
+    if value is None:
+        return EvidenceMetadata()
+    if isinstance(value, EvidenceMetadata):
+        return value.validated()
+    if not isinstance(value, dict):
+        raise TypeError("metadata must be an object")
+
+    def _pairs(name: str) -> tuple[tuple[str, str], ...]:
+        raw = value.get(name, ())
+        if not isinstance(raw, (list, tuple)):
+            raise TypeError(f"metadata.{name} must be a list of pairs")
+        return tuple(tuple(pair) for pair in raw)  # validation checks pair shape/types
+
+    def _value(name: str) -> Any:
+        raw = value.get(name, "")
+        return "" if raw is None else raw
+
+    raw_timing = value.get("timing_samples_ms", ())
+    if raw_timing is None:
+        raw_timing = ()
+
+    return EvidenceMetadata(
+        request_ref=_value("request_ref"),
+        response_ref=_value("response_ref"),
+        baseline_request_ref=_value("baseline_request_ref"),
+        baseline_response_ref=_value("baseline_response_ref"),
+        probe_request_ref=_value("probe_request_ref"),
+        probe_response_ref=_value("probe_response_ref"),
+        body_projection=_value("body_projection"),
+        baseline_body_projection=_value("baseline_body_projection"),
+        probe_body_projection=_value("probe_body_projection"),
+        headers=_pairs("headers"),
+        timing_samples_ms=tuple(raw_timing),
+        oob_channels=_pairs("oob_channels"),
+    ).validated()
+
+
+_METADATA_KEYS = (
+    "request_ref",
+    "response_ref",
+    "baseline_request_ref",
+    "baseline_response_ref",
+    "probe_request_ref",
+    "probe_response_ref",
+    "body_projection",
+    "baseline_body_projection",
+    "probe_body_projection",
+    "headers",
+    "timing_samples_ms",
+    "oob_channels",
+)
+
+
+def _metadata_for(values: dict[str, Any]) -> EvidenceMetadata:
+    """Accept nested metadata or the same fields at the flat MCP level."""
+    if "metadata" in values:
+        return _metadata_from(values.get("metadata"))
+    return _metadata_from({key: values[key] for key in _METADATA_KEYS if key in values})
 
 
 @dataclass
@@ -439,6 +509,8 @@ class VerdictOut:
     confirmed: bool
     is_violation: bool
     evidence_ref: str
+    reason: str = ""
+    evidence_metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -817,13 +889,21 @@ def register_tools(mcp: FastMCP, session: _Session) -> None:
           ``violating_body`` (str), ``evidence_ref``.
         """
         ev = evidence or {}
+        ev_for_audit = ev if isinstance(ev, dict) else {}
         mech = OracleMechanism(mechanism)
         oracle_evidence: object
 
         if mech is OracleMechanism.DIFFERENTIAL:
-            evidence_in = (
-                ev if isinstance(ev, DifferentialEvidenceInput) else DifferentialEvidenceInput(**ev)
-            )
+            evidence_in: DifferentialEvidenceInput
+            if isinstance(ev, DifferentialEvidenceInput):
+                evidence_in = ev
+            else:
+                raw_ev = dict(ev)
+                metadata = _metadata_for(raw_ev)
+                for key in (*_METADATA_KEYS, "metadata", "identity", "endpoint_node", "target"):
+                    raw_ev.pop(key, None)
+                raw_ev["metadata"] = metadata
+                evidence_in = DifferentialEvidenceInput(**raw_ev)
             if evidence_in.baseline_fire_ref is not None:
                 base = session.get_fire(evidence_in.baseline_fire_ref)
                 evidence_in.baseline_status = base.status_code
@@ -862,6 +942,12 @@ def register_tools(mcp: FastMCP, session: _Session) -> None:
                     return str(probe_fire.headers.get(header_name, ""))
                 return ""
 
+            structural_metadata = _metadata_for(ev)
+            if ev.get("probe_fire_ref") and not structural_metadata.probe_response_ref:
+                structural_metadata = replace(
+                    structural_metadata,
+                    probe_response_ref=ev["probe_fire_ref"],
+                )
             oracle_evidence = StructuralEvidence(
                 check_type=StructuralCheckType(ev.get("check_type", "")),
                 baseline_status=int(ev.get("baseline_status", 0)),
@@ -884,6 +970,7 @@ def register_tools(mcp: FastMCP, session: _Session) -> None:
                 set_cookie=_hdr("set_cookie", "set-cookie"),
                 csrf_token_present=bool(ev.get("csrf_token_present", False)),
                 evidence_ref=str(ev.get("evidence_ref", "")),
+                metadata=structural_metadata.validated(),
             )
 
         elif mech is OracleMechanism.TIMING_STATISTICAL:
@@ -894,6 +981,7 @@ def register_tools(mcp: FastMCP, session: _Session) -> None:
                 baseline_latencies_ms=tuple(float(x) for x in ev.get("baseline_latencies_ms", [])),
                 threshold_multiplier=float(ev.get("threshold_multiplier", 3.0)),
                 evidence_ref=str(ev.get("evidence_ref", "")),
+                metadata=_metadata_for(ev),
             )
 
         elif mech is OracleMechanism.OOB_CALLBACK:
@@ -906,6 +994,7 @@ def register_tools(mcp: FastMCP, session: _Session) -> None:
                     (str(a), str(b)) for a, b in ev.get("observed_channels", [])
                 ),
                 evidence_ref=str(ev.get("evidence_ref", "")),
+                metadata=_metadata_for(ev),
             )
 
         elif mech is OracleMechanism.EXECUTION_CONFIRMATION:
@@ -926,6 +1015,12 @@ def register_tools(mcp: FastMCP, session: _Session) -> None:
             if not exec_body and ev.get("probe_fire_ref"):
                 exec_fire = session.get_fire(str(ev["probe_fire_ref"]))
                 exec_body = exec_fire.body.decode("utf-8", errors="replace")
+            execution_metadata = _metadata_for(ev)
+            if ev.get("probe_fire_ref") and not execution_metadata.probe_response_ref:
+                execution_metadata = replace(
+                    execution_metadata,
+                    probe_response_ref=ev["probe_fire_ref"],
+                )
 
             oracle_evidence = ExecutionConfirmationEvidence(
                 flows=flows,
@@ -934,6 +1029,7 @@ def register_tools(mcp: FastMCP, session: _Session) -> None:
                 response_body=exec_body,
                 expected_output=str(ev.get("expected_output", "")),
                 evidence_ref=str(ev.get("evidence_ref", "")),
+                metadata=execution_metadata.validated(),
             )
 
         elif mech is OracleMechanism.BUSINESS_RULE_INVARIANT:
@@ -956,6 +1052,7 @@ def register_tools(mcp: FastMCP, session: _Session) -> None:
                     body=str(ev.get("violating_body", "")),
                 ),
                 evidence_ref=str(ev.get("evidence_ref", "")),
+                metadata=_metadata_for(ev),
             )
 
         else:
@@ -963,6 +1060,16 @@ def register_tools(mcp: FastMCP, session: _Session) -> None:
 
         verdict = _validator.run_oracle(mech, oracle_evidence)
         ref = session.put_verdict(verdict)
+        if verdict.status is _nodes.FindingStatus.INCONCLUSIVE:
+            # Keep a bounded negative-result audit record.  Only opaque ids and
+            # the deterministic reason leave the server; raw bodies/headers stay
+            # in the fire store.
+            ctx.firer.audit.record_oracle_result(
+                str(ev_for_audit.get("identity", "validator")),
+                str(ev_for_audit.get("endpoint_node") or ev_for_audit.get("target") or "oracle"),
+                verdict.reason,
+                evidence_ref=verdict.evidence_ref,
+            )
         return VerdictOut(
             verdict_ref=ref,
             mechanism=verdict.mechanism.value,
@@ -970,6 +1077,8 @@ def register_tools(mcp: FastMCP, session: _Session) -> None:
             confirmed=verdict.confirmed,
             is_violation=verdict.is_violation,
             evidence_ref=verdict.evidence_ref,
+            reason=verdict.reason,
+            evidence_metadata=verdict.evidence_metadata.as_dict(),
         )
 
     @mcp.tool()
@@ -1009,9 +1118,21 @@ def register_tools(mcp: FastMCP, session: _Session) -> None:
         )
 
     @mcp.tool()
-    def mark_inconclusive(identity_node: str, endpoint_node: str, evidence: str = "") -> str:
+    def mark_inconclusive(
+        identity_node: str,
+        endpoint_node: str,
+        evidence: str = "",
+        reason: str = "caller_marked_inconclusive",
+    ) -> str:
         """Write a negative result back to a can_call edge so it isn't retested (§13)."""
-        _validator.mark_inconclusive(session.graph, identity_node, endpoint_node, evidence=evidence)
+        _validator.mark_inconclusive(
+            session.graph,
+            identity_node,
+            endpoint_node,
+            evidence=evidence,
+            reason=reason,
+            audit=ctx.firer.audit,
+        )
         return "inconclusive"
 
     # -- fire_browser: Explorer-owned browser transport for DOM XSS (§13, Task 5) --

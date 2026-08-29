@@ -27,7 +27,7 @@ from __future__ import annotations
 import json
 import re
 import urllib.parse
-from collections.abc import Mapping
+from collections.abc import Mapping as _Mapping
 from typing import TYPE_CHECKING
 
 # Imported as modules, never as names: the role-boundary test asserts this module
@@ -324,9 +324,9 @@ def get_payloads(
     vuln_class: str,
     sink_type: SinkType | None,
     *,
-    context: Mapping[str, object] | None = None,
+    context: _Mapping[str, object] | None = None,
     max_mutations: int = 0,
-    slot_kit: Mapping[str, object] | None = None,
+    slot_kit: _Mapping[str, object] | None = None,
 ) -> list[PayloadEntry]:
     """Sink-matched lookup from the tagged library, ordered by oracle confidence (§9, §13).
 

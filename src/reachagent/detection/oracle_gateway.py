@@ -39,6 +39,16 @@ class OracleOutcome:
     def status(self) -> str:
         return self._verdict.status.value
 
+    @property
+    def reason(self) -> str:
+        """Stable, deterministic explanation supplied by the oracle."""
+        return self._verdict.reason
+
+    @property
+    def evidence_metadata(self) -> dict[str, object]:
+        """Safe bounded evidence projection; raw bodies remain server-side."""
+        return self._verdict.evidence_metadata.as_dict()
+
 
 class OracleRunner(Protocol):
     """Callable contract: (mechanism, evidence) -> OracleOutcome."""
