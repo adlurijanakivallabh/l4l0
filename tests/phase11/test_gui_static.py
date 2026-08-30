@@ -11,7 +11,13 @@ def test_workspace_contains_real_state_views_and_controls() -> None:
     response = TestClient(app).get("/")
     assert response.status_code == 200
     html = response.text
+    assert "<title>ReachAgent — mission control</title>" in html
     for marker in (
+        'class="shell"',
+        'id="launch"',
+        'class="mission section"',
+        'aria-label="Active assessments"',
+        "Execution guardrails",
         'id="scan-status"',
         'id="cancel-scan"',
         'id="active-scans"',
