@@ -13,6 +13,8 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import json
+import re
+import threading
 import uuid
 from contextvars import copy_context
 from pathlib import Path
@@ -29,7 +31,105 @@ from reachagent.scan.orchestrator import ScanEvent, scan_all_classes
 
 app = FastAPI(title="ReachAgent GUI", version="2.0")
 _scans: dict[str, dict[str, Any]] = {}  # id → {status, phase, events, findings, report_md, error}
+_scan_lock = threading.RLock()
+_MAX_EVENTS = 4_000
+_PUBLIC_SECRET = re.compile(
+    r"(?i)(?:bearer\s+[^\s,;}]+|[\"']?(?:password|passwd|secret|token|api[_-]?key|"
+    r"access[_-]?token|refresh[_-]?token|id[_-]?token|cookie|authorization)[\"']?"
+    r"\s*[:=]\s*[\"']?(?:bearer\s+)?[^\s,;}\"']+)"
+)
+_EPHEMERAL_HANDLE = re.compile(r"\b(?:fire|browser|verdict)-[A-Za-z0-9._:-]+\b")
 _providers_path = Path(__file__).resolve().parents[3] / "config" / "providers.json"
+
+
+def _now() -> str:
+    from datetime import UTC, datetime
+
+    return datetime.now(UTC).isoformat(timespec="seconds")
+
+
+def _touch_scan(scan_id: str) -> None:
+    with _scan_lock:
+        data = _scans.get(scan_id)
+        if data is not None:
+            data["updated_at"] = _now()
+
+
+class _EventBuffer(list[ScanEvent]):
+    """Bounded event history that updates the owning scan heartbeat."""
+
+    def __init__(self, touch: Any) -> None:
+        super().__init__()
+        self._touch = touch
+
+    def append(self, event: ScanEvent) -> None:
+        super().append(event)
+        if len(self) > _MAX_EVENTS:
+            del self[: len(self) - _MAX_EVENTS]
+        self._touch()
+
+
+def _scan_update(scan_id: str, **values: Any) -> None:
+    with _scan_lock:
+        data = _scans.get(scan_id)
+        if data is None:
+            return
+        data.update(values)
+        data["updated_at"] = _now()
+
+
+def _lifecycle(status: object) -> str:
+    """Normalize compatibility statuses to the explicit GUI lifecycle."""
+    return {
+        "queued": "queued",
+        "running": "running",
+        "paused": "paused",
+        "blocked": "blocked",
+        "done": "completed",
+        "completed": "completed",
+        "error": "failed",
+        "failed": "failed",
+        "cancelling": "running",
+        "cancelled": "cancelled",
+    }.get(str(status), "queued")
+
+
+def _public_text(value: object, maximum: int = 500) -> str:
+    text = str(value).replace("\x00", "").replace("\n", " ").replace("\r", " ")
+    text = _PUBLIC_SECRET.sub("<redacted>", text)
+    text = _EPHEMERAL_HANDLE.sub("<opaque-handle>", text)
+    return text[:maximum]
+
+
+def _public_value(value: object, *, key: str = "", depth: int = 0) -> object:
+    """Project graph/event metadata without secrets, raw bodies, or handles."""
+    if depth > 4:
+        return "<truncated>"
+    lowered = key.lower()
+    if any(
+        word in lowered
+        for word in (
+            "password",
+            "passwd",
+            "secret",
+            "token",
+            "api_key",
+            "apikey",
+            "cookie",
+            "authorization",
+        )
+    ):
+        return "<redacted>"
+    if isinstance(value, dict):
+        return {
+            _public_text(name, 96): _public_value(item, key=str(name), depth=depth + 1)
+            for name, item in list(value.items())[:80]
+        }
+    if isinstance(value, (list, tuple)):
+        return [_public_value(item, key=key, depth=depth + 1) for item in list(value)[:80]]
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return _public_text(value) if isinstance(value, str) else value
+    return _public_text(value)
 
 
 def _load_providers() -> list[dict[str, Any]]:
@@ -156,23 +256,51 @@ def test_provider(provider_id: str) -> JSONResponse:
 
 def _event_dict(e: ScanEvent) -> dict[str, Any]:
     """Serialize one orchestrator event for the GUI (reasoning loop included)."""
-    return {"phase": e.phase, "kind": e.kind, "message": e.message, "details": e.details}
+    return {
+        "phase": _public_text(e.phase, 64),
+        "kind": _public_text(e.kind, 64),
+        "message": _public_text(e.message, 800),
+        "details": _public_value(e.details, key="details"),
+    }
 
 
 @app.get("/api/scan/{scan_id}/reasoning")
 def get_reasoning(scan_id: str) -> JSONResponse:
     """The LLM reasoning stream: plan rationale, per-phase decisions, transport
     and tool picks — every proposal the loop made and why, in order."""
-    data = _scans.get(scan_id)
-    if not data:
+    with _scan_lock:
+        data = _scans.get(scan_id)
+    if data is None:
         return JSONResponse({"error": "not found"}, status_code=404)
     events = data.get("events", [])
     reasoning_events = [
         _event_dict(e)
-        for e in events
+        for e in events[-_MAX_EVENTS:]
         if e.kind in ("plan", "step") or "LLM" in e.message or "decision" in e.message.lower()
     ]
     return JSONResponse({"scan_id": scan_id, "reasoning": reasoning_events})
+
+
+@app.get("/api/scan/{scan_id}/events")
+def get_events(scan_id: str, after: int = 0, limit: int = 300) -> JSONResponse:
+    """Return a bounded event delta for low-latency polling clients."""
+    with _scan_lock:
+        data = _scans.get(scan_id)
+    if data is None:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    events = data.get("events", [])
+    start = max(0, int(after))
+    limit = max(1, min(limit, 1_000))
+    selected = list(events[start : start + limit])
+    return JSONResponse(
+        {
+            "scan_id": scan_id,
+            "events": [_event_dict(event) for event in selected],
+            "next": start + len(selected),
+            "event_count": len(events),
+            "lifecycle": _lifecycle(data.get("status", "queued")),
+        }
+    )
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -274,15 +402,22 @@ async def start_scan(payload: dict[str, Any]) -> JSONResponse:
             status_code=400,
         )
     scan_id = uuid.uuid4().hex[:8]
-    _scans[scan_id] = {
-        "target": target,
-        "operator_prompt": operator_prompt,
-        "status": "running",
-        "phase": "recon",
-        "events": [],
-        "findings": [],
-        "report_md": "",
-    }
+    with _scan_lock:
+        _scans[scan_id] = {
+            "target": target,
+            "operator_prompt": operator_prompt,
+            "status": "queued",
+            "lifecycle": "queued",
+            "phase": "recon",
+            "events": [],
+            "findings": [],
+            "report_md": "",
+            "created_at": _now(),
+            "updated_at": _now(),
+            "finished_at": None,
+            "cancel_event": threading.Event(),
+            "cancel_requested": False,
+        }
     asyncio.create_task(
         _run_scan(
             scan_id,
@@ -297,7 +432,72 @@ async def start_scan(payload: dict[str, Any]) -> JSONResponse:
             named_overrides,
         )
     )
-    return JSONResponse({"scan_id": scan_id, "status": "running"})
+    return JSONResponse({"scan_id": scan_id, "status": "queued", "lifecycle": "queued"})
+
+
+def _scan_summary(scan_id: str, data: dict[str, Any]) -> dict[str, Any]:
+    graph = data.get("graph")
+    events = data.get("events", [])
+    status = str(data.get("status", "queued"))
+    latest = _event_dict(events[-1]) if events else None
+    return {
+        "scan_id": scan_id,
+        "target": _public_text(data.get("target", ""), 300),
+        "status": status,
+        "lifecycle": _lifecycle(status),
+        "phase": _public_text(data.get("phase", "recon"), 64),
+        "created_at": data.get("created_at"),
+        "updated_at": data.get("updated_at"),
+        "finished_at": data.get("finished_at"),
+        "event_count": len(events) if isinstance(events, list) else 0,
+        "latest_event": latest,
+        "cancel_requested": bool(data.get("cancel_requested", False)),
+        "can_cancel": status in {"queued", "running", "cancelling"},
+        "graph_available": isinstance(graph, ReachabilityGraph),
+        "counts": _graph_snapshot(graph).get("counts", {}),
+    }
+
+
+@app.get("/api/scans")
+def list_scans(limit: int = 50) -> JSONResponse:
+    """Bounded real scan history for the workspace sidebar and refreshes."""
+    limit = max(1, min(limit, 100))
+    with _scan_lock:
+        items = [_scan_summary(scan_id, data) for scan_id, data in _scans.items()]
+    items.sort(key=lambda item: str(item.get("created_at") or ""), reverse=True)
+    return JSONResponse({"scans": items[:limit], "count": len(items)})
+
+
+@app.post("/api/scan/{scan_id}/cancel")
+def cancel_scan(scan_id: str) -> JSONResponse:
+    """Request cooperative cancellation; the worker still owns execution gates."""
+    with _scan_lock:
+        data = _scans.get(scan_id)
+        if data is None:
+            return JSONResponse({"error": "not found"}, status_code=404)
+        status = str(data.get("status", "queued"))
+        if status not in {"queued", "running", "cancelling"}:
+            return JSONResponse(
+                {"error": "scan is already terminal", "status": status}, status_code=409
+            )
+        cancel_event = data.get("cancel_event")
+        if not isinstance(cancel_event, threading.Event):
+            return JSONResponse({"error": "scan cancellation unavailable"}, status_code=409)
+        cancel_event.set()
+        data["status"] = "cancelling"
+        data["lifecycle"] = "running"
+        data["cancel_requested"] = True
+        data["updated_at"] = _now()
+        events = data.get("events")
+        if isinstance(events, list):
+            events.append(
+                ScanEvent(
+                    phase=str(data.get("phase", "recon")),
+                    kind="info",
+                    message="Cancellation requested by operator",
+                )
+            )
+    return JSONResponse(_scan_summary(scan_id, data))
 
 
 def _load_identities(path: str | None) -> tuple[Any | None, str | None]:
@@ -331,6 +531,7 @@ async def _run_scan(
 
     from reachagent.llm.runtime import override
 
+    _scan_update(scan_id, status="running", lifecycle="running", phase="recon")
     saved: dict[str, str | None] = {}
     if named_overrides:
         for key, value in named_overrides.items():
@@ -369,14 +570,21 @@ async def _run_scan_body(
     try:
         identities, id_error = _load_identities(identities_path)
         if id_error:
-            _scans[scan_id].update({"status": "error", "error": id_error})
+            _scan_update(
+                scan_id,
+                status="error",
+                lifecycle="failed",
+                error=_public_text(id_error, 500),
+                finished_at=_now(),
+            )
             return
         # Live references: the GUI polls these SAME objects while the scan writes them,
         # so the live view streams the real audit log + graph state + phase events.
         graph = ReachabilityGraph()
         audit = AuditLog()
-        events: list[ScanEvent] = []
-        _scans[scan_id].update({"graph": graph, "audit": audit, "events": events})
+        events = _EventBuffer(lambda: _touch_scan(scan_id))
+        _scan_update(scan_id, graph=graph, audit=audit, events=events)
+        cancel_event = _scans.get(scan_id, {}).get("cancel_event")
 
         def _run() -> dict[str, Any]:
             return scan_all_classes(
@@ -391,6 +599,7 @@ async def _run_scan_body(
                 operator_prompt=operator_prompt,
                 require_llm=use_llm,
                 live_recon=True,
+                cancel_check=cancel_event,
             )
 
         loop = asyncio.get_running_loop()
@@ -410,16 +619,43 @@ async def _run_scan_body(
                 details={"findings": len(graph.findings())},
             )
         )
-        _scans[scan_id].update({"status": "done", "phase": "report", "report_md": md})
+        _scan_update(
+            scan_id,
+            status="done",
+            lifecycle="completed",
+            phase="report",
+            report_md=md,
+            finished_at=_now(),
+        )
     except Exception as exc:  # noqa: BLE001 — a scan failure is surfaced, not swallowed
         from reachagent.identity.login import LoginError, redact_message
+        from reachagent.scan.agentic_loop import ScanCancelled
 
-        if isinstance(exc, LoginError):
-            _scans[scan_id].update(
-                {"status": "blocked", "phase": "auth", "error": redact_message(exc)}
+        if isinstance(exc, ScanCancelled):
+            _scan_update(
+                scan_id,
+                status="cancelled",
+                lifecycle="cancelled",
+                error="cancelled by operator",
+                finished_at=_now(),
+            )
+        elif isinstance(exc, LoginError):
+            _scan_update(
+                scan_id,
+                status="blocked",
+                lifecycle="blocked",
+                phase="auth",
+                error=redact_message(exc),
+                finished_at=_now(),
             )
         else:
-            _scans[scan_id].update({"status": "error", "error": redact_message(exc)})
+            _scan_update(
+                scan_id,
+                status="error",
+                lifecycle="failed",
+                error=redact_message(exc),
+                finished_at=_now(),
+            )
 
 
 def _audit_rows(audit: AuditLog | None) -> list[dict[str, Any]]:
@@ -429,10 +665,10 @@ def _audit_rows(audit: AuditLog | None) -> list[dict[str, Any]]:
     return [
         {
             "timestamp": e.timestamp.isoformat(timespec="seconds"),
-            "identity": e.identity,
-            "method": e.method,
-            "target": e.target,
-            "outcome": e.outcome,
+            "identity": _public_text(e.identity, 120),
+            "method": _public_text(e.method, 24),
+            "target": _public_text(e.target, 300),
+            "outcome": _public_text(e.outcome, 300),
         }
         for e in audit.entries[-200:]
     ]
@@ -441,8 +677,9 @@ def _audit_rows(audit: AuditLog | None) -> list[dict[str, Any]]:
 def _graph_snapshot(graph: ReachabilityGraph | None) -> dict[str, Any]:
     """A live snapshot of the reachability graph the scan is building (real data)."""
     if graph is None:
-        return {"counts": {}, "hosts": [], "endpoints": []}
+        return {"available": False, "counts": {}, "hosts": [], "endpoints": []}
     return {
+        "available": True,
         "counts": {
             "hosts": len(graph.hosts()),
             "services": len(graph.services()),
@@ -451,21 +688,21 @@ def _graph_snapshot(graph: ReachabilityGraph | None) -> dict[str, Any]:
             "findings": len(graph.findings()),
             "sessions": len(graph.sessions()),
         },
-        "hosts": [h.address for h_id, h in graph.hosts()[:20]],
+        "hosts": [_public_text(h.address, 180) for h_id, h in graph.hosts()[:20]],
         "sessions": [
             {
-                "id": sid,
-                "identity": session.identity_ref,
-                "auth_kind": session.auth_kind,
-                "expires_at": session.expires_at,
+                "id": _public_text(sid, 180),
+                "identity": _public_text(session.identity_ref, 120),
+                "auth_kind": _public_text(session.auth_kind, 40),
+                "expires_at": _public_text(session.expires_at, 80) if session.expires_at else None,
                 "live": session.live,
             }
             for sid, session in graph.sessions()[:20]
         ],
         "endpoints": [
             {
-                "method": ep.method,
-                "path": ep.path,
+                "method": _public_text(ep.method, 16),
+                "path": _public_text(ep.path, 240),
                 "sinks": [
                     p.inferred_sink_type.value if p.inferred_sink_type is not None else ""
                     for _pn, p in graph.parameters_of(ep_id)
@@ -479,7 +716,7 @@ def _graph_snapshot(graph: ReachabilityGraph | None) -> dict[str, Any]:
 def _surface_snapshot(graph: ReachabilityGraph | None) -> dict[str, Any]:
     """Return the real Host → Service/Endpoint → Parameter surface tree."""
     if graph is None:
-        return {"hosts": [], "orphan_endpoints": []}
+        return {"available": False, "hosts": [], "orphan_endpoints": []}
     endpoint_by_host: dict[str, list[tuple[str, Any]]] = {}
     for host_id, endpoint_id in graph.resolves_to_edges():
         try:
@@ -491,17 +728,19 @@ def _surface_snapshot(graph: ReachabilityGraph | None) -> dict[str, Any]:
 
     def endpoint_row(endpoint_id: str, endpoint: Any) -> dict[str, Any]:
         return {
-            "id": endpoint_id,
-            "method": endpoint.method,
-            "path": endpoint.path,
-            "content_type": endpoint.content_type,
-            "technology": endpoint.technology,
-            "access_restricted": endpoint.access_restricted,
+            "id": _public_text(endpoint_id, 180),
+            "method": _public_text(endpoint.method, 16),
+            "path": _public_text(endpoint.path, 240),
+            "content_type": _public_text(endpoint.content_type, 100) if endpoint.content_type else None,
+            "technology": _public_text(endpoint.technology, 120) if endpoint.technology else None,
+            "access_restricted": _public_text(endpoint.access_restricted, 40)
+            if endpoint.access_restricted
+            else None,
             "parameters": [
                 {
-                    "id": param_id,
-                    "name": param.name,
-                    "location": param.location,
+                    "id": _public_text(param_id, 180),
+                    "name": _public_text(param.name, 100),
+                    "location": _public_text(param.location, 32),
                     "inferred_sink_type": (
                         param.inferred_sink_type.value
                         if param.inferred_sink_type is not None
@@ -516,21 +755,25 @@ def _surface_snapshot(graph: ReachabilityGraph | None) -> dict[str, Any]:
     for host_id, host in graph.hosts():
         hosts.append(
             {
-                "id": host_id,
-                "address": host.address,
-                "hostname": host.hostname,
-                "source": host.source,
-                "technology": host.technology,
-                "detected_version": host.detected_version,
+                "id": _public_text(host_id, 180),
+                "address": _public_text(host.address, 180),
+                "hostname": _public_text(host.hostname, 180),
+                "source": _public_text(host.source, 120) if host.source else None,
+                "technology": _public_text(host.technology, 120) if host.technology else None,
+                "detected_version": _public_text(host.detected_version, 80)
+                if host.detected_version
+                else None,
                 "services": [
                     {
-                        "id": service_id,
+                        "id": _public_text(service_id, 180),
                         "port": service.port,
-                        "protocol": service.protocol,
-                        "service_name": service.service_name,
-                        "banner": service.banner,
-                        "detected_version": service.detected_version,
-                        "source": service.source,
+                        "protocol": _public_text(service.protocol, 32),
+                        "service_name": _public_text(service.service_name, 100),
+                        "banner": _public_text(service.banner, 160),
+                        "detected_version": _public_text(service.detected_version, 80)
+                        if service.detected_version
+                        else None,
+                        "source": _public_text(service.source, 120) if service.source else None,
                     }
                     for service_id, service in graph.services_of(host_id)
                 ],
@@ -546,7 +789,7 @@ def _surface_snapshot(graph: ReachabilityGraph | None) -> dict[str, Any]:
         for endpoint_id, endpoint in graph.endpoints()
         if endpoint_id not in attached
     ]
-    return {"hosts": hosts, "orphan_endpoints": orphan_endpoints}
+    return {"available": True, "hosts": hosts, "orphan_endpoints": orphan_endpoints}
 
 
 def _chain_label(graph: ReachabilityGraph, node: str) -> str:
@@ -582,18 +825,24 @@ def _chains_for(graph: ReachabilityGraph, finding_node: str) -> list[dict[str, A
 def _finding_rows(graph: ReachabilityGraph | None) -> list[dict[str, Any]]:
     if graph is None:
         return []
-    rows = []
+    rows: list[dict[str, Any]] = []
     for fid, f in graph.findings():
+        metadata = dict(getattr(f, "metadata", {}) or {})
         rows.append(
             {
-                "finding_id": fid,
-                "vuln_class": getattr(f, "vuln_class", ""),
-                "severity": getattr(f, "severity", ""),
-                "oracle_used": getattr(f, "oracle_used", ""),
-                "evidence_ref": getattr(f, "evidence_ref", ""),
-                "status": getattr(getattr(f, "status", ""), "value", str(getattr(f, "status", ""))),
-                "metadata": dict(getattr(f, "metadata", {}) or {}),
-                "chain_precondition": (getattr(f, "metadata", {}) or {}).get("chain_precondition"),
+                "finding_id": _public_text(fid, 180),
+                "vuln_class": _public_text(getattr(f, "vuln_class", ""), 100),
+                "severity": _public_text(getattr(f, "severity", ""), 24),
+                "oracle_used": _public_text(getattr(f, "oracle_used", ""), 80),
+                "evidence_ref": _public_text(getattr(f, "evidence_ref", ""), 180),
+                "status": _public_text(
+                    getattr(getattr(f, "status", ""), "value", str(getattr(f, "status", ""))),
+                    40,
+                ),
+                "metadata": _public_value(metadata, key="metadata"),
+                "chain_precondition": _public_text(metadata.get("chain_precondition", ""), 180)
+                if metadata.get("chain_precondition")
+                else None,
                 "chains": _chains_for(graph, fid),
             }
         )
@@ -602,26 +851,45 @@ def _finding_rows(graph: ReachabilityGraph | None) -> list[dict[str, Any]]:
 
 @app.get("/api/scan/{scan_id}")
 def get_scan(scan_id: str) -> JSONResponse:
-    data = _scans.get(scan_id)
-    if not data:
+    with _scan_lock:
+        data = _scans.get(scan_id)
+        if data is None:
+            return JSONResponse({"error": "not found"}, status_code=404)
+        # Copy references while holding the lock; graph/audit objects are
+        # intentionally shared with the worker for live, real state.
+        snapshot = dict(data)
+    if not snapshot:
         return JSONResponse({"error": "not found"}, status_code=404)
-    graph: ReachabilityGraph | None = data.get("graph")
-    events = data.get("events", [])
-    phase = data.get("phase")
-    if data.get("status") == "running" and events:
+    graph: ReachabilityGraph | None = snapshot.get("graph")
+    events = snapshot.get("events", [])
+    phase = snapshot.get("phase")
+    if snapshot.get("status") in {"running", "queued", "cancelling"} and events:
         phase = events[-1].phase
+    status = str(snapshot.get("status", "queued"))
+    latest = _event_dict(events[-1]) if events else None
     return JSONResponse(
         {
             "scan_id": scan_id,
-            "target": data.get("target"),
-            "status": data.get("status"),
-            "phase": phase,
-            "events": [_event_dict(e) for e in events],
-            "audit": _audit_rows(data.get("audit")),
+            "target": _public_text(snapshot.get("target", ""), 300),
+            "status": status,
+            "lifecycle": _lifecycle(status),
+            "phase": _public_text(phase or "recon", 64),
+            "events": [_event_dict(e) for e in events[-_MAX_EVENTS:]],
+            "event_count": len(events) if isinstance(events, list) else 0,
+            "latest_event": latest,
+            "audit": _audit_rows(snapshot.get("audit")),
             "graph": _graph_snapshot(graph),
             "findings": _finding_rows(graph),
-            "report_md": data.get("report_md", ""),
-            "error": data.get("error"),
+            "report_md": snapshot.get("report_md", ""),
+            "error": _public_text(snapshot.get("error", ""), 500)
+            if snapshot.get("error")
+            else None,
+            "created_at": snapshot.get("created_at"),
+            "updated_at": snapshot.get("updated_at"),
+            "finished_at": snapshot.get("finished_at"),
+            "cancel_requested": bool(snapshot.get("cancel_requested", False)),
+            "can_cancel": status in {"queued", "running", "cancelling"},
+            "stale_after_seconds": 20,
         }
     )
 
@@ -629,8 +897,9 @@ def get_scan(scan_id: str) -> JSONResponse:
 @app.get("/api/scan/{scan_id}/surface")
 def get_surface(scan_id: str) -> JSONResponse:
     """Read-only Host/Service/Endpoint/Parameter graph slice for the GUI."""
-    data = _scans.get(scan_id)
-    if not data or "graph" not in data:
+    with _scan_lock:
+        data = _scans.get(scan_id)
+    if data is None or "graph" not in data:
         return JSONResponse({"error": "not found"}, status_code=404)
     return JSONResponse({"scan_id": scan_id, **_surface_snapshot(data.get("graph"))})
 
@@ -638,18 +907,20 @@ def get_surface(scan_id: str) -> JSONResponse:
 @app.get("/api/scan/{scan_id}/audit")
 def get_audit(scan_id: str, limit: int = 200) -> JSONResponse:
     """Read-only bounded audit tail; the full execution log stays server-side."""
-    data = _scans.get(scan_id)
-    if not data:
+    with _scan_lock:
+        data = _scans.get(scan_id)
+    if data is None:
         return JSONResponse({"error": "not found"}, status_code=404)
-    limit = max(1, min(limit, 1000))
+    limit = max(0, min(limit, 1000))
     return JSONResponse({"scan_id": scan_id, "entries": _audit_rows(data.get("audit"))[-limit:]})
 
 
 @app.get("/api/scan/{scan_id}/chains")
 def get_chains(scan_id: str) -> JSONResponse:
     """Return connected chain paths for the real confirmed findings."""
-    data = _scans.get(scan_id)
-    if not data or "graph" not in data:
+    with _scan_lock:
+        data = _scans.get(scan_id)
+    if data is None or "graph" not in data:
         return JSONResponse({"error": "not found"}, status_code=404)
     graph: ReachabilityGraph = data["graph"]
     return JSONResponse(

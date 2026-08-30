@@ -70,6 +70,9 @@
   .report-panel .panel-body{padding:0}.report-toolbar{display:flex;align-items:center;gap:7px;padding:12px 17px;border-bottom:1px solid var(--line)}.dl{display:inline-flex;align-items:center;padding:5px 8px;border:1px solid var(--line-strong);border-radius:6px;color:var(--muted);font-size:10px}.dl:hover{border-color:var(--indigo);color:var(--indigo)}#report{max-height:430px;overflow:auto;padding:17px;color:var(--muted);font-size:12px}.report-view h1,.report-view h2,.report-view h3{color:var(--text);margin:0 0 9px}.report-view h1{font-size:19px}.report-view h2{font-size:15px;margin-top:19px}.report-view h3{font-size:13px;margin-top:15px}.report-view p{margin:0 0 9px;line-height:1.65}.report-view hr{border:0;border-top:1px solid var(--line);margin:15px 0}.report-view table{width:100%;border-collapse:collapse;margin:11px 0;font-size:10px}.report-view th,.report-view td{padding:8px;border:1px solid var(--line);text-align:left}.report-view th{color:var(--faint);font-weight:700;text-transform:uppercase}.report-view code.inline-code{padding:2px 5px;border-radius:4px;background:var(--field);color:var(--cyan);font:11px ui-monospace,monospace}.report-view ul{margin:0 0 9px;padding-left:18px;color:var(--muted)}.report-view li{margin:3px 0;line-height:1.5}.report-view pre{background:var(--field);border:1px solid var(--line);border-radius:6px;padding:10px;margin:9px 0;overflow-x:auto}.report-view pre code{font:11px ui-monospace,monospace;color:var(--text)}
   .audit-panel .panel-body{padding:0}.audit{max-height:340px;overflow:auto;padding:12px 17px;background:var(--field);font:10px/1.75 ui-monospace,SFMono-Regular,Menlo,monospace}.al{display:grid;grid-template-columns:65px 55px 42px minmax(100px,1fr) auto;gap:8px;align-items:baseline;white-space:nowrap}.al+.al{border-top:1px solid rgba(32,43,57,.6)}.al .ts,.al .muted{color:var(--faint)}.al .id{color:var(--indigo)}.out-fired{color:var(--green)}.out-refused{color:var(--red)}.out-error{color:var(--amber)}.out-ingested{color:var(--cyan)}
   .muted{color:var(--muted)}
+  .status-strip{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:16px;align-items:center;margin:0 0 22px;padding:14px 16px;border:1px solid var(--line-strong);border-radius:12px;background:linear-gradient(100deg,var(--panel-raised),var(--panel));box-shadow:0 12px 30px rgba(0,0,0,.14)}
+  .status-strip[hidden]{display:none}.status-main{display:flex;align-items:center;gap:12px;min-width:0}.status-main .status-dot{width:9px;height:9px;flex:0 0 auto}.status-copy{min-width:0}.status-title{display:flex;align-items:center;gap:8px;color:var(--text);font-weight:700}.status-detail{margin-top:3px;color:var(--muted);font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.lifecycle{display:inline-flex;align-items:center;padding:3px 8px;border:1px solid var(--line-strong);border-radius:999px;color:var(--muted);font:10px ui-monospace,monospace;text-transform:uppercase;letter-spacing:.08em}.lifecycle.running{border-color:rgba(99,223,154,.35);color:var(--green);background:rgba(99,223,154,.08)}.lifecycle.failed,.lifecycle.blocked{border-color:rgba(255,113,129,.35);color:var(--red);background:rgba(255,113,129,.08)}.lifecycle.completed{border-color:rgba(72,214,198,.35);color:var(--cyan);background:rgba(72,214,198,.08)}.status-actions{display:flex;align-items:center;gap:9px}.status-action{border:1px solid var(--line-strong);border-radius:7px;padding:7px 10px;background:transparent;color:var(--muted);font-size:11px}.status-action:hover{border-color:var(--indigo);color:var(--text)}.status-action.danger:hover{border-color:var(--red);color:var(--red)}.stale{color:var(--amber);font:10px ui-monospace,monospace}.stale[hidden]{display:none}
+  .history-list{display:grid;gap:8px}.history-row{display:grid;width:100%;grid-template-columns:minmax(0,1fr) auto auto;align-items:center;gap:12px;padding:10px 12px;border:1px solid var(--line);border-radius:9px;background:var(--field);color:var(--text);text-align:left;cursor:pointer}.history-row:hover,.history-row:focus-visible{border-color:var(--line-strong);outline:0;box-shadow:0 0 0 3px rgba(124,131,255,.1)}.history-target{overflow:hidden;color:var(--text);font:11px ui-monospace,monospace;text-overflow:ellipsis;white-space:nowrap}.history-meta{color:var(--muted);font-size:10px}.history-count{color:var(--green);font:10px ui-monospace,monospace}.history-empty{color:var(--muted);font-size:12px}
   /* reasoning stream (agentic loop) */
   #reasoning-stream{max-height:420px;overflow:auto;font-size:12px}
   .r-row{display:grid;grid-template-columns:82px 12px 1fr;gap:9px;padding:7px 0;border-bottom:1px dashed rgba(45,214,198,.14)}
@@ -82,7 +85,7 @@
   .r-hint{color:var(--muted);font-size:11px;margin-top:2px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
   .t-name{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--cyan);min-width:96px;display:inline-block}
   @media (max-width:1100px){.app-shell{grid-template-columns:210px minmax(0,1fr)}.main{padding:0 24px 45px}.hero{grid-template-columns:1fr}.hero-copy p{max-width:680px}.launch-card{max-width:760px}.content-grid{grid-template-columns:1fr}.workspace-grid{grid-template-columns:1fr}}
-  @media (max-width:760px){.app-shell{display:block}.sidebar{position:static;height:auto;padding:15px 14px;border-right:0;border-bottom:1px solid var(--line)}.brand{padding:0 6px 14px}.nav{display:grid;grid-template-columns:repeat(4,1fr)}.nav-label,.nav-link kbd,.sidebar-spacer,.side-target,.theme-toggle,.sidebar-foot{display:none}.nav-link{justify-content:center;padding:9px 4px;font-size:10px}.nav-link .nav-icon{display:none}.main{padding:0 15px 35px}.topbar{min-height:58px}.top-status{display:none}.hero{padding:31px 0 26px;gap:23px}.hero h1{font-size:34px}.launch-grid{grid-template-columns:1fr}.field.span-2{grid-column:auto}.launch-footer{align-items:flex-start;flex-direction:column}.primary-btn{width:100%;justify-content:center}.metric-grid{grid-template-columns:repeat(2,1fr)}.metric:last-child{grid-column:span 2}.section-heading{align-items:flex-start;flex-direction:column}.al{grid-template-columns:56px 45px 38px minmax(80px,1fr);font-size:9px}.al>span:last-child{grid-column:4}.ev{grid-template-columns:74px 10px 1fr}.ev::before{left:78px}}
+  @media (max-width:760px){.app-shell{display:block}.sidebar{position:static;height:auto;padding:15px 14px;border-right:0;border-bottom:1px solid var(--line)}.brand{padding:0 6px 14px}.nav{display:grid;grid-template-columns:repeat(4,1fr)}.nav-label,.nav-link kbd,.sidebar-spacer,.side-target,.theme-toggle,.sidebar-foot{display:none}.nav-link{justify-content:center;padding:9px 4px;font-size:10px}.nav-link .nav-icon{display:none}.main{padding:0 15px 35px}.topbar{min-height:58px}.top-status{display:none}.hero{padding:31px 0 26px;gap:23px}.hero h1{font-size:34px}.launch-grid{grid-template-columns:1fr}.field.span-2{grid-column:auto}.launch-footer{align-items:flex-start;flex-direction:column}.primary-btn{width:100%;justify-content:center}.metric-grid{grid-template-columns:repeat(2,1fr)}.metric:last-child{grid-column:span 2}.section-heading{align-items:flex-start;flex-direction:column}.al{grid-template-columns:56px 45px 38px minmax(80px,1fr);font-size:9px}.al>span:last-child{grid-column:4}.ev{grid-template-columns:74px 10px 1fr}.ev::before{left:78px}.status-strip{grid-template-columns:1fr;gap:10px}.status-actions{justify-content:space-between}.history-row{grid-template-columns:1fr auto}.history-count{grid-column:2;grid-row:1}.history-meta{grid-column:1}}
 </style>
 </head>
 <body>
@@ -94,13 +97,14 @@
     </div>
     <span class="nav-label">Workspace</span>
     <nav class="nav" aria-label="Workspace navigation">
-      <a class="nav-link active" data-nav="launch" href="#launch"><span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke-width="1.8"><path d="M4 5h16v14H4z"/><path d="m8 9 3 3-3 3M13 15h3"/></svg></span>Run assessment<kbd>R</kbd></a>
-      <a class="nav-link" data-nav="overview" href="#overview"><span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke-width="1.8"><path d="M4 13h6V4H4v9ZM14 20h6v-9h-6v9ZM14 8h6V4h-6v4ZM4 20h6v-3H4v3Z"/></svg></span>Overview</a>
-      <a class="nav-link" data-nav="surface-panel" href="#surface-panel"><span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke-width="1.8"><circle cx="6" cy="6" r="2"/><circle cx="18" cy="6" r="2"/><circle cx="12" cy="18" r="2"/><path d="M8 7.2 10.8 16M16 7.2 13.2 16M8 6h8"/></svg></span>Attack surface</a>
-      <a class="nav-link" data-nav="findings-panel" href="#findings-panel"><span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke-width="1.8"><path d="M12 3 20 7v5c0 4.5-3 7.7-8 9-5-1.3-8-4.5-8-9V7l8-4Z"/><path d="M12 8v4M12 16h.01"/></svg></span>Findings</a>
-      <a class="nav-link" data-nav="report-panel" href="#report-panel"><span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke-width="1.8"><path d="M6 3h9l3 3v15H6z"/><path d="M14 3v4h4M9 12h6M9 16h6"/></svg></span>Report</a>
-      <a class="nav-link" data-nav="audit-panel" href="#audit-panel"><span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke-width="1.8"><path d="M5 5h14v14H5z"/><path d="M8 9h8M8 12h8M8 15h5"/></svg></span>Audit trail</a>
-      <a class="nav-link" data-nav="settings-panel" href="#settings-panel"><span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke-width="1.8"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.01a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.01a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z"/></svg></span>Settings</a>
+      <a class="nav-link active" aria-label="Run assessment" data-nav="launch" href="#launch"><span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke-width="1.8"><path d="M4 5h16v14H4z"/><path d="m8 9 3 3-3 3M13 15h3"/></svg></span>Run assessment<kbd>R</kbd></a>
+      <a class="nav-link" aria-label="Overview" data-nav="overview" href="#overview"><span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke-width="1.8"><path d="M4 13h6V4H4v9ZM14 20h6v-9h-6v9ZM14 8h6V4h-6v4ZM4 20h6v-3H4v3Z"/></svg></span>Overview</a>
+      <a class="nav-link" aria-label="Attack surface" data-nav="surface-panel" href="#surface-panel"><span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke-width="1.8"><circle cx="6" cy="6" r="2"/><circle cx="18" cy="6" r="2"/><circle cx="12" cy="18" r="2"/><path d="M8 7.2 10.8 16M16 7.2 13.2 16M8 6h8"/></svg></span>Attack surface</a>
+      <a class="nav-link" aria-label="Findings" data-nav="findings-panel" href="#findings-panel"><span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke-width="1.8"><path d="M12 3 20 7v5c0 4.5-3 7.7-8 9-5-1.3-8-4.5-8-9V7l8-4Z"/><path d="M12 8v4M12 16h.01"/></svg></span>Findings</a>
+      <a class="nav-link" aria-label="Report" data-nav="report-panel" href="#report-panel"><span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke-width="1.8"><path d="M6 3h9l3 3v15H6z"/><path d="M14 3v4h4M9 12h6M9 16h6"/></svg></span>Report</a>
+      <a class="nav-link" aria-label="Audit trail" data-nav="audit-panel" href="#audit-panel"><span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke-width="1.8"><path d="M5 5h14v14H5z"/><path d="M8 9h8M8 12h8M8 15h5"/></svg></span>Audit trail</a>
+      <a class="nav-link" aria-label="History" data-nav="history-panel" href="#history-panel"><span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke-width="1.8"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v6h6M12 7v5l3 2"/></svg></span>History</a>
+      <a class="nav-link" aria-label="Settings" data-nav="settings-panel" href="#settings-panel"><span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke-width="1.8"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.01a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.01a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z"/></svg></span>Settings</a>
     </nav>
     <div class="sidebar-spacer"></div>
     <div class="side-target">
@@ -129,26 +133,31 @@
         <div class="launch-head"><div><span class="eyebrow">New assessment</span><h2>Configure a target</h2><p>Scope is enforced before every request.</p></div><span class="launch-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3v18M3 12h18"/></svg></span></div>
         <div class="launch-grid">
           <div class="field span-2"><label for="target">Target URL</label><input id="target" type="text" placeholder="http://localhost:5000" autocomplete="url"></div>
-          <div class="field"><label for="scope">In-scope hosts</label><input id="scope" type="text" placeholder="localhost, 127.0.0.1"></div>
-          <div class="field"><label for="outscope">Out-of-scope (optional)</label><input id="outscope" type="text" placeholder="admin.localhost"></div>
-          <div class="field span-2"><label for="prompt">Operator objective</label><textarea id="prompt" rows="2" placeholder="e.g. prioritize authenticated API abuse and chained impact"></textarea></div>
-          <div class="field"><label for="idents">Identities file (optional YAML)</label><input id="idents" type="text" placeholder="config/identities.yaml"></div>
-          <div class="field"><label for="attempts">Max payload attempts</label><input id="attempts" type="number" value="20" min="5" max="200"></div>
+          <div class="field"><label for="scope">In-scope hosts</label><input id="scope" type="text" autocomplete="off" placeholder="localhost, 127.0.0.1"></div>
+          <div class="field"><label for="outscope">Out-of-scope (optional)</label><input id="outscope" type="text" autocomplete="off" placeholder="admin.localhost"></div>
+          <div class="field span-2"><label for="prompt">Operator objective</label><textarea id="prompt" rows="2" autocomplete="off" placeholder="e.g. prioritize authenticated API abuse and chained impact"></textarea></div>
+          <div class="field"><label for="idents">Identities file (optional YAML)</label><input id="idents" type="text" autocomplete="off" placeholder="config/identities.yaml"></div>
+          <div class="field"><label for="attempts">Max payload attempts</label><input id="attempts" type="number" autocomplete="off" value="20" min="5" max="200"></div>
           <div class="field"><label for="llm-provider">LLM provider</label><select id="llm-provider"><option value="">Server default</option><option value="openai-compatible">Custom OpenAI-compatible</option><option value="deepseek">DeepSeek / compatible</option><option value="openai">OpenAI / compatible</option><option value="anthropic">Anthropic</option></select></div>
         </div>
-        <div class="launch-footer"><span class="llm-toggle">LLM execution required</span><button id="go" class="primary-btn" type="button">Start assessment<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m5 12 14 0M13 6l6 6-6 6"/></svg></button></div>
+        <div class="launch-footer"><span class="llm-toggle">LLM execution required</span><button id="go" class="primary-btn" type="button"><span id="go-label">Start assessment</span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m5 12 14 0M13 6l6 6-6 6"/></svg></button></div>
         <div class="launch-hint">The selected provider must be configured on the server. Only deterministic oracles can confirm findings; API keys remain server-side.</div>
       </div>
     </section>
 
+    <section id="scan-status" class="status-strip" aria-live="polite" hidden>
+      <div class="status-main"><i id="scan-status-dot" class="status-dot"></i><div class="status-copy"><div class="status-title"><span id="scan-status-title">Assessment queued</span><span id="scan-lifecycle" class="lifecycle">queued</span></div><div id="scan-status-detail" class="status-detail">Waiting for the worker.</div></div></div>
+      <div class="status-actions"><span id="stale-indicator" class="stale" hidden>stale data</span><button id="cancel-scan" class="status-action danger" type="button" hidden>Cancel</button></div>
+    </section>
+
     <section id="overview" class="section">
-      <div class="section-heading"><div><span class="eyebrow">Live workspace</span><h2>Assessment overview</h2><p>Graph, events, and audit state update as the worker runs.</p></div><span class="section-count" id="overview-count">waiting for scan</span></div>
+      <div class="section-heading"><div><span class="eyebrow">Live workspace</span><h2>Assessment overview</h2><p>Graph, events, and audit state update as the worker runs.</p></div><span class="section-count" id="overview-count">no assessment</span></div>
       <div class="metric-grid">
-        <div class="metric"><span class="metric-label">Hosts</span><strong id="c-hosts" class="metric-value indigo">0</strong></div>
-        <div class="metric"><span class="metric-label">Services</span><strong id="c-services" class="metric-value">0</strong></div>
-        <div class="metric"><span class="metric-label">Endpoints</span><strong id="c-endpoints" class="metric-value">0</strong></div>
-        <div class="metric"><span class="metric-label">Parameters</span><strong id="c-params" class="metric-value">0</strong></div>
-        <div class="metric"><span class="metric-label">Confirmed findings</span><strong id="c-findings" class="metric-value green">0</strong></div>
+        <div class="metric"><span class="metric-label">Hosts</span><strong id="c-hosts" class="metric-value indigo">—</strong></div>
+        <div class="metric"><span class="metric-label">Services</span><strong id="c-services" class="metric-value">—</strong></div>
+        <div class="metric"><span class="metric-label">Endpoints</span><strong id="c-endpoints" class="metric-value">—</strong></div>
+        <div class="metric"><span class="metric-label">Parameters</span><strong id="c-params" class="metric-value">—</strong></div>
+        <div class="metric"><span class="metric-label">Confirmed findings</span><strong id="c-findings" class="metric-value green">—</strong></div>
       </div>
       <article class="panel" style="margin-top:13px"><div class="panel-head"><div><h3>Tool activity</h3><p>Per-tool recon + verification outcomes, streamed live.</p></div><span class="panel-tag">real runner results</span></div><div class="panel-body"><div id="tool-activity"><span class="empty">No tools dispatched yet.</span></div></div></article>
       <article class="panel" style="margin-top:13px"><div class="panel-head"><div><h3>Reasoning stream</h3><p>Plan rationale and every loop decision, streamed as the LLM makes them.</p></div><span class="panel-tag">agentic loop</span></div><div class="panel-body"><div id="reasoning-stream"><span class="empty">Start an assessment to watch the reasoning loop.</span></div></div></article>
@@ -160,7 +169,7 @@
     </section>
 
     <section id="surface-panel" class="section">
-      <div class="section-heading"><div><span class="eyebrow">Phase 02 · mapping</span><h2>Attack surface</h2><p>Host → service → endpoint → insertion point, taken from the live graph.</p></div><span class="section-count" id="surface-count">0 endpoints</span></div>
+      <div class="section-heading"><div><span class="eyebrow">Phase 02 · mapping</span><h2>Attack surface</h2><p>Host → service → endpoint → insertion point, taken from the live graph.</p></div><span class="section-count" id="surface-count">not started</span></div>
       <div class="content-grid"><article class="panel panel-tall"><div class="panel-head"><div><h3>Discovered surface</h3><p>Expand a host to inspect its real parameters.</p></div><span class="panel-tag">graph nodes</span></div><div class="panel-body"><div id="surface"><span class="empty">No endpoints yet.</span></div></div></article><article id="findings-panel" class="panel panel-tall"><div class="panel-head"><div><h3>Confirmed findings</h3><p>Only oracle-confirmed violations appear here.</p></div><span class="panel-tag">severity + evidence</span></div><div class="panel-body"><div id="findings"><span class="empty">No findings yet.</span></div></div></article></div>
     </section>
 
@@ -174,35 +183,55 @@
       <article class="panel audit-panel"><div class="panel-head"><div><h3>Request activity</h3><p>Real execution-layer entries, not simulated terminal output.</p></div><span class="panel-tag">last 200</span></div><div class="panel-body"><div id="audit" class="audit"><span class="empty">Waiting for an assessment.</span></div></div></article>
     </section>
 
+    <section id="history-panel" class="section">
+      <div class="section-heading"><div><span class="eyebrow">Run history</span><h2>Recent assessments</h2><p>Only scans created in this server process are shown.</p></div><button id="refresh-history" class="dl" type="button">Refresh</button></div>
+      <article class="panel"><div class="panel-head"><div><h3>Assessment ledger</h3><p>Targets, lifecycle state, event count, and oracle-confirmed findings.</p></div><span class="panel-tag" id="history-count">0 scans</span></div><div class="panel-body"><div id="scan-history" class="history-list"><span class="history-empty">No assessments yet.</span></div></div></article>
+    </section>
+
     <section id="settings-panel" class="section">
       <div class="section-heading"><div><span class="eyebrow">Configuration</span><h2>LLM providers</h2><p>Add, test, and switch named provider configs. Keys stay server-side.</p></div><button id="prov-new" class="dl" type="button">+ Add provider</button></div>
       <article class="panel"><div class="panel-head"><div><h3>Configured providers</h3><p>Used by the launch form"s provider dropdown.</p></div></div><div class="panel-body"><div id="prov-list"><span class="empty">Loading&#8230;</span></div></div></article>
       <article id="prov-form-card" class="panel" style="display:none;margin-top:13px">
         <div class="panel-head"><div><h3 id="prov-form-title">New provider</h3><p>API keys are stored server-side in config/providers.json (gitignored).</p></div></div>
-        <div class="panel-body launch-grid">
-          <div class="field"><label for="pf-name">Name</label><input id="pf-name" type="text" placeholder="e.g. opencode-free"></div>
+        <form id="provider-form" class="panel-body launch-grid" autocomplete="off" onsubmit="return false">
+          <div class="field"><label for="pf-name">Name</label><input id="pf-name" type="text" autocomplete="off" placeholder="e.g. lab-provider"></div>
           <div class="field"><label for="pf-provider">Type</label><select id="pf-provider"><option value="openai-compatible">Custom OpenAI-compatible</option><option value="deepseek">DeepSeek / compatible</option><option value="openai">OpenAI / compatible</option></select></div>
-          <div class="field span-2"><label for="pf-base-url">Base URL</label><input id="pf-base-url" type="text" placeholder="https://opencode.ai/zen/v1/responses"></div>
-          <div class="field"><label for="pf-model">Model</label><input id="pf-model" type="text" placeholder="muse-spark-1.2-contributor-free"></div>
+          <div class="field span-2"><label for="pf-base-url">Base URL</label><input id="pf-base-url" type="url" autocomplete="url" placeholder="https://llm.example/v1"></div>
+          <div class="field"><label for="pf-model">Model</label><input id="pf-model" type="text" autocomplete="off" placeholder="your-model-name"></div>
           <div class="field"><label for="pf-api-style">API endpoint shape</label><select id="pf-api-style"><option value="responses">/responses</option><option value="chat_completions">/chat/completions</option></select></div>
-          <div class="field span-2"><label for="pf-api-key">API key</label><input id="pf-api-key" type="password" placeholder="(leave empty to keep existing key when editing)"></div>
+          <div class="field span-2"><label for="pf-api-key">API key</label><input id="pf-api-key" type="password" autocomplete="new-password" placeholder="(leave empty to keep existing key when editing)"></div>
           <div class="launch-footer span-2"><span id="prov-form-error" style="color:var(--red);font-size:11px"></span><div><button id="prov-test" class="dl" type="button">Test connection</button> <button id="prov-save" class="primary-btn" type="button">Save provider</button></div></div>
-        </div>
+        </form>
       </article>
     </section>
   </main>
 </div>
 <script>
 const $=id=>document.getElementById(id);
-let scanId=null,timer=null;
+let scanId=null,timer=null,pollDelay=1000,pollInFlight=false;
 const KIND_BADGE={info:"info",step:"step",finding:"finding","not-applicable":"skipped",error:"error"};
 const PHASE_STEP={plan:"00 · PLAN",recon:"01 · RECON",surface:"02 · SURFACE",endpoints:"02 · ENDPOINTS", "insertion-points":"02 · INSERTION",payloads:"03 · PAYLOADS",verification:"03 · VERIFY",chains:"03 · CHAINS",tools:"TOOLS",report:"04 · REPORT"};
 const OUT_CLASS={fired:"out-fired",refused:"out-refused",error:"out-error",ingested:"out-ingested"};
 
 function setBusy(busy){
   $("go").disabled=busy;
-  $("go").firstChild.textContent=busy?"Assessment running":"Start assessment";
+  $("go-label").textContent=busy?"Assessment running":"Start assessment";
   $("side-dot").classList.toggle("live",busy); $("top-dot").classList.toggle("live",busy);
+}
+function lifecycleLabel(value){return ({queued:"Queued",running:"Running",paused:"Paused",blocked:"Blocked",completed:"Completed",failed:"Failed",cancelled:"Cancelled"})[value]||value||"Queued";}
+function renderStatus(j){
+  const strip=$("scan-status"); if(!strip)return;
+  const lifecycle=j.lifecycle||({done:"completed",error:"failed"}[j.status]||j.status||"queued");
+  if(scanId)strip.hidden=false;
+  $("scan-lifecycle").textContent=lifecycleLabel(lifecycle);
+  $("scan-lifecycle").className="lifecycle "+lifecycle;
+  $("scan-status-title").textContent=j.status==="cancelling"?"Cancellation requested":(j.latest_event&&j.latest_event.message)||lifecycleLabel(lifecycle);
+  const detail=[j.target,j.phase&&("phase: "+(PHASE_STEP[j.phase]||j.phase)),j.event_count!=null&&(j.event_count+" events")].filter(Boolean).join(" · ");
+  $("scan-status-detail").textContent=detail||"Waiting for the worker.";
+  $("cancel-scan").hidden=!j.can_cancel;
+  const updated=j.updated_at?Date.parse(j.updated_at):NaN;
+  const stale=Number.isFinite(updated)&&Date.now()-updated>(Number(j.stale_after_seconds)||20)*1000;
+  $("stale-indicator").hidden=!stale;
 }
 function renderProfile(events){
   const ev=(events||[]).find(e=>e.phase==="recon"&&e.kind==="step"&&e.details&&e.details.profile)||(events||[]).find(e=>e.phase==="recon"&&e.kind==="step");
@@ -224,7 +253,13 @@ function renderReasoningStream(events){
   box.scrollTop=box.scrollHeight;
 }
 function renderCounts(g){
-  const c=(g&&g.counts)||{}; $("c-hosts").textContent=c.hosts||0; $("c-services").textContent=c.services||0; $("c-endpoints").textContent=c.endpoints||0; $("c-params").textContent=c.parameters||0; $("c-findings").textContent=c.findings||0; $("overview-count").textContent=c.endpoints?`${c.endpoints} endpoints mapped`:"waiting for scan"; $("surface-count").textContent=`${c.endpoints||0} endpoints`;
+  const available=Boolean(g&&g.available), c=(g&&g.counts)||{};
+  ["hosts","services","endpoints","params","findings"].forEach((key)=>{
+    const value=available?Number(c[key==="params"?"parameters":key]||0):"—";
+    $("c-"+key).textContent=value;
+  });
+  $("overview-count").textContent=available?`${Number(c.endpoints||0)} endpoints mapped`:"waiting for assessment";
+  $("surface-count").textContent=available?`${Number(c.endpoints||0)} endpoints`:"not started";
 }
 function renderTimeline(events){
   const tl=$("timeline");tl.innerHTML="";if(!events||!events.length){tl.innerHTML='<span class="empty">No assessment yet.</span>';return;}
@@ -288,7 +323,7 @@ function mdToHtml(md){
   if(inTable)flushTable();flushList();flushCode();
   return out.join("\n");
 }
-function renderExports(id,done){const box=$("exports");if(!done){box.style.display="none";return;}box.style.display="flex";$("dl-md").href="/api/scan/"+id+"/export?format=markdown";$("dl-json").href="/api/scan/"+id+"/export?format=json";$("dl-html").href="/api/scan/"+id+"/export?format=html";}
+function renderExports(id,done){const box=$("exports");if(!done||!id){box.style.display="none";return;}box.style.display="flex";$("dl-md").href="/api/scan/"+id+"/export?format=markdown";$("dl-json").href="/api/scan/"+id+"/export?format=json";$("dl-html").href="/api/scan/"+id+"/export?format=html";}
 function renderReport(md){const box=$("report");if(!box)return;if(!md){box.innerHTML='<span class="empty">No report yet.</span>';return;}box.innerHTML=mdToHtml(String(md));}
 function addMetaRow(parent,label,value){const row=document.createElement("div");row.className="fmeta-row";const b=document.createElement("b");b.textContent=label;const v=document.createElement("span");v.textContent=value||"—";row.append(b,v);parent.appendChild(row);}
 function renderFindings(findings){
@@ -301,17 +336,55 @@ function renderSurface(surface){
   hosts.forEach(h=>{const d=document.createElement("details");d.className="surface-host";d.open=true;const s=document.createElement("summary");s.textContent=h.address||h.hostname||h.id;d.appendChild(s);const m=document.createElement("div");m.className="node-meta";m.textContent=h.technology||h.source||"host";d.appendChild(m);(h.services||[]).forEach(svc=>{const x=document.createElement("div");x.className="node-meta";x.textContent="service "+svc.port+"/"+svc.protocol+(svc.service_name?" "+svc.service_name:"");d.appendChild(x);});(h.endpoints||[]).forEach(ep=>d.appendChild(endpoint(ep)));box.appendChild(d);});orphan.forEach(ep=>box.appendChild(endpoint(ep)));
 }
 function setTarget(target,scanStatus){$("side-target").textContent=target||"No target selected";$("side-state").textContent=scanStatus||"Idle";}
+function schedulePoll(){if(timer)clearTimeout(timer);timer=setTimeout(poll,pollDelay);}
+function stopPolling(){if(timer){clearTimeout(timer);timer=null;}}
+async function loadHistory(){
+  try{const r=await fetch("/api/scans?limit=20");if(!r.ok)throw new Error("history unavailable");const j=await r.json();renderHistory(j.scans||[]);}
+  catch(_e){$("scan-history").innerHTML='<span class="history-empty">History is unavailable until the server responds.</span>';}
+}
+function renderHistory(scans){
+  const box=$("scan-history"),count=$("history-count");
+  count.textContent=(scans.length||0)+" scan"+(scans.length===1?"":"s"); box.innerHTML="";
+  if(!scans.length){box.innerHTML='<span class="history-empty">No assessments yet.</span>';return;}
+  scans.forEach(s=>{
+    const row=document.createElement("button");row.type="button";row.className="history-row";row.title="Open this assessment";
+    row.onclick=()=>{stopPolling();scanId=s.scan_id;pollDelay=1000;$("scan-status").hidden=false;poll();window.location.hash="overview";};
+    const target=document.createElement("span");target.className="history-target";target.textContent=s.target||"Unknown target";
+    const meta=document.createElement("span");meta.className="history-meta";meta.textContent=lifecycleLabel(s.lifecycle||s.status);
+    const findings=document.createElement("span");findings.className="history-count";findings.textContent=(s.graph_available?String((s.counts||{}).findings||0):"—")+" confirmed";
+    row.append(target,meta,findings);box.appendChild(row);
+  });
+}
 async function poll(){
-  if(!scanId)return;
-  try{const r=await fetch("/api/scan/"+scanId);const j=await r.json();$("status").textContent=j.status+(j.phase?" — "+j.phase:"");$("side-state").textContent=j.status||"running";if(j.phase)$("phase").textContent=PHASE_STEP[j.phase]||j.phase;renderProfile(j.events);renderReasoningStream(j.events);renderCounts(j.graph);renderTimeline(j.events);renderTools(j.events);renderConsole(j.events);renderAudit(j.audit);renderFindings(j.findings);try{const sr=await fetch("/api/scan/"+scanId+"/surface");renderSurface(await sr.json());}catch(_e){}renderReport(j.report_md);renderExports(scanId,j.status==="done");if(j.status==="done"||j.status==="error"){clearInterval(timer);timer=null;setBusy(false);if(j.status==="error")$("report").textContent="Error: "+(j.error||"unknown");$("status").textContent=j.status+" — "+scanId;}}
-  catch(err){clearInterval(timer);timer=null;setBusy(false);$("status").textContent="connection error";$("side-state").textContent="offline";$("report").textContent=String(err);}
+  if(!scanId||pollInFlight)return;
+  pollInFlight=true;
+  try{
+    const r=await fetch("/api/scan/"+scanId,{cache:"no-store"}); if(!r.ok)throw new Error("scan status "+r.status);
+    const j=await r.json(); pollDelay=1000; renderStatus(j); $("status").textContent=(j.lifecycle||j.status)+(j.phase?" — "+(PHASE_STEP[j.phase]||j.phase):""); $("side-state").textContent=j.lifecycle||j.status||"running"; if(j.target)setTarget(j.target,j.lifecycle||j.status); if(j.phase)$("phase").textContent=PHASE_STEP[j.phase]||j.phase;
+    renderProfile(j.events);renderReasoningStream(j.events);renderCounts(j.graph);renderTimeline(j.events);renderTools(j.events);renderConsole(j.events);renderAudit(j.audit);renderFindings(j.findings);
+    try{const sr=await fetch("/api/scan/"+scanId+"/surface",{cache:"no-store"});renderSurface(sr.ok?await sr.json():null);}catch(_e){}
+    renderReport(j.report_md);renderExports(scanId,j.lifecycle==="completed"||j.status==="done");
+    if(["done","error","blocked","cancelled"].includes(j.status)||["completed","failed","blocked","cancelled"].includes(j.lifecycle)){
+      stopPolling();setBusy(false);loadHistory(); if(j.error)$("report").textContent="Error: "+j.error; $("status").textContent=(j.lifecycle||j.status)+" — "+scanId;
+    }else{setBusy(true);schedulePoll();}
+  }catch(err){
+    pollDelay=Math.min(8000,Math.max(1000,pollDelay*2)); $("status").textContent="connection retry in "+Math.round(pollDelay/1000)+"s"; $("side-state").textContent="stale"; $("stale-indicator").hidden=false; schedulePoll();
+  }finally{pollInFlight=false;}
 }
 $("go").onclick=async()=>{
-  const target=$("target").value.trim(),scope=$("scope").value.trim()||target;if(!target){$("status").textContent="target required";$("target").focus();return;}
-  if(timer)clearInterval(timer);setBusy(true);setTarget(target,"starting");$("status").textContent="starting…";$("phase").textContent=PHASE_STEP.recon;renderProfile([]);renderCounts(null);renderTimeline([]);renderAudit([]);renderFindings([]);renderSurface(null);renderReport("");renderExports(null,false);
+  const target=$("target").value.trim(),scope=$("scope").value.trim()||target;
+  if(!target){$("status").textContent="target required";$("target").focus();return;}
+  stopPolling();pollDelay=1000;scanId=null;setBusy(true);setTarget(target,"queued");$("scan-status").hidden=false;$("status").textContent="queued";$("phase").textContent=PHASE_STEP.recon;renderStatus({lifecycle:"queued",status:"queued",target,event_count:0,can_cancel:false});renderProfile([]);renderCounts(null);renderTimeline([]);renderAudit([]);renderFindings([]);renderSurface(null);renderReport("");renderExports(null,false);
   const body={target,in_scope:scope,out_of_scope:$("outscope").value.trim()||null,prompt:$("prompt").value.trim()||null,max_attempts:parseInt($("attempts").value,10)||20,use_llm:true,llm_provider:$("llm-provider").value||null,identities_path:$("idents").value.trim()||null};
-  try{const r=await fetch("/api/scan",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)}),j=await r.json();if(j.error)throw new Error(j.error);scanId=j.scan_id;$("status").textContent="running "+scanId;timer=setInterval(poll,1000);poll();}catch(err){setBusy(false);$("status").textContent=String(err);$("side-state").textContent="error";}
+  try{const r=await fetch("/api/scan",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)}),j=await r.json();if(!r.ok||j.error)throw new Error(j.error||"Could not queue assessment");scanId=j.scan_id;$("status").textContent="queued "+scanId;poll();}catch(err){scanId=null;setBusy(false);$("scan-status").hidden=true;$("status").textContent=String(err);$("side-state").textContent="failed";}
 };
+$("cancel-scan").onclick=async()=>{
+  if(!scanId)return;
+  $("cancel-scan").disabled=true;$("status").textContent="cancelling…";
+  try{const r=await fetch("/api/scan/"+scanId+"/cancel",{method:"POST"});const j=await r.json();if(!r.ok)throw new Error(j.error||"cancel failed");renderStatus(j);poll();}
+  catch(err){$("cancel-scan").disabled=false;$("status").textContent=String(err);}
+};
+$("refresh-history").onclick=loadHistory;
 $("theme-toggle").onclick=()=>{const next=document.documentElement.dataset.theme==="dark"?"light":"dark";document.documentElement.dataset.theme=next;localStorage.setItem("reachagent-theme",next);};
 const savedTheme=localStorage.getItem("reachagent-theme");if(savedTheme)document.documentElement.dataset.theme=savedTheme;
 
@@ -382,6 +455,7 @@ $("prov-test").onclick=async()=>{
   }catch(e){$("prov-form-error").textContent=String(e);}
 };
 loadProviders();
+loadHistory();
 
 document.querySelectorAll("[data-nav]").forEach(link=>link.addEventListener("click",()=>{document.querySelectorAll("[data-nav]").forEach(x=>x.classList.remove("active"));link.classList.add("active");}));
 </script>
