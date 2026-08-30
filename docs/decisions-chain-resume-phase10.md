@@ -1,7 +1,7 @@
 # Phase 10 decision record — multi-hop chaining and durable resume
 
-Date: 2026-08-30  
-Status: complete  
+Date: 2026-08-30
+Status: complete
 Implementation commit: `52f2c3a`
 
 ## Invariants and authorization boundary
