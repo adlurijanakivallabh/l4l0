@@ -472,7 +472,9 @@ invalid-input classification, and replayability.
 - learn producer→consumer identifier edges from response JSON and headers;
 - generate schema-valid boundary cases and safe negative controls;
 - map state transitions without assuming endpoint order;
-- feed discovered dependencies into `enables`/resource graph edges;
+- feed discovered producer→consumer dependencies into the structural
+  `data_dependency` edge (the finding-only `enables` edge remains reserved for
+  confirmed chain findings);
 - route all generated requests through scope, read-only-first, audit, and
   deterministic confirmation.
 
@@ -481,6 +483,22 @@ tests.
 
 **Exit criterion:** a deeper sequence is represented as graph evidence and can be
 replayed deterministically; no generated sequence bypasses safety gates.
+
+**Status (2026-08-29): complete.** Stateful execution now accepts bounded model
+plans containing only graph endpoint/parameter ids and schema-derived selectors.
+OpenAPI/Swagger, GraphQL introspection (including field arguments), Postman, and
+same-authority observed traffic are materialized as replay templates. Response
+JSON and safe identifier headers are harvested into short-lived bindings; only
+SHA-256 references and source/evidence metadata are written to the graph's new
+`data_dependency` structural edge. Boundary values and negative controls are
+deterministic and contain no attack payload text. Every generated request,
+including mutating and GraphQL requests, calls `RequestFirer.fire`, so scope,
+read-only-first, and audit gates run before network I/O. Probe steps require an
+existing differential or business-rule oracle; controls and observations are
+never findings, and no stateful module imports or writes `Finding`. The focused
+gate passed 16 tests; changed-module Ruff and strict mypy checks passed. No files
+were deleted. The whole-tree test suite remains reserved for the plan's final
+release gate.
 
 ### Phase 8 — Signal-gated external adapters
 

@@ -38,6 +38,7 @@ from reachagent.graph.nodes import (
     Session,
 )
 from reachagent.graph.store import (
+    _DEPENDENCY_REF,
     endpoint_id,
     finding_id,
     identity_id,
@@ -45,6 +46,7 @@ from reachagent.graph.store import (
     parameter_id,
     session_id,
 )
+from reachagent.oracles import evidence as _evidence
 
 # Shared node label + relationship type used for every node/edge; the specific
 # kind and edge semantics live in properties, mirroring the NetworkX store's
@@ -210,6 +212,40 @@ class Neo4jGraphStore:
             StructuralEdge.CAN_CALL,
             {"status": status.value, "evidence": evidence},
         )
+
+    def add_dependency(
+        self,
+        producer_endpoint: str,
+        consumer_endpoint: str,
+        *,
+        parameter_node: str,
+        source_field: str,
+        value_ref: str,
+        evidence_ref: str = "",
+    ) -> None:
+        """Persist the same secret-free producer→consumer dependency as NetworkX."""
+        if producer_endpoint == consumer_endpoint:
+            raise ValueError("producer and consumer endpoints must be distinct")
+        if not isinstance(value_ref, str) or _DEPENDENCY_REF.fullmatch(value_ref) is None:
+            raise ValueError("value_ref must be a sha256: hash of the runtime identifier")
+        source = str(source_field).strip()
+        if not source or len(source) > 128 or any(ord(char) < 32 for char in source):
+            raise ValueError("source_field must be a bounded, printable name")
+        safe_evidence = _evidence.validate_evidence_ref(evidence_ref)
+        self._merge_edge(
+            producer_endpoint,
+            consumer_endpoint,
+            StructuralEdge.DATA_DEPENDENCY,
+            {
+                "parameter_node": parameter_node,
+                "source_field": source,
+                "value_ref": value_ref,
+                "evidence_ref": safe_evidence,
+            },
+        )
+
+    def dependency_edges(self) -> list[tuple[str, str]]:
+        return self._typed_edges(StructuralEdge.DATA_DEPENDENCY)
 
     # -- findings & finding-relationship layer (§8, §13) -----------------
 

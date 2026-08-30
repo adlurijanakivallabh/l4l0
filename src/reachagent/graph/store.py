@@ -52,9 +52,10 @@ from reachagent.oracles import evidence as _evidence
 _KIND = "kind"
 _DATA = "data"
 _SECRET_FIELD = re.compile(
-    r"(?i)(?:pass(?:word|wd)?|token|bearer|secret|authorization|cookie|csrf|"
+    r"(?i)(?:pass(?:word|wd)?|token|bearer|secret|authorization|auth(?:entication)?|cookie|csrf|"
     r"api[_-]?key|access[_-]?token|id[_-]?token)"
 )
+_DEPENDENCY_REF = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 
 def _redact_text(value: str | None) -> str | None:
@@ -65,7 +66,7 @@ def _redact_text(value: str | None) -> str | None:
         parsed: object = json.loads(value)
     except (TypeError, ValueError):
         pattern = re.compile(
-            r"(?i)(?P<key>pass(?:word|wd)?|token|bearer|secret|authorization|cookie|csrf|"
+            r"(?i)(?P<key>pass(?:word|wd)?|token|bearer|secret|authorization|auth(?:entication)?|cookie|csrf|"
             r"api[_-]?key|access[_-]?token|id[_-]?token)"
             r"\s*[=:]\s*(?P<raw>(?:Bearer\s+)?[^,;\s}]+)"
         )
@@ -399,6 +400,89 @@ class ReachabilityGraph:
         (whatweb) attaches to the ``Host`` that serves it. Facts only — no status.
         """
         self._g.add_edge(host_node, endpoint_node, key=StructuralEdge.RESOLVES_TO)
+
+    def add_dependency(
+        self,
+        producer_endpoint: str,
+        consumer_endpoint: str,
+        *,
+        parameter_node: str,
+        source_field: str,
+        value_ref: str,
+        evidence_ref: str = "",
+    ) -> None:
+        """Record a producer→consumer identifier dependency without the value.
+
+        The edge carries only the consumer parameter, source field, a one-way
+        hash of the runtime identifier, and an opaque evidence reference.  The
+        identifier itself stays in the short-lived execution binding store.
+        """
+        if producer_endpoint == consumer_endpoint:
+            raise ValueError("producer and consumer endpoints must be distinct")
+        for node, expected in (
+            (producer_endpoint, "endpoint"),
+            (consumer_endpoint, "endpoint"),
+            (parameter_node, "parameter"),
+        ):
+            attrs = self._g.nodes.get(node)
+            if attrs is None or attrs.get(_KIND) != expected:
+                raise ValueError(f"{node!r} is not a graph {expected} node")
+        if not any(
+            target == parameter_node and key == StructuralEdge.ACCEPTS
+            for _, target, key in self._g.out_edges(consumer_endpoint, keys=True)
+        ):
+            raise ValueError(
+                f"parameter {parameter_node!r} is not accepted by {consumer_endpoint!r}"
+            )
+        if not isinstance(value_ref, str) or _DEPENDENCY_REF.fullmatch(value_ref) is None:
+            raise ValueError("value_ref must be a sha256: hash of the runtime identifier")
+        source = str(source_field).strip()
+        if not source or len(source) > 128 or any(ord(char) < 32 for char in source):
+            raise ValueError("source_field must be a bounded, printable name")
+        safe_evidence = _evidence.validate_evidence_ref(evidence_ref)
+        self._g.add_edge(
+            producer_endpoint,
+            consumer_endpoint,
+            key=StructuralEdge.DATA_DEPENDENCY,
+            parameter_node=parameter_node,
+            source_field=source,
+            value_ref=value_ref,
+            evidence_ref=safe_evidence,
+        )
+
+    def dependency_edges(self) -> list[tuple[str, str]]:
+        """All producer→consumer data-dependency edges in stable order."""
+        return sorted(
+            (src, dst)
+            for src, dst, key in self._g.edges(keys=True)
+            if key == StructuralEdge.DATA_DEPENDENCY
+        )
+
+    def dependency_details(self) -> list[dict[str, str]]:
+        """Safe metadata for each producer→consumer dependency edge."""
+        rows: list[dict[str, str]] = []
+        for src, dst, key, attrs in self._g.edges(keys=True, data=True):
+            if key != StructuralEdge.DATA_DEPENDENCY:
+                continue
+            rows.append(
+                {
+                    "producer_endpoint": str(src),
+                    "consumer_endpoint": str(dst),
+                    "parameter_node": str(attrs.get("parameter_node", "")),
+                    "source_field": str(attrs.get("source_field", "")),
+                    "value_ref": str(attrs.get("value_ref", "")),
+                    "evidence_ref": str(attrs.get("evidence_ref", "")),
+                }
+            )
+        return sorted(
+            rows,
+            key=lambda row: (
+                row["producer_endpoint"],
+                row["consumer_endpoint"],
+                row["parameter_node"],
+                row["source_field"],
+            ),
+        )
 
     # -- structural edges (§6) --------------------------------------------
 

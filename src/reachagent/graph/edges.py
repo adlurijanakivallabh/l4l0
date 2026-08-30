@@ -24,6 +24,7 @@ class StructuralEdge(StrEnum):
     # Transport-tier (§9, v1.8) — recon facts, never a can_call/Finding, no status.
     RUNS_SERVICE = "runs_service"  # Host → Service, a host exposes a port/service
     RESOLVES_TO = "resolves_to"  # Host → Endpoint, a host serves an HTTP path
+    DATA_DEPENDENCY = "data_dependency"  # Endpoint → Endpoint, producer data feeds a consumer
 
 
 class FindingEdge(StrEnum):
