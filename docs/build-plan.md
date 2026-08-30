@@ -676,6 +676,20 @@ states.
 the LLM proposed, what actually ran, what the oracle confirmed, and why anything
 was skipped.
 
+**Status (2026-08-30): complete.** The GUI now exposes an explicit queued/
+running/completed/failed/blocked/cancelled lifecycle, cooperative cancellation,
+bounded process-local history, heartbeat timestamps, stale-data indication, and
+incremental event reads. Server projections redact secrets and ephemeral handles;
+graph availability is explicit, and the browser renders counts, findings, chains,
+audit rows, and reports only from real ReachAgent state. The no-build page gained
+responsive navigation, accessible labels, responsive status/history controls,
+backoff polling, provider-form autocomplete, and dark-theme action styling.
+Focused GUI/API tests, inline-script syntax checks, strict full-tree mypy, and
+desktop/mobile Playwright smoke checks passed; no files were deleted.
+Implementation commits: `b77488c`, `9dfd8ad`; decision record:
+`docs/decisions-gui-phase11.md`. The optional Phase 10 capabilities remain
+deferred. Whole-tree pytest remains reserved for Phase 14.
+
 ### Phase 12 — Reporting, evidence export, and operational history
 
 **Goal:** make every result reviewable and reusable.
