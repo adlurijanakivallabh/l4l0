@@ -2,7 +2,7 @@
 
 Date: 2026-08-30  
 Status: complete  
-Implementation commit: `eebd5b8`
+Implementation commit: `52f2c3a`
 
 ## Invariants and authorization boundary
 

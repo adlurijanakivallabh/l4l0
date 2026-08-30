@@ -630,7 +630,7 @@ retained. `scan_target` checkpoints each recon/auth/discovery/recovery/payload
 boundary and reuses `resume_path` when no replacement is supplied. Resume skips
 confirmed and inconclusive edges while leaving errored work retryable. Focused
 Phase 10 gates and full-tree strict optional mypy passed; no files were deleted.
-Implementation commit: `eebd5b8`; decision record:
+Implementation commit: `52f2c3a`; decision record:
 `docs/decisions-chain-resume-phase10.md`. Whole-tree pytest remains reserved for
 Phase 14.
 
