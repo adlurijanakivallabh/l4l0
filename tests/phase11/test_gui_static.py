@@ -14,6 +14,8 @@ def test_workspace_contains_real_state_views_and_controls() -> None:
     for marker in (
         'id="scan-status"',
         'id="cancel-scan"',
+        'id="active-scans"',
+        'id="active-count"',
         'id="reasoning-stream"',
         'id="surface"',
         'id="findings"',

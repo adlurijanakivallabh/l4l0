@@ -73,6 +73,7 @@
   .status-strip{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:16px;align-items:center;margin:0 0 22px;padding:14px 16px;border:1px solid var(--line-strong);border-radius:12px;background:linear-gradient(100deg,var(--panel-raised),var(--panel));box-shadow:0 12px 30px rgba(0,0,0,.14)}
   .status-strip[hidden]{display:none}.status-main{display:flex;align-items:center;gap:12px;min-width:0}.status-main .status-dot{width:9px;height:9px;flex:0 0 auto}.status-main .status-dot.failed,.status-main .status-dot.blocked{background:var(--red)}.status-main .status-dot.completed{background:var(--cyan)}.status-main .status-dot.cancelled{background:var(--amber)}.status-copy{min-width:0}.status-title{display:flex;align-items:center;gap:8px;color:var(--text);font-weight:700}.status-detail{margin-top:3px;color:var(--muted);font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.lifecycle{display:inline-flex;align-items:center;padding:3px 8px;border:1px solid var(--line-strong);border-radius:999px;color:var(--muted);font:10px ui-monospace,monospace;text-transform:uppercase;letter-spacing:.08em}.lifecycle.running{border-color:rgba(99,223,154,.35);color:var(--green);background:rgba(99,223,154,.08)}.lifecycle.failed,.lifecycle.blocked{border-color:rgba(255,113,129,.35);color:var(--red);background:rgba(255,113,129,.08)}.lifecycle.completed{border-color:rgba(72,214,198,.35);color:var(--cyan);background:rgba(72,214,198,.08)}.status-actions{display:flex;align-items:center;gap:9px}.status-action{border:1px solid var(--line-strong);border-radius:7px;padding:7px 10px;background:transparent;color:var(--muted);font-size:11px}.status-action:hover{border-color:var(--indigo);color:var(--text)}.status-action.danger:hover{border-color:var(--red);color:var(--red)}.stale{color:var(--amber);font:10px ui-monospace,monospace}.stale[hidden]{display:none}
   .history-list{display:grid;gap:8px}.history-row{display:grid;width:100%;grid-template-columns:minmax(0,1fr) auto auto;align-items:center;gap:12px;padding:10px 12px;border:1px solid var(--line);border-radius:9px;background:var(--field);color:var(--text);text-align:left;cursor:pointer}.history-row:hover,.history-row:focus-visible{border-color:var(--line-strong);outline:0;box-shadow:0 0 0 3px rgba(124,131,255,.1)}.history-target{overflow:hidden;color:var(--text);font:11px ui-monospace,monospace;text-overflow:ellipsis;white-space:nowrap}.history-meta{color:var(--muted);font-size:10px}.history-count{color:var(--green);font:10px ui-monospace,monospace}.history-empty{color:var(--muted);font-size:12px}
+  .active-runs{margin:0 5px 16px;padding:12px;border:1px solid var(--line);border-radius:11px;background:var(--panel-raised)}.active-runs-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;color:var(--faint);font-size:10px;font-weight:750;letter-spacing:.11em;text-transform:uppercase}.active-runs-count{color:var(--cyan);font:10px ui-monospace,monospace}.active-runs-list{display:grid;gap:6px}.active-run{display:block;width:100%;padding:8px;border:1px solid transparent;border-radius:8px;background:var(--field);color:var(--muted);text-align:left}.active-run:hover,.active-run.selected{border-color:rgba(124,131,255,.4);color:var(--text)}.active-run-target{display:block;overflow:hidden;font:10px ui-monospace,monospace;text-overflow:ellipsis;white-space:nowrap}.active-run-meta{display:flex;align-items:center;justify-content:space-between;gap:6px;margin-top:4px;font-size:9px}.active-run-phase{color:var(--indigo)}.active-run-findings{color:var(--green);font-family:ui-monospace,monospace}.active-runs-empty{color:var(--muted);font-size:10px;line-height:1.4}
   /* reasoning stream (agentic loop) */
   #reasoning-stream{max-height:420px;overflow:auto;font-size:12px}
   .r-row{display:grid;grid-template-columns:82px 12px 1fr;gap:9px;padding:7px 0;border-bottom:1px dashed rgba(45,214,198,.14)}
@@ -86,6 +87,7 @@
   .t-name{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--cyan);min-width:96px;display:inline-block}
   @media (max-width:1100px){.app-shell{grid-template-columns:210px minmax(0,1fr)}.main{padding:0 24px 45px}.hero{grid-template-columns:1fr}.hero-copy p{max-width:680px}.launch-card{max-width:760px}.content-grid{grid-template-columns:1fr}.workspace-grid{grid-template-columns:1fr}}
   @media (max-width:760px){.app-shell{display:block}.sidebar{position:static;height:auto;padding:15px 14px;border-right:0;border-bottom:1px solid var(--line)}.brand{padding:0 6px 14px}.nav{display:grid;grid-template-columns:repeat(4,1fr)}.nav-label,.nav-link kbd,.sidebar-spacer,.side-target,.theme-toggle,.sidebar-foot{display:none}.nav-link{justify-content:center;padding:9px 4px;font-size:10px}.nav-link .nav-icon{display:none}.main{padding:0 15px 35px}.topbar{min-height:58px}.top-status{display:none}.hero{padding:31px 0 26px;gap:23px}.hero h1{font-size:34px}.launch-grid{grid-template-columns:1fr}.field.span-2{grid-column:auto}.launch-footer{align-items:flex-start;flex-direction:column}.primary-btn{width:100%;justify-content:center}.metric-grid{grid-template-columns:repeat(2,1fr)}.metric:last-child{grid-column:span 2}.section-heading{align-items:flex-start;flex-direction:column}.al{grid-template-columns:56px 45px 38px minmax(80px,1fr);font-size:9px}.al>span:last-child{grid-column:4}.ev{grid-template-columns:74px 10px 1fr}.ev::before{left:78px}.status-strip{grid-template-columns:1fr;gap:10px}.status-actions{justify-content:space-between}.history-row{grid-template-columns:1fr auto}.history-count{grid-column:2;grid-row:1}.history-meta{grid-column:1}}
+  @media (max-width:760px){.app-shell{display:block}.sidebar{position:static;height:auto;padding:15px 14px;border-right:0;border-bottom:1px solid var(--line)}.brand{padding:0 6px 14px}.nav{display:grid;grid-template-columns:repeat(4,1fr)}.nav-label,.nav-link kbd,.sidebar-spacer,.side-target,.active-runs,.theme-toggle,.sidebar-foot{display:none}.nav-link{justify-content:center;padding:9px 4px;font-size:10px}.nav-link .nav-icon{display:none}.main{padding:0 15px 35px}.topbar{min-height:58px}.top-status{display:none}.hero{padding:31px 0 26px;gap:23px}.hero h1{font-size:34px}.launch-grid{grid-template-columns:1fr}.field.span-2{grid-column:auto}.launch-footer{align-items:flex-start;flex-direction:column}.primary-btn{width:100%;justify-content:center}.metric-grid{grid-template-columns:repeat(2,1fr)}.metric:last-child{grid-column:span 2}.section-heading{align-items:flex-start;flex-direction:column}.al{grid-template-columns:56px 45px 38px minmax(80px,1fr);font-size:9px}.al>span:last-child{grid-column:4}.ev{grid-template-columns:74px 10px 1fr}.ev::before{left:78px}.status-strip{grid-template-columns:1fr;gap:10px}.status-actions{justify-content:space-between}.history-row{grid-template-columns:1fr auto}.history-count{grid-column:2;grid-row:1}.history-meta{grid-column:1}}
 </style>
 </head>
 <body>
@@ -112,6 +114,10 @@
       <span id="side-target" class="target-name">No target selected</span>
       <span class="side-state"><i id="side-dot" class="status-dot"></i><span id="side-state">Idle</span></span>
     </div>
+    <section class="active-runs" aria-label="Active assessments">
+      <div class="active-runs-head"><span>Active assessments</span><span id="active-count" class="active-runs-count">not loaded</span></div>
+      <div id="active-scans" class="active-runs-list"><span class="active-runs-empty">No active assessments.</span></div>
+    </section>
     <button id="theme-toggle" class="theme-toggle" type="button"><span>◐</span><span>Toggle appearance</span></button>
     <div class="sidebar-foot">v2.0 · oracle-gated execution</div>
   </aside>
@@ -208,7 +214,7 @@
 </div>
 <script>
 const $=id=>document.getElementById(id);
-let scanId=null,timer=null,pollDelay=1000,pollInFlight=false;
+let scanId=null,timer=null,pollDelay=1000,pollInFlight=false,scanListTimer=null,scanListInFlight=false;
 const KIND_BADGE={info:"info",step:"step",finding:"finding","not-applicable":"skipped",error:"error"};
 const PHASE_STEP={plan:"00 · PLAN",recon:"01 · RECON",surface:"02 · SURFACE",endpoints:"02 · ENDPOINTS", "insertion-points":"02 · INSERTION",payloads:"03 · PAYLOADS",verification:"03 · VERIFY",chains:"03 · CHAINS",tools:"TOOLS",report:"04 · REPORT"};
 const OUT_CLASS={fired:"out-fired",refused:"out-refused",error:"out-error",ingested:"out-ingested"};
@@ -339,6 +345,29 @@ function renderSurface(surface){
 function setTarget(target,scanStatus){$("side-target").textContent=target||"No target selected";$("side-state").textContent=scanStatus||"Idle";}
 function schedulePoll(){if(timer)clearTimeout(timer);timer=setTimeout(poll,pollDelay);}
 function stopPolling(){if(timer){clearTimeout(timer);timer=null;}}
+function scheduleScanList(){if(scanListTimer)clearTimeout(scanListTimer);scanListTimer=setTimeout(loadActiveScans,2000);}
+function selectScan(id){if(!id||id===scanId)return;stopPolling();scanId=id;pollDelay=1000;$('scan-status').hidden=false;poll();window.location.hash='overview';}
+async function loadActiveScans(){
+  if(scanListInFlight)return;
+  scanListInFlight=true;
+  try{const r=await fetch('/api/scans?limit=20',{cache:'no-store'});if(!r.ok)throw new Error('scan list unavailable');const j=await r.json();renderActiveScans(j.scans||[]);}
+  catch(_e){$('active-count').textContent='offline';$('active-scans').innerHTML='<span class="active-runs-empty">Live run list unavailable.</span>';}
+  finally{scanListInFlight=false;scheduleScanList();}
+}
+function renderActiveScans(scans){
+  const active=(scans||[]).filter(s=>['queued','running'].includes(s.lifecycle)||['queued','running','cancelling'].includes(s.status));
+  const count=$('active-count');count.textContent=String(active.length);
+  const box=$('active-scans');box.innerHTML='';
+  if(!active.length){box.innerHTML='<span class="active-runs-empty">No active assessments.</span>';return;}
+  active.forEach(s=>{
+    const row=document.createElement('button');row.type='button';row.className='active-run'+(s.scan_id===scanId?' selected':'');row.onclick=()=>selectScan(s.scan_id);
+    const target=document.createElement('span');target.className='active-run-target';target.textContent=s.target||'Unknown target';
+    const meta=document.createElement('span');meta.className='active-run-meta';
+    const phase=document.createElement('span');phase.className='active-run-phase';phase.textContent=(PHASE_STEP[s.phase]||s.phase||'queued').toLowerCase();
+    const findings=document.createElement('span');findings.className='active-run-findings';findings.textContent=s.graph_available?String((s.counts||{}).findings||0)+' confirmed':'— confirmed';
+    meta.append(phase,findings);row.append(target,meta);box.appendChild(row);
+  });
+}
 async function loadHistory(){
   try{const r=await fetch("/api/scans?limit=20");if(!r.ok)throw new Error("history unavailable");const j=await r.json();renderHistory(j.scans||[]);}
   catch(_e){$("scan-history").innerHTML='<span class="history-empty">History is unavailable until the server responds.</span>';}
@@ -349,7 +378,7 @@ function renderHistory(scans){
   if(!scans.length){box.innerHTML='<span class="history-empty">No assessments yet.</span>';return;}
   scans.forEach(s=>{
     const row=document.createElement("button");row.type="button";row.className="history-row";row.title="Open this assessment";
-    row.onclick=()=>{stopPolling();scanId=s.scan_id;pollDelay=1000;$("scan-status").hidden=false;poll();window.location.hash="overview";};
+    row.onclick=()=>selectScan(s.scan_id);
     const target=document.createElement("span");target.className="history-target";target.textContent=s.target||"Unknown target";
     const meta=document.createElement("span");meta.className="history-meta";meta.textContent=lifecycleLabel(s.lifecycle||s.status);
     const findings=document.createElement("span");findings.className="history-count";findings.textContent=(s.graph_available?String((s.counts||{}).findings||0):"—")+" confirmed";
@@ -366,7 +395,7 @@ async function poll(){
     try{const sr=await fetch("/api/scan/"+scanId+"/surface",{cache:"no-store"});renderSurface(sr.ok?await sr.json():null);}catch(_e){}
     renderReport(j.report_md);renderExports(scanId,j.lifecycle==="completed"||j.status==="done");
     if(["done","error","blocked","cancelled"].includes(j.status)||["completed","failed","blocked","cancelled"].includes(j.lifecycle)){
-      stopPolling();setBusy(false);loadHistory(); if(j.error)$("report").textContent="Error: "+j.error; $("status").textContent=(j.lifecycle||j.status)+" — "+scanId;
+      stopPolling();setBusy(false);loadHistory();loadActiveScans(); if(j.error)$("report").textContent="Error: "+j.error; $("status").textContent=(j.lifecycle||j.status)+" — "+scanId;
     }else{setBusy(true);schedulePoll();}
   }catch(err){
     pollDelay=Math.min(8000,Math.max(1000,pollDelay*2)); $("status").textContent="connection retry in "+Math.round(pollDelay/1000)+"s"; $("side-state").textContent="stale"; $("stale-indicator").hidden=false; schedulePoll();
@@ -377,7 +406,7 @@ $("go").onclick=async()=>{
   if(!target){$("status").textContent="target required";$("target").focus();return;}
   stopPolling();pollDelay=1000;scanId=null;setBusy(true);setTarget(target,"queued");$("scan-status").hidden=false;$("status").textContent="queued";$("phase").textContent=PHASE_STEP.recon;renderStatus({lifecycle:"queued",status:"queued",target,event_count:0,can_cancel:false});renderProfile([]);renderCounts(null);renderTimeline([]);renderAudit([]);renderFindings([]);renderSurface(null);renderReport("");renderExports(null,false);
   const body={target,in_scope:scope,out_of_scope:$("outscope").value.trim()||null,prompt:$("prompt").value.trim()||null,max_attempts:parseInt($("attempts").value,10)||20,use_llm:true,llm_provider:$("llm-provider").value||null,identities_path:$("idents").value.trim()||null};
-  try{const r=await fetch("/api/scan",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)}),j=await r.json();if(!r.ok||j.error)throw new Error(j.error||"Could not queue assessment");scanId=j.scan_id;$("status").textContent="queued "+scanId;poll();}catch(err){scanId=null;setBusy(false);$("scan-status").hidden=true;$("status").textContent=String(err);$("side-state").textContent="failed";}
+  try{const r=await fetch("/api/scan",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)}),j=await r.json();if(!r.ok||j.error)throw new Error(j.error||"Could not queue assessment");scanId=j.scan_id;$("status").textContent="queued "+scanId;loadActiveScans();poll();}catch(err){scanId=null;setBusy(false);$("scan-status").hidden=true;$("status").textContent=String(err);$("side-state").textContent="failed";}
 };
 $("cancel-scan").onclick=async()=>{
   if(!scanId)return;
@@ -457,6 +486,7 @@ $("prov-test").onclick=async()=>{
 };
 loadProviders();
 loadHistory();
+loadActiveScans();
 
 document.querySelectorAll("[data-nav]").forEach(link=>link.addEventListener("click",()=>{document.querySelectorAll("[data-nav]").forEach(x=>x.classList.remove("active"));link.classList.add("active");}));
 </script>
