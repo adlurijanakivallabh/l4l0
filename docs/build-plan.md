@@ -530,6 +530,24 @@ AST no-validator-import tests.
 **Exit criterion:** an external tool can accelerate discovery but can never create
 a finding without independent ReachAgent evidence.
 
+**Status (2026-08-29): complete.** The six allowlisted signal-gated adapters
+remain optional claim emitters. Their shared runner now validates oracle-family
+and candidate shapes, scope-checks claim URLs, redacts sensitive text, caps
+candidate/output volume, and records bounded command policy, version, duration,
+exit status, output size, and partial-output state. Live execution is still
+explicitly environment-gated and uses an argument array with `shell=False`;
+missing binaries, timeouts, parser failures, and non-zero exits are visible
+recoverable outcomes rather than findings. The dispatcher returns candidates,
+exposes a bounded preview, and hands every candidate to an injected
+Validator-side reconfirmation callback when supplied; without one it emits an
+explicit reconfirmation-required event. `reconfirm_candidate` now accepts only
+a registered, mechanism-matching `OracleVerdict` with `confirmed_violation`
+status before invoking the injected writer. The focused Phase 8 gate passed 8
+tests (plus 62 related compatibility tests); source-wide strict mypy and Ruff
+passed. The changed-adapter AST test found no Validator/finding-writer imports.
+No files were deleted. Whole-tree pytest remains reserved for the final release
+gate.
+
 ### Phase 9 — Browser and proxy firing transports
 
 **Goal:** make LLM transport selection real, scoped, and observable.
