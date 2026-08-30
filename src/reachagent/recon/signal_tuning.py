@@ -87,15 +87,17 @@ class OpenAISignalToolClient:
 
 
 def _validate_selection(raw: dict[str, object]) -> SignalToolChoice | None:
-    """Check every selected tool is in the allowlist; drop unknowns silently."""
+    """Validate the model response without allowing fields to alter execution."""
+    if not isinstance(raw, dict) or set(raw) - {"selected_tools", "rationale"}:
+        return None
     raw_tools = raw.get("selected_tools")
-    if not isinstance(raw_tools, list):
+    if not isinstance(raw_tools, list) or not all(isinstance(item, str) for item in raw_tools):
         return None
     allowed = set(SIGNAL_TOOL_ALLOWLIST)
     seen: set[str] = set()
     valid: list[str] = []
     for item in raw_tools:
-        name = str(item).strip().lower()
+        name = item.strip().lower()
         if name in allowed and name not in seen:
             seen.add(name)
             valid.append(name)
@@ -103,7 +105,10 @@ def _validate_selection(raw: dict[str, object]) -> SignalToolChoice | None:
             break
     if not valid:
         return None
-    rationale = str(raw.get("rationale", ""))[:300]
+    raw_rationale = raw.get("rationale", "")
+    if not isinstance(raw_rationale, str):
+        return None
+    rationale = raw_rationale.strip()[:300]
     return SignalToolChoice(selected_tools=tuple(valid), rationale=rationale)
 
 

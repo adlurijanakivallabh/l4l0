@@ -47,6 +47,7 @@ from reachagent.recon.tools.paramspider import ParamSpiderRunner
 from reachagent.recon.tools.rustscan import RustscanRunner
 from reachagent.recon.tools.shuffledns import ShuffleDnsRunner
 from reachagent.recon.tools.signal_gated import (
+    SignalGatedMetadata,
     SignalGatedOutcome,
     SignalGatedResult,
     SignalGatedToolRunner,
@@ -91,6 +92,7 @@ __all__ = [
     "ReconToolRunner",
     "RustscanRunner",
     "SignalGatedOutcome",
+    "SignalGatedMetadata",
     "SignalGatedResult",
     "SignalGatedToolRunner",
     "SqlmapRunner",
