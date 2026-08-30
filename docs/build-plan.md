@@ -725,6 +725,54 @@ phase, and confirmed-finding counts. Focused tests, strict mypy, Ruff, inline
 script checks, and Playwright desktop/mobile smoke passed. No files were
 deleted. Decision record: `docs/decisions-gui-phase11a.md`.
 
+### Phase 11A.1 — Visual command-center rebuild
+
+**Goal:** replace the incremental page styling with a deliberate, dense
+mission-control workspace while preserving the existing server-backed data
+contracts and execution boundaries.
+
+**Read during this phase:** the full ReachAgent GUI/backend projection,
+orchestrator event, report, and focused test paths listed in the Phase 11A
+decision records; R1's full shell/theme/sidebar/live-panel/report and browser
+smoke paths; R2's stream/session lifecycle paths; R3's normalized event paths;
+R4's session/transcript presentation; R5's progress/health/recovery views; and
+R6's run switcher, graph/transcript, tool-card, and report views. Licenses were
+recorded as neutral aliases before reading: R1 MIT, R2 dual, R3 MIT, R4 MIT,
+R5 MIT, R6 Apache-2.0.
+
+**Build:**
+
+- establish a dark-first token system with a light-theme fallback, sticky
+  navigation, keyboard-visible links, responsive mobile navigation, and
+  reduced-motion support;
+- make launch, status, overview metrics, reasoning, tool activity, timeline,
+  console, surface, findings, report, audit, history, and provider settings
+  distinct workspaces with clear empty/loading/error states;
+- retain the active-assessment rail and independent scan selection, showing
+  real lifecycle/phase/finding values from `/api/scans`;
+- keep every displayed count, finding, chain, report, tool status, and event
+  sourced from server projections; unavailable graph state remains `—`;
+- add no runtime frontend dependency or alternate request/oracle path.
+
+**Focused gate:** static marker and secret checks, GUI/API slices, inline
+JavaScript syntax, full-tree strict-optional mypy, Ruff, desktop/mobile
+Playwright screenshots and console checks, responsive overflow checks, and a
+two-record preview proving parallel-card selection and real finding counts.
+
+**Exit criterion:** a user can launch an LLM-only assessment, see what is being
+proposed and executed, switch between concurrent assessments, inspect the live
+surface and audit trail, and review only oracle-confirmed findings in a visual
+workspace that remains usable at desktop and mobile widths.
+
+**Status (2026-08-30): complete.** `static/index.html` now uses a compact
+command-center layout with a mission hero, launch card, guardrail rail,
+live reasoning/tool/timeline/console panels, graph-backed surface/finding
+panels, report/audit/history workspaces, provider configuration, dark/light
+tokens, and responsive breakpoints. The server and redaction seams were not
+changed. No files were deleted and no new dependency was added. Implementation
+commit: `d75a681`; static contract pin: `e988b29`; decision record:
+`docs/decisions-gui-phase11a-visual.md`.
+
 ### Phase 12 — Reporting, evidence export, and operational history
 
 **Goal:** make every result reviewable and reusable.
