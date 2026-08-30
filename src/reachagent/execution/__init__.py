@@ -13,6 +13,16 @@ from __future__ import annotations
 from reachagent.execution.audit import AuditEntry, AuditLog
 from reachagent.execution.firer import FireResult, ReadOnlyFirstError, RequestFirer
 from reachagent.execution.scope import OutOfScopeError, ScopeGuard, ScopeRule
+from reachagent.execution.transports import (
+    TOOL_ANNOTATIONS,
+    TRANSPORTS,
+    ProgressEvent,
+    ToolAnnotation,
+    TransportCancelledError,
+    TransportControl,
+    TransportDispatcher,
+    TransportRequest,
+)
 
 __all__ = [
     "AuditEntry",
@@ -23,4 +33,12 @@ __all__ = [
     "RequestFirer",
     "ScopeGuard",
     "ScopeRule",
+    "TRANSPORTS",
+    "TOOL_ANNOTATIONS",
+    "ProgressEvent",
+    "ToolAnnotation",
+    "TransportCancelledError",
+    "TransportControl",
+    "TransportDispatcher",
+    "TransportRequest",
 ]

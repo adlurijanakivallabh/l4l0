@@ -578,6 +578,20 @@ MCP registration, and transport-selection tests.
 **Exit criterion:** a selected transport changes only how evidence is collected;
 the deterministic oracle remains the sole confirmation path.
 
+**Status (2026-08-30): complete.** `http`, `browser`, and `proxy` are now
+allowlisted firing transports. HTTP and proxy requests share `RequestFirer` scope,
+read-only-first, and audit gates; proxy selection fails closed without an explicit
+proxy URL. Playwright navigation captures status, final URL, redirect chain,
+response headers, bounded page content, and cookie names, while cookie values are
+bound only to the selected identity's private `TokenStore`. Browser routes check
+scope and external read-only authorization for every HTTP(S) request. MCP tools
+carry conservative read-only/idempotent/destructive annotations and expose
+bounded progress/cancellation controls. Bodies, headers, browser results, and
+verdicts remain server-side behind opaque handles. `run_oracle` is the only new
+path that consumes browser handles; no transport adapter imports an oracle or
+finding writer. Focused Phase 9 tests and real Chromium integration passed; no
+files were deleted. Whole-tree pytest remains reserved for Phase 14.
+
 ### Phase 10 — Multi-hop chaining and durable resume
 
 **Goal:** finish chains from real dependencies and survive interruption.

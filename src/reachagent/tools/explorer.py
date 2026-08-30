@@ -95,6 +95,8 @@ def _fire_with_value(
     state_changing: bool,
     extra_fields: dict[str, object] | None = None,
     upload: _ctx.UploadSpec | None = None,
+    transport: str = "http",
+    proxy_url: str | None = None,
 ) -> FireResult:
     """Fire ``value`` into a parameter's location through Task 1's firer.
 
@@ -128,29 +130,67 @@ def _fire_with_value(
             method,
             url,
             state_changing=state_changing,
+            transport=transport,
+            proxy_url=proxy_url,
             files=files,
             data=dict(extra_fields or {}),
         )
     if location == "query":
         return ctx.firer.fire(
-            identity, method, url, state_changing=state_changing, params={name: value}
+            identity,
+            method,
+            url,
+            state_changing=state_changing,
+            transport=transport,
+            proxy_url=proxy_url,
+            params={name: value},
         )
     if location == "header":
         return ctx.firer.fire(
-            identity, method, url, state_changing=state_changing, headers={name: value}
+            identity,
+            method,
+            url,
+            state_changing=state_changing,
+            transport=transport,
+            proxy_url=proxy_url,
+            headers={name: value},
         )
     if location in {"body", "json"}:
         body: dict[str, object] = dict(extra_fields or {})
         body[name] = value
-        return ctx.firer.fire(identity, method, url, state_changing=state_changing, json=body)
+        return ctx.firer.fire(
+            identity,
+            method,
+            url,
+            state_changing=state_changing,
+            transport=transport,
+            proxy_url=proxy_url,
+            json=body,
+        )
     if location == "form":
         body = {str(k): str(v) for k, v in (extra_fields or {}).items()}
         body[name] = value
-        return ctx.firer.fire(identity, method, url, state_changing=state_changing, data=body)
+        return ctx.firer.fire(
+            identity,
+            method,
+            url,
+            state_changing=state_changing,
+            transport=transport,
+            proxy_url=proxy_url,
+            data=body,
+        )
     if location == "cookie":
         cookies = {str(k): str(v) for k, v in (extra_fields or {}).items()}
         cookies[name] = value
-        return ctx.firer.fire(identity, method, url, state_changing=state_changing, cookies=cookies)
+        return ctx.firer.fire(
+            identity,
+            method,
+            url,
+            state_changing=state_changing,
+            transport=transport,
+            proxy_url=proxy_url,
+            cookies=cookies,
+        )
     if location == "multipart":
         files = {name: ("probe.txt", value.encode("utf-8"), "text/plain")}
         return ctx.firer.fire(
@@ -158,6 +198,8 @@ def _fire_with_value(
             method,
             url,
             state_changing=state_changing,
+            transport=transport,
+            proxy_url=proxy_url,
             files=files,
             data=dict(extra_fields or {}),
         )
@@ -176,11 +218,20 @@ def _fire_with_value(
             method,
             url,
             state_changing=state_changing,
+            transport=transport,
+            proxy_url=proxy_url,
             json={"query": document},
         )
     if location == "path":
         injected = url.replace(f"{{{name}}}", urllib.parse.quote(value, safe=""))
-        return ctx.firer.fire(identity, method, injected, state_changing=state_changing)
+        return ctx.firer.fire(
+            identity,
+            method,
+            injected,
+            state_changing=state_changing,
+            transport=transport,
+            proxy_url=proxy_url,
+        )
     raise ValueError(f"unsupported parameter location: {location!r}")
 
 
@@ -359,6 +410,8 @@ def fire_request(
     state_changing: bool = False,
     extra_fields: dict[str, object] | None = None,
     upload: _ctx.UploadSpec | None = None,
+    transport: str = "http",
+    proxy_url: str | None = None,
 ) -> FireResult:
     """Execute one payload-bearing request through Task 1's firer (§13).
 
@@ -392,6 +445,8 @@ def fire_request(
         state_changing=state_changing,
         extra_fields=extra_fields,
         upload=upload,
+        transport=transport,
+        proxy_url=proxy_url,
     )
 
 

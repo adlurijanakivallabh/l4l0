@@ -62,6 +62,12 @@ class FireResult:
     elapsed_seconds: float
     body: bytes
     headers: httpx.Headers
+    # Transport metadata is evidence, never a verdict.  HTTPX returns the
+    # final response without following redirects in the normal path; browser
+    # and proxy adapters fill the same projection for a uniform oracle seam.
+    final_url: str = ""
+    redirects: tuple[str, ...] = ()
+    transport: str = "http"
 
 
 class RequestFirer:
@@ -161,6 +167,8 @@ class RequestFirer:
         method: str,
         parsed: httpx.URL,
         kwargs: dict[str, object],
+        *,
+        client: httpx.Client | None = None,
     ) -> FireResult:
         """Send one request and time it — a single transport attempt (§12).
 
@@ -171,7 +179,7 @@ class RequestFirer:
         # Redirects are returned to the caller rather than followed. A client
         # redirect hop would bypass this execution-layer scope check.
         kwargs.pop("follow_redirects", None)
-        response = self._client.request(
+        response = (client or self._client).request(
             method,
             parsed,
             follow_redirects=False,
@@ -182,6 +190,8 @@ class RequestFirer:
             elapsed_seconds=time.monotonic() - started,
             body=response.content,
             headers=response.headers,
+            final_url=str(response.url),
+            redirects=tuple(str(item.url) for item in response.history),
         )
 
     def _send_with_retry(
@@ -191,6 +201,9 @@ class RequestFirer:
         target: str,
         parsed: httpx.URL,
         kwargs: dict[str, object],
+        *,
+        client: httpx.Client | None = None,
+        transport: str = "http",
     ) -> tuple[FireResult, bool]:
         """Send a read-only request with bounded transient retry (D5).
 
@@ -204,15 +217,19 @@ class RequestFirer:
         """
         for attempt in range(_RETRY_LIMIT + 1):
             try:
-                result = self._send_once(method, parsed, kwargs)
+                result = self._send_once(method, parsed, kwargs, client=client)
             except Exception as exc:  # noqa: BLE001 — transport failure, audited per attempt
                 if attempt < _RETRY_LIMIT:
-                    self._audit.record(identity, method, target, f"error:{type(exc).__name__}")
+                    outcome = f"error:{type(exc).__name__}"
+                    if transport != "http":
+                        outcome = f"{transport}:{outcome}"
+                    self._audit.record(identity, method, target, outcome)
                     time.sleep(_RETRY_BACKOFF[attempt])
                     continue
-                self._audit.record(
-                    identity, method, target, f"error:{type(exc).__name__}:unrecoverable"
-                )
+                outcome = f"error:{type(exc).__name__}:unrecoverable"
+                if transport != "http":
+                    outcome = f"{transport}:{outcome}"
+                self._audit.record(identity, method, target, outcome)
                 raise
             if result.status_code not in _RETRY_STATUSES:
                 # A non-transient response (2xx/3xx/4xx, or a meaningful 500) is
@@ -220,7 +237,10 @@ class RequestFirer:
                 return result, attempt > 0
             if attempt < _RETRY_LIMIT:
                 # Transient gateway error — retry; audit the real response.
-                self._audit.record(identity, method, target, f"fired:{result.status_code}")
+                outcome = f"fired:{result.status_code}"
+                if transport != "http":
+                    outcome = f"{transport}:{outcome}"
+                self._audit.record(identity, method, target, outcome)
                 time.sleep(_RETRY_BACKOFF[attempt])
                 continue
             # Last attempt still a transient gateway error — that IS the answer.
@@ -250,9 +270,22 @@ class RequestFirer:
         state-changing requests retain the normal gate.
         """
         method = method.upper()
+        proxy_value = kwargs.pop("proxy_url", None)
+        proxy_url = str(proxy_value) if proxy_value is not None else None
+        transport = str(kwargs.pop("transport", "http"))
+        if transport not in {"http", "browser", "proxy"}:
+            raise ValueError(f"unsupported firing transport: {transport!r}")
+        if transport == "browser":
+            raise ValueError("browser transport must run through the browser dispatcher")
+        if transport == "proxy" and not proxy_url:
+            raise ValueError("proxy transport requires a configured proxy URL")
         parsed = httpx.URL(url)
         target = self._endpoint_key(parsed)
         authentication = bool(kwargs.pop("authentication", False))
+        # A proxy is selected by the LLM-facing transport layer, but all safety
+        # gates below still run in this method.  The proxy client is created only
+        # after those gates pass and is short-lived per request.
+        proxy_client: httpx.Client | None = None
 
         # Merge configured identity headers first, allowing an explicit probe
         # header (for example Origin) to override one value for this request.
@@ -287,6 +320,14 @@ class RequestFirer:
             self._audit.record(identity, method, target, "refused_invalid_auth_setup")
             raise ReadOnlyFirstError("authentication setup is limited to POST login requests")
 
+        if proxy_url:
+            proxy_client = httpx.Client(
+                proxy=proxy_url,
+                timeout=self._client.timeout,
+                follow_redirects=False,
+                trust_env=False,
+            )
+
         # Gate passed — send the packet. A state-changing request is NEVER
         # retried (a retried mutation could double-apply a side effect); a
         # read-only request gets bounded transient retry on 5xx/transport error
@@ -294,14 +335,43 @@ class RequestFirer:
         # attempt — retries do not re-run them.
         if not read_only:
             try:
-                result = self._send_once(method, parsed, kwargs)
+                result = self._send_once(method, parsed, kwargs, client=proxy_client)
             except Exception as exc:  # noqa: BLE001 — every failed attempt must be audited
                 self._audit.record(identity, method, target, f"error:{type(exc).__name__}")
                 raise
-            self._audit.record(identity, method, target, f"fired:{result.status_code}")
+            finally:
+                if proxy_client is not None:
+                    proxy_client.close()
+            result = FireResult(
+                status_code=result.status_code,
+                elapsed_seconds=result.elapsed_seconds,
+                body=result.body,
+                headers=result.headers,
+                final_url=result.final_url,
+                redirects=result.redirects,
+                transport=transport,
+            )
+            outcome = (
+                f"fired:{result.status_code}"
+                if transport == "http"
+                else f"{transport}:fired:{result.status_code}"
+            )
+            self._audit.record(identity, method, target, outcome)
             return result
 
-        result, recovered = self._send_with_retry(identity, method, target, parsed, kwargs)
+        try:
+            result, recovered = self._send_with_retry(
+                identity,
+                method,
+                target,
+                parsed,
+                kwargs,
+                client=proxy_client,
+                transport=transport,
+            )
+        finally:
+            if proxy_client is not None:
+                proxy_client.close()
 
         # A successful read-only request clears this endpoint for later mutation.
         if self._read_only_clears(method, result.status_code):
@@ -309,5 +379,81 @@ class RequestFirer:
                 self._read_only_cleared.add(key)
 
         suffix = ":recovered" if recovered else ""
-        self._audit.record(identity, method, target, f"fired:{result.status_code}{suffix}")
+        result = FireResult(
+            status_code=result.status_code,
+            elapsed_seconds=result.elapsed_seconds,
+            body=result.body,
+            headers=result.headers,
+            final_url=result.final_url,
+            redirects=result.redirects,
+            transport=transport,
+        )
+        outcome = (
+            f"fired:{result.status_code}{suffix}"
+            if transport == "http"
+            else f"{transport}:fired:{result.status_code}{suffix}"
+        )
+        self._audit.record(identity, method, target, outcome)
         return result
+
+    def record_transport_result(
+        self,
+        identity: str,
+        method: str,
+        url: str,
+        status_code: int | None,
+        *,
+        transport: str,
+        error: str | None = None,
+    ) -> None:
+        """Audit an already-fired browser/proxy response without judging it.
+
+        Browser navigation happens inside Playwright, so it cannot be sent by
+        HTTPX.  This method records the result after the caller performed the
+        same scope/read-only-first preflight through :meth:`fire`.
+        """
+        parsed = httpx.URL(url)
+        target = self._endpoint_key(parsed)
+        outcome = (
+            f"{transport}:error:{error[:80]}"
+            if error
+            else f"{transport}:fired:{status_code or 0}"
+        )
+        self._audit.record(identity, method.upper(), target, outcome)
+
+    def authorize_external(
+        self,
+        identity: str,
+        method: str,
+        url: str,
+        *,
+        state_changing: bool = False,
+        authentication: bool = False,
+    ) -> None:
+        """Check an external transport request without sending it.
+
+        Browser contexts and proxy SDKs own their socket, so they call this
+        execution-layer gate before continuing a request.  The actual response
+        is still recorded separately and remains inert until the Validator
+        oracle evaluates it.
+        """
+        normalized = method.upper()
+        parsed = httpx.URL(url)
+        target = self._endpoint_key(parsed)
+        try:
+            self._scope.enforce(parsed)
+        except OutOfScopeError:
+            self._audit.record(identity, normalized, target, "refused_out_of_scope")
+            raise
+        read_only = self._is_read_only(normalized, state_changing=state_changing)
+        key = (identity, target)
+        with self._clearance_lock:
+            cleared = key in self._read_only_cleared
+        if not read_only and not cleared and not authentication:
+            self._audit.record(identity, normalized, target, "refused_read_only_first")
+            raise ReadOnlyFirstError(
+                f"read-only case not yet confirmed for {target}; external transport refused"
+            )
+        if authentication and normalized != "POST":
+            self._audit.record(identity, normalized, target, "refused_invalid_auth_setup")
+            raise ReadOnlyFirstError("authentication setup is limited to POST login requests")

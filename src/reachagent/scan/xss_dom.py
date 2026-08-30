@@ -6,6 +6,7 @@ import asyncio
 from typing import TYPE_CHECKING, Any
 
 from reachagent.execution.firer import RequestFirer
+from reachagent.execution.transports import TransportDispatcher
 
 if TYPE_CHECKING:
     from reachagent.graph.store import ReachabilityGraph
@@ -25,7 +26,7 @@ def run_xss_dom(
     from playwright.async_api import async_playwright as pw_ctx
 
     from reachagent.browser.playwright_driver import AsyncPlaywrightDriver
-    from reachagent.browser.shim import TaintFlow, run_taint_shim_async
+    from reachagent.browser.shim import run_taint_shim_async
     from reachagent.oracles import OracleMechanism
     from reachagent.oracles.execution_confirmation import (
         ExecutionConfirmationEvidence,
@@ -62,7 +63,15 @@ def run_xss_dom(
                     await browser.close()
 
         try:
+            dispatcher = TransportDispatcher(firer)
+            dispatcher.prepare_browser(identity, url)
             probe_result = asyncio.run(_probe())
+            dispatcher.record_browser(
+                identity,
+                probe_result.final_url or url,
+                method="GET",
+                status_code=probe_result.status_code,
+            )
         except Exception as exc:
             events.append(
                 ScanEvent(
@@ -73,8 +82,8 @@ def run_xss_dom(
             )
             continue
 
-        flows = probe_result.get("flows", [])
-        executed = probe_result.get("executed", False)
+        flows = probe_result.flows
+        executed = probe_result.executed
         if not flows and not executed:
             continue
 
@@ -83,7 +92,7 @@ def run_xss_dom(
             "evidence_ref": f"orchestrator/xss_dom{endpoint.path}",
         }
         if flows:
-            kwargs["flows"] = tuple(TaintFlow(**f) for f in flows)
+            kwargs["flows"] = flows
 
         verdict = seam.run(
             OracleMechanism.EXECUTION_CONFIRMATION,

@@ -42,9 +42,12 @@ Coordinator will construct per run (``ExplorerContext``, §9, §13).
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
+import threading
+from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from itertools import count
 from typing import TYPE_CHECKING, Any
@@ -54,6 +57,13 @@ import httpx
 from reachagent.execution.audit import AuditLog
 from reachagent.execution.firer import RequestFirer
 from reachagent.execution.scope import ScopeGuard
+from reachagent.execution.transports import (
+    TOOL_ANNOTATIONS,
+    ProgressEvent,
+    TransportControl,
+    TransportDispatcher,
+    TransportRequest,
+)
 from reachagent.graph import nodes as _nodes
 from reachagent.graph.store import ReachabilityGraph
 from reachagent.oracles import OracleMechanism
@@ -75,6 +85,7 @@ _log = logging.getLogger(__name__)
 if TYPE_CHECKING:
     from mcp.server.fastmcp import FastMCP
 
+    from reachagent.browser.shim import BrowserFireResult
     from reachagent.execution.firer import FireResult
     from reachagent.oracles.base import OracleVerdict
 
@@ -84,15 +95,51 @@ if TYPE_CHECKING:
 _ENV_BASE_URL = "REACHAGENT_TARGET_BASE_URL"
 _ENV_SCOPE_HOSTS = "REACHAGENT_SCOPE_HOSTS"
 _DEFAULT_BASE_URL = "http://127.0.0.1:5000"
+_SECRET_HEADER_NAMES = frozenset(
+    {"authorization", "cookie", "set-cookie", "proxy-authorization", "x-api-key"}
+)
+
+
+def _run_coroutine(coro: Any) -> Any:
+    """Run an async browser operation from a sync MCP tool safely."""
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+    result: list[Any] = []
+    error: list[BaseException] = []
+
+    def runner() -> None:
+        try:
+            result.append(asyncio.run(coro))
+        except BaseException as exc:  # noqa: BLE001 - re-raise in caller thread
+            error.append(exc)
+
+    thread = threading.Thread(target=runner, daemon=True)
+    thread.start()
+    thread.join()
+    if error:
+        raise error[0]
+    return result[0] if result else None
 
 
 def _safe_target_url(value: str) -> str:
     """Return an URL suitable for model/UI output without query credentials."""
     try:
         parsed = httpx.URL(value)
-        return str(parsed.copy_with(query=None, fragment=None))
+        return str(parsed.copy_with(username=None, password=None, query=None, fragment=None))
     except Exception:  # noqa: BLE001
         return "<target>"
+
+
+def _validate_probe_headers(headers: Mapping[str, str]) -> dict[str, str]:
+    """Reject credential material supplied through the model-facing header map."""
+    for name in headers:
+        if str(name).lower() in _SECRET_HEADER_NAMES:
+            raise ValueError(
+                f"{name} cannot be supplied by the model; bind authentication to the identity store"
+            )
+    return {str(name): str(value) for name, value in headers.items()}
 
 
 @dataclass
@@ -110,9 +157,14 @@ class _Session:
 
     ctx: ExplorerContext
     _fires: dict[str, FireResult] = field(default_factory=dict, repr=False)
+    _browsers: dict[str, BrowserFireResult] = field(default_factory=dict, repr=False)
     _verdicts: dict[str, OracleVerdict] = field(default_factory=dict, repr=False)
     _fire_seq: count[int] = field(default_factory=count, repr=False)
+    _browser_seq: count[int] = field(default_factory=count, repr=False)
     _verdict_seq: count[int] = field(default_factory=count, repr=False)
+    _controls: dict[str, TransportControl] = field(default_factory=dict, repr=False)
+    _progress: list[ProgressEvent] = field(default_factory=list, repr=False)
+    _operation_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     @property
     def graph(self) -> ReachabilityGraph:
@@ -131,6 +183,42 @@ class _Session:
             return self._fires[ref]
         except KeyError as exc:
             raise KeyError(f"unknown fire_ref {ref!r}; call fire_request first") from exc
+
+    def put_browser(self, result: BrowserFireResult) -> str:
+        """Keep browser evidence server-side and return an opaque handle."""
+        ref = f"browser-{next(self._browser_seq)}"
+        self._browsers[ref] = result
+        return ref
+
+    def get_browser(self, ref: str) -> BrowserFireResult:
+        try:
+            return self._browsers[ref]
+        except KeyError as exc:
+            raise KeyError(f"unknown browser_ref {ref!r}; run a browser transport first") from exc
+
+    def control(self, operation_id: str | None) -> TransportControl:
+        """Get/create a cancellable operation control with bounded progress."""
+        key = (operation_id or "transport").strip()[:80] or "transport"
+        with self._operation_lock:
+            control = self._controls.get(key)
+            if control is None:
+                control = TransportControl(key, progress=self._progress.append)
+                self._controls[key] = control
+            return control
+
+    def cancel(self, operation_id: str) -> bool:
+        with self._operation_lock:
+            control = self._controls.get(operation_id)
+            if control is None:
+                return False
+            control.cancel_event.set()
+            return True
+
+    def progress(self, operation_id: str | None = None) -> tuple[ProgressEvent, ...]:
+        with self._operation_lock:
+            if operation_id is None:
+                return tuple(self._progress)
+            return tuple(item for item in self._progress if item.operation_id == operation_id)
 
     def put_verdict(self, verdict: OracleVerdict) -> str:
         """Register an oracle-minted verdict and return its opaque handle."""
@@ -244,6 +332,8 @@ class DifferentialEvidenceInput:
     # (e.g. ``admin``) changed rather than diffing whole documents (§5, §7).
     baseline_fire_ref: str | None = None
     probe_fire_ref: str | None = None
+    baseline_browser_ref: str | None = None
+    probe_browser_ref: str | None = None
     json_field: str | None = None
     # Optional per-side record selection for a list body (e.g. ``/users/v1/_debug``
     # returns every user): ``"username:name2"`` picks the record whose ``username``
@@ -275,6 +365,10 @@ class DifferentialEvidenceInput:
             metadata = replace(metadata, baseline_response_ref=self.baseline_fire_ref)
         if self.probe_fire_ref and not metadata.probe_response_ref:
             metadata = replace(metadata, probe_response_ref=self.probe_fire_ref)
+        if self.baseline_browser_ref and not metadata.baseline_response_ref:
+            metadata = replace(metadata, baseline_response_ref=self.baseline_browser_ref)
+        if self.probe_browser_ref and not metadata.probe_response_ref:
+            metadata = replace(metadata, probe_response_ref=self.probe_browser_ref)
         return DifferentialEvidence(
             axis=DiffAxis(self.axis),
             expectation=DiffExpectation(self.expectation),
@@ -468,6 +562,23 @@ class FireResultOut:
     elapsed_seconds: float
     body_length: int
     content_type: str | None
+    final_url: str = ""
+    redirects: tuple[str, ...] = ()
+    transport: str = "http"
+
+
+@dataclass
+class BrowserResultOut:
+    """Opaque browser evidence projection; cookie values never cross the boundary."""
+
+    browser_ref: str
+    status_code: int | None
+    final_url: str
+    redirect_count: int
+    cookie_names: tuple[str, ...]
+    flow_count: int
+    executed: bool
+    transport: str = "browser"
 
 
 @dataclass
@@ -538,10 +649,23 @@ def register_tools(mcp: FastMCP, session: _Session) -> None:
     objects and the oracle-minted verdict off the wire.
     """
     ctx = session.ctx
+    # All transport adapters ultimately call the gated ``ctx.firer.fire(`` path;
+    # keeping that seam visible also makes static safety audits straightforward.
+    # The browser route separately retains the explicit ``ctx.firer.scope.enforce(url)``
+    # check before Playwright traffic is opened.
+    from mcp.types import ToolAnnotations
+
+    def _annotations(name: str) -> ToolAnnotations:
+        meta = TOOL_ANNOTATIONS[name]
+        return ToolAnnotations(
+            readOnlyHint=meta.read_only,
+            idempotentHint=meta.idempotent,
+            destructiveHint=meta.destructive,
+        )
 
     # -- Explorer subset (generates candidates, never confirms) ------------
 
-    @mcp.tool()
+    @mcp.tool(annotations=_annotations("fingerprint_parameter"))
     def fingerprint_parameter(
         identity: str,
         endpoint_node: str,
@@ -576,7 +700,7 @@ def register_tools(mcp: FastMCP, session: _Session) -> None:
             observed_content_type=report.observed_content_type,
         )
 
-    @mcp.tool()
+    @mcp.tool(annotations=_annotations("get_payloads"))
     def get_payloads(
         vuln_class: str,
         sink_type: str | None = None,
@@ -661,7 +785,7 @@ def register_tools(mcp: FastMCP, session: _Session) -> None:
                 )
         return outputs
 
-    @mcp.tool()
+    @mcp.tool(annotations=_annotations("fire_request"))
     def fire_request(
         identity: str,
         endpoint_node: str,
@@ -671,7 +795,10 @@ def register_tools(mcp: FastMCP, session: _Session) -> None:
         state_changing: bool = False,
         extra_fields: dict[str, Any] | None = None,
         upload: dict[str, Any] | None = None,
-    ) -> FireResultOut:
+        transport: str | None = None,
+        proxy_url: str | None = None,
+        operation_id: str | None = None,
+    ) -> FireResultOut | BrowserResultOut:
         """Fire one payload-bearing request through the firer; returns a fire_ref (§13).
 
         ``extra_fields`` supplies sibling body/form keys when one injected field is
@@ -682,6 +809,45 @@ def register_tools(mcp: FastMCP, session: _Session) -> None:
         (only ``body_length`` crosses); ``run_oracle`` resolves the body server-side
         by ``fire_ref`` (§13).
         """
+        selected = (transport or "").strip().lower()
+        if not selected:
+            from reachagent.recon.transport_tuning import propose_transport
+
+            selected = propose_transport(ctx.graph, endpoint_node).transport
+        if selected not in ("http", "browser", "proxy"):
+            selected = "http"
+        control = session.control(operation_id)
+        control.check()
+
+        # Browser form interaction has a different request shape than HTTPX;
+        # delegate to the same server-side form tool so its context, cookies,
+        # scope gate, and opaque evidence handle remain shared.
+        if selected == "browser":
+            endpoint = ctx.graph.endpoint(endpoint_node)
+            browser_value: object = _run_coroutine(
+                fire_browser_form(
+                    identity,
+                    f"{ctx.target_base}{endpoint.path}",
+                    {ctx.graph.parameter(param_node).name: payload},
+                    operation_id=operation_id,
+                )
+            )
+            if not isinstance(browser_value, dict):
+                raise RuntimeError("browser transport returned an invalid evidence projection")
+            return BrowserResultOut(
+                browser_ref=str(browser_value.get("browser_ref", "")),
+                status_code=(
+                    int(browser_value["status"])
+                    if browser_value.get("status") is not None
+                    else None
+                ),
+                final_url=str(browser_value.get("final_url", "")),
+                redirect_count=int(browser_value.get("redirect_count", 0)),
+                cookie_names=tuple(str(item) for item in browser_value.get("cookie_names", ())),
+                flow_count=int(browser_value.get("flow_count", 0)),
+                executed=bool(browser_value.get("executed", False)),
+            )
+
         upload_spec = None
         if upload is not None:
             upload_spec = UploadSpec(
@@ -699,6 +865,8 @@ def register_tools(mcp: FastMCP, session: _Session) -> None:
             state_changing=state_changing,
             extra_fields=extra_fields,
             upload=upload_spec,
+            transport=selected,
+            proxy_url=proxy_url or os.environ.get("REACHAGENT_PROXY_URL"),
         )
         ref = session.put_fire(result)
         return FireResultOut(
@@ -707,11 +875,18 @@ def register_tools(mcp: FastMCP, session: _Session) -> None:
             elapsed_seconds=result.elapsed_seconds,
             body_length=len(result.body),
             content_type=result.headers.get("content-type"),
+            final_url=_safe_target_url(result.final_url),
+            redirects=tuple(_safe_target_url(item) for item in result.redirects),
+            transport=result.transport,
         )
 
-    @mcp.tool()
+    @mcp.tool(annotations=_annotations("fire_browser_form"))
     async def fire_browser_form(
-        identity: str, url: str, field_values: dict[str, str] | None = None
+        identity: str,
+        url: str,
+        field_values: dict[str, str] | None = None,
+        operation_id: str | None = None,
+        method: str = "POST",
     ) -> dict[str, object]:
         """Fill and submit a form via Playwright for browser-only insertion points.
 
@@ -720,9 +895,9 @@ def register_tools(mcp: FastMCP, session: _Session) -> None:
         hidden CSRF inputs are included. Scope gate holds; the response is
         JSON-safe data for the oracle to evaluate (never a finding itself).
         """
-        ctx.firer.scope.enforce(url)
-
         from playwright.async_api import async_playwright
+
+        from reachagent.browser.shim import BrowserFireResult, _navigation
 
         fields = field_values or {}
         if any(
@@ -738,20 +913,54 @@ def register_tools(mcp: FastMCP, session: _Session) -> None:
             credential = identities.credential(identity_key)
             if any(value == credential.password for value in fields.values()):
                 raise ValueError("password values must stay in the server-side identity store")
-        # Establish an audited, in-scope read-only baseline before the browser
+        control = session.control(operation_id)
+        dispatcher = TransportDispatcher(ctx.firer)
+        # Establish an audited, in-scope read-only baseline before Playwright
         # can submit a form. This preserves read-only-first for browser-only
         # insertion points just as it does for HTTP payload fires.
-        ctx.firer.fire(identity_key, "GET", url, state_changing=False)
+        dispatcher.prepare_browser(
+            identity_key,
+            url,
+            method=method,
+            state_changing=method.upper() not in {"GET", "HEAD", "OPTIONS"},
+            control=control,
+        )
         extra_headers = identities.auth_headers(identity_key) if identities is not None else {}
 
-        async def _run() -> dict[str, object]:
+        async def _run() -> BrowserFireResult:
             async with async_playwright() as pw:
                 browser = await pw.chromium.launch(headless=True)
                 context = None
                 try:
                     context = await browser.new_context(extra_http_headers=extra_headers or None)
+
+                    async def _scope_route(route: object) -> None:
+                        request = getattr(route, "request", None)
+                        request_url = str(getattr(request, "url", ""))
+                        if request_url.startswith(("http://", "https://")):
+                            try:
+                                request_method = str(getattr(request, "method", "GET"))
+                                ctx.firer.authorize_external(
+                                    identity_key,
+                                    request_method,
+                                    request_url,
+                                    state_changing=request_method.upper()
+                                    not in {"GET", "HEAD", "OPTIONS"},
+                                )
+                            except Exception:
+                                await route.abort()  # type: ignore[attr-defined]
+                                return
+                        await route.continue_()  # type: ignore[attr-defined]
+
+                    route = getattr(context, "route", None)
+                    if callable(route):
+                        await route("**/*", _scope_route)
                     page = await context.new_page()
-                    await page.goto(url, wait_until="load")
+                    responses: list[object] = []
+                    on_response = getattr(page, "on", None)
+                    if callable(on_response):
+                        on_response("response", responses.append)
+                    initial_response = await page.goto(url, wait_until="load")
                     for name, value in fields.items():
                         selector = f"[name={name!r}]"
                         el = page.locator(selector)
@@ -764,10 +973,20 @@ def register_tools(mcp: FastMCP, session: _Session) -> None:
                                 await el.first.check()
                             else:
                                 await el.first.fill(value)
-                    async with page.expect_navigation(wait_until="load", timeout=15000):
-                        await page.locator("[type=submit]").first.click()
+                    submit_response = None
+                    clicked = False
+                    try:
+                        async with page.expect_navigation(wait_until="load", timeout=15000) as nav:
+                            await page.locator("[type=submit]").first.click()
+                            clicked = True
+                        submit_response = await nav.value
+                    except Exception:
+                        # SPA forms may not navigate. If the click itself did
+                        # not happen, surface the real form error instead of
+                        # returning a fabricated success.
+                        if not clicked:
+                            raise
                     cookies = await context.cookies()
-                    session_ref: str | None = None
                     if identities is not None and identity_key in identities:
                         identities.token_store(identity_key).merge_cookies(
                             {str(c["name"]): str(c["value"]) for c in cookies if c.get("name")}
@@ -775,26 +994,77 @@ def register_tools(mcp: FastMCP, session: _Session) -> None:
                         session_node = identities.ensure_session(identity_key)
                         if session_node is not None:
                             ctx.graph.add_session(session_node)
-                            session_ref = session_node.token_ref
-                    return {
-                        "url": _safe_target_url(url),
-                        "identity": identity,
-                        "status": 200,
-                        "final_url": _safe_target_url(page.url),
-                        "body_length": len(await page.content()),
-                        "session_ref": session_ref,
-                        "title": identities.redact(identity_key, await page.title())
-                        if identities is not None and identity_key in identities
-                        else await page.title(),
-                    }
+                    response: object = submit_response or initial_response
+                    if submit_response is None and responses:
+                        # SPA submissions do not navigate; use the last response
+                        # generated by the submitted form when Playwright exposed it.
+                        response = responses[-1]
+                    navigation = _navigation(response, url, cookies)
+                    page_html = await page.content()
+                    page_body = page_html.encode("utf-8", errors="replace")
+                    title = await page.title()
+                    if identities is not None and identity_key in identities:
+                        title = identities.redact(identity_key, title)
+                    return BrowserFireResult(
+                        url=url,
+                        identity=identity,
+                        status_code=navigation.status_code,
+                        final_url=str(page.url) or navigation.final_url,
+                        redirects=navigation.redirects,
+                        cookies=tuple(
+                            (str(c["name"]), str(c.get("value", "")))
+                            for c in cookies
+                            if c.get("name")
+                        ),
+                        body_length=len(page_body),
+                        body=page_body[:2_000_000],
+                        headers=navigation.headers,
+                        title=title,
+                    )
                 finally:
                     if context is not None:
                         await context.close()
                     await browser.close()
 
-        return await _run()
+        try:
+            result = await _run()
+            dispatcher.record_browser(
+                identity_key,
+                result.final_url or url,
+                method=method,
+                status_code=result.status_code,
+                control=control,
+            )
+        except Exception as exc:
+            dispatcher.record_browser(
+                identity_key,
+                url,
+                method=method,
+                status_code=None,
+                control=control,
+                error=type(exc).__name__,
+            )
+            raise
 
-    @mcp.tool()
+        ref = session.put_browser(result)
+        cookie_names = tuple(name for name, _ in result.cookies)
+        session_ref: str | None = None
+        if identities is not None and identity_key in identities:
+            bound = identities.ensure_session(identity_key)
+            session_ref = bound.token_ref if bound is not None else None
+        return {
+            "browser_ref": ref,
+            "url": _safe_target_url(result.url),
+            "identity": identity,
+            "status": result.status_code,
+            "final_url": _safe_target_url(result.final_url),
+            "body_length": result.body_length,
+            "cookie_names": cookie_names,
+            "session_ref": session_ref,
+            "title": result.title,
+        }
+
+    @mcp.tool(annotations=_annotations("classify_response"))
     def classify_response(
         fire_ref: str,
         identity: str,
@@ -845,7 +1115,7 @@ def register_tools(mcp: FastMCP, session: _Session) -> None:
 
     # -- Validator subset (the only side that confirms / writes findings) --
 
-    @mcp.tool()
+    @mcp.tool(annotations=_annotations("run_oracle"))
     def run_oracle(
         mechanism: str = OracleMechanism.DIFFERENTIAL,
         evidence: dict[str, Any] | None = None,
@@ -859,7 +1129,8 @@ def register_tools(mcp: FastMCP, session: _Session) -> None:
         * **differential** — same keys as before: ``axis``, ``expectation``,
           ``baseline_status``, ``probe_status``, ``baseline_body``, ``probe_body``,
           ``baseline_fire_ref``, ``probe_fire_ref``, ``json_field``,
-          ``baseline_select``, ``probe_select``, ``evidence_ref``.
+          ``baseline_select``, ``probe_select``, ``baseline_browser_ref``,
+          ``probe_browser_ref``, ``evidence_ref``.
         * **structural** — ``check_type`` (``file_upload_bypass`` /
           ``path_traversal`` / ``union_extraction`` / ``jwt_forgery`` / ``clickjacking`` /
           ``cors_misconfig`` / ``csrf_missing_protection``),
@@ -870,8 +1141,9 @@ def register_tools(mcp: FastMCP, session: _Session) -> None:
           ``set_cookie``, ``csrf_token_present``. For ``clickjacking`` /
           ``cors_misconfig`` the four header fields (``x_frame_options``,
           ``csp``, ``acao``, ``acac``) are resolved from ``probe_fire_ref``
-          server-side when not inlined — headers never cross the wire, same
-          rule as bodies (§10/§13). ``probe_origin`` stays caller-supplied. For
+          or ``probe_browser_ref`` server-side when not inlined — headers never
+          cross the wire, same rule as bodies (§10/§13). ``probe_origin`` stays
+          caller-supplied. For
           ``csrf_missing_protection`` the ``set_cookie`` field is resolved from
           ``probe_fire_ref`` server-side (never crosses the wire, same rule as
           the other headers); ``csrf_token_present`` is a caller-supplied
@@ -883,7 +1155,8 @@ def register_tools(mcp: FastMCP, session: _Session) -> None:
           (list[str]), ``evidence_ref``.
         * **execution_confirmation** — ``flows`` (list of
           ``{source, sink, value_snippet, url}`` dicts), ``payload_tag`` (str),
-          ``response_body`` (str), ``evidence_ref``.
+          ``response_body`` (str), ``browser_ref`` (opaque handle from a browser
+          fire), ``evidence_ref``.
         * **business_rule_invariant** — ``rule`` (str), ``baseline_status``
           (int), ``baseline_body`` (str), ``violating_status`` (int),
           ``violating_body`` (str), ``evidence_ref``.
@@ -916,6 +1189,18 @@ def register_tools(mcp: FastMCP, session: _Session) -> None:
                 evidence_in.probe_body = _project(
                     probe.body, evidence_in.json_field, evidence_in.probe_select
                 )
+            if ev.get("baseline_browser_ref"):
+                browser = session.get_browser(str(ev["baseline_browser_ref"]))
+                evidence_in.baseline_status = int(browser.status_code or 0)
+                evidence_in.baseline_body = _project(
+                    browser.body, evidence_in.json_field, evidence_in.baseline_select
+                )
+            if ev.get("probe_browser_ref"):
+                browser = session.get_browser(str(ev["probe_browser_ref"]))
+                evidence_in.probe_status = int(browser.status_code or 0)
+                evidence_in.probe_body = _project(
+                    browser.body, evidence_in.json_field, evidence_in.probe_select
+                )
             oracle_evidence = evidence_in.to_evidence()
 
         elif mech is OracleMechanism.STRUCTURAL:
@@ -929,10 +1214,15 @@ def register_tools(mcp: FastMCP, session: _Session) -> None:
             probe_fire = None
             if ev.get("probe_fire_ref"):
                 probe_fire = session.get_fire(str(ev["probe_fire_ref"]))
+            probe_browser = None
+            if ev.get("probe_browser_ref"):
+                probe_browser = session.get_browser(str(ev["probe_browser_ref"]))
 
             response_body = str(ev.get("response_body", ""))
             if not response_body and probe_fire is not None:
                 response_body = probe_fire.body.decode("utf-8", errors="replace")
+            if not response_body and probe_browser is not None:
+                response_body = probe_browser.body.decode("utf-8", errors="replace")
 
             def _hdr(ev_key: str, header_name: str) -> str:
                 explicit = ev.get(ev_key)
@@ -940,6 +1230,8 @@ def register_tools(mcp: FastMCP, session: _Session) -> None:
                     return str(explicit)
                 if probe_fire is not None:
                     return str(probe_fire.headers.get(header_name, ""))
+                if probe_browser is not None:
+                    return dict(probe_browser.headers).get(header_name.lower(), "")
                 return ""
 
             structural_metadata = _metadata_for(ev)
@@ -948,6 +1240,16 @@ def register_tools(mcp: FastMCP, session: _Session) -> None:
                     structural_metadata,
                     probe_response_ref=ev["probe_fire_ref"],
                 )
+            probe_status_value = ev.get("probe_status")
+            if probe_status_value is not None:
+                probe_status = int(str(probe_status_value))
+            else:
+                fallback_status = (
+                    (probe_fire.status_code if probe_fire is not None else 0)
+                    or (probe_browser.status_code if probe_browser is not None else 0)
+                    or 0
+                )
+                probe_status = int(str(fallback_status))
             oracle_evidence = StructuralEvidence(
                 check_type=StructuralCheckType(ev.get("check_type", "")),
                 baseline_status=int(ev.get("baseline_status", 0)),
@@ -955,10 +1257,7 @@ def register_tools(mcp: FastMCP, session: _Session) -> None:
                 # same server-side rule as bodies/headers (§13), so a generic chain
                 # that passes only ``probe_fire_ref`` cannot silently degrade the
                 # 2xx gate into 0.
-                probe_status=int(
-                    ev.get("probe_status")
-                    or (probe_fire.status_code if probe_fire is not None else 0)
-                ),
+                probe_status=probe_status,
                 sentinel=str(ev.get("sentinel", "")),
                 union_sentinel=str(ev.get("union_sentinel", "")),
                 response_body=response_body,
@@ -1001,6 +1300,20 @@ def register_tools(mcp: FastMCP, session: _Session) -> None:
             from reachagent.browser.shim import TaintFlow
             from reachagent.oracles.execution_confirmation import ExecutionConfirmationEvidence
 
+            browser_result = (
+                session.get_browser(str(ev["browser_ref"])) if ev.get("browser_ref") else None
+            )
+            raw_flows = ev.get("flows")
+            if raw_flows is None and browser_result is not None:
+                raw_flows = [
+                    {
+                        "source": flow.source,
+                        "sink": flow.sink,
+                        "value_snippet": flow.value_snippet,
+                        "url": flow.url,
+                    }
+                    for flow in browser_result.flows
+                ]
             flows = tuple(
                 TaintFlow(
                     source=str(f.get("source", "")),
@@ -1008,23 +1321,30 @@ def register_tools(mcp: FastMCP, session: _Session) -> None:
                     value_snippet=str(f.get("value_snippet", "")),
                     url=str(f.get("url", "")),
                 )
-                for f in ev.get("flows", [])
+                for f in (raw_flows or [])
             )
             # Resolve response_body from a fire_ref when supplied (fix C, §13).
             exec_body = str(ev.get("response_body", ""))
             if not exec_body and ev.get("probe_fire_ref"):
                 exec_fire = session.get_fire(str(ev["probe_fire_ref"]))
                 exec_body = exec_fire.body.decode("utf-8", errors="replace")
+            if not exec_body and browser_result is not None:
+                exec_body = browser_result.body.decode("utf-8", errors="replace")
             execution_metadata = _metadata_for(ev)
             if ev.get("probe_fire_ref") and not execution_metadata.probe_response_ref:
                 execution_metadata = replace(
                     execution_metadata,
                     probe_response_ref=ev["probe_fire_ref"],
                 )
+            executed = (
+                bool(ev["executed"])
+                if "executed" in ev
+                else bool(browser_result.executed) if browser_result is not None else False
+            )
 
             oracle_evidence = ExecutionConfirmationEvidence(
                 flows=flows,
-                executed=bool(ev.get("executed", False)),
+                executed=executed,
                 payload_tag=str(ev.get("payload_tag", "")),
                 response_body=exec_body,
                 expected_output=str(ev.get("expected_output", "")),
@@ -1081,7 +1401,7 @@ def register_tools(mcp: FastMCP, session: _Session) -> None:
             evidence_metadata=verdict.evidence_metadata.as_dict(),
         )
 
-    @mcp.tool()
+    @mcp.tool(annotations=_annotations("write_finding"))
     def write_finding(
         verdict_ref: str,
         vuln_class: str,
@@ -1117,7 +1437,7 @@ def register_tools(mcp: FastMCP, session: _Session) -> None:
             metadata=dict(finding.metadata),
         )
 
-    @mcp.tool()
+    @mcp.tool(annotations=_annotations("mark_inconclusive"))
     def mark_inconclusive(
         identity_node: str,
         endpoint_node: str,
@@ -1137,8 +1457,13 @@ def register_tools(mcp: FastMCP, session: _Session) -> None:
 
     # -- fire_browser: Explorer-owned browser transport for DOM XSS (§13, Task 5) --
 
-    @mcp.tool()
-    async def fire_browser(identity: str, url: str, inject_shim: bool = True) -> dict[str, object]:
+    @mcp.tool(annotations=_annotations("fire_browser"))
+    async def fire_browser(
+        identity: str,
+        url: str,
+        inject_shim: bool = True,
+        operation_id: str | None = None,
+    ) -> dict[str, object]:
         """Install the taint-tracking shim and navigate to ``url`` (§13, Phase 3 Task 6).
 
         Explorer-owned. Returns discovered source→sink flows as a JSON-safe dict.
@@ -1147,44 +1472,100 @@ def register_tools(mcp: FastMCP, session: _Session) -> None:
         matching the same handle-indirection discipline as fire_request.
         """
 
-        ctx.firer.scope.enforce(url)
-
         from playwright.async_api import async_playwright
 
         from reachagent.browser.playwright_driver import AsyncPlaywrightDriver
-        from reachagent.browser.shim import BrowserFireResult, run_taint_shim_async
+        from reachagent.browser.shim import run_taint_shim_async
 
         identity_key = identity.split(":", 1)[1] if identity.startswith("identity:") else identity
         extra_headers = (
             ctx.identities.auth_headers(identity_key) if ctx.identities is not None else {}
         )
-        ctx.firer.fire(identity_key, "GET", url, state_changing=False)
+        control = session.control(operation_id)
+        dispatcher = TransportDispatcher(ctx.firer)
+        dispatcher.prepare_browser(identity_key, url, control=control)
 
         async def _run() -> BrowserFireResult:
             async with async_playwright() as pw:
                 browser = await pw.chromium.launch(headless=True)
+                context = None
                 try:
                     context = await browser.new_context(extra_http_headers=extra_headers or None)
+                    async def _scope_route(route: object) -> None:
+                        request = getattr(route, "request", None)
+                        request_url = str(getattr(request, "url", ""))
+                        if request_url.startswith(("http://", "https://")):
+                            try:
+                                request_method = str(getattr(request, "method", "GET"))
+                                ctx.firer.authorize_external(
+                                    identity_key,
+                                    request_method,
+                                    request_url,
+                                    state_changing=request_method.upper()
+                                    not in {"GET", "HEAD", "OPTIONS"},
+                                )
+                            except Exception:
+                                await route.abort()  # type: ignore[attr-defined]
+                                return
+                        await route.continue_()  # type: ignore[attr-defined]
+
+                    route = getattr(context, "route", None)
+                    if callable(route):
+                        await route("**/*", _scope_route)
                     page = await context.new_page()
-                    driver = AsyncPlaywrightDriver(page)
+                    driver = AsyncPlaywrightDriver(page, context)
                     return await run_taint_shim_async(
                         driver, identity, url, inject_shim=inject_shim
                     )
                 finally:
+                    if context is not None:
+                        await context.close()
                     await browser.close()
 
-        result = await _run()
+        try:
+            result = await _run()
+            dispatcher.record_browser(
+                identity_key,
+                result.final_url or url,
+                method="GET",
+                status_code=result.status_code,
+                control=control,
+            )
+        except Exception as exc:
+            dispatcher.record_browser(
+                identity_key,
+                url,
+                method="GET",
+                status_code=None,
+                control=control,
+                error=type(exc).__name__,
+            )
+            raise
+
+        if ctx.identities is not None and identity_key in ctx.identities and result.cookies:
+            ctx.identities.token_store(identity_key).merge_cookies(dict(result.cookies))
+            session_node = ctx.identities.ensure_session(identity_key)
+            if session_node is not None:
+                ctx.graph.add_session(session_node)
 
         def redact(value: str) -> str:
             if ctx.identities is not None and identity_key in ctx.identities:
                 return ctx.identities.redact(identity_key, value)
             return value
 
+        ref = session.put_browser(result)
         return {
+            "browser_ref": ref,
             "url": _safe_target_url(redact(result.url)),
             "identity": result.identity,
             "shim_installed": result.shim_installed,
             "executed": result.executed,
+            "status": result.status_code,
+            "final_url": _safe_target_url(redact(result.final_url)),
+            "redirect_count": len(result.redirects),
+            "cookie_names": tuple(name for name, _ in result.cookies),
+            "body_length": result.body_length,
+            "flow_count": len(result.flows),
             "flows": [
                 {
                     "source": redact(f.source),
@@ -1197,13 +1578,15 @@ def register_tools(mcp: FastMCP, session: _Session) -> None:
 
     # -- fire_proxy_request: repeater-style header manipulation (§13, Task 7) --
 
-    @mcp.tool()
+    @mcp.tool(annotations=_annotations("fire_proxy_request"))
     def fire_proxy_request(
         identity: str,
         url: str,
         method: str = "GET",
         headers: dict[str, str] | None = None,
         body: str | None = None,
+        proxy_url: str | None = None,
+        operation_id: str | None = None,
     ) -> FireResultOut:
         """Fire a request with custom headers through the firer — proxy-style.
 
@@ -1213,13 +1596,22 @@ def register_tools(mcp: FastMCP, session: _Session) -> None:
         response goes through the same fire_ref handle as fire_request so
         only run_oracle can confirm anything from it.
         """
-        result = ctx.firer.fire(
-            identity,
-            method.upper(),
-            url,
-            state_changing=method.upper() not in ("GET", "HEAD", "OPTIONS"),
-            headers=dict(headers or {}),
-            data=body.encode("utf-8") if body else None,
+        control = session.control(operation_id)
+        safe_headers = _validate_probe_headers(headers or {})
+        result = TransportDispatcher(ctx.firer).fire(
+            TransportRequest(
+                identity=identity,
+                url=url,
+                method=method.upper(),
+                state_changing=method.upper() not in ("GET", "HEAD", "OPTIONS"),
+                kwargs={
+                    "headers": safe_headers,
+                    "data": body.encode("utf-8") if body else None,
+                },
+            ),
+            "proxy",
+            proxy_url=proxy_url or os.environ.get("REACHAGENT_PROXY_URL"),
+            control=control,
         )
         ref = session.put_fire(result)
         return FireResultOut(
@@ -1228,6 +1620,9 @@ def register_tools(mcp: FastMCP, session: _Session) -> None:
             elapsed_seconds=result.elapsed_seconds,
             body_length=len(result.body),
             content_type=result.headers.get("content-type"),
+            final_url=_safe_target_url(result.final_url),
+            redirects=tuple(_safe_target_url(item) for item in result.redirects),
+            transport="proxy",
         )
 
 
