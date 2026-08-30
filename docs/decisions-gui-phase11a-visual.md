@@ -217,6 +217,20 @@ No files were deleted. The pre-existing untracked `docs/payload.json` and
 ignored Playwright output were not staged or modified. No frontend dependency was
 added; native HTML/CSS/DOM remains the smallest working implementation.
 
+## Phase 11 re-verification
+
+On 2026-08-30 the production GUI was started from a clean server process and
+checked again without modifying scan state. Focused tests remained **22 passed**;
+inline JavaScript, Ruff, and full-tree strict-optional mypy remained clean.
+Playwright rechecked the launch form (including empty-target validation),
+provider settings, desktop and mobile overflow, theme switching, browser
+console, and the two-record parallel preview. Fresh captures are
+`output/playwright/phase11-reverify-desktop.png`,
+`output/playwright/phase11-reverify-mobile.png`, and
+`output/playwright/phase11-reverify-parallel-selected.png`; the console reported
+zero errors and zero warnings. No scan was launched against an external target
+during this UI-only verification.
+
 ## Installed skills
 
 The curated `figma-implement-design`, `playwright-interactive`, and `screenshot`
