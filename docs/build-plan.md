@@ -496,7 +496,7 @@ including mutating and GraphQL requests, calls `RequestFirer.fire`, so scope,
 read-only-first, and audit gates run before network I/O. Probe steps require an
 existing differential or business-rule oracle; controls and observations are
 never findings, and no stateful module imports or writes `Finding`. The focused
-gate passed 16 tests; changed-module Ruff and strict mypy checks passed. No files
+gate passed 17 tests; changed-module Ruff and strict mypy checks passed. No files
 were deleted. The whole-tree test suite remains reserved for the plan's final
 release gate.
 

@@ -210,7 +210,7 @@ reference-name scan was clean.
 Focused checks:
 
 ```text
-uv run pytest -q tests/phase7/test_stateful_exploration.py  # 16 passed
+uv run pytest -q tests/phase7/test_stateful_exploration.py  # 17 passed
 uv run ruff format --check ...                             # passed
 uv run ruff check ...                                      # passed
 uv run mypy src/reachagent/stateful src/reachagent/graph/... # passed

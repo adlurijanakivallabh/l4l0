@@ -15,6 +15,7 @@ from reachagent.graph.nodes import Endpoint, Parameter, Protocol
 from reachagent.graph.persistence import dump_graph, load_graph
 from reachagent.graph.store import ReachabilityGraph
 from reachagent.oracles import OracleMechanism
+from reachagent.oracles.business_rule import BusinessRule
 from reachagent.oracles.differential import DiffExpectation
 from reachagent.stateful import (
     ObservedExchange,
@@ -464,6 +465,40 @@ def test_probe_outcome_is_checked_by_existing_differential_oracle() -> None:
     assert result.oracle_outcome is not None
     assert result.oracle_outcome.is_violation is True
     assert result.oracle_outcome.status == "confirmed_violation"
+    assert any(entry.method == "ORACLE" for entry in audit.entries)
+
+
+def test_probe_outcome_is_checked_by_existing_business_rule_oracle() -> None:
+    graph = ReachabilityGraph()
+    endpoint = graph.add_endpoint(Endpoint(method="GET", path="/redeem"))
+    calls = 0
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(200, json={"redeemed": True})
+
+    firer, audit = _firer(handler)
+    plan = StatefulPlan(
+        rationale="replay a single-use action and compare the second acceptance",
+        steps=(
+            StatefulStep(endpoint, role=SequenceRole.CONTROL, label="first-use"),
+            StatefulStep(endpoint, role=SequenceRole.PROBE, label="replay"),
+        ),
+        oracle_check=StatefulOracleCheck(
+            mechanism=OracleMechanism.BUSINESS_RULE_INVARIANT,
+            baseline_step=0,
+            probe_step=1,
+            rule=BusinessRule.SINGLE_USE_REUSE,
+            evidence_ref="stateful/redeem",
+        ),
+    )
+    result = StatefulExecution(graph, firer, base_url="https://api.test", identity="guest").run(
+        plan
+    )
+    assert calls == 2
+    assert result.oracle_outcome is not None
+    assert result.oracle_outcome.is_violation is True
     assert any(entry.method == "ORACLE" for entry in audit.entries)
 
 
