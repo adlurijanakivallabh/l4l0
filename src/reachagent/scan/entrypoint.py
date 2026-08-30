@@ -412,6 +412,9 @@ def scan_target(
     scope = ScopeGuard.from_raw(in_scope, out_of_scope)
 
     resumed = resume_path is not None
+    # A resume run must checkpoint back to its source when no replacement path
+    # was supplied. In-memory scans keep the historical zero-I/O behavior.
+    checkpoint_path = state_path or resume_path
     if resumed:
         from reachagent.graph.persistence import load_graph
 
@@ -447,6 +450,41 @@ def scan_target(
         identity_headers=identity_headers,
         identity_stores=identities,
     )
+
+    checkpoint_revision = 0
+
+    def _checkpoint(
+        phase: str,
+        *,
+        status: str = "running",
+        iteration: int = 0,
+        completed_tools: Iterable[str] = (),
+        pending_tools: Iterable[str] = (),
+        last_error: str | None = None,
+    ) -> None:
+        """Atomically persist bounded scheduling state when configured."""
+        nonlocal checkpoint_revision
+        if checkpoint_path is None:
+            return
+        from reachagent.graph.persistence import dump_graph
+
+        checkpoint_revision += 1
+        dump_graph(
+            g,
+            solver,
+            a,
+            checkpoint_path,
+            phase_state={
+                "run_id": "scan",
+                "phase": phase,
+                "status": status,
+                "iteration": iteration,
+                "revision": checkpoint_revision,
+                "completed_tools": list(completed_tools),
+                "pending_tools": list(pending_tools),
+                "last_error": last_error,
+            },
+        )
 
     def _tool_event(
         tool_name: str,
@@ -525,9 +563,15 @@ def scan_target(
         from reachagent.identity.store import IdentityStore
         from reachagent.recon.mapper import SurfaceMapper, SurfaceSpec
 
-        SurfaceMapper(g, firer, identities or IdentityStore(), base_url).map_structure(
-            SurfaceSpec.from_file(surface_path)
-        )
+        _checkpoint("surface", pending_tools=("surface",))
+        try:
+            SurfaceMapper(g, firer, identities or IdentityStore(), base_url).map_structure(
+                SurfaceSpec.from_file(surface_path)
+            )
+        except Exception as exc:  # noqa: BLE001 — persist mapper failure state
+            _checkpoint("surface", status="errored", last_error=type(exc).__name__)
+            raise
+        _checkpoint("surface", status="completed", completed_tools=("surface",))
 
     if not resumed:
         # Recon dispatch by target type (D2): host-shaped targets skip subdomain
@@ -668,6 +712,8 @@ def scan_target(
         completed_names: list[str] = []
         runners: dict[str, Any] = {}
 
+        _checkpoint("recon", pending_tools=pending_names)
+
         def _selection_values(selection: object) -> tuple[tuple[str, ...], bool, str]:
             """Read a validated callback result without importing planner types."""
 
@@ -737,6 +783,11 @@ def scan_target(
                     runner.resolve = dns_resolve
             target_arg = base_url if name in _URL_TOOLS else target_host
             _tool_event(name, "starting")
+            _checkpoint(
+                "recon",
+                completed_tools=completed_names,
+                pending_tools=(name, *pending_names),
+            )
             if fixtures is not None:
                 raw = fixtures.get(name, "")
                 if not raw:
@@ -751,10 +802,20 @@ def scan_target(
                         detail=ingest_result.detail,
                     )
             elif not dry_run:
-                run_result = runner.run(
-                    target_arg,
-                    environ={"REACHAGENT_RECON_LIVE": "1"} if live_recon else None,
-                )
+                try:
+                    run_result = runner.run(
+                        target_arg,
+                        environ={"REACHAGENT_RECON_LIVE": "1"} if live_recon else None,
+                    )
+                except Exception as exc:  # noqa: BLE001 — persist retryable tool failure
+                    _checkpoint(
+                        "recon",
+                        status="errored",
+                        completed_tools=completed_names,
+                        pending_tools=(name, *pending_names),
+                        last_error=type(exc).__name__,
+                    )
+                    raise
                 _tool_event(
                     name,
                     run_result.outcome.value,
@@ -764,6 +825,11 @@ def scan_target(
             completed_names.append(name)
             if name not in selected_recon_tools:
                 selected_recon_tools += (name,)
+            _checkpoint(
+                "recon",
+                completed_tools=completed_names,
+                pending_tools=pending_names,
+            )
 
             if recon_selector is None:
                 continue
@@ -802,7 +868,18 @@ def scan_target(
         # Bind configured identities before spec/API mapping so every subsequent
         # endpoint probe carries the selected isolated session.
         if not dry_run:
-            _authenticate_configured()
+            _checkpoint("auth", completed_tools=completed_names, pending_tools=("auth",))
+            try:
+                _authenticate_configured()
+            except Exception as exc:  # noqa: BLE001 — persist blocked auth state
+                _checkpoint(
+                    "auth",
+                    status="errored",
+                    completed_tools=completed_names,
+                    last_error=type(exc).__name__,
+                )
+                raise
+            _checkpoint("auth", status="completed", completed_tools=completed_names)
 
         # Spec-first API discovery (Task 27, live only — it fires read-only GET
         # probes). After --surface seeding and cold-start recon, before the
@@ -811,7 +888,17 @@ def scan_target(
         if not dry_run:
             from reachagent.recon.api_discovery import discover_api
 
-            discovery = discover_api(g, firer, base_url)
+            _checkpoint("endpoints", completed_tools=completed_names, pending_tools=("api",))
+            try:
+                discovery = discover_api(g, firer, base_url)
+            except Exception as exc:  # noqa: BLE001 — persist retryable discovery failure
+                _checkpoint(
+                    "endpoints",
+                    status="errored",
+                    completed_tools=completed_names,
+                    last_error=type(exc).__name__,
+                )
+                raise
             if discovery is None:
                 _tool_event(
                     "surface-mapper",
@@ -830,11 +917,18 @@ def scan_target(
                     scripts=discovery.scripts_parsed,
                     forms=discovery.forms_found,
                 )
+            _checkpoint("endpoints", status="completed", completed_tools=completed_names)
 
     # On resume there is no cold-start block above; authenticate before the
     # coordinator replays any unexplored endpoint. Dry runs never submit creds.
     if resumed and not dry_run:
-        _authenticate_configured()
+        _checkpoint("auth", pending_tools=("auth",))
+        try:
+            _authenticate_configured()
+        except Exception as exc:  # noqa: BLE001 — persist blocked auth state
+            _checkpoint("auth", status="errored", last_error=type(exc).__name__)
+            raise
+        _checkpoint("auth", status="completed")
 
     from reachagent.tools.explorer_context import ExplorerContext
 
@@ -856,18 +950,24 @@ def scan_target(
         from reachagent.graph.nodes import Session as _SessionNode
         from reachagent.graph.store import identity_id as _identity_id
 
-        for _f_node, f_data in g.findings():
-            if f_data.status is not FindingStatus.CONFIRMED_VIOLATION:
-                continue
-            for from_finding, spawned in g.derived_credential_edges():
-                if from_finding != _f_node:
+        _checkpoint("recover", pending_tools=("derived-credentials",))
+        try:
+            for _f_node, f_data in g.findings():
+                if f_data.status is not FindingStatus.CONFIRMED_VIOLATION:
                     continue
-                data = g._g.nodes[spawned].get("data")
-                if isinstance(data, _SessionNode):
-                    target = _identity_id(data.identity_ref)
-                else:
-                    target = spawned
-                solver.recover_derived(target, path_id="scan")
+                for from_finding, spawned in g.derived_credential_edges():
+                    if from_finding != _f_node:
+                        continue
+                    data = g._g.nodes[spawned].get("data")
+                    if isinstance(data, _SessionNode):
+                        target = _identity_id(data.identity_ref)
+                    else:
+                        target = spawned
+                    solver.recover_derived(target, path_id="scan")
+        except Exception as exc:  # noqa: BLE001 — persist retryable recovery failure
+            _checkpoint("recover", status="errored", last_error=type(exc).__name__)
+            raise
+        _checkpoint("recover", status="completed")
 
     # Seed every configured identity into the same graph the Coordinator reads.
     # The old path always created only ``seed`` here, so a GUI-provided identity
@@ -914,6 +1014,11 @@ def scan_target(
                 )
 
     if dry_run:
+        _checkpoint(
+            "planning",
+            status="completed",
+            completed_tools=selected_recon_tools,
+        )
         return {
             "dry_run": True,
             "plan": plan,
@@ -950,6 +1055,7 @@ def scan_target(
     while iterations < max_iterations and solver.budget_remaining("scan") > 0:
         check_cancel(cancel_check)
         iterations += 1
+        _checkpoint("payloads", iteration=iterations)
         cands = _coordinator.query_graph(context)
         if resumed:
             # Resume honors "don't replay what was decided": an INCONCLUSIVE
@@ -1072,21 +1178,33 @@ def scan_target(
         for vc in ranked_classes:
             check_cancel(cancel_check)
             _log.debug("trying vuln_class=%s on %s", vc, sel.endpoint_node)
-            result = _pc.run_payload_chain(
-                _caller,
-                identity=sel.identity_node,
-                endpoint_node=sel.endpoint_node,
-                param_node=param_node,
-                vuln_class=vc,
-                baseline_payload=baseline_payload,
-                method=selected_endpoint.method,
-                payload_context=payload_context,
-                # Mutations are opt-in from the LLM payload proposal; the
-                # default chain remains one parent reference per bucket.
-                mutation_limit=0,
-                max_attempts=max_attempts,
-                on_event=_on_chain_event,
-            )
+            try:
+                result = _pc.run_payload_chain(
+                    _caller,
+                    identity=sel.identity_node,
+                    endpoint_node=sel.endpoint_node,
+                    param_node=param_node,
+                    vuln_class=vc,
+                    baseline_payload=baseline_payload,
+                    method=selected_endpoint.method,
+                    payload_context=payload_context,
+                    # Mutations are opt-in from the LLM payload proposal; the
+                    # default chain remains one parent reference per bucket.
+                    mutation_limit=0,
+                    max_attempts=max_attempts,
+                    on_event=_on_chain_event,
+                )
+            except Exception as exc:  # noqa: BLE001 — preserve retryable chain failure
+                _checkpoint(
+                    "payloads",
+                    status="errored",
+                    iteration=iterations,
+                    last_error=type(exc).__name__,
+                )
+                raise
+            # Persist the oracle result immediately; a crash after a confirmed
+            # or inconclusive decision must not turn it into a replay.
+            _checkpoint("payloads", iteration=iterations)
             if result.confirmed and result.finding_node:
                 break
         if result is not None and result.confirmed and result.finding_node:
@@ -1103,12 +1221,12 @@ def scan_target(
         # would violate the recon-facts-only invariant (a dead endpoint is not a
         # negative finding; retrying it on a later resume is acceptable).
 
-    if state_path is not None:
-        # Persist run state at the end of a live run (D6) — atomic JSON, so the
-        # next resume continues from here.
-        from reachagent.graph.persistence import dump_graph
-
-        dump_graph(g, solver, a, state_path)
+    _checkpoint(
+        "completed",
+        status="completed",
+        iteration=iterations,
+        completed_tools=selected_recon_tools,
+    )
 
     return {
         "dry_run": False,

@@ -60,7 +60,9 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import tempfile
+from collections.abc import Mapping
 from dataclasses import asdict
 from datetime import datetime
 from enum import StrEnum
@@ -93,6 +95,17 @@ from reachagent.graph.store import (
 )
 
 _VERSION = 1
+_MAX_AUDIT_ENTRIES = 2_000
+_HANDLE = re.compile(r"\b(?:fire|browser|verdict)-[A-Za-z0-9._:-]+\b")
+_SECRET = re.compile(
+    r"(?i)(?:bearer\s+[^\s,;\}\"]+|[\"']?(?:password|passwd|secret|token|"
+    r"api[_-]?key|access[_-]?token|refresh[_-]?token|id[_-]?token|csrf[_-]?token|"
+    r"cookie|authorization)[\"']?\s*[:=]\s*[\"']?(?:bearer\s+)?[^\s,;}\"']+)"
+)
+_SENSITIVE_KEY = re.compile(
+    r"(?i)(?:password|passwd|secret|authorization|cookie|csrf|api[_-]?key|access[_-]?token|"
+    r"refresh[_-]?token|id[_-]?token|bearer)"
+)
 
 
 class PersistenceError(RuntimeError):
@@ -128,18 +141,87 @@ def _serialize_edges(graph: ReachabilityGraph) -> list[dict[str, object]]:
 
     StrEnum attrs (can_call ``status``) serialize as their string value via JSON;
     determinism comes from sorting by (src, dst, key) and the single-edge-per-pair
-    can_call slot. ``attrs`` are stored raw — the only edge carrying attrs is
-    ``can_call`` (status + evidence).
+    can_call slot. Evidence is projected through the same secret/handle scrubber
+    as node fields; edge attributes are part of the durable trust boundary too.
     """
     out: list[dict[str, object]] = []
     for src, dst, key, attrs in graph._g.edges(keys=True, data=True):  # noqa: SLF001 — raw store access, same package
-        out.append({"src": src, "dst": dst, "key": key, "attrs": dict(attrs)})
+        out.append(
+            {
+                "src": _safe_text(src),
+                "dst": _safe_text(dst),
+                "key": key,
+                "attrs": _safe_value(dict(attrs)),
+            }
+        )
     out.sort(key=lambda e: (str(e["src"]), str(e["dst"]), str(e["key"])))
     return out
 
 
+def _safe_text(value: object, *, handles: bool = True) -> str:
+    """Bound persisted text and remove credentials/ephemeral execution handles."""
+    text = str(value).replace("\x00", "")[:4_096]
+    text = _SECRET.sub("<redacted>", text)
+    if handles:
+        text = _HANDLE.sub("<opaque-handle>", text)
+    return text
+
+
+def _safe_value(value: object, *, key: str = "") -> object:
+    """Recursively project state to JSON without raw secrets or ephemeral refs."""
+    if isinstance(value, Mapping):
+        result: dict[str, object] = {}
+        for raw_key, raw_value in value.items():
+            name = _safe_text(raw_key, handles=False)[:128]
+            lowered = name.lower()
+            if _SENSITIVE_KEY.search(name) and not lowered.endswith(("_ref", "_id")):
+                result[name] = "<redacted>"
+            else:
+                result[name] = _safe_value(raw_value, key=name)
+        return result
+    if isinstance(value, list | tuple):
+        return [_safe_value(item, key=key) for item in value]
+    if isinstance(value, str):
+        # Stable identity/session handles are useful facts; transient fire and
+        # verdict handles are deliberately removed from durable state.
+        is_identifier = key.lower().endswith(("_ref", "_id"))
+        return _safe_text(value, handles=not is_identifier or bool(_HANDLE.search(value)))
+    if isinstance(value, int | float | bool) or value is None:
+        return value
+    return _safe_text(value)
+
+
+def _safe_phase_state(value: Mapping[str, object] | None) -> dict[str, object]:
+    """Keep only bounded scheduling fields; never persist request/evidence data."""
+    if not value:
+        return {}
+    allowed = {
+        "run_id",
+        "phase",
+        "status",
+        "iteration",
+        "revision",
+        "completed_tools",
+        "pending_tools",
+        "last_error",
+    }
+    projected = {key: value[key] for key in allowed if key in value}
+    safe = _safe_value(projected)
+    if not isinstance(safe, dict):
+        return {}
+    result: dict[str, object] = {}
+    for key, item in safe.items():
+        result[str(key)] = item
+    return result
+
+
 def dump_graph(
-    graph: ReachabilityGraph, solver: ChainSolver, audit: AuditLog, path: str | Path
+    graph: ReachabilityGraph,
+    solver: ChainSolver,
+    audit: AuditLog,
+    path: str | Path,
+    *,
+    phase_state: Mapping[str, object] | None = None,
 ) -> None:
     """Deterministic, atomic JSON dump of graph + solver + audit tail (D1).
 
@@ -154,7 +236,13 @@ def dump_graph(
         kind = data.get(_KIND)
         if kind is None:
             raise PersistenceError(f"node {node_id!r} has no kind — cannot persist")
-        nodes.append({"id": node_id, "kind": kind, "fields": asdict(data[_DATA])})
+        nodes.append(
+            {
+                "id": _safe_text(node_id),
+                "kind": kind,
+                "fields": _safe_value(asdict(data[_DATA])),
+            }
+        )
 
     payload: dict[str, object] = {
         "version": _VERSION,
@@ -162,21 +250,24 @@ def dump_graph(
             "nodes": nodes,
             "edges": _serialize_edges(graph),
         },
-        "solver": solver.snapshot(),
+        "solver": _safe_value(solver.snapshot()),
         "audit": [
             {
                 "timestamp": e.timestamp.isoformat(),
-                "identity": e.identity,
-                "method": e.method,
-                "target": e.target,
-                "outcome": e.outcome,
+                "identity": _safe_text(e.identity),
+                "method": _safe_text(e.method, handles=False),
+                "target": _safe_text(e.target),
+                "outcome": _safe_text(e.outcome),
             }
-            for e in audit.entries
+            for e in audit.entries[-_MAX_AUDIT_ENTRIES:]
         ],
     }
+    if phase_state is not None:
+        payload["phase_state"] = _safe_phase_state(phase_state)
 
     text = json.dumps(payload, sort_keys=True, indent=2) + "\n"
     target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_name = tempfile.mkstemp(
         dir=str(target.parent) if target.parent != Path("") else ".",
         prefix=target.name,
@@ -244,3 +335,17 @@ def load_graph(path: str | Path) -> tuple[ReachabilityGraph, ChainSolver, AuditL
     with audit_log._lock:  # noqa: SLF001 — seeding the append-only log; same package
         audit_log._entries.extend(parsed_entries)  # noqa: SLF001
     return g, solver, audit_log
+
+
+def load_phase_state(path: str | Path) -> dict[str, object]:
+    """Load the bounded scheduling projection without loading graph objects."""
+    try:
+        raw = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise PersistenceError(f"state file is unreadable: {exc}") from exc
+    if not isinstance(raw, dict) or raw.get("version") != _VERSION:
+        raise PersistenceError("state file has an unsupported version")
+    state = raw.get("phase_state", {})
+    if not isinstance(state, dict):
+        raise PersistenceError("state file phase_state must be an object")
+    return dict(_safe_phase_state(state))

@@ -26,7 +26,7 @@ exhausted, preventing unbounded re-querying.
 
 from __future__ import annotations
 
-from reachagent.graph.nodes import Identity, Session
+from reachagent.graph.nodes import FindingStatus, Identity, Session
 from reachagent.graph.store import ReachabilityGraph, identity_id
 
 _DEFAULT_PATH = "default"
@@ -47,10 +47,18 @@ class ChainSolver:
     """
 
     def __init__(self, graph: ReachabilityGraph, *, path_budget: int = 40) -> None:
+        if path_budget < 1:
+            raise ValueError("path_budget must be positive")
         self._graph = graph
         self._path_budget = path_budget
         self._budgets: dict[str, int] = {}
         self._spawned_by_path: dict[str, set[str]] = {}
+        # Persisted advances are remembered separately from this process's
+        # mutable ledger.  A live coordinator may deliberately explore two
+        # derived identities from one finding; after a restart the persisted
+        # advance is a completed decision and must not be replayed.
+        self._advanced_findings: dict[str, set[str]] = {}
+        self._restored_advanced_findings: dict[str, set[str]] = {}
 
     # -- public API -------------------------------------------------------
 
@@ -89,7 +97,15 @@ class ChainSolver:
             ``can_call`` verdict — the Coordinator's next test candidates.
             Returns ``[]`` when the budget is exhausted.
         """
+        finding = next(
+            (data for node, data in self._graph.findings() if node == finding_node),
+            None,
+        )
+        if finding is None or finding.status is not FindingStatus.CONFIRMED_VIOLATION:
+            raise ValueError("advance requires a committed confirmed_violation Finding")
         if self.budget_remaining(path_id) <= 0:
+            return []
+        if finding_node in self._restored_advanced_findings.get(path_id, ()):
             return []
 
         if spawn is None:
@@ -110,6 +126,7 @@ class ChainSolver:
         if spawn is not None:
             self._spawned_by_path.setdefault(path_id, set()).add(target_identity)
         candidates = self._unexplored(target_identity)
+        self._advanced_findings.setdefault(path_id, set()).add(finding_node)
         self._consume(path_id, 1)
         return candidates
 
@@ -155,7 +172,7 @@ class ChainSolver:
     # -- run persistence (D6 durable resume) ---------------------------------
 
     def snapshot(self) -> dict[str, object]:
-        """The solver's two mutable ledgers — budgets + spawned-by-path sets.
+        """The solver's durable ledgers — budgets, spawned nodes, and advances.
 
         The ONLY solver state that crosses a restart boundary. Everything else is
         re-derived from the graph on load (the graph carries the findings, edges,
@@ -165,6 +182,7 @@ class ChainSolver:
         return {
             "budgets": dict(self._budgets),
             "spawned_by_path": {k: sorted(v) for k, v in self._spawned_by_path.items()},
+            "advanced_findings": {k: sorted(v) for k, v in self._advanced_findings.items()},
         }
 
     def restore(self, state: object) -> None:
@@ -182,6 +200,14 @@ class ChainSolver:
             self._budgets = {str(k): int(v) for k, v in budgets.items()}
         if isinstance(spawned, dict):
             self._spawned_by_path = {str(k): set(str(x) for x in v) for k, v in spawned.items()}
+        advanced = state.get("advanced_findings", {})
+        if isinstance(advanced, dict):
+            self._advanced_findings = {
+                str(k): set(str(x) for x in v) for k, v in advanced.items() if isinstance(v, list)
+            }
+            self._restored_advanced_findings = {
+                key: set(values) for key, values in self._advanced_findings.items()
+            }
 
     def recover_derived(
         self,
