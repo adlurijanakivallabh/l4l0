@@ -222,3 +222,5 @@ final release gate. Remaining weakness: generated stateful sequences are an
 explicit API primitive, not yet selected by the top-level scan orchestrator;
 that integration belongs to a later approved phase so this phase does not add a
 second planning loop or bypass the existing one.
+
+Feature commit: `824b69a`.
