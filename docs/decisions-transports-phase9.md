@@ -2,7 +2,7 @@
 
 Date: 2026-08-30
 Status: complete; Phase 10 is not started.
-Implementation commits: `874f04e`, `5db9ab3`
+Implementation commits: `874f04e`, `5db9ab3`, `b43332d`
 
 ## Invariants
 
