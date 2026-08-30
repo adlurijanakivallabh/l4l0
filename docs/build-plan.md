@@ -690,6 +690,41 @@ Implementation commits: `b77488c`, `9dfd8ad`; decision record:
 `docs/decisions-gui-phase11.md`. The optional Phase 10 capabilities remain
 deferred. Whole-tree pytest remains reserved for Phase 14.
 
+### Phase 11A — Parallel assessment workspace
+
+**Goal:** make concurrent LLM-driven assessments observable and switchable from
+one browser session without creating a second execution path.
+
+**Read during this phase:** R1 active-flow/sidebar/live-panel/reconnect/report
+frontend paths; R2 streaming/session cancellation paths; R3 lifecycle events; R4
+session/transcript views; R5 progress/health/recovery views; R6 run switcher,
+history, graph/transcript, and bounded tool-card paths; current GUI registry,
+status projections, and static page.
+
+**Build:**
+
+- render a bounded active-assessment rail from `/api/scans`;
+- keep one independent selectable detail stream per scan while summary cards
+  refresh concurrently;
+- show real phase, lifecycle, event, and confirmed-finding counts only;
+- preserve cancellation, stale-data, redaction, responsive, and accessibility
+  behavior from Phase 11;
+- do not add a frontend dependency or alternate execution/confirmation path.
+
+**Focused gate:** active-run registry, selectable parallel cards, event/status
+projection, redaction, static script, and desktop/mobile Playwright smoke checks.
+
+**Exit criterion:** two concurrent server-side scan records remain visible as
+independent cards; selecting either updates the detail workspace without losing
+the other, and every displayed value remains grounded in server state.
+
+**Status (2026-08-30): complete.** The active-assessment rail now polls bounded
+`/api/scans` summaries independently of the selected scan's detail stream,
+supports switching between concurrent records, and displays real lifecycle,
+phase, and confirmed-finding counts. Focused tests, strict mypy, Ruff, inline
+script checks, and Playwright desktop/mobile smoke passed. No files were
+deleted. Decision record: `docs/decisions-gui-phase11a.md`.
+
 ### Phase 12 — Reporting, evidence export, and operational history
 
 **Goal:** make every result reviewable and reusable.
