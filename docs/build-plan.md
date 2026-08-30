@@ -803,6 +803,20 @@ and history comparison tests.
 **Exit criterion:** exported reports are deterministic, provenance-complete, and
 cannot contain an unconfirmed finding.
 
+**Status (2026-08-30): complete.** Reporting now has a shared redaction-safe
+renderer for deterministic finding tables, evidence-index JSON/Markdown/HTML,
+SARIF 2.1.0, and a complete report bundle. Exports include scope, identity,
+tool, payload reference, oracle, evidence, timing, chain-precondition, and
+matching audit metadata when the graph provides those facts; raw payload/body
+content is excluded. Stored/model report prose is sanitized before serving or
+downloading, and HTML uses escaping. `/api/scans/compare` compares process-local
+graph/audit snapshots, while `/api/history/compare` compares JSON snapshots only
+inside the configured `REACHAGENT_HISTORY_DIR`; neither route fires requests or
+re-runs an oracle. The GUI exposes Markdown, JSON, SARIF, evidence, bundle, and
+HTML download links. Focused report, GUI, persistence, redaction, export, and
+history tests passed; no files were deleted. Implementation commit:
+`7201978`; decision record: `docs/decisions-reporting-phase12.md`.
+
 ### Phase 13 — Race and asynchronous behavior
 
 **Goal:** validate concurrency only when sequential evidence is inconclusive.
