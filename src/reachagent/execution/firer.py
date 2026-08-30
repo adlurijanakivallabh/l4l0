@@ -414,6 +414,11 @@ class RequestFirer:
         """
         parsed = httpx.URL(url)
         target = self._endpoint_key(parsed)
+        try:
+            self._scope.enforce(parsed)
+        except OutOfScopeError:
+            self._audit.record(identity, method.upper(), target, "refused_out_of_scope")
+            raise
         outcome = (
             f"{transport}:error:{error[:80]}"
             if error
