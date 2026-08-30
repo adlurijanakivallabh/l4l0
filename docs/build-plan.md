@@ -621,6 +621,19 @@ recovery, and backend parity tests.
 **Exit criterion:** at least one multi-class path is represented as connected graph
 evidence and resumes without duplicating findings or leaking secrets.
 
+**Status (2026-08-30): complete.** Chain advancement now requires a committed
+`confirmed_violation` finding, preserves only proven `enables` and
+`derived_credential` relationships, and carries per-path solver ledgers across
+atomic JSON checkpoints. Graph fields, edge evidence, solver state, audit data,
+and phase state are bounded and scrubbed; only the last 2,000 audit entries are
+retained. `scan_target` checkpoints each recon/auth/discovery/recovery/payload
+boundary and reuses `resume_path` when no replacement is supplied. Resume skips
+confirmed and inconclusive edges while leaving errored work retryable. Focused
+Phase 10 gates and full-tree strict optional mypy passed; no files were deleted.
+Implementation commit: `eebd5b8`; decision record:
+`docs/decisions-chain-resume-phase10.md`. Whole-tree pytest remains reserved for
+Phase 14.
+
 ### Phase 11 — GUI production workspace
 
 **Goal:** provide a polished GUI grounded entirely in real ReachAgent state.
