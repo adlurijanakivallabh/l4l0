@@ -365,7 +365,8 @@ snapshot/model-error/cancellation events and applies only phase scheduling and
 priority hints; `scan_target` checks cancellation before discovery, selection, and
 payload classes. Focused gate: 37 passed (`tests/scan/test_phase4_control.py`,
 `tests/scan/test_agentic_loop.py`, `tests/recon/test_llm_planner.py`, and
-`tests/recon/test_recon_adaptive.py`). The full suite remains reserved for Phase 10.
+`tests/recon/test_recon_adaptive.py`). The full suite remains reserved for the
+final Phase 14 release gate.
 
 ### Phase 5 — Payload library, context selection, and mutation
 
@@ -408,7 +409,7 @@ descriptors, receives prior attempt outcomes, and never supplies raw payload tex
 The resolver caches source lines and MCP binds generated variants to one per-fire
 slot kit. Focused gate: 153 passed across corpus, resolver, MCP, payload-chain,
 mutation, tuning, and flag-gating suites. The full suite remains reserved for
-Phase 10.
+the final Phase 14 release gate.
 
 ### Phase 6 — Deterministic evidence and oracle hardening
 
