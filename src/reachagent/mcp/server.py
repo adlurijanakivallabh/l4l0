@@ -640,7 +640,7 @@ class FindingOut:
 def register_tools(mcp: FastMCP, session: _Session) -> None:
     """Register the Explorer + Validator tools on ``mcp``, bound to ``session`` (§13).
 
-    Exactly eight tools, matching the §13 manifest's Explorer and Validator rows —
+    Exactly ten tools, matching the §13 manifest's Explorer and Validator rows —
     no Coordinator tool is registered here. Each wrapper binds the server-side
     context/graph and exposes the bare §13 contract (domain arguments only), so a
     human — and later the Coordinator — calls the same signature. The wrappers add
