@@ -2,6 +2,7 @@
 
 Date: 2026-08-30
 Status: complete; Phase 10 is not started.
+Implementation commit: `874f04e`
 
 ## Invariants
 
