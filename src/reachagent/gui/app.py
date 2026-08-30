@@ -26,7 +26,18 @@ from fastapi.staticfiles import StaticFiles
 
 from reachagent.execution.audit import AuditLog
 from reachagent.graph.store import ReachabilityGraph
-from reachagent.report.renderer import render_findings_markdown
+from reachagent.report.renderer import (
+    build_evidence_index,
+    compare_graphs,
+    render_evidence_index_json,
+    render_evidence_index_markdown,
+    render_findings_json,
+    render_findings_markdown,
+    render_findings_sarif,
+    render_report_bundle_json,
+    render_report_html,
+    sanitize_report_markdown,
+)
 from reachagent.scan.orchestrator import ScanEvent, scan_all_classes
 
 app = FastAPI(title="ReachAgent GUI", version="2.0")
@@ -405,6 +416,8 @@ async def start_scan(payload: dict[str, Any]) -> JSONResponse:
     with _scan_lock:
         _scans[scan_id] = {
             "target": target,
+            "in_scope": in_scope,
+            "out_of_scope": out_of_scope,
             "operator_prompt": operator_prompt,
             "status": "queued",
             "lifecycle": "queued",
@@ -611,6 +624,7 @@ async def _run_scan_body(
             from reachagent.report.llm_report import generate_llm_report
 
             md = generate_llm_report(graph, operator_prompt=operator_prompt)
+        md = sanitize_report_markdown(md)
         events.append(
             ScanEvent(
                 phase="report",
@@ -731,7 +745,9 @@ def _surface_snapshot(graph: ReachabilityGraph | None) -> dict[str, Any]:
             "id": _public_text(endpoint_id, 180),
             "method": _public_text(endpoint.method, 16),
             "path": _public_text(endpoint.path, 240),
-            "content_type": _public_text(endpoint.content_type, 100) if endpoint.content_type else None,
+            "content_type": _public_text(endpoint.content_type, 100)
+            if endpoint.content_type
+            else None,
             "technology": _public_text(endpoint.technology, 120) if endpoint.technology else None,
             "access_restricted": _public_text(endpoint.access_restricted, 40)
             if endpoint.access_restricted
@@ -946,47 +962,159 @@ def get_report(scan_id: str) -> JSONResponse:
     report_md = data.get("report_md")
     if not isinstance(report_md, str) or not report_md:
         return JSONResponse({"error": "report not ready"}, status_code=409)
-    return JSONResponse({"scan_id": scan_id, "report_md": report_md})
+    return JSONResponse({"scan_id": scan_id, "report_md": sanitize_report_markdown(report_md)})
 
 
-def _report_html(report_md: str) -> str:
-    """A minimal self-contained HTML export of the Phase 4 report (narrative + table)."""
-    import html as _html
+@app.get("/api/scan/{scan_id}/evidence")
+def get_evidence_index(scan_id: str) -> JSONResponse:
+    """Return the bounded evidence index for a scan's confirmed findings."""
+    with _scan_lock:
+        data = _scans.get(scan_id)
+    if data is None or "graph" not in data:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    graph: ReachabilityGraph = data["graph"]
+    context = _report_context(scan_id, data)
+    return JSONResponse(build_evidence_index(graph, data.get("audit"), context=context))
 
-    body = _html.escape(report_md)
-    return (
-        "<!doctype html><html><head><meta charset='utf-8'>"
-        "<title>ReachAgent report</title>"
-        "<style>body{font-family:ui-monospace,Menlo,monospace;max-width:880px;margin:2rem auto;"
-        "padding:0 1rem;line-height:1.55}table{border-collapse:collapse}th,td{border:1px solid #999;"
-        "padding:.35rem .6rem;text-align:left}</style></head>"
-        f"<body><h1>ReachAgent report</h1><pre style='white-space:pre-wrap'>{body}</pre></body></html>"
+
+@app.get("/api/scans/compare")
+def compare_scans(left: str, right: str) -> JSONResponse:
+    """Compare two process-local scan snapshots without firing or re-confirming."""
+    with _scan_lock:
+        left_data = _scans.get(left)
+        right_data = _scans.get(right)
+    if left_data is None or right_data is None:
+        return JSONResponse({"error": "unknown scan"}, status_code=404)
+    left_graph = left_data.get("graph")
+    right_graph = right_data.get("graph")
+    if not isinstance(left_graph, ReachabilityGraph) or not isinstance(
+        right_graph, ReachabilityGraph
+    ):
+        return JSONResponse({"error": "both scans must have graph snapshots"}, status_code=409)
+    result = compare_graphs(
+        left_graph,
+        right_graph,
+        left_data.get("audit"),
+        right_data.get("audit"),
+        left_label=left,
+        right_label=right,
     )
+    return JSONResponse(result)
+
+
+@app.get("/api/history/compare")
+def compare_history(left: str, right: str) -> JSONResponse:
+    """Compare persisted snapshots confined to ``REACHAGENT_HISTORY_DIR``."""
+    import os
+
+    from reachagent.report.renderer import compare_persisted_snapshots
+
+    raw_root = os.environ.get("REACHAGENT_HISTORY_DIR", "").strip()
+    if not raw_root:
+        return JSONResponse(
+            {"error": "persisted history is disabled", "code": "history_unconfigured"},
+            status_code=400,
+        )
+    root = Path(raw_root).expanduser().resolve()
+
+    def resolve(name: str) -> Path | None:
+        candidate = (root / name).resolve()
+        if candidate.suffix != ".json" or (candidate != root and root not in candidate.parents):
+            return None
+        return candidate if candidate.is_file() else None
+
+    left_path, right_path = resolve(left), resolve(right)
+    if left_path is None or right_path is None:
+        return JSONResponse({"error": "unknown persisted snapshot"}, status_code=404)
+    try:
+        return JSONResponse(compare_persisted_snapshots(left_path, right_path))
+    except Exception as exc:  # noqa: BLE001 — malformed history fails loudly
+        return JSONResponse(
+            {"error": f"history comparison failed: {type(exc).__name__}"}, status_code=422
+        )
+
+
+def _report_context(scan_id: str, data: dict[str, Any]) -> dict[str, object]:
+    """Return safe run metadata for report/evidence projections."""
+    return {
+        "run_id": scan_id,
+        "target": data.get("target", ""),
+        "scope": data.get("in_scope", ""),
+        "out_of_scope": data.get("out_of_scope", ""),
+    }
+
+
+def _report_html(
+    report_md: str,
+    graph: ReachabilityGraph,
+    audit: object | None = None,
+    *,
+    context: dict[str, object] | None = None,
+) -> str:
+    """Self-contained report + evidence index; both are redaction-safe."""
+    return render_report_html(report_md, graph, audit, context=context)
 
 
 @app.get("/api/scan/{scan_id}/export")
 def export_report(scan_id: str, format: str = "markdown") -> Response:
-    """Download the report in markdown/json/html — real data from the completed scan."""
-    from reachagent.report.renderer import render_findings_json
-
+    """Download a deterministic report, evidence index, bundle, or SARIF document."""
     data = _scans.get(scan_id)
     if not data or "graph" not in data:
         return JSONResponse({"error": "not found or not done"}, status_code=404)
     graph: ReachabilityGraph = data["graph"]
-    if format == "json":
+    context = _report_context(scan_id, data)
+    audit = data.get("audit")
+    normalized = str(format or "markdown").lower()
+    if normalized == "json":
         body, media, ext = render_findings_json(graph), "application/json", "json"
+    elif normalized == "bundle":
+        body, media, ext = (
+            render_report_bundle_json(
+                graph,
+                audit,
+                report_markdown=data.get("report_md", ""),
+                context=context,
+            ),
+            "application/json",
+            "bundle.json",
+        )
+    elif normalized == "sarif":
+        body, media, ext = (
+            render_findings_sarif(graph, context=context),
+            "application/sarif+json",
+            "sarif",
+        )
+    elif normalized in {"evidence", "evidence-json"}:
+        body, media, ext = (
+            render_evidence_index_json(graph, audit, context=context),
+            "application/json",
+            "evidence.json",
+        )
+    elif normalized in {"evidence-md", "evidence-markdown"}:
+        body, media, ext = (
+            render_evidence_index_markdown(graph, audit, context=context),
+            "text/markdown",
+            "evidence.md",
+        )
     else:
         report_md = data.get("report_md")
         if not isinstance(report_md, str) or not report_md:
             return JSONResponse({"error": "report not ready"}, status_code=409)
-        if format == "html":
-            body, media, ext = _report_html(report_md), "text/html", "html"
+        if normalized == "html":
+            body, media, ext = (
+                _report_html(report_md, graph, audit, context=context),
+                "text/html",
+                "html",
+            )
         else:
-            body, media, ext = report_md, "text/markdown", "md"
+            body, media, ext = sanitize_report_markdown(report_md), "text/markdown", "md"
     return Response(
         content=body,
         media_type=media,
-        headers={"Content-Disposition": f'attachment; filename="reachagent-report.{ext}"'},
+        headers={
+            "Content-Disposition": f'attachment; filename="reachagent-report.{ext}"',
+            "X-Content-Type-Options": "nosniff",
+        },
     )
 
 

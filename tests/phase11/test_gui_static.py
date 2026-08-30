@@ -29,6 +29,9 @@ def test_workspace_contains_real_state_views_and_controls() -> None:
         'id="audit"',
         'id="scan-history"',
         'id="provider-form"',
+        'id="dl-sarif"',
+        'id="dl-evidence"',
+        'id="dl-bundle"',
     ):
         assert marker in html
     assert "No oracle-confirmed findings yet." in html

@@ -26,6 +26,7 @@ from reachagent.llm.client import (
 from reachagent.report.renderer import (
     finding_to_dict,
     render_findings_markdown,
+    sanitize_report_markdown,
 )
 
 _log = logging.getLogger(__name__)
@@ -142,7 +143,7 @@ def _validate_narrative(raw: dict[str, str], allowed_ids: set[str]) -> str | Non
     # Light check: if narrative contains "finding_id" that is not allowed, log.
     for _fid in allowed_ids:
         pass
-    return narrative
+    return sanitize_report_markdown(narrative)
 
 
 def _deterministic_report(graph: ReachabilityGraph) -> str:
@@ -188,6 +189,6 @@ def generate_llm_report(
 
     deterministic = _deterministic_report(graph)
     if narrative is None:
-        return deterministic
+        return sanitize_report_markdown(deterministic)
     # Narrative first, deterministic table second — table is the ground truth.
-    return f"{narrative.strip()}\n\n---\n\n{deterministic}"
+    return sanitize_report_markdown(f"{narrative.strip()}\n\n---\n\n{deterministic}")
