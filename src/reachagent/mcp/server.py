@@ -95,6 +95,12 @@ if TYPE_CHECKING:
 _ENV_BASE_URL = "REACHAGENT_TARGET_BASE_URL"
 _ENV_SCOPE_HOSTS = "REACHAGENT_SCOPE_HOSTS"
 _DEFAULT_BASE_URL = "http://127.0.0.1:5000"
+# Playwright's own navigation timeout (30s default) doesn't cover evaluate() —
+# a page whose JS never returns (an infinite loop, deliberate or a test-target
+# accident) hangs that await forever with no built-in recovery. Bounding the
+# whole browser probe here guarantees the browser process gets killed instead
+# of pinning a CPU core indefinitely.
+_BROWSER_PROBE_TIMEOUT = 25.0
 _SECRET_HEADER_NAMES = frozenset(
     {"authorization", "cookie", "set-cookie", "proxy-authorization", "x-api-key"}
 )
@@ -1003,9 +1009,7 @@ def register_tools(mcp: FastMCP, session: _Session) -> None:
                         matching = [
                             item
                             for item in responses
-                            if str(
-                                getattr(getattr(item, "request", None), "method", "")
-                            ).upper()
+                            if str(getattr(getattr(item, "request", None), "method", "")).upper()
                             == method.upper()
                         ]
                         response = matching[-1] if matching else responses[-1]
@@ -1037,7 +1041,7 @@ def register_tools(mcp: FastMCP, session: _Session) -> None:
                     await browser.close()
 
         try:
-            result = await _run()
+            result = await asyncio.wait_for(_run(), timeout=_BROWSER_PROBE_TIMEOUT)
             dispatcher.record_browser(
                 identity_key,
                 result.final_url or url,
@@ -1349,7 +1353,9 @@ def register_tools(mcp: FastMCP, session: _Session) -> None:
             executed = (
                 bool(ev["executed"])
                 if "executed" in ev
-                else bool(browser_result.executed) if browser_result is not None else False
+                else bool(browser_result.executed)
+                if browser_result is not None
+                else False
             )
 
             oracle_evidence = ExecutionConfirmationEvidence(
@@ -1501,6 +1507,7 @@ def register_tools(mcp: FastMCP, session: _Session) -> None:
                 context = None
                 try:
                     context = await browser.new_context(extra_http_headers=extra_headers or None)
+
                     async def _scope_route(route: object) -> None:
                         request = getattr(route, "request", None)
                         request_url = str(getattr(request, "url", ""))
@@ -1533,7 +1540,7 @@ def register_tools(mcp: FastMCP, session: _Session) -> None:
                     await browser.close()
 
         try:
-            result = await _run()
+            result = await asyncio.wait_for(_run(), timeout=_BROWSER_PROBE_TIMEOUT)
             dispatcher.record_browser(
                 identity_key,
                 result.final_url or url,

@@ -48,6 +48,12 @@ def run_xss_dom(
         )
         return []
 
+    # Playwright's navigation timeout doesn't cover evaluate() — a page whose
+    # injected JS never returns (an infinite loop) hangs that await forever
+    # with no built-in recovery. Bounding the whole probe guarantees the
+    # browser process gets killed instead of pinning a CPU core indefinitely.
+    _PROBE_TIMEOUT = 25.0
+
     found = []
     for endpoint in html_endpoints[:5]:
         url = base_url.rstrip("/") + endpoint.path + "#__reachagent_taint=1"
@@ -65,7 +71,7 @@ def run_xss_dom(
         try:
             dispatcher = TransportDispatcher(firer)
             dispatcher.prepare_browser(identity, url)
-            probe_result = asyncio.run(_probe())
+            probe_result = asyncio.run(asyncio.wait_for(_probe(), timeout=_PROBE_TIMEOUT))
             dispatcher.record_browser(
                 identity,
                 probe_result.final_url or url,

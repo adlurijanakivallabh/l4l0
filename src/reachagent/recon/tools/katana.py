@@ -22,8 +22,23 @@ class KatanaRunner(ReconToolRunner):
     name = "katana"
     binary = "katana"
 
+    # Hard defaults, applied unless overridden: an uncapped crawl can grow its
+    # URL frontier without bound against a site with dynamically generated
+    # links (e.g. "next page" loops), exhausting memory well before the outer
+    # subprocess timeout (base.py's _LIVE_TIMEOUT) ever fires. -mdp/-ct bound
+    # that growth at the tool level, not just the process level.
+    _DEFAULT_MAX_PAGES = "200"
+    _DEFAULT_CRAWL_SECONDS = "120"
+
     def command(self, target: str) -> list[str]:
-        """katana -u <target> -jc -silent [+ -jsl -aff -d depth -ct timeout]."""
+        """katana -u <target> -jc -silent [+ -jsl -aff -d depth -ct timeout -mdp cap].
+
+        Headless-browser crawling (``-hl``) is deliberately never offered here:
+        it spawns katana's own internal Chromium process, and killing katana on
+        an outer timeout does not guarantee that grandchild browser process is
+        also reaped — an orphaned Chromium can keep running (and consuming
+        memory/CPU) indefinitely. No profile or GUI path ever needs it.
+        """
         import os
 
         argv: list[str] = ["katana", "-u", target, "-jc", "-silent"]
@@ -34,14 +49,16 @@ class KatanaRunner(ReconToolRunner):
         depth = os.environ.get("REACHAGENT_KATANA_DEPTH", "3")
         if depth.isdigit():
             argv += ["-d", depth]
-        ct = os.environ.get("REACHAGENT_KATANA_TIMEOUT")
+        ct = os.environ.get("REACHAGENT_KATANA_TIMEOUT", self._DEFAULT_CRAWL_SECONDS)
         if ct and ct.isdigit():
             argv += ["-ct", ct]
+        max_pages = os.environ.get("REACHAGENT_KATANA_MAX_PAGES", self._DEFAULT_MAX_PAGES)
+        if max_pages and max_pages.isdigit():
+            argv += ["-mdp", max_pages]
         for env_name, flag in (
             ("REACHAGENT_KATANA_CONCURRENCY", "-c"),
             ("REACHAGENT_KATANA_PARALLELISM", "-p"),
             ("REACHAGENT_KATANA_RATE", "-rl"),
-            ("REACHAGENT_KATANA_MAX_PAGES", "-mdp"),
             ("REACHAGENT_KATANA_TIMEOUT_PER_REQUEST", "-timeout"),
         ):
             value = os.environ.get(env_name)
@@ -53,12 +70,6 @@ class KatanaRunner(ReconToolRunner):
         extensions = os.environ.get("REACHAGENT_KATANA_EXTENSION_FILTER")
         if extensions:
             argv += ["-ef", extensions]
-        if os.environ.get("REACHAGENT_KATANA_HEADLESS", "").lower() in {
-            "1",
-            "true",
-            "yes",
-        }:
-            argv += ["-hl", "-xhr"]
         return argv
 
     def parse(self, target: str, raw_output: str) -> tuple[str, ...]:

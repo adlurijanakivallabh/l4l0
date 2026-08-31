@@ -89,6 +89,30 @@ def test_katana_js_env_off(monkeypatch) -> None:
     assert "-jsl" not in argv
 
 
+def test_katana_default_caps_pages_and_crawl_time() -> None:
+    # Un-set by default: without a hard page/time cap an unbounded crawl
+    # target (e.g. dynamically generated "next page" links) can grow the URL
+    # frontier without bound, exhausting memory well before the outer
+    # subprocess timeout fires.
+    argv = KatanaRunner(graph=ReachabilityGraph(), scope=_scope()).command(_TARGET)
+    assert "-mdp" in argv and argv[argv.index("-mdp") + 1] == "200"
+    assert "-ct" in argv and argv[argv.index("-ct") + 1] == "120"
+
+
+def test_katana_page_cap_env_override(monkeypatch) -> None:
+    monkeypatch.setenv("REACHAGENT_KATANA_MAX_PAGES", "50")
+    argv = KatanaRunner(graph=ReachabilityGraph(), scope=_scope()).command(_TARGET)
+    assert argv[argv.index("-mdp") + 1] == "50"
+
+
+def test_katana_never_offers_headless_browser_mode() -> None:
+    # -hl spawns katana's own internal Chromium; killing katana on timeout
+    # does not guarantee that grandchild process is reaped too, risking an
+    # orphaned browser process. Removed entirely — no env var re-enables it.
+    argv = KatanaRunner(graph=ReachabilityGraph(), scope=_scope()).command(_TARGET)
+    assert "-hl" not in argv
+
+
 def test_httpx_flags(monkeypatch) -> None:
     monkeypatch.setenv("REACHAGENT_HTTPX_THREADS", "25")
     monkeypatch.setenv("REACHAGENT_HTTPX_TIMEOUT", "10")
