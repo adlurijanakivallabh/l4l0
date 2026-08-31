@@ -501,6 +501,45 @@ order at Phase D next.
 - Gate: full suite green (minus intentionally-deleted tests); net LOC down;
   invariants intact; a planner/provider failure degrades, never aborts.
 
+**Status (2026-08-31): C1 correction — verified NOT dead, wired instead of cut.**
+- Before touching anything, re-verified **C1**'s claim directly (never trust an
+  old audit ledger without re-checking): `surface_tuning`/`signal_tuning`/
+  `transport_tuning` (564 LOC) ARE called from real code paths
+  (`orchestrator.py`, `entrypoint.py`, `mcp/server.py`), have their own test
+  coverage already in the tree, and match my own memory note from an earlier
+  phase ("three-layer propose/validate/execute fully built ... all flag-gated
+  OFF" — a deliberate ship-but-not-enabled state, not dead code). The ledger's
+  "bypasses the ContextVar the GUI's `override()` sets" was imprecise: that
+  ContextVar (`llm.runtime.override`) is LLM-provider-specific; these three
+  flags are read via plain `os.environ.get(...)`, which the GUI's
+  `named_overrides` mechanism (also plain `os.environ`, also real) simply
+  never populated for these keys — a missing GUI control, not a broken
+  mechanism.
+- Flagged the discrepancy to the user rather than either blindly executing the
+  original "cut" plan or unilaterally deciding to keep it myself — deleting
+  ~564 LOC of real, tested, three-layer-architected functionality is a
+  materially bigger call than routine dead-code removal. User chose: wire a
+  GUI toggle rather than cut.
+- `gui/app.py`'s `/api/scan` handler now reads 3 checkboxes
+  (`surface_tuning`/`signal_tuning`/`transport_tuning`) and builds
+  `env_overrides` — the LLM `named_overrides` dict (unchanged, still validated
+  by `_validate_named_provider` exactly as before) merged with the checked
+  tuning flags. `_run_scan`'s `named_overrides` param renamed to
+  `env_overrides` (it was never LLM-only after this change) and its
+  save/restore `os.environ` loop is unchanged — it was already fully generic.
+  `index.html` gained 3 checkboxes + JS wiring into the POST body; verified
+  served correctly via a live `curl` against the running dev server (no
+  browser tool available in this environment, so this is HTML/JS-serving
+  verification only, not an interactive click-through).
+- 2 new hermetic tests (`tests/gui/test_gui_slices.py`) proving the checkbox
+  state actually reaches `_run_scan`'s `env_overrides` argument with the right
+  keys, and that unchecked flags never appear. Whole tree: **1318 passed,
+  0 failed, 16 skipped.**
+- **Remaining in Phase D:** C2 (5 AnthropicClient classes + config-validation
+  trap), C4 (tui/, dead aliases, build_phase_summary, wordlist branches),
+  W2/W3 (plan-schema collapse), 20-client-class collapse, D3 (signal-gated
+  reconfirm wiring).
+
 ### Phase E — Payload corpus hygiene
 *(read R7 corpora, R8 wordlists.)*
 - Cut `expand_encoding_variants`; memoize corpus load (measure first — near-YAGNI);

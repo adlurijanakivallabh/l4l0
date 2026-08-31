@@ -91,6 +91,83 @@ def test_scan_endpoint_preflights_named_provider_values(monkeypatch: pytest.Monk
     _scans.pop(response.json()["scan_id"], None)
 
 
+def _stub_named_provider(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        gui_app,
+        "_load_providers",
+        lambda: [
+            {
+                "id": "unit-provider",
+                "name": "unit-provider",
+                "provider": "openai-compatible",
+                "api_key": "unit-test-key",
+                "base_url": "https://llm.example/v1/responses",
+                "model": "unit-model",
+                "api_style": "responses",
+            }
+        ],
+    )
+
+
+def test_scan_endpoint_passes_checked_tuning_flags_as_env_overrides(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The 3 tuning checkboxes are the only GUI control that can ever turn these
+    flag-gated recon layers on — the env-override plumbing must actually reach
+    _run_scan with the right keys, or the checkboxes silently do nothing.
+    """
+    _stub_named_provider(monkeypatch)
+    captured: list[object] = []
+
+    async def capturing_scan(*args: object, **_kwargs: object) -> None:
+        captured.extend(args)
+
+    monkeypatch.setattr(gui_app, "_run_scan", capturing_scan)
+    response = TestClient(app).post(
+        "/api/scan",
+        json={
+            "target": "https://demo.example",
+            "in_scope": "demo.example",
+            "use_llm": True,
+            "llm_provider": "named:unit-provider",
+            "surface_tuning": True,
+            "signal_tuning": True,
+            "transport_tuning": False,
+        },
+    )
+    assert response.status_code == 200
+    env_overrides = captured[-1]
+    assert env_overrides["REACHAGENT_SURFACE_TUNING"] == "1"
+    assert env_overrides["REACHAGENT_SIGNAL_TUNING"] == "1"
+    assert "REACHAGENT_TRANSPORT_TUNING" not in env_overrides
+    _scans.pop(response.json()["scan_id"], None)
+
+
+def test_scan_endpoint_omits_tuning_flags_when_nothing_checked(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _stub_named_provider(monkeypatch)
+    captured: list[object] = []
+
+    async def capturing_scan(*args: object, **_kwargs: object) -> None:
+        captured.extend(args)
+
+    monkeypatch.setattr(gui_app, "_run_scan", capturing_scan)
+    response = TestClient(app).post(
+        "/api/scan",
+        json={
+            "target": "https://demo.example",
+            "in_scope": "demo.example",
+            "use_llm": True,
+            "llm_provider": "named:unit-provider",
+        },
+    )
+    assert response.status_code == 200
+    env_overrides = captured[-1]
+    assert not any(k.endswith("_TUNING") for k in env_overrides)
+    _scans.pop(response.json()["scan_id"], None)
+
+
 def test_scan_endpoint_uses_single_saved_provider_when_form_omits_selection(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

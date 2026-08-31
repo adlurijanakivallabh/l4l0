@@ -390,6 +390,19 @@ async def start_scan(payload: dict[str, Any]) -> JSONResponse:
             {"error": "max_attempts must be an integer", "code": "invalid_input"}, status_code=400
         )
     identities_path = _opt_str(payload.get("identities_path"))
+    # Opt-in recon tuning layers (surface priority / signal tools / transport) —
+    # built and tested, but flag-gated off by default (§9); these three checkboxes
+    # are the only place a scan can turn them on, since named_overrides above is
+    # LLM-provider-only and there is no CLI/TUI left to export the env var by hand.
+    tuning_overrides = {
+        env_key: "1"
+        for form_key, env_key in (
+            ("surface_tuning", "REACHAGENT_SURFACE_TUNING"),
+            ("signal_tuning", "REACHAGENT_SIGNAL_TUNING"),
+            ("transport_tuning", "REACHAGENT_TRANSPORT_TUNING"),
+        )
+        if payload.get(form_key) is True
+    }
     if not target:
         return JSONResponse({"error": "target required"}, status_code=400)
     if not use_llm:
@@ -412,6 +425,7 @@ async def start_scan(payload: dict[str, Any]) -> JSONResponse:
             {"error": str(exc), "code": "llm_provider_unavailable"},
             status_code=400,
         )
+    env_overrides = {**(named_overrides or {}), **tuning_overrides} or None
     scan_id = uuid.uuid4().hex[:8]
     with _scan_lock:
         _scans[scan_id] = {
@@ -442,7 +456,7 @@ async def start_scan(payload: dict[str, Any]) -> JSONResponse:
             identities_path,
             llm_provider,
             operator_prompt,
-            named_overrides,
+            env_overrides,
         )
     )
     return JSONResponse({"scan_id": scan_id, "status": "queued", "lifecycle": "queued"})
@@ -538,16 +552,19 @@ async def _run_scan(
     identities_path: str | None,
     llm_provider: str | None = None,
     operator_prompt: str | None = None,
-    named_overrides: dict[str, str] | None = None,
+    env_overrides: dict[str, str] | None = None,
 ) -> None:
+    """``env_overrides`` merges LLM-provider config and the opt-in tuning-flag
+    checkboxes into one plain os.environ save/set/restore for the scan's duration.
+    """
     import os
 
     from reachagent.llm.runtime import override
 
     _scan_update(scan_id, status="running", lifecycle="running", phase="recon")
     saved: dict[str, str | None] = {}
-    if named_overrides:
-        for key, value in named_overrides.items():
+    if env_overrides:
+        for key, value in env_overrides.items():
             saved[key] = os.environ.get(key)
             os.environ[key] = value
     try:
