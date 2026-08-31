@@ -53,7 +53,9 @@ from reachagent.graph.store import ReachabilityGraph
 from reachagent.oracles import OracleMechanism
 from reachagent.oracles.base import OracleVerdict
 from reachagent.oracles.registry import UnknownOracleError, get_oracle
+from reachagent.recon.tools._net import GO_MEMORY_LIMIT_ENV as _GO_MEMORY_LIMIT_ENV
 from reachagent.recon.tools._net import available_memory_mb as _available_memory_mb
+from reachagent.recon.tools._net import limit_child_memory as _limit_child_memory
 from reachagent.recon.tools._net import output_preview as _recon_output_preview
 from reachagent.recon.tools.base import RECON_ENV_LIVE, _scope_url
 from reachagent.tools.candidate import Candidate, ResponseSignal
@@ -579,6 +581,8 @@ class SignalGatedToolRunner:
                 timeout=_LIVE_TIMEOUT,
                 check=False,
                 shell=False,
+                env={**os.environ, **_GO_MEMORY_LIMIT_ENV},
+                preexec_fn=_limit_child_memory,  # noqa: PLW1509 — trivial setrlimit only, no locks
             )
             bounded_output, partial = _collect_output(getattr(completed, "stdout", ""), output_path)
             metadata = replace(

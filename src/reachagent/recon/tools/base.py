@@ -54,10 +54,12 @@ from reachagent.execution.audit import AuditLog
 from reachagent.execution.scope import OutOfScopeError, ScopeGuard
 from reachagent.graph.nodes import Endpoint, Host
 from reachagent.graph.store import ReachabilityGraph
+from reachagent.recon.tools._net import GO_MEMORY_LIMIT_ENV as _GO_MEMORY_LIMIT_ENV
 from reachagent.recon.tools._net import available_memory_mb as _available_memory_mb
 from reachagent.recon.tools._net import (
     host_of as _recon_host_of,  # noqa: F401 — re-export for 8 callers
 )
+from reachagent.recon.tools._net import limit_child_memory as _limit_child_memory
 from reachagent.recon.tools._net import output_preview as _recon_output_preview
 from reachagent.recon.tools._net import (
     path_of as _recon_path_of,  # noqa: F401 — re-export for 6 callers
@@ -306,6 +308,8 @@ class ReconToolRunner:
                 timeout=_LIVE_TIMEOUT,
                 check=False,
                 shell=False,
+                env={**os.environ, **_GO_MEMORY_LIMIT_ENV},
+                preexec_fn=_limit_child_memory,  # noqa: PLW1509 — trivial setrlimit only, no locks
             )
         except FileNotFoundError:
             # Race: binary vanished between which() and spawn — still a clean skip.
