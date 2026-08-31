@@ -297,12 +297,34 @@ def get_events(scan_id: str, after: int = 0, limit: int = 300) -> JSONResponse:
     )
 
 
+_NO_CACHE = {"Cache-Control": "no-store"}
+
+
 @app.get("/", response_class=HTMLResponse)
-def index() -> str:
+def index() -> HTMLResponse:
+    # No-store: this file changes across GUI development iterations and a
+    # stale cached copy silently diverges from what the server actually
+    # serves — confusing to debug from either side. A local dev tool pays
+    # nothing for always revalidating a few KB of HTML.
     try:
-        return (app.static_path / "index.html").read_text()  # type: ignore[attr-defined,no-any-return]
+        content = (app.static_path / "index.html").read_text()  # type: ignore[attr-defined]
     except Exception:
-        return "<h1>ReachAgent GUI</h1><p>static/index.html missing</p>"
+        content = "<h1>ReachAgent GUI</h1><p>static/index.html missing</p>"
+    return HTMLResponse(content=content, headers=_NO_CACHE)
+
+
+@app.get("/static/app.js")
+def app_js() -> Response:
+    """Serve app.js without caching — same rationale as ``index()`` above."""
+    try:
+        content = (app.static_path / "app.js").read_text()  # type: ignore[attr-defined]
+    except Exception:
+        return Response(content="", media_type="application/javascript", status_code=404)
+    return Response(
+        content=content,
+        media_type="application/javascript",
+        headers=_NO_CACHE,
+    )
 
 
 def _opt_str(value: Any) -> str | None:

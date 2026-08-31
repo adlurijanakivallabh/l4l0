@@ -366,3 +366,20 @@ def test_scan_endpoint_omits_identities_inline_when_not_a_list(
     assert response.status_code == 200
     assert captured[-1] is None
     _scans.pop(response.json()["scan_id"], None)
+
+
+# === No-cache headers on the served frontend (/, /static/app.js) ============
+# A GUI file that changes across development iterations must never be served
+# from a stale browser cache — that's the exact stale-frontend confusion this
+# session hit directly.
+
+
+def test_index_route_is_never_cached() -> None:
+    response = TestClient(app).get("/")
+    assert response.headers.get("cache-control") == "no-store"
+
+
+def test_app_js_route_is_never_cached() -> None:
+    response = TestClient(app).get("/static/app.js")
+    assert response.status_code == 200
+    assert response.headers.get("cache-control") == "no-store"

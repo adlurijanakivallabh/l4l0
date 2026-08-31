@@ -492,6 +492,10 @@ function appendTerminalRows(events) {
   if (atBottom) feed.scrollTop = feed.scrollHeight;
 }
 
+// Shown inline, always — the operator watches these run live, like a shell.
+// Everything else in `details` stays behind the click-to-expand JSON panel.
+const _INLINE_DETAIL_KEYS = new Set(["command", "output"]);
+
 function terminalRow(e) {
   const row = document.createElement("div");
   row.className = "term-row kind-" + (e.kind || "info");
@@ -500,20 +504,54 @@ function terminalRow(e) {
   phase.textContent = PHASE_STEP[e.phase] || e.phase || "";
   const dot = document.createElement("span");
   dot.className = "t-dot";
-  const msg = document.createElement("span");
-  msg.className = "t-msg";
-  msg.textContent = e.message || "";
-  row.append(phase, dot, msg);
-  const details = e.details && Object.keys(e.details).length ? e.details : null;
-  if (details) {
+  const body = document.createElement("span");
+  body.className = "t-msg";
+  const msgLine = document.createElement("div");
+  msgLine.textContent = e.message || "";
+  body.appendChild(msgLine);
+
+  // Recon-tier events put command/output as top-level detail keys; signal-gated
+  // events nest the same concept inside a `metadata` sub-object (its own,
+  // already-established shape) under `output_preview` instead of `output` —
+  // check both rather than forcing one source to change its established shape.
+  const details = e.details || {};
+  const meta = details.metadata || {};
+  const command = details.command || meta.command;
+  const output = details.output || meta.output_preview;
+  if (command) {
+    const cmdLine = document.createElement("div");
+    cmdLine.className = "t-cmd";
+    cmdLine.textContent = command;
+    body.appendChild(cmdLine);
+  }
+  if (output) {
+    const outBlock = document.createElement("pre");
+    outBlock.className = "t-output";
+    outBlock.textContent = output;
+    body.appendChild(outBlock);
+  }
+  row.append(phase, dot, body);
+
+  const extraKeys = Object.keys(details).filter((k) => !_INLINE_DETAIL_KEYS.has(k));
+  if (extraKeys.length) {
+    const extra = {};
+    extraKeys.forEach((k) => (extra[k] = details[k]));
+    if (extra.metadata && typeof extra.metadata === "object") {
+      const { command: _c, output_preview: _o, ...restMeta } = extra.metadata;
+      extra.metadata = restMeta;
+    }
+    const more = document.createElement("div");
+    more.className = "term-more";
+    more.textContent = "more detail";
     const detailBox = document.createElement("div");
     detailBox.className = "term-detail";
     detailBox.hidden = true;
-    detailBox.textContent = JSON.stringify(details, null, 2);
-    row.appendChild(detailBox);
-    row.addEventListener("click", () => {
+    detailBox.textContent = JSON.stringify(extra, null, 2);
+    more.addEventListener("click", (evt) => {
+      evt.stopPropagation();
       detailBox.hidden = !detailBox.hidden;
     });
+    body.append(more, detailBox);
   }
   return row;
 }
