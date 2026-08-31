@@ -17,7 +17,6 @@ from reachagent.recon.live_tuning import (
     _SAFE_DEFAULT_WORDLIST,
     RECON_ALLOWLIST,
     ReconTuningChoice,
-    RunConfig,
     propose_recon_tuning,
 )
 
@@ -89,21 +88,6 @@ def test_propose_mocked_valid_each_status_code() -> None:
         raw = _allowlisted_raw(wordlist_idx=0, flag_idx=0, status_idx=idx)
         choice = propose_recon_tuning({"target": "http://example.com"}, client=_fake_client(raw))
         assert choice.filter_codes == raw["filter_codes"]
-
-
-def test_runconfig_alias_is_recontuningchoice() -> None:
-    # prompt name ``RunConfig`` is kept as subclass alias; a RunConfig is a ReconTuningChoice
-    assert issubclass(RunConfig, ReconTuningChoice)
-    rc = RunConfig(
-        wordlist_path=str(RECON_ALLOWLIST["wordlists"][0]),  # type: ignore[index]
-        flags=(),
-        filter_codes=str(RECON_ALLOWLIST["status_codes"][0]),  # type: ignore[index]
-    )
-    assert isinstance(rc, ReconTuningChoice)
-    # propose returns the base type, which validates against the same allowlist
-    raw = _allowlisted_raw()
-    choice = propose_recon_tuning({"target": "http://example.com"}, client=_fake_client(raw))
-    assert isinstance(choice, ReconTuningChoice)
 
 
 # ---------------------------------------------------------------------------

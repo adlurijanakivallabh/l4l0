@@ -567,9 +567,43 @@ order at Phase D next.
   (`test_provider_preflight_requires_a_provider`,
   `test_provider_preflight_rejects_anthropic_as_unsupported`) pinning the new
   behavior. Whole tree: **1319 passed, 0 failed, 16 skipped.**
-- **Remaining in Phase D:** C4 (tui/, dead aliases, build_phase_summary,
-  wordlist branches), W2/W3 (plan-schema collapse), 20-client-class collapse,
-  D3 (signal-gated reconfirm wiring).
+**Status (2026-08-31): C4 done, partially — one item found not dead, same
+discipline as C1/C2 applied per sub-item.**
+- **Cut (verified genuinely dead):** `RunConfig`/`VulnTuningChoice` dataclass
+  aliases (each had zero references outside their own definition — `RunConfig`
+  had one dedicated test asserting nothing but its own existence, deleted with
+  it); `_wordlist.py`'s `"api"`/`"parameter"` `_PURPOSE_CANDIDATES` entries
+  (every real caller across all 6 recon tool wrappers passes `purpose=` from
+  `{"directory","dns"}` or uses the `x8=True` shortcut — confirmed by reading
+  every call site, not just grepping the dict); `expand_encoding_variants`
+  (payloads/encoding.py) — not called anywhere outside its own dedicated test
+  class, superseded by the more general LLM-drivable `expand_payload_mutations`
+  (same `_variants_for`/`validate_mutation` plumbing, more mutation kinds).
+  Its test file's own class docstring claimed "previously dead code, now
+  wired" — stale; re-verified `get_payloads` directly and confirmed no call
+  site exists today. Kept that test file's second, unrelated class
+  (`TestPayloadAttemptContext`, still-live code) rather than deleting the
+  whole file. Stale `tui/__pycache__` (no `.py` source left, gitignored, not
+  a tracked change) removed from disk.
+- **NOT cut — re-flagged like C1, not another interrupt (small, reversible,
+  LOW-priority ledger item):** `build_phase_summary`. Its own docstring says
+  "Legacy compact summary retained for existing advisor callers," and its
+  only production call site (`AdaptiveControlLoop.after_phase` ->
+  `reassess_after_phase`) always supplies a `snapshot`, making the
+  `build_phase_summary` fallback branch unreachable in production — BUT 5+
+  tests in `test_agentic_loop.py` call `reassess_after_phase` directly
+  without a snapshot specifically to exercise that fallback, and 3 more unit
+  the function itself. Cutting it cleanly would mean rewriting those test
+  call sites to construct real `PhaseSnapshot`s, a real but non-trivial
+  change for a function whose own docstring says it's deliberately kept.
+  Left as-is; noted here rather than acted on unilaterally or re-asking for
+  a call this small.
+- 66 directly-affected tests + full 401-test recon suite pass. Whole tree:
+  **1315 passed, 0 failed, 16 skipped** (4 fewer than before this slice —
+  exactly the 4 tests deleted alongside their dead code: 1 RunConfig test,
+  3 TestExpandEncodingVariants tests).
+- **Remaining in Phase D:** W2/W3 (plan-schema collapse), 20-client-class
+  collapse, D3 (signal-gated reconfirm wiring).
 
 ### Phase E — Payload corpus hygiene
 *(read R7 corpora, R8 wordlists.)*

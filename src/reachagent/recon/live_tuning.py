@@ -152,11 +152,6 @@ class ReconTuningChoice:
     filter_codes: str
 
 
-@dataclass(frozen=True)
-class RunConfig(ReconTuningChoice):
-    """Alias kept for the prompt's ``propose_recon_tuning(...) -> RunConfig`` name."""
-
-
 # ---------------------------------------------------------------------------
 # Provider-neutral interface — single function, swappable client
 # ---------------------------------------------------------------------------

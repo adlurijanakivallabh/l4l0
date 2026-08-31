@@ -26,17 +26,11 @@ _X8_CANDIDATES = (
 
 _PURPOSE_CANDIDATES = {
     "directory": _DIRECTORY_CANDIDATES,
-    "api": (
-        "/usr/share/seclists/Discovery/Web-Content/api/api-endpoints.txt",
-        "/usr/share/seclists/Discovery/Web-Content/api/api-seen-in-wild.txt",
-        *_DIRECTORY_CANDIDATES,
-    ),
     "dns": (
         "/usr/share/seclists/Discovery/DNS/subdomains-top1million-5000.txt",
         "/usr/share/seclists/Discovery/DNS/namelist.txt",
         *_DIRECTORY_CANDIDATES,
     ),
-    "parameter": _X8_CANDIDATES,
 }
 
 

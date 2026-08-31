@@ -79,11 +79,6 @@ class VulnTargetChoice:
 
 
 @dataclass(frozen=True)
-class VulnTuningChoice(VulnTargetChoice):
-    """Alias for prompt's propose_vuln_targets name."""
-
-
-@dataclass(frozen=True)
 class InsertionPointSignals:
     """Everything the LLM needs to reason about one insertion point."""
 
