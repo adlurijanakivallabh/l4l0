@@ -91,12 +91,32 @@ class ScopeGuard:
 
     @classmethod
     def from_raw(cls, in_scope: str | None, out_of_scope: str | None = None) -> ScopeGuard:
-        """Comma-separated host patterns → guard (wildcard-aware)."""
+        """Comma-separated host patterns → guard (wildcard-aware).
+
+        A caller may hand a full URL instead of a bare host (e.g. a confirmed
+        target URL reused as its own default scope, as the GUI does when the
+        operator leaves "in-scope hosts" blank) — a rule literally holding
+        ``http://localhost:3000`` as its host never matches a real request's
+        parsed host (``localhost``), refusing every single request as
+        out-of-scope. Each entry is normalized to a bare host first so this
+        can't silently produce a guard that allows nothing.
+        """
 
         def _parse(raw: str | None) -> list[str]:
             if not raw:
                 return []
-            return [p.strip().lower() for p in raw.split(",") if p.strip()]
+            hosts: list[str] = []
+            for part in raw.split(","):
+                entry = part.strip()
+                if not entry:
+                    continue
+                if "://" in entry:
+                    try:
+                        entry = httpx.URL(entry).host or entry
+                    except Exception:  # noqa: BLE001, S110 — malformed entry, fall back as-is
+                        pass
+                hosts.append(entry.lower())
+            return hosts
 
         return cls.from_hosts(_parse(in_scope), _parse(out_of_scope))
 

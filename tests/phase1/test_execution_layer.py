@@ -154,3 +154,37 @@ def test_transport_error_is_audited_and_reraised(monkeypatch) -> None:
         firer.fire("user_a", "GET", f"{IN_SCOPE}/orders")
     # Read-only transport errors are retried, then marked unrecoverable honestly.
     assert firer.audit.entries[-1].outcome == "error:ConnectError:unrecoverable"
+
+
+# ---------------------------------------------------------------------------
+# ScopeGuard.from_raw — full-URL entries must normalize to a bare host
+# ---------------------------------------------------------------------------
+#
+# The GUI defaults "in-scope hosts" to the confirmed target URL verbatim
+# (app.py: `in_scope = ... or target`) when the operator leaves it blank —
+# the overwhelmingly common case. A rule literally holding the string
+# "http://localhost:3000" as its host never matches a real request's parsed
+# host ("localhost"), so every single request was refused as out-of-scope
+# and every default-flow GUI scan silently produced zero endpoints/findings.
+
+
+def test_from_raw_normalizes_a_full_url_entry_to_its_bare_host() -> None:
+    scope = ScopeGuard.from_raw("http://localhost:3000")
+    assert scope.is_in_scope("http://localhost:3000/api/users")
+    assert scope.is_in_scope("http://localhost:3000/")
+
+
+def test_from_raw_still_accepts_a_bare_host() -> None:
+    scope = ScopeGuard.from_raw("target.test")
+    assert scope.is_in_scope("https://target.test/orders")
+
+
+def test_from_raw_still_accepts_a_wildcard_host() -> None:
+    scope = ScopeGuard.from_raw("*.target.test")
+    assert scope.is_in_scope("https://api.target.test/orders")
+
+
+def test_from_raw_normalizes_full_urls_in_both_in_scope_and_out_of_scope() -> None:
+    scope = ScopeGuard.from_raw("http://target.test:8080", "http://admin.target.test:8080")
+    assert scope.is_in_scope("http://target.test:8080/orders")
+    assert not scope.is_in_scope("http://admin.target.test:8080/orders")
