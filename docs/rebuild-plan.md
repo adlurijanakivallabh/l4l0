@@ -881,6 +881,64 @@ user decision.**
 - Gate: E2E covers ≥3 families through a real entry point; no test asserts a
   comment or a stub's mere presence.
 
+**Status (2026-08-31): Phase G mostly done — C5 fully cut, item 1 was
+already satisfied, the E2E addition deferred as a documented gap.**
+- Item 1 ("add drivers OR downgrade ratings for idor/mass_assignment/
+  xss_stored/race; fix B6") was already fully satisfied by the earlier
+  coverage-completeness insert (all four classes have real drivers in
+  `driven_classes`; the `xss_dom` staleness this ledger calls B6 was fixed
+  in that same insert, documented there). Verified by grep before crediting
+  it as done, not assumed.
+- **C5 cut, all three parts:**
+  - The "no-op race gate" (`test_live_portswigger_race_lab_is_env_gated`):
+    confirmed it was a genuine no-op, not just an env-skipped test like
+    every other live-lab gate in the suite — even WITH the `skipif`
+    decorator's condition satisfied (real credentials present), the
+    function body called `pytest.skip(...)` unconditionally, so it could
+    never run under any circumstance. Deleted; `live_gate_configured()` (the
+    function it never actually exercised) keeps its own, real,
+    non-placeholder test elsewhere in the same file.
+  - 9 byte-identical copies of `test_six_oracle_families_unchanged`,
+    scattered across phases 1/3/recon (confirmed identical via md5sum
+    before touching anything) — consolidated into one canonical copy in
+    `tests/phase1/test_tool_boundaries.py` (the file already asserting the
+    other §7/§13 role-boundary invariants; its own docstring already
+    mentioned "all six §7 oracle families"), removed from the other 8.
+  - The brittle source-substring test
+    (`test_scan_imports_no_external_scanner_dep`): this is the exact test
+    that flagged one of my own comments earlier this session (mentioning
+    signal-gated tool names in prose, not as an import) — direct first-hand
+    proof of the false-positive risk the ledger describes. Rewrote it to
+    walk the AST's `Import`/`ImportFrom` nodes instead of grepping raw file
+    text, matching the pattern its own sibling test in the same file
+    already used correctly. Verified both directions live: temporarily
+    re-added a prose comment naming the tools (test still passes) and
+    temporarily added a real `import sqlmap` (test correctly fails), then
+    reverted both.
+- **E2E addition — deferred, ledger's literal wording doesn't match the
+  current architecture.** "Through `scan_target`" is impossible to satisfy
+  meaningfully for BOLA or clickjacking/CORS: `scan_target` only ever drives
+  the generic sink-matched payload-chain loop (confirmed by grep —
+  `run_authz_bola`/`run_structural_headers` are called exclusively from
+  `scan_all_classes`, never from `scan_target`, which `scan_all_classes`
+  itself calls as one piece of a larger pipeline). A meaningful version of
+  this test would go through `scan_all_classes` instead — a materially
+  larger build (a full hermetic fixture: two identities with sessions, an
+  owned object, a vulnerable endpoint, plus the fake-planner/fake-advisor
+  harness `test_recon_economy.py` already established for driving
+  `scan_all_classes(require_llm=True, ...)` end to end) for a test whose
+  value is largely already covered by BOLA's and clickjacking/CORS's
+  existing pure-oracle and driver-level tests, just at a different
+  (integration) altitude. Not attempted this session; left as a documented
+  gap rather than pushed through at the end of an already very long
+  session.
+- Whole tree: **1317 passed, 0 failed, 15 skipped** — down from 1325
+  passed/16 skipped exactly as expected: -8 passed (9 duplicate invariant
+  tests collapsed to 1 canonical copy) and -1 skipped (the no-op race gate,
+  which was never anything but a skip, deleted outright). Every removed
+  test provided zero unique coverage; the invariants themselves are still
+  checked, once each, for real.
+
 ### Phase H — Full hardening + evaluation (final; no new capability)
 - The one authorized fresh whole-tree run; provisioned live gates (VAmPI
   numeric, crAPI, Juice Shop clean-container, PortSwigger/DVGA where provisioned);

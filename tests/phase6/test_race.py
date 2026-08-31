@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import ast
-import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -327,15 +326,3 @@ def test_live_gate_requires_both_credentials(monkeypatch: pytest.MonkeyPatch) ->
         monkeypatch.setenv("REACHAGENT_PORTSWIGGER_LAB_URL", url)
         monkeypatch.setenv("REACHAGENT_PORTSWIGGER_SESSION_TOKEN", token)
         assert live_gate_configured() is False
-
-
-@pytest.mark.skipif(
-    not (
-        os.environ.get("REACHAGENT_PORTSWIGGER_LAB_URL")
-        and os.environ.get("REACHAGENT_PORTSWIGGER_SESSION_TOKEN")
-    ),
-    reason="PortSwigger race lab credentials unavailable",
-)
-def test_live_portswigger_race_lab_is_env_gated() -> None:
-    """Configured lab remains a deferred live assertion, never run in unit tests."""
-    pytest.skip("live PortSwigger race assertion requires dedicated lab adapter")

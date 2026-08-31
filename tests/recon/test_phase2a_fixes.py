@@ -293,17 +293,6 @@ def test_oob_oracle_confirms_on_probe_nonce() -> None:
 # -- Invariants: six families, stimulus-only payloads, no tier leak ------------
 
 
-def test_six_oracle_families_unchanged() -> None:
-    assert set(OracleMechanism) == {
-        OracleMechanism.DIFFERENTIAL,
-        OracleMechanism.STRUCTURAL,
-        OracleMechanism.TIMING_STATISTICAL,
-        OracleMechanism.OOB_CALLBACK,
-        OracleMechanism.EXECUTION_CONFIRMATION,
-        OracleMechanism.BUSINESS_RULE_INVARIANT,
-    }
-
-
 def test_payload_resolver_imports_no_validator_or_candidate() -> None:
     import reachagent.payloads.payload_resolver as mod
 

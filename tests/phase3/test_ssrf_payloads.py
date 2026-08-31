@@ -201,17 +201,6 @@ def test_end_to_end_ssrf_payload_to_confirmed_finding() -> None:
 # -- Invariants ------------------------------------------------------------------
 
 
-def test_six_oracle_families_unchanged() -> None:
-    assert set(OracleMechanism) == {
-        OracleMechanism.DIFFERENTIAL,
-        OracleMechanism.STRUCTURAL,
-        OracleMechanism.TIMING_STATISTICAL,
-        OracleMechanism.OOB_CALLBACK,
-        OracleMechanism.EXECUTION_CONFIRMATION,
-        OracleMechanism.BUSINESS_RULE_INVARIANT,
-    }
-
-
 def test_structural_imports_no_validator() -> None:
     import reachagent.oracles.structural as mod
 

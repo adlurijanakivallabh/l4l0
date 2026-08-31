@@ -228,12 +228,31 @@ def test_scan_imports_do_not_pull_validator_outside_seam() -> None:
 
 
 def test_scan_imports_no_external_scanner_dep() -> None:
-    src = Path("src/reachagent/scan/entrypoint.py").read_text().lower()
-    for dep in ("sqlmap", "nuclei", "zap", "burp", "caido"):
-        assert dep not in src
-    orch_src = Path("src/reachagent/scan/orchestrator.py").read_text().lower()
-    for dep in ("sqlmap", "nuclei", "zap", "burp", "caido"):
-        assert dep not in orch_src
+    """No external scanner as a DEPENDENCY — an AST import check, not a raw text
+    grep (§9, C5). A prose comment or docstring naming a signal-gated wrapper by
+    way of explanation (e.g. describing what recon/tools/signal_gated.py
+    dispatches) is not a dependency; only an actual import is. Scope is
+    deliberately just these two core-orchestration files — recon/tools/ itself
+    legitimately wraps these binaries as gated, never-authoritative candidate
+    sources (§9 signal-gated tier), which is a different thing entirely.
+    """
+    scanners = ("sqlmap", "nuclei", "zap", "burp", "caido")
+    for path in (
+        Path("src/reachagent/scan/entrypoint.py"),
+        Path("src/reachagent/scan/orchestrator.py"),
+    ):
+        tree = ast.parse(path.read_text())
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.module:
+                names = [node.module, *(alias.name for alias in node.names)]
+            elif isinstance(node, ast.Import):
+                names = [alias.name for alias in node.names]
+            else:
+                continue
+            for name in names:
+                lowered = name.lower()
+                hit = next((s for s in scanners if s in lowered), None)
+                assert hit is None, f"{path}: import {name!r} pulls in scanner dep {hit!r}"
 
 
 # -- Live cold-start recon (prereq commit) --------------------------------------

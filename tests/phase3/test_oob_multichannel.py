@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from reachagent.graph.nodes import FindingStatus
 from reachagent.oob.collaborator import InteractshCollaborator, OOBCollaborator
-from reachagent.oracles import OracleMechanism
 from reachagent.oracles.oob_callback import OOBCallbackEvidence, OOBCallbackOracle
 
 
@@ -110,14 +109,3 @@ def test_phase2a_oob_templates_resolve_identically() -> None:
 
 
 # -- D4: exactly six OracleMechanism members -------------------------------------
-
-
-def test_six_oracle_families_unchanged() -> None:
-    assert set(OracleMechanism) == {
-        OracleMechanism.DIFFERENTIAL,
-        OracleMechanism.STRUCTURAL,
-        OracleMechanism.TIMING_STATISTICAL,
-        OracleMechanism.OOB_CALLBACK,
-        OracleMechanism.EXECUTION_CONFIRMATION,
-        OracleMechanism.BUSINESS_RULE_INVARIANT,
-    }

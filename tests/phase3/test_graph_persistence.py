@@ -29,7 +29,6 @@ from reachagent.graph.nodes import (
 )
 from reachagent.graph.persistence import dump_graph, load_graph
 from reachagent.graph.store import ReachabilityGraph
-from reachagent.oracles import OracleMechanism
 from reachagent.scan.entrypoint import scan_target
 
 _TARGET = "target.test"
@@ -386,14 +385,3 @@ def test_persistence_imports_no_validator(tmp_path: Path) -> None:
                 if any(f in alias.name for f in forbidden):
                     offenders.append(f"import {alias.name}")
     assert offenders == []
-
-
-def test_six_oracle_families_unchanged() -> None:
-    assert set(OracleMechanism) == {
-        OracleMechanism.DIFFERENTIAL,
-        OracleMechanism.STRUCTURAL,
-        OracleMechanism.TIMING_STATISTICAL,
-        OracleMechanism.OOB_CALLBACK,
-        OracleMechanism.EXECUTION_CONFIRMATION,
-        OracleMechanism.BUSINESS_RULE_INVARIANT,
-    }

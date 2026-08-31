@@ -199,17 +199,6 @@ def test_diagnostic_fires_at_most_once_read_only() -> None:
 # -- Invariants -------------------------------------------------------------------
 
 
-def test_six_oracle_families_unchanged() -> None:
-    assert set(OracleMechanism) == {
-        OracleMechanism.DIFFERENTIAL,
-        OracleMechanism.STRUCTURAL,
-        OracleMechanism.TIMING_STATISTICAL,
-        OracleMechanism.OOB_CALLBACK,
-        OracleMechanism.EXECUTION_CONFIRMATION,
-        OracleMechanism.BUSINESS_RULE_INVARIANT,
-    }
-
-
 def test_explorer_tool_surface_unchanged() -> None:
     # The diagnostic is a private branch inside fingerprint_parameter — it adds no
     # public callable, so the role-boundary test's four-tool surface still holds.

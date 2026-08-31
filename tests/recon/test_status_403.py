@@ -9,7 +9,6 @@ from pathlib import Path
 from reachagent.execution.audit import AuditLog
 from reachagent.execution.scope import ScopeGuard
 from reachagent.graph.store import ReachabilityGraph
-from reachagent.oracles import OracleMechanism
 from reachagent.recon.calibration import CalibrationResult
 from reachagent.recon.tools.dirb import DirbRunner
 from reachagent.recon.tools.feroxbuster import FeroxbusterRunner
@@ -163,14 +162,3 @@ def test_wrappers_import_no_validator() -> None:
             if isinstance(node, ast.Name) and node.id == "Candidate":
                 offenders.append(f"{name}: bare Candidate")
     assert offenders == []
-
-
-def test_six_oracle_families_unchanged() -> None:
-    assert set(OracleMechanism) == {
-        OracleMechanism.DIFFERENTIAL,
-        OracleMechanism.STRUCTURAL,
-        OracleMechanism.TIMING_STATISTICAL,
-        OracleMechanism.OOB_CALLBACK,
-        OracleMechanism.EXECUTION_CONFIRMATION,
-        OracleMechanism.BUSINESS_RULE_INVARIANT,
-    }

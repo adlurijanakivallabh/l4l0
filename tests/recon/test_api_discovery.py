@@ -12,7 +12,6 @@ from reachagent.execution.firer import RequestFirer
 from reachagent.execution.scope import ScopeGuard
 from reachagent.graph.nodes import Protocol
 from reachagent.graph.store import ReachabilityGraph
-from reachagent.oracles import OracleMechanism
 from reachagent.recon.api_discovery import discover_api
 from reachagent.scan.entrypoint import scan_target
 
@@ -276,14 +275,3 @@ def test_api_discovery_imports_no_validator() -> None:
         if isinstance(node, ast.Name) and node.id == "Candidate":
             offenders.append("bare Candidate symbol")
     assert offenders == []
-
-
-def test_six_oracle_families_unchanged() -> None:
-    assert set(OracleMechanism) == {
-        OracleMechanism.DIFFERENTIAL,
-        OracleMechanism.STRUCTURAL,
-        OracleMechanism.TIMING_STATISTICAL,
-        OracleMechanism.OOB_CALLBACK,
-        OracleMechanism.EXECUTION_CONFIRMATION,
-        OracleMechanism.BUSINESS_RULE_INVARIANT,
-    }

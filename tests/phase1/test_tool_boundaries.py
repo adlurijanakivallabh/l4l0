@@ -19,6 +19,7 @@ import importlib
 from pathlib import Path
 
 from reachagent.mcp import server
+from reachagent.oracles import OracleMechanism
 from reachagent.tools import coordinator, explorer, validator
 
 
@@ -283,3 +284,19 @@ def test_no_detector_imports_validator_directly() -> None:
         "Detector modules import reachagent.tools.validator directly — "
         "MCP boundary bypassed:\n" + "\n".join(violations)
     )
+
+
+def test_six_oracle_families_unchanged() -> None:
+    """The §7 family set is exactly six — CLAUDE.md forbids a seventh without a
+    plan update. Canonical home for this tripwire (§9/§14 C5): it was pasted
+    byte-identically into 9 unrelated test files across phases 1/3/recon; this
+    is now the only copy.
+    """
+    assert set(OracleMechanism) == {
+        OracleMechanism.DIFFERENTIAL,
+        OracleMechanism.STRUCTURAL,
+        OracleMechanism.TIMING_STATISTICAL,
+        OracleMechanism.OOB_CALLBACK,
+        OracleMechanism.EXECUTION_CONFIRMATION,
+        OracleMechanism.BUSINESS_RULE_INVARIANT,
+    }

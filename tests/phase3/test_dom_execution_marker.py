@@ -17,7 +17,6 @@ from reachagent.execution import RequestFirer, ScopeGuard
 from reachagent.graph.nodes import FindingStatus
 from reachagent.graph.store import ReachabilityGraph
 from reachagent.mcp import server
-from reachagent.oracles import OracleMechanism
 from reachagent.oracles.execution_confirmation import (
     ExecutionConfirmationEvidence,
     ExecutionConfirmationOracle,
@@ -162,17 +161,6 @@ def test_mcp_execution_confirmation_executed_absent_defaults_false() -> None:
 
 
 # -- Invariants ------------------------------------------------------------------
-
-
-def test_six_oracle_families_unchanged() -> None:
-    assert set(OracleMechanism) == {
-        OracleMechanism.DIFFERENTIAL,
-        OracleMechanism.STRUCTURAL,
-        OracleMechanism.TIMING_STATISTICAL,
-        OracleMechanism.OOB_CALLBACK,
-        OracleMechanism.EXECUTION_CONFIRMATION,
-        OracleMechanism.BUSINESS_RULE_INVARIANT,
-    }
 
 
 def test_shim_and_oracle_import_no_validator() -> None:

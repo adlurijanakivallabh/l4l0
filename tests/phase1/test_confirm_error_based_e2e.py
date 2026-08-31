@@ -11,7 +11,6 @@ import httpx
 from reachagent.execution import RequestFirer, ScopeGuard
 from reachagent.graph.nodes import Endpoint, Parameter, SinkType
 from reachagent.graph.store import ReachabilityGraph
-from reachagent.oracles import OracleMechanism
 from reachagent.payloads import PayloadLibrary
 from reachagent.payloads.payload_resolver import template_refs
 from reachagent.scan.entrypoint import _harvest_baseline_value, scan_target
@@ -216,17 +215,6 @@ def test_clean_target_zero_findings(tmp_path: Path) -> None:
 
 
 # -- Invariants ------------------------------------------------------------------
-
-
-def test_six_oracle_families_unchanged() -> None:
-    assert set(OracleMechanism) == {
-        OracleMechanism.DIFFERENTIAL,
-        OracleMechanism.STRUCTURAL,
-        OracleMechanism.TIMING_STATISTICAL,
-        OracleMechanism.OOB_CALLBACK,
-        OracleMechanism.EXECUTION_CONFIRMATION,
-        OracleMechanism.BUSINESS_RULE_INVARIANT,
-    }
 
 
 def test_explorer_tool_surface_unchanged() -> None:
