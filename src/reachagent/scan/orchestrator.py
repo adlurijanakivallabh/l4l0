@@ -77,6 +77,7 @@ ALL_CLASSES: tuple[str, ...] = (
     "open_redirect",
     "csrf_missing_protection",
     "web_cache_poisoning",
+    "request_smuggling",
     "graphql",
     "race",
 )
@@ -1447,6 +1448,64 @@ def run_cache_poisoning(
         _emit(
             events, "payloads", "not-applicable", "cache_poisoning: no marker replayed from cache"
         )
+    return found
+
+
+# ---------------------------------------------------------------------------
+# Request smuggling — CL.TE desync via a raw-socket timing probe
+# ---------------------------------------------------------------------------
+
+
+def run_request_smuggling(
+    *,
+    base_url: str,
+    seam: _ValidatorSeam,
+    events: list[ScanEvent],
+) -> list[str]:
+    """Fire the CL.TE raw-socket timing probe once per scan (§7, §10).
+
+    A transport-level property of the host:port, not any one endpoint — unlike
+    the other structural checks this runs once against the target root, not
+    per discovered path. Reuses the existing TIMING_STATISTICAL oracle
+    unchanged (same ≥10-trial paired-trial rigor as blind SQLi/NoSQLi/LDAP);
+    reuses ``smuggling/detector.py`` (no inline oracle wiring). The raw-socket
+    transport lives entirely in ``smuggling/raw_probe.py`` — this function
+    never touches a socket directly.
+    """
+    from reachagent.smuggling.detector import (
+        SmugglingProber,
+        SmugglingTimingProbe,
+        detect_request_smuggling,
+    )
+    from reachagent.smuggling.raw_probe import RawProbeTarget, fire_timing_trials
+
+    target = RawProbeTarget.from_base_url(base_url)
+    found: list[str] = []
+    if not target.host:
+        _emit(events, "payloads", "not-applicable", "request_smuggling: no resolvable host")
+        return found
+
+    def _fire_timing() -> SmugglingTimingProbe:
+        probe_ms, baseline_ms = fire_timing_trials(target)
+        return SmugglingTimingProbe(probe_latencies_ms=probe_ms, baseline_latencies_ms=baseline_ms)
+
+    prober = SmugglingProber(fire_timing=_fire_timing, oracle_runner=seam.run)
+    result = detect_request_smuggling(
+        prober, evidence_ref=f"orchestrator/request_smuggling/{target.host}:{target.port}"
+    )
+    if result.confirmed and seam.last is not None:
+        nid = seam.write("request_smuggling", seam.last, severity="high")
+        if nid:
+            found.append(nid)
+            _emit(
+                events,
+                "payloads",
+                "finding",
+                "request smuggling — CL.TE desync confirmed via timing",
+                path="/",
+            )
+    else:
+        _emit(events, "payloads", "not-applicable", "request_smuggling: no CL.TE timing signal")
     return found
 
 
@@ -2908,6 +2967,12 @@ def scan_all_classes(
         events=events_out,
     )
     check_cancel(cancel_check)
+    run_request_smuggling(
+        base_url=base_url,
+        seam=seam,
+        events=events_out,
+    )
+    check_cancel(cancel_check)
     run_jwt_forgery(
         graph=graph,
         firer=firer,
@@ -3034,6 +3099,7 @@ def scan_all_classes(
         "xss_stored",
         "open_redirect",
         "web_cache_poisoning",
+        "request_smuggling",
         "xxe",
         # xss_dom IS driven (run_xss_dom above) — this set was stale, causing a
         # contradictory "no discovered precondition" event on every all-class
