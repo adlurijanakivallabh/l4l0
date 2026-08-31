@@ -100,7 +100,8 @@ Ratings are calibrated against published results and documented technique limita
 
 | Class | Support | Primary oracle | Basis |
 |---|---|---|---|
-| BOLA / IDOR | **Full** | Cross-identity differential diff | Core mechanism of the graph design |
+| BOLA (cross-identity read) | **Full** | Cross-identity differential diff | Core mechanism of the graph design; read-only-first, always on |
+| IDOR (cross-identity write) | **Partial, opt-in** | Cross-identity differential diff on a state-changing write | Confirms a PUT/PATCH against another identity's live object succeeds when it should be refused — the one detector whose confirmed path mutates real cross-user data. Gated behind `allow_cross_user_writes: bool = False` (default off); DELETE excluded even when enabled (irreversible destruction is out of scope for this opt-in). Candidate discovery is narrower than BOLA's three strategies: only an owned object whose `instance_key` substitutes into a `{placeholder}` write-endpoint path |
 | BFLA | **Full** | Cross-identity differential on role-gated actions | Same mechanism applied to actions |
 | Business logic — known patterns (limit overrun, workflow-order bypass) | **Partial** | 4-template library: single-use reuse, quantity/limit, price/parameter tamper diff, step-order check | Covers the common pattern set via recon-instantiated templates, not hand-modeled per target |
 | Business logic — novel/unprecedented | **Weak** | None generic | No oracle exists for a rule the system was never told |

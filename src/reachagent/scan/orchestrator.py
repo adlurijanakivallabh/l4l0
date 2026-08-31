@@ -1427,6 +1427,167 @@ def run_authz_bola(
     return [hop.finding_node for hop in result.confirmed_hops]
 
 
+def run_authz_idor(
+    *,
+    graph: ReachabilityGraph,
+    firer: RequestFirer,
+    base_url: str,
+    identities: IdentityStore,
+    seam: _ValidatorSeam,
+    events: list[ScanEvent],
+    allow_cross_user_writes: bool = False,
+) -> list[str]:
+    """Cross-identity IDOR via a genuine state-changing write (§7 differential).
+
+    Sibling to ``run_authz_bola``, not a replacement — that driver is
+    read-only-first (GET only) and its ``vuln_class="bola"`` findings/
+    enumerable-disclosed preconditions are untouched here. This confirms the
+    one case a read can't: a PUT/PATCH against ANOTHER identity's live object
+    actually succeeds when it should be refused.
+
+    Opt-in only (``allow_cross_user_writes`` defaults False): the non-owner's
+    probe write is the single most invasive action this project ever takes —
+    it mutates a real identity's real data on the live target. DELETE is
+    deliberately excluded even when enabled — irreversible destruction is a
+    materially larger blast radius than an overwrite, beyond what this opt-in
+    was scoped for.
+
+    Candidate discovery is deliberately narrower than BOLA's three strategies:
+    only an owned object with a known ``instance_key`` substituted into a
+    ``{placeholder}`` of a write-method endpoint path — the one unambiguous
+    case where "this write targets exactly this owner's object" is a graph
+    fact, not a guess. The owner's own write must succeed first (proves the
+    endpoint is a genuinely live write for this object) before the
+    non-owner's probe — the intentionally risky step — ever fires.
+    """
+    if not allow_cross_user_writes:
+        _emit(
+            events,
+            "payloads",
+            "not-applicable",
+            "idor: cross-user write probing disabled (allow_cross_user_writes=False)",
+        )
+        return []
+
+    names = identities.names()
+    auth_ok = {identity_id(n) for n in names if identities.auth_headers(n)}
+    if len(auth_ok) < 2:
+        _emit(events, "payloads", "not-applicable", "idor: need ≥2 identities with sessions")
+        return []
+
+    from reachagent.bola.idor_detector import IdorProbe, IdorProber, detect_idor
+
+    found: list[str] = []
+    seen: set[tuple[str, str]] = set()
+    for obj_node, obj in graph.objects():
+        if obj.sensitivity_tier < 2 or not obj.instance_key:
+            continue
+        owner = graph.owner_of(obj_node)
+        if owner is None or owner not in auth_ok:
+            continue
+        non_owner = next((nid for nid in auth_ok if nid != owner), None)
+        if non_owner is None:
+            continue
+        for ep_node, ep in graph.endpoints():
+            if ep.method.upper() not in ("PUT", "PATCH"):
+                continue
+            if not _PLACEHOLDER.search(ep.path):
+                continue
+            concrete_path = _PLACEHOLDER.sub(obj.instance_key, ep.path)
+            key = (ep.method, concrete_path)
+            if key in seen:
+                continue
+            seen.add(key)
+
+            label = f"idor {ep.method} {concrete_path}"
+            url = f"{base_url.rstrip('/')}{concrete_path}"
+
+            def _clear(identity: str, sub_label: str, _url: str = url) -> Any | None:
+                ready = _fire_readonly(
+                    firer, identity, "OPTIONS", _url, events=events, label=f"{sub_label}/preflight"
+                )
+                if ready is None or not (200 <= ready.status_code < 300):
+                    ready = _fire_readonly(
+                        firer,
+                        identity,
+                        "GET",
+                        _url,
+                        events=events,
+                        label=f"{sub_label}/preflight-get",
+                    )
+                return ready
+
+            owner_ready = _clear(owner, f"{label}/owner")
+            non_owner_ready = _clear(non_owner, f"{label}/non-owner")
+            if (
+                owner_ready is None
+                or not (200 <= owner_ready.status_code < 300)
+                or non_owner_ready is None
+                or not (200 <= non_owner_ready.status_code < 300)
+            ):
+                _emit(events, "payloads", "not-applicable", f"{label}: no read-only clearance")
+                continue
+
+            body_params = [(n, p) for n, p in graph.parameters_of(ep_node) if p.location == "json"]
+            write_body = {p.name: _synth_body_value(p) for _n, p in body_params} or None
+            fire_kwargs: dict[str, object] = {"state_changing": True}
+            if write_body is not None:
+                fire_kwargs["json"] = write_body
+
+            try:
+                owner_result = firer.fire(owner, ep.method, url, **fire_kwargs)
+            except Exception as exc:  # noqa: BLE001, S112 — a refused write is a dead lead
+                _emit(
+                    events,
+                    "payloads",
+                    "error",
+                    f"{label}: owner write refused ({type(exc).__name__})",
+                )
+                continue
+            if not (200 <= owner_result.status_code < 300):
+                _emit(
+                    events,
+                    "payloads",
+                    "not-applicable",
+                    f"{label}: owner's own write did not succeed — not a live write endpoint",
+                )
+                continue
+
+            try:
+                probe_result = firer.fire(non_owner, ep.method, url, **fire_kwargs)
+            except Exception as exc:  # noqa: BLE001, S112 — a refused probe is not a violation
+                _emit(
+                    events,
+                    "payloads",
+                    "error",
+                    f"{label}: non-owner probe refused ({type(exc).__name__})",
+                )
+                continue
+
+            def _fire_probe(status: int = probe_result.status_code) -> IdorProbe:
+                return IdorProbe(non_owner_status=status)
+
+            prober = IdorProber(fire_probe=_fire_probe, oracle_runner=seam.run)
+            result = detect_idor(prober, evidence_ref=f"orchestrator/{label}")
+            if result.confirmed and seam.last is not None:
+                nid = seam.write(
+                    "idor", seam.last, severity="critical", metadata={"path": concrete_path}
+                )
+                if nid:
+                    found.append(nid)
+                    _emit(
+                        events,
+                        "payloads",
+                        "finding",
+                        f"idor — cross-user write succeeded at {concrete_path}",
+                        path=concrete_path,
+                    )
+
+    if not found:
+        _emit(events, "payloads", "not-applicable", "idor: no cross-user write confirmed")
+    return found
+
+
 # ---------------------------------------------------------------------------
 # Phase 3 — graphql (when a /graphql endpoint exists)
 # ---------------------------------------------------------------------------
@@ -1781,6 +1942,7 @@ def scan_all_classes(
     checkpoint_path: str | None = None,
     resume_checkpoint: str | None = None,
     idle_timeout: float = 900.0,
+    allow_cross_user_writes: bool = False,
 ) -> dict[str, Any]:
     """Run the validated multi-phase LLM-driven loop over ALL attack classes.
 
@@ -1790,6 +1952,10 @@ def scan_all_classes(
     ``library`` is built once and shared by ``scan_target`` and the blind-SQLi driver.
     ``graph``/``audit`` may be injected so the caller holds live references to the state
     the scan is writing (the GUI streams them while the scan runs).
+
+    ``allow_cross_user_writes`` gates ``run_authz_idor`` alone (default False): the one
+    driver whose confirmed path fires a genuine state-changing write against ANOTHER
+    identity's live object, so it never runs without explicit opt-in.
     """
     from reachagent.scan.agentic_loop import (
         AdaptiveControlLoop,
@@ -2343,6 +2509,16 @@ def scan_all_classes(
             events=events_out,
             transport=transport,
         )
+        check_cancel(cancel_check)
+        run_authz_idor(
+            graph=graph,
+            firer=firer,
+            base_url=base_url,
+            identities=identities,
+            seam=seam,
+            events=events_out,
+            allow_cross_user_writes=allow_cross_user_writes,
+        )
     check_cancel(cancel_check)
     run_graphql(
         graph=graph,
@@ -2411,6 +2587,7 @@ def scan_all_classes(
         "jwt_forgery",
         "bola",
         "bfla",
+        "idor",
         "graphql",
         "business_logic",
         "race",

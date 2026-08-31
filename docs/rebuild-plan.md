@@ -437,9 +437,54 @@ the read-only-first + independent-confirmation discipline (§7/§9/§10).
   `uuid.uuid4` is monkeypatched deterministic so the test can assert the
   collaborator's `observed_nonces()` return value against the exact nonce
   the driver generated. Whole tree: **1305 passed, 0 failed, 16 skipped.**
-- **Remaining in this insert:** idor (gated behind an opt-in
-  `allow_cross_user_writes: bool = False` — requires a genuine cross-user
-  write against another identity's live object).
+**Status (2026-08-31): idor done — coverage-completeness insert closed.**
+- Checked with the user before building this one specifically: unlike every
+  other class in this insert, a confirmed idor finding requires actually
+  firing a state-changing write (PUT/PATCH) as one identity against ANOTHER
+  identity's real live object — no read-only or self-only variant proves
+  anything. User chose the full live-write design, opt-in flag, default off
+  (over skipping the class entirely).
+- New `src/reachagent/bola/idor_detector.py` — a sibling to `bola/detector.py`,
+  not a modification of it (that detector stays exactly as-is: read-only-first
+  by its own docstring, `vuln_class="bola"` hardcoded, enumerable/disclosed
+  precondition tagging untouched — confirmed by running the two locked Phase 2
+  gate tests, `test_bola_enables_precondition.py` and
+  `test_crapi_bola_gate.py`, unchanged and green). Reuses the differential
+  oracle's existing `CROSS_IDENTITY`/`PROBE_UNAUTHORIZED` branch, but since two
+  different writes' response bodies are never comparable the way two reads of
+  the same resource are, both Observations are synthetic ok/denied reductions
+  of the access outcome — same engineered-observation trick
+  `mass_assignment/detector.py` uses, not a new oracle branch.
+- New `run_authz_idor` driver in `orchestrator.py`, gated by a new
+  `scan_all_classes(..., allow_cross_user_writes: bool = False)` parameter.
+  Candidate discovery is deliberately narrower than BOLA's three strategies:
+  only an owned object whose `instance_key` substitutes into a `{placeholder}`
+  of a PUT/PATCH endpoint path — DELETE is excluded even when the flag is on
+  (irreversible destruction is a materially larger blast radius than an
+  overwrite, judged beyond what this opt-in was scoped for). Sequencing:
+  read-only-first preflight for BOTH identities on the same path, then the
+  owner's own write must succeed (proves the endpoint is a genuinely live
+  write for this object) — only then does the non-owner's probe, the one
+  genuinely risky step in the whole coverage-completeness insert, ever fire.
+  The shared `firer` already carries `identity_stores=identities`, so firing
+  as two different identities needed no new session/MCP machinery — just two
+  `.fire()` calls with different identity strings.
+- Not wired into the GUI: `scan_all_classes`'s new parameter has no exposed
+  toggle in the scan-launch form yet, so a GUI-triggered scan can never opt
+  in today. Flagged rather than silently expanded — the user's ask was about
+  the detection mechanism, not a GUI feature.
+- Split the coverage matrix's old combined "BOLA / IDOR — Full" row into two
+  honest rows: BOLA (Full, always-on read) and IDOR (Partial, opt-in write).
+- 5 pure-oracle unit tests (`tests/phase2/test_idor_detector.py`) + 6 hermetic
+  orchestrator driver tests (`tests/scan/test_idor_driver.py`). Verified the
+  owner-write-gates-the-probe test actually catches the bug it's meant to
+  catch: temporarily removed the gate, confirmed the non-owner's write fired
+  and a finding got written even though the owner's own write had failed
+  (500), then restored. Whole tree: **1316 passed, 0 failed, 16 skipped.**
+
+All six planned coverage-completeness classes are now shipped: mass_assignment,
+xss_stored, open_redirect, race, xxe, idor. Resuming the original A-H phase
+order at Phase D next.
 
 ### Phase D — Cut the planning/tuning tier
 *(read R2 orchestration, R3 unified loop.)*
