@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 
 from reachagent.graph.nodes import Endpoint, Host, Parameter, Service
 from reachagent.graph.store import ReachabilityGraph
-from reachagent.gui.app import _scans, app
+from reachagent.gui.app import _ScanControl, _scans, app
 
 gui_app = import_module("reachagent.gui.app")
 
@@ -383,3 +383,86 @@ def test_app_js_route_is_never_cached() -> None:
     response = TestClient(app).get("/static/app.js")
     assert response.status_code == 200
     assert response.headers.get("cache-control") == "no-store"
+
+
+# === Pause / resume / cancel ================================================
+# _ScanControl.is_set() blocks the worker thread while pause_event is set and
+# unblocks it the instant cancel_event fires — these tests only exercise the
+# HTTP-facing state transitions, not the blocking itself (covered indirectly:
+# a scan stuck mid-pause would just never reach a terminal status, which the
+# live GUI verification already confirmed against a real running scan).
+
+
+def _running_scan(scan_id: str) -> _ScanControl:
+    control = _ScanControl()
+    _scans[scan_id] = {"status": "running", "events": [], "control": control}
+    return control
+
+
+def test_pause_a_running_scan_flips_status_and_sets_the_event() -> None:
+    scan_id = "pause-slice"
+    control = _running_scan(scan_id)
+    try:
+        response = TestClient(app).post(f"/api/scan/{scan_id}/pause")
+        assert response.status_code == 200
+        body = response.json()
+        assert body["status"] == "paused"
+        assert body["lifecycle"] == "paused"
+        assert body["can_resume"] is True
+        assert body["can_pause"] is False
+        assert control.pause_event.is_set()
+    finally:
+        _scans.pop(scan_id, None)
+
+
+def test_resume_a_paused_scan_flips_status_and_clears_the_event() -> None:
+    scan_id = "resume-slice"
+    control = _running_scan(scan_id)
+    _scans[scan_id]["status"] = "paused"
+    try:
+        control.pause_event.set()
+        response = TestClient(app).post(f"/api/scan/{scan_id}/resume")
+        assert response.status_code == 200
+        body = response.json()
+        assert body["status"] == "running"
+        assert body["can_pause"] is True
+        assert body["can_resume"] is False
+        assert not control.pause_event.is_set()
+    finally:
+        _scans.pop(scan_id, None)
+
+
+def test_pause_rejected_when_not_running() -> None:
+    scan_id = "pause-reject-slice"
+    _running_scan(scan_id)
+    _scans[scan_id]["status"] = "queued"
+    try:
+        response = TestClient(app).post(f"/api/scan/{scan_id}/pause")
+        assert response.status_code == 409
+    finally:
+        _scans.pop(scan_id, None)
+
+
+def test_resume_rejected_when_not_paused() -> None:
+    scan_id = "resume-reject-slice"
+    _running_scan(scan_id)
+    try:
+        response = TestClient(app).post(f"/api/scan/{scan_id}/resume")
+        assert response.status_code == 409
+    finally:
+        _scans.pop(scan_id, None)
+
+
+def test_cancel_still_works_from_a_paused_scan() -> None:
+    scan_id = "cancel-from-paused-slice"
+    control = _running_scan(scan_id)
+    _scans[scan_id]["status"] = "paused"
+    control.pause_event.set()
+    try:
+        response = TestClient(app).post(f"/api/scan/{scan_id}/cancel")
+        assert response.status_code == 200
+        body = response.json()
+        assert body["status"] == "cancelling"
+        assert control.cancel_event.is_set()
+    finally:
+        _scans.pop(scan_id, None)

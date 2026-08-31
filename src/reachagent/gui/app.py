@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import json
+import logging
 import re
 import threading
 import uuid
@@ -26,6 +27,7 @@ from fastapi.staticfiles import StaticFiles
 
 from reachagent.execution.audit import AuditLog
 from reachagent.graph.store import ReachabilityGraph
+from reachagent.logging_setup import configure_file_logging
 from reachagent.report.renderer import (
     build_evidence_index,
     compare_graphs,
@@ -41,6 +43,33 @@ from reachagent.report.renderer import (
 from reachagent.scan.orchestrator import ScanEvent, scan_all_classes
 
 app = FastAPI(title="ReachAgent GUI", version="2.0")
+_log = logging.getLogger(__name__)
+LOG_PATH = configure_file_logging()
+
+
+class _ScanControl:
+    """Composite cancel/pause token passed to ``scan_all_classes`` as ``cancel_check``.
+
+    ``check_cancel()`` (agentic_loop.py) already treats anything with an
+    ``is_set()`` method as a cancellation checkpoint, called at every phase
+    boundary — the same checkpoints a pause needs. Blocking inside
+    ``is_set()`` while paused gets pause/resume for free at every one of
+    those checkpoints, with zero changes to the orchestrator/agentic-loop
+    call sites. The block happens on the scan's own worker thread (run via
+    a ThreadPoolExecutor), never the GUI's event loop, so pausing one scan
+    never blocks the GUI itself.
+    """
+
+    def __init__(self) -> None:
+        self.cancel_event = threading.Event()
+        self.pause_event = threading.Event()
+
+    def is_set(self) -> bool:
+        while self.pause_event.is_set() and not self.cancel_event.is_set():
+            self.cancel_event.wait(timeout=0.5)
+        return self.cancel_event.is_set()
+
+
 _scans: dict[str, dict[str, Any]] = {}  # id → {status, phase, events, findings, report_md, error}
 _scan_lock = threading.RLock()
 _MAX_EVENTS = 4_000
@@ -558,7 +587,7 @@ async def start_scan(payload: dict[str, Any]) -> JSONResponse:
             "created_at": _now(),
             "updated_at": _now(),
             "finished_at": None,
-            "cancel_event": threading.Event(),
+            "control": _ScanControl(),
             "cancel_requested": False,
         }
     asyncio.create_task(
@@ -596,7 +625,9 @@ def _scan_summary(scan_id: str, data: dict[str, Any]) -> dict[str, Any]:
         "event_count": len(events) if isinstance(events, list) else 0,
         "latest_event": latest,
         "cancel_requested": bool(data.get("cancel_requested", False)),
-        "can_cancel": status in {"queued", "running", "cancelling"},
+        "can_cancel": status in {"queued", "running", "cancelling", "paused"},
+        "can_pause": status == "running",
+        "can_resume": status == "paused",
         "graph_available": isinstance(graph, ReachabilityGraph),
         "counts": _graph_snapshot(graph).get("counts", {}),
     }
@@ -620,14 +651,18 @@ def cancel_scan(scan_id: str) -> JSONResponse:
         if data is None:
             return JSONResponse({"error": "not found"}, status_code=404)
         status = str(data.get("status", "queued"))
-        if status not in {"queued", "running", "cancelling"}:
+        if status not in {"queued", "running", "cancelling", "paused"}:
             return JSONResponse(
                 {"error": "scan is already terminal", "status": status}, status_code=409
             )
-        cancel_event = data.get("cancel_event")
-        if not isinstance(cancel_event, threading.Event):
+        control = data.get("control")
+        if not isinstance(control, _ScanControl):
             return JSONResponse({"error": "scan cancellation unavailable"}, status_code=409)
-        cancel_event.set()
+        # A paused scan is blocked inside control.is_set() — clearing pause here
+        # lets that wait loop observe the cancel_event on its very next check
+        # instead of sleeping for up to another 0.5s.
+        control.pause_event.clear()
+        control.cancel_event.set()
         data["status"] = "cancelling"
         data["lifecycle"] = "running"
         data["cancel_requested"] = True
@@ -639,6 +674,63 @@ def cancel_scan(scan_id: str) -> JSONResponse:
                     phase=str(data.get("phase", "recon")),
                     kind="info",
                     message="Cancellation requested by operator",
+                )
+            )
+    return JSONResponse(_scan_summary(scan_id, data))
+
+
+@app.post("/api/scan/{scan_id}/pause")
+def pause_scan(scan_id: str) -> JSONResponse:
+    """Pause a running scan at its next phase-boundary checkpoint (resumable)."""
+    with _scan_lock:
+        data = _scans.get(scan_id)
+        if data is None:
+            return JSONResponse({"error": "not found"}, status_code=404)
+        status = str(data.get("status", "queued"))
+        if status != "running":
+            return JSONResponse({"error": "scan is not running", "status": status}, status_code=409)
+        control = data.get("control")
+        if not isinstance(control, _ScanControl):
+            return JSONResponse({"error": "scan pause unavailable"}, status_code=409)
+        control.pause_event.set()
+        data["status"] = "paused"
+        data["lifecycle"] = "paused"
+        data["updated_at"] = _now()
+        events = data.get("events")
+        if isinstance(events, list):
+            events.append(
+                ScanEvent(
+                    phase=str(data.get("phase", "recon")),
+                    kind="info",
+                    message="Paused by operator",
+                )
+            )
+    return JSONResponse(_scan_summary(scan_id, data))
+
+
+@app.post("/api/scan/{scan_id}/resume")
+def resume_scan(scan_id: str) -> JSONResponse:
+    """Resume a paused scan — the blocked worker thread picks up immediately."""
+    with _scan_lock:
+        data = _scans.get(scan_id)
+        if data is None:
+            return JSONResponse({"error": "not found"}, status_code=404)
+        if str(data.get("status", "queued")) != "paused":
+            return JSONResponse({"error": "scan is not paused"}, status_code=409)
+        control = data.get("control")
+        if not isinstance(control, _ScanControl):
+            return JSONResponse({"error": "scan resume unavailable"}, status_code=409)
+        control.pause_event.clear()
+        data["status"] = "running"
+        data["lifecycle"] = "running"
+        data["updated_at"] = _now()
+        events = data.get("events")
+        if isinstance(events, list):
+            events.append(
+                ScanEvent(
+                    phase=str(data.get("phase", "recon")),
+                    kind="info",
+                    message="Resumed by operator",
                 )
             )
     return JSONResponse(_scan_summary(scan_id, data))
@@ -746,7 +838,7 @@ async def _run_scan_body(
         audit = AuditLog()
         events = _EventBuffer(lambda: _touch_scan(scan_id))
         _scan_update(scan_id, graph=graph, audit=audit, events=events)
-        cancel_event = _scans.get(scan_id, {}).get("cancel_event")
+        control = _scans.get(scan_id, {}).get("control")
 
         def _run() -> dict[str, Any]:
             return scan_all_classes(
@@ -761,7 +853,7 @@ async def _run_scan_body(
                 operator_prompt=operator_prompt,
                 require_llm=use_llm,
                 live_recon=True,
-                cancel_check=cancel_event,
+                cancel_check=control,
             )
 
         loop = asyncio.get_running_loop()
@@ -812,6 +904,7 @@ async def _run_scan_body(
                 finished_at=_now(),
             )
         else:
+            _log.exception("scan %s crashed", scan_id)
             _scan_update(
                 scan_id,
                 status="error",
@@ -1028,7 +1121,7 @@ def get_scan(scan_id: str) -> JSONResponse:
     graph: ReachabilityGraph | None = snapshot.get("graph")
     events = snapshot.get("events", [])
     phase = snapshot.get("phase")
-    if snapshot.get("status") in {"running", "queued", "cancelling"} and events:
+    if snapshot.get("status") in {"running", "queued", "cancelling", "paused"} and events:
         phase = events[-1].phase
     status = str(snapshot.get("status", "queued"))
     latest = _event_dict(events[-1]) if events else None
@@ -1053,7 +1146,9 @@ def get_scan(scan_id: str) -> JSONResponse:
             "updated_at": snapshot.get("updated_at"),
             "finished_at": snapshot.get("finished_at"),
             "cancel_requested": bool(snapshot.get("cancel_requested", False)),
-            "can_cancel": status in {"queued", "running", "cancelling"},
+            "can_cancel": status in {"queued", "running", "cancelling", "paused"},
+            "can_pause": status == "running",
+            "can_resume": status == "paused",
             "stale_after_seconds": 20,
         }
     )
@@ -1268,6 +1363,7 @@ def main() -> None:  # ponytail: one-liner entry, no config file until 3 flags
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=8000)
     args = p.parse_args()
+    print(f"Debug/crash log: {LOG_PATH}")
     uvicorn.run(app, host=args.host, port=args.port)
 
 

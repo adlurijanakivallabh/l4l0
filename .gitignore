@@ -13,6 +13,9 @@ __pycache__/
 # Local chat-log dumps — not source
 reachagentchat/
 
+# Durable debug/crash log (logging_setup.py) — not source
+logs/
+
 # Runtime provider configs (contain API keys)
 config/providers.json
 .playwright-cli/

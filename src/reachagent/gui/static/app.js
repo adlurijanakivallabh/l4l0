@@ -413,6 +413,8 @@ function updateChatHeader(j) {
   pill.textContent = LIFECYCLE_LABEL[lifecycle] || lifecycle;
   pill.className = "chat-header-lifecycle " + lifecycle;
   $("cancel-scan").hidden = !j.can_cancel;
+  $("pause-scan").hidden = !j.can_pause;
+  $("resume-scan").hidden = !j.can_resume;
 }
 
 function renderScanSnapshot(j) {
@@ -484,12 +486,16 @@ function setTerminalLive(live) {
 function appendTerminalRows(events) {
   if (!events.length) return;
   const feed = $("term-feed");
+  // The scrollable element is the .work-body ancestor (#tab-terminal), not
+  // #term-feed itself — #term-feed has no overflow/height of its own, so
+  // reading/writing scrollTop on it was always a no-op.
+  const scroller = $("tab-terminal");
   const emptyPlaceholder = feed.querySelector(".term-empty");
   if (emptyPlaceholder) emptyPlaceholder.remove();
-  const atBottom = feed.scrollHeight - feed.scrollTop - feed.clientHeight < 40;
+  const atBottom = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 40;
   events.forEach((e) => feed.appendChild(terminalRow(e)));
   $("term-count").textContent = feed.children.length + " events";
-  if (atBottom) feed.scrollTop = feed.scrollHeight;
+  if (atBottom) scroller.scrollTop = scroller.scrollHeight;
 }
 
 // Shown inline, always — the operator watches these run live, like a shell.
@@ -831,10 +837,33 @@ function renderExportLinks(scanId) {
 
 $("cancel-scan").onclick = async () => {
   if (!state.scanId) return;
+  if (!confirm("Cancel this assessment? This stops the scan and cannot be undone.")) return;
   const btn = $("cancel-scan");
   btn.disabled = true;
   try {
     await fetch("/api/scan/" + state.scanId + "/cancel", { method: "POST" });
+  } finally {
+    btn.disabled = false;
+  }
+};
+
+$("pause-scan").onclick = async () => {
+  if (!state.scanId) return;
+  const btn = $("pause-scan");
+  btn.disabled = true;
+  try {
+    await fetch("/api/scan/" + state.scanId + "/pause", { method: "POST" });
+  } finally {
+    btn.disabled = false;
+  }
+};
+
+$("resume-scan").onclick = async () => {
+  if (!state.scanId) return;
+  const btn = $("resume-scan");
+  btn.disabled = true;
+  try {
+    await fetch("/api/scan/" + state.scanId + "/resume", { method: "POST" });
   } finally {
     btn.disabled = false;
   }
