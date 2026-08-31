@@ -602,8 +602,54 @@ discipline as C1/C2 applied per sub-item.**
   **1315 passed, 0 failed, 16 skipped** (4 fewer than before this slice —
   exactly the 4 tests deleted alongside their dead code: 1 RunConfig test,
   3 TestExpandEncodingVariants tests).
+**Status (2026-08-31): W5/D3 done (narrow MVP, per user's scoping choice).**
+- Investigated before building: `reconfirm_candidate` (the "only place a
+  tool-sourced candidate can become a finding") already existed, fully built
+  and unit-tested in isolation — but genuinely never wired into the real scan
+  (`run_signal_tools`'s `reconfirm` callback defaulted to `None` at its one
+  production call site, confirmed by grep). The missing piece was upstream:
+  something to independently re-fire a fresh probe against the candidate's
+  own endpoint/param and build the evidence `reconfirm_candidate` needs.
+- Checked with the user on scope first: the six signal-gated wrappers
+  (`recon/tools/{commix,dalfox,jwt_tool,nikto,nuclei,sqlmap}.py`) span all
+  six §7 oracle mechanisms across ~10 `vuln_class` values, several with no
+  existing driver to reuse a confirmation shape from at all
+  (`cve_match`/`information_exposure`/`server_misconfiguration`). Chose the
+  narrow MVP: wire only the 4 `(vuln_class, suggested_oracle)` pairs with a
+  clear existing shape to reuse —
+  `(sqli, DIFFERENTIAL)`/`(xss_reflected, EXECUTION_CONFIRMATION)`/
+  `(command_injection, OOB_CALLBACK)`/`(jwt_forgery, STRUCTURAL)`. Every
+  other claim still gets the same honest `"reconfirmation_required"` event
+  as before — no regression, just not yet upgraded.
+- New `_make_signal_reconfirm` (built once per scan, before `run_signal_tools`
+  now runs — reordered `firer`/`seam` construction earlier for this) builds
+  one `ExplorerContext` and dispatches through 4 new
+  `_reconfirm_<class>` functions on the exact `(vuln_class, suggested_oracle)`
+  pair, reusing established patterns: the JWT forgery baseline/probe shape
+  from `run_jwt_forgery`, the reflected-tag shape from the xss detector, the
+  OOB-collaborator shape from `run_xxe`, and the DATABASE_ERROR signature
+  list from `payload_chain._evidence_for`. `run_oracle`/`write_finding` are
+  `validator.run_oracle`/`validator.write_finding` directly (not
+  `_ValidatorSeam`) — `reconfirm_candidate` type-checks for the raw
+  `OracleVerdict`, which the seam wraps in `OracleOutcome`.
+- Caught and fixed two real issues before committing: (1) each reconfirm
+  builder was independently calling the uncached `build_library()`
+  (re-parses the whole vendored corpus from disk) — moved to build the
+  `ExplorerContext` once in the factory instead of once per candidate, same
+  "build once, reuse across the loop" pattern every other driver already
+  follows; (2) one new payload template (`command_injection/oob-dns-callback`
+  — no existing shell-command OOB template to reuse, `log4shell-oob` is a
+  different attack class despite sharing the vuln_class tag) needed its own
+  `library.yaml` catalog row — the project enforces a "no orphan template"
+  integrity invariant (every `_TEMPLATES` ref must map to a real catalog
+  entry) that a first pass missed, caught by 2 existing tests failing on the
+  next full-suite run.
+- 10 new hermetic tests (`tests/scan/test_signal_reconfirm.py`) covering all
+  4 pairs' confirm and deny paths, the no-bearer-token/no-OOB-domain guards,
+  and that an unmapped pair is a complete no-op (zero requests fired).
+  Whole tree: **1325 passed, 0 failed, 16 skipped.**
 - **Remaining in Phase D:** W2/W3 (plan-schema collapse), 20-client-class
-  collapse, D3 (signal-gated reconfirm wiring).
+  collapse.
 
 ### Phase E — Payload corpus hygiene
 *(read R7 corpora, R8 wordlists.)*

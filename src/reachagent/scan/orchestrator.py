@@ -26,7 +26,7 @@ import logging
 import os
 import re
 import uuid
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -1916,6 +1916,339 @@ def run_xxe(
 
 
 # ---------------------------------------------------------------------------
+# Signal-gated reconfirm seam (§9 W5/D3)
+#
+# A signal-gated tool (the wrappers registered in recon/tools/signal_gated.py)
+# emits a CLAIM as an inert Candidate; run_signal_tools drops every claim on the
+# floor (an honest "reconfirmation_required" event) unless a `reconfirm`
+# callback is supplied. This section is that callback: it independently
+# re-fires ONE fresh probe against the candidate's own endpoint/param and
+# builds real §7 evidence, then hands it to signal_gated.reconfirm_candidate
+# — the one place a tool-sourced claim can become a Finding, and only via a
+# fresh run_oracle verdict, never the tool's own say-so.
+#
+# Narrow scope, deliberately: only the (vuln_class, suggested_oracle) pairs
+# with an existing deterministic confirmation shape to reuse are handled —
+# (sqli, DIFFERENTIAL), (xss_reflected, EXECUTION_CONFIRMATION),
+# (command_injection, OOB_CALLBACK), (jwt_forgery, STRUCTURAL). Every other
+# claim (ssti, ssrf, path_traversal, cve_match, information_exposure,
+# server_misconfiguration, and sqli/command_injection claims suggesting a
+# different oracle than above) still gets dropped with the same honest event
+# as before this change — no regression, just not yet upgraded.
+# ---------------------------------------------------------------------------
+
+_SQL_ERROR_SIGNATURES: tuple[str, ...] = (
+    "sql syntax",
+    "sqlite3.operationalerror",
+    "sqlite_error",
+    "psycopg2",
+    "you have an error in your sql",
+    "unclosed quotation mark",
+    "sqlalchemy",
+    'near "',
+)
+
+
+def _reconfirm_jwt_forgery(
+    candidate: Any,
+    *,
+    graph: ReachabilityGraph,
+    firer: RequestFirer,
+    base_url: str,
+    identity: str,
+    auth_headers: Mapping[str, str],
+    events: list[ScanEvent],
+    ctx: Any,
+) -> object | None:
+    del ctx  # unused — no ExplorerContext needed for the header-only JWT probe
+    from reachagent.oracles.structural import StructuralCheckType, StructuralEvidence
+    from reachagent.payloads.payload_resolver import _TEMPLATES
+
+    valid_token = auth_headers.get("Authorization", "")
+    if not valid_token.lower().startswith("bearer "):
+        return None
+    forged = _TEMPLATES.get("jwt_forgery/none-alg")
+    if not forged:
+        return None
+    ep = graph.endpoint(candidate.endpoint_node)
+    url = f"{base_url.rstrip('/')}{ep.path}"
+    label = f"signal-reconfirm jwt {ep.path}"
+    baseline = _fire_readonly(
+        firer, identity, "GET", url, events=events, label=f"{label}/baseline", headers=auth_headers
+    )
+    if baseline is None:
+        return None
+    probe = _fire_readonly(
+        firer,
+        identity,
+        "GET",
+        url,
+        events=events,
+        label=f"{label}/probe",
+        headers={**auth_headers, "Authorization": f"Bearer {forged}"},
+    )
+    if probe is None:
+        return None
+    return StructuralEvidence(
+        check_type=StructuralCheckType.JWT_FORGERY,
+        baseline_status=baseline.status_code,
+        probe_status=probe.status_code,
+        evidence_ref=f"signal-reconfirm/jwt{ep.path}",
+    )
+
+
+def _reconfirm_xss_reflected(
+    candidate: Any,
+    *,
+    graph: ReachabilityGraph,
+    firer: RequestFirer,
+    base_url: str,
+    identity: str,
+    auth_headers: Mapping[str, str],
+    events: list[ScanEvent],
+    ctx: Any,
+) -> object | None:
+    from reachagent.oracles.execution_confirmation import ExecutionConfirmationEvidence
+    from reachagent.payloads.payload_resolver import resolve
+    from reachagent.tools.explorer import _fire_with_value
+
+    if candidate.param_node is None:
+        return None
+    ep = graph.endpoint(candidate.endpoint_node)
+    param = graph.parameter(candidate.param_node)
+    url = f"{base_url.rstrip('/')}{ep.path}"
+    label = f"signal-reconfirm xss {ep.path}"
+    mutating = ep.method.upper() not in ("GET", "HEAD", "OPTIONS")
+    if mutating:
+        preflight = _fire_readonly(
+            firer, identity, "OPTIONS", url, events=events, label=f"{label}/preflight"
+        )
+        if preflight is None or not (200 <= preflight.status_code < 300):
+            preflight = _fire_readonly(
+                firer, identity, "GET", url, events=events, label=f"{label}/preflight-get"
+            )
+        if preflight is None or not (200 <= preflight.status_code < 300):
+            return None
+    tag = f"ra{uuid.uuid4().hex[:10]}"
+    payload = resolve("xss/reflected/script-tag-canary", canary=tag)
+    try:
+        result = _fire_with_value(
+            ctx,
+            identity,
+            ep.method,
+            url,
+            param.location,
+            param.name,
+            payload,
+            state_changing=mutating,
+        )
+    except Exception:  # noqa: BLE001 — a refused probe is not a violation
+        return None
+    body = result.body.decode("utf-8", errors="replace")
+    return ExecutionConfirmationEvidence(
+        payload_tag=tag, response_body=body, evidence_ref=f"signal-reconfirm/xss{ep.path}"
+    )
+
+
+def _reconfirm_command_injection(
+    candidate: Any,
+    *,
+    graph: ReachabilityGraph,
+    firer: RequestFirer,
+    base_url: str,
+    identity: str,
+    auth_headers: Mapping[str, str],
+    events: list[ScanEvent],
+    ctx: Any,
+) -> object | None:
+    if not os.environ.get("REACHAGENT_OOB_BASE_DOMAIN") or candidate.param_node is None:
+        return None
+    from reachagent.oob.collaborator import InteractshCollaborator
+    from reachagent.oracles.oob_callback import OOBCallbackEvidence
+    from reachagent.payloads.payload_resolver import resolve
+    from reachagent.tools.explorer import _fire_with_value
+
+    try:
+        collaborator = InteractshCollaborator()
+    except Exception:  # noqa: BLE001, S110 — no OOB domain configured is valid
+        return None
+    ep = graph.endpoint(candidate.endpoint_node)
+    param = graph.parameter(candidate.param_node)
+    url = f"{base_url.rstrip('/')}{ep.path}"
+    label = f"signal-reconfirm cmdi {ep.path}"
+    mutating = ep.method.upper() not in ("GET", "HEAD", "OPTIONS")
+    if mutating:
+        preflight = _fire_readonly(
+            firer, identity, "OPTIONS", url, events=events, label=f"{label}/preflight"
+        )
+        if preflight is None or not (200 <= preflight.status_code < 300):
+            preflight = _fire_readonly(
+                firer, identity, "GET", url, events=events, label=f"{label}/preflight-get"
+            )
+        if preflight is None or not (200 <= preflight.status_code < 300):
+            return None
+    nonce = "ra" + uuid.uuid4().hex[:12]
+    payload = resolve(
+        "command_injection/oob-dns-callback", nonce=nonce, collab=collaborator._base_domain
+    )
+    try:
+        _fire_with_value(
+            ctx,
+            identity,
+            ep.method,
+            url,
+            param.location,
+            param.name,
+            payload,
+            state_changing=mutating,
+        )
+    except Exception:  # noqa: BLE001 — a refused probe is not a violation
+        return None
+    return OOBCallbackEvidence(
+        probe_nonce=nonce,
+        observed_nonces=collaborator.observed_nonces(),
+        evidence_ref=f"signal-reconfirm/cmdi{ep.path}",
+    )
+
+
+def _reconfirm_sqli(
+    candidate: Any,
+    *,
+    graph: ReachabilityGraph,
+    firer: RequestFirer,
+    base_url: str,
+    identity: str,
+    auth_headers: Mapping[str, str],
+    events: list[ScanEvent],
+    ctx: Any,
+) -> object | None:
+    from reachagent.oracles.differential import (
+        DiffAxis,
+        DifferentialEvidence,
+        DiffExpectation,
+        Observation,
+    )
+    from reachagent.tools.explorer import _fire_with_value
+
+    if candidate.param_node is None:
+        return None
+    ep = graph.endpoint(candidate.endpoint_node)
+    param = graph.parameter(candidate.param_node)
+    url = f"{base_url.rstrip('/')}{ep.path}"
+    label = f"signal-reconfirm sqli {ep.path}"
+    mutating = ep.method.upper() not in ("GET", "HEAD", "OPTIONS")
+    if mutating:
+        preflight = _fire_readonly(
+            firer, identity, "OPTIONS", url, events=events, label=f"{label}/preflight"
+        )
+        if preflight is None or not (200 <= preflight.status_code < 300):
+            preflight = _fire_readonly(
+                firer, identity, "GET", url, events=events, label=f"{label}/preflight-get"
+            )
+        if preflight is None or not (200 <= preflight.status_code < 300):
+            return None
+    try:
+        baseline = _fire_with_value(
+            ctx, identity, ep.method, url, param.location, param.name, "1", state_changing=mutating
+        )
+        probe = _fire_with_value(
+            ctx, identity, ep.method, url, param.location, param.name, "1'", state_changing=mutating
+        )
+    except Exception:  # noqa: BLE001 — a refused probe is not a violation
+        return None
+    return DifferentialEvidence(
+        axis=DiffAxis.CROSS_CONDITION,
+        expectation=DiffExpectation.DATABASE_ERROR,
+        baseline=Observation("baseline", baseline.status_code, ""),
+        probe=Observation("probe", probe.status_code, probe.body.decode("utf-8", errors="replace")),
+        error_signatures=_SQL_ERROR_SIGNATURES,
+        evidence_ref=f"signal-reconfirm/sqli{ep.path}",
+    )
+
+
+_RECONFIRM_BUILDERS: dict[tuple[str, OracleMechanism], Callable[..., object | None]] = {
+    ("jwt_forgery", OracleMechanism.STRUCTURAL): _reconfirm_jwt_forgery,
+    ("xss_reflected", OracleMechanism.EXECUTION_CONFIRMATION): _reconfirm_xss_reflected,
+    ("command_injection", OracleMechanism.OOB_CALLBACK): _reconfirm_command_injection,
+    ("sqli", OracleMechanism.DIFFERENTIAL): _reconfirm_sqli,
+}
+
+
+def _make_signal_reconfirm(
+    *,
+    graph: ReachabilityGraph,
+    firer: RequestFirer,
+    base_url: str,
+    identity: str,
+    auth_headers: Mapping[str, str],
+    events: list[ScanEvent],
+) -> Callable[[Any], object]:
+    """Build the ``reconfirm`` callback ``run_signal_tools`` calls per candidate.
+
+    Builds the ``ExplorerContext`` (and its payload library) once here, not once
+    per candidate inside each builder — ``build_library()`` re-parses the whole
+    vendored corpus from disk on every call and is uncached, so this is the
+    difference between one library load per scan and one per candidate.
+    """
+    from reachagent.recon.tools.signal_gated import reconfirm_candidate
+    from reachagent.tools import validator
+    from reachagent.tools.explorer_context import ExplorerContext
+
+    ctx = ExplorerContext(graph=graph, firer=firer, library=_library(), base_url=base_url)
+
+    def _finding_factory(candidate: Any, verdict: object) -> Finding:
+        return Finding(
+            vuln_class=candidate.vuln_class, severity="high", oracle_used="", evidence_ref=""
+        )
+
+    def _reconfirm(candidate: Any) -> object:
+        builder = _RECONFIRM_BUILDERS.get((candidate.vuln_class, candidate.suggested_oracle))
+        if builder is None:
+            return None
+        try:
+            evidence = builder(
+                candidate,
+                graph=graph,
+                firer=firer,
+                base_url=base_url,
+                identity=identity,
+                auth_headers=auth_headers,
+                events=events,
+                ctx=ctx,
+            )
+        except Exception as exc:  # noqa: BLE001 — one candidate cannot abort others
+            _emit(
+                events,
+                "verification",
+                "error",
+                f"signal-gated reconfirm probe failed: {type(exc).__name__}",
+            )
+            return None
+        if evidence is None:
+            return None
+        node_id = reconfirm_candidate(
+            candidate,
+            evidence,
+            run_oracle=validator.run_oracle,
+            write_finding=validator.write_finding,
+            graph=graph,
+            finding_factory=_finding_factory,
+        )
+        if node_id:
+            _emit(
+                events,
+                "payloads",
+                "finding",
+                f"signal-gated reconfirm — {candidate.vuln_class} independently confirmed",
+                finding=node_id,
+                endpoint=candidate.endpoint_node,
+            )
+        return node_id
+
+    return _reconfirm
+
+
+# ---------------------------------------------------------------------------
 # Main orchestrator
 # ---------------------------------------------------------------------------
 
@@ -2396,6 +2729,18 @@ def scan_all_classes(
         )
         effective_signal_tools = signal_choice.selected_tools
 
+    # Built before run_signal_tools (not after, as previously) so a real
+    # reconfirm callback can be wired in — the same firer/seam every other
+    # driver below uses, not a second execution path.
+    firer = RequestFirer(
+        httpx.Client(transport=transport) if transport is not None else httpx.Client(),
+        scope,
+        audit,
+        identity_stores=identities,
+    )
+    seam = _ValidatorSeam(graph)
+    identity, auth_headers = _identity_for_scan(identities, events_out)
+
     run_signal_tools(
         tool_names=effective_signal_tools,
         graph=graph,
@@ -2406,16 +2751,16 @@ def scan_all_classes(
             events_out, phase, kind, message, **details
         ),
         live_recon=live_recon,
+        reconfirm=_make_signal_reconfirm(
+            graph=graph,
+            firer=firer,
+            base_url=base_url,
+            identity=identity,
+            auth_headers=auth_headers,
+            events=events_out,
+        ),
     )
     _adapt("verification", ("payloads", "report"))
-    firer = RequestFirer(
-        httpx.Client(transport=transport) if transport is not None else httpx.Client(),
-        scope,
-        audit,
-        identity_stores=identities,
-    )
-    seam = _ValidatorSeam(graph)
-    identity, auth_headers = _identity_for_scan(identities, events_out)
 
     # Phase 3 — the classes the sink loop does not drive.
     _emit(events_out, "payloads", "info", "phase 3: structural + authz + advanced classes")

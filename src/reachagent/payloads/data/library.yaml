@@ -151,6 +151,18 @@ payloads:
     payload_ref: command_injection/log4shell-oob
     graph_edge_on_success: enables
 
+  - vuln_class: command_injection
+    context: >-
+      A shell-chained ``nslookup <nonce>.<collab>`` DNS lookup — the injection
+      value itself, not a log/header field. Confirmed by OOB_CALLBACK (the
+      probe's nonce observed by the collaborator). Fired directly against a
+      signal-gated tool's own candidate parameter (§9 W5/D3 reconfirm seam),
+      not sink-matched through get_payloads.
+    inferred_sink_type: null
+    oracle_type: oob_callback
+    payload_ref: command_injection/oob-dns-callback
+    graph_edge_on_success: enables
+
   # -- SSRF (Task 24): blind (OOB) / non-blind (structural SSRF_RESPONSE) --------
   # Hand-tagged set closing the SSRF payload gap — §5 SSRF was already Full via
   # the oracles; this supplies the payload breadth. inferred_sink_type: url
