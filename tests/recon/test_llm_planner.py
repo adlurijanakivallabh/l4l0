@@ -21,7 +21,6 @@ def _context() -> PlanningContext:
         in_scope=("api.example.test",),
         graph_facts={"technology": "api", "endpoint_count": "7"},
         operator_prompt="test the authenticated API safely",
-        payload_refs=("sqli/error-based/quote-break", "xss/reflected/script-tag-canary"),
         max_request_budget=30,
         max_tool_budget=6,
     )
@@ -37,7 +36,6 @@ def _plan() -> dict[str, object]:
                 "name": "recon",
                 "rationale": "Fingerprint the web API and crawl its read-only surface.",
                 "tools": ["httpx", "katana"],
-                "profile": "api_target",
             },
             {
                 "name": "surface",
@@ -51,14 +49,11 @@ def _plan() -> dict[str, object]:
             {
                 "name": "payloads",
                 "rationale": "Use only sink-matched library entries.",
-                "vuln_classes": ["sqli", "xss_reflected"],
-                "payload_refs": ["sqli/error-based/quote-break"],
             },
             {
                 "name": "verification",
                 "rationale": "Use a signal-gated enrichment result only as a candidate.",
                 "tools": ["nuclei"],
-                "vuln_classes": ["sqli"],
             },
             {
                 "name": "report",
@@ -90,7 +85,7 @@ def test_validated_plan_is_immutable_and_prompt_exposes_only_catalog_names() -> 
     plan = validate_execution_plan(_plan(), context)
     assert plan.phases[0].tools == ("httpx", "katana")
     payload_phase = next(phase for phase in plan.phases if phase.name == "payloads")
-    assert payload_phase.payload_refs == ("sqli/error-based/quote-break",)
+    assert payload_phase.name == "payloads"
     prompt = planning_prompt(context)
     assert '"httpx"' in prompt
     assert "subprocess" not in prompt

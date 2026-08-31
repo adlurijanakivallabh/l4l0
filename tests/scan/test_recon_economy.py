@@ -69,7 +69,6 @@ class _FakePlannerClient:
                 {
                     "name": "payloads",
                     "rationale": "Use only sink-matched library entries.",
-                    "vuln_classes": ["sqli"],
                 },
                 {"name": "verification", "rationale": "No signal-gated tools needed."},
                 {"name": "report", "rationale": "Render only oracle-confirmed findings."},

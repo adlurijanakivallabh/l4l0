@@ -2427,13 +2427,6 @@ def scan_all_classes(
             select_recon_tools,
         )
 
-        lib_for_plan = library if library is not None else _library()
-        entries = getattr(lib_for_plan, "all_entries", lambda: ())()
-        payload_refs = tuple(
-            str(getattr(entry, "payload_ref", ""))
-            for entry in entries[:100]
-            if getattr(entry, "payload_ref", "")
-        )
         target_type = detect_target_type(base_url)
         context = PlanningContext(
             target=base_url,
@@ -2441,7 +2434,6 @@ def scan_all_classes(
             in_scope=tuple(part.strip() for part in in_scope.split(",") if part.strip()),
             graph_facts={"phase": "recon", "target": base_url},
             operator_prompt=operator_prompt or "",
-            payload_refs=payload_refs,
             max_request_budget=max(1, max_attempts),
             max_tool_budget=16,
         )
@@ -2499,7 +2491,6 @@ def scan_all_classes(
                 in_scope=context.in_scope,
                 graph_facts=state,
                 operator_prompt=context.operator_prompt,
-                payload_refs=(),
                 max_request_budget=context.max_request_budget,
                 max_tool_budget=max(1, max_tools),
             )
@@ -2527,9 +2518,6 @@ def scan_all_classes(
                     "name": phase.name,
                     "rationale": phase.rationale,
                     "tools": list(phase.tools),
-                    "profile": phase.profile,
-                    "vuln_classes": list(phase.vuln_classes),
-                    "payload_refs": list(phase.payload_refs),
                 }
                 for phase in execution_plan.phases
             ],
@@ -2542,8 +2530,6 @@ def scan_all_classes(
                 f"LLM planned {phase.name} phase",
                 rationale=phase.rationale,
                 tools=list(phase.tools),
-                vuln_classes=list(phase.vuln_classes),
-                payload_refs=list(phase.payload_refs),
             )
     _emit(events_out, "recon", "info", "phase 1: recon and technology discovery", target=base_url)
     # The recon-profile decision is real data the GUI shows first: which profile the LLM

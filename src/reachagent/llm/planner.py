@@ -16,7 +16,6 @@ from reachagent.llm.client import (
     build_openai_compatible_client,
     is_model_output_error,
 )
-from reachagent.recon.live_tuning import RECON_PROFILES
 from reachagent.recon.tools import (
     AmassRunner,
     ArjunRunner,
@@ -54,7 +53,6 @@ from reachagent.recon.tools import (
     WpscanPassiveRunner,
     X8Runner,
 )
-from reachagent.scan.orchestrator import ALL_CLASSES
 
 PHASE_ORDER = (
     "recon",
@@ -118,7 +116,6 @@ class PlanningContext:
     in_scope: tuple[str, ...]
     graph_facts: Mapping[str, str]
     operator_prompt: str = ""
-    payload_refs: tuple[str, ...] = ()
     max_request_budget: int = 80
     max_tool_budget: int = 16
 
@@ -131,14 +128,20 @@ class PlanningContext:
 
 @dataclass(frozen=True)
 class PlanPhase:
-    """One ordered, allowlist-only part of a scan plan."""
+    """One ordered, allowlist-only part of a scan plan.
+
+    ``profile``/``vuln_classes``/``payload_refs`` were removed (§9 W2): the
+    upfront plan never drove real targeting with them — real recon-profile,
+    vuln-class, and payload-ref decisions each come from a separate, later,
+    more-granular live-reasoning call (``profile_decision``,
+    ``propose_vuln_targets``, ``propose_payload_choice``) that the upfront
+    pick was silently overridden by every time. Asking the model to produce
+    fields nothing downstream consumed was pure prompt/response ceremony.
+    """
 
     name: str
     rationale: str
     tools: tuple[str, ...] = ()
-    profile: str | None = None
-    vuln_classes: tuple[str, ...] = ()
-    payload_refs: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -474,7 +477,6 @@ def planning_prompt(
         "in_scope": list(context.in_scope),
         "graph_facts": _bounded_facts(context.graph_facts),
         "operator_goal": context.operator_prompt[:500],
-        "allowed_payload_refs": list(context.payload_refs[:100]),
         "max_request_budget": context.max_request_budget,
         "max_tool_budget": context.max_tool_budget,
     }
@@ -487,27 +489,19 @@ def planning_prompt(
                 "name": "one allowed phase",
                 "rationale": "short phase rationale",
                 "tools": ["catalog names only"],
-                "profile": "optional recon profile name",
-                "vuln_classes": ["ALL_CLASSES names only"],
-                "payload_refs": ["allowed_payload_refs only"],
             }
         ],
     }
     return (
         "You are a constrained ReachAgent planner for an AUTHORIZED lab assessment. "
-        "Choose only catalog names and allowlisted classes/payload refs. Never include a command, "
+        "Choose only catalog tool names. Never include a command, "
         "URL, request body, headers, state-changing option, or a finding. "
         "Signal-gated tools remain conditional on graph evidence. "
-        "Keep phases in the supplied order and do not repeat a tool.\n"
-        "The optional profile field is valid only on the phase whose name is "
-        "exactly 'recon'; omit profile from every other phase. If no profile "
-        "fits, omit it from recon too.\n"
+        "Keep phases in the supplied order and do not repeat a tool. "
+        "Recon profile, vulnerability-class, and payload-ref choices are made by "
+        "separate, later, more granular reasoning calls — do not include them here.\n"
         f"Allowed phases: {json.dumps(PHASE_ORDER)}\n"
-        f"Allowed recon profiles (use ONLY these names in the recon phase's optional"
-        f" profile field; omit profile entirely if none fits): "
-        f"{json.dumps(sorted(RECON_PROFILES))}\n"
         f"Catalog: {json.dumps(catalog_json, sort_keys=True)}\n"
-        f"Classes: {json.dumps(ALL_CLASSES)}\n"
         f"Context: {json.dumps(context_json, sort_keys=True)}\n"
         f"Response schema: {json.dumps(schema, sort_keys=True)}"
     )
@@ -755,9 +749,6 @@ def validate_execution_plan(
         raise PlanValidationError("phases must be a non-empty list")
 
     catalog_by_name = {entry.name: entry for entry in (catalog or build_tool_catalog())}
-    profiles = frozenset(RECON_PROFILES)
-    allowed_classes = frozenset(ALL_CLASSES)
-    allowed_payloads = frozenset(context.payload_refs)
     phases: list[PlanPhase] = []
     used_tools: set[str] = set()
     last_phase = -1
@@ -766,7 +757,7 @@ def validate_execution_plan(
         phase_raw = _mapping(value, f"phases[{index}]")
         _reject_unknown_keys(
             phase_raw,
-            frozenset({"name", "rationale", "tools", "profile", "vuln_classes", "payload_refs"}),
+            frozenset({"name", "rationale", "tools"}),
             f"phases[{index}]",
         )
         name = _string(phase_raw.get("name"), f"phases[{index}].name")
@@ -794,39 +785,11 @@ def validate_execution_plan(
                 raise PlanValidationError(f"tool {tool_name!r} is selected more than once")
             used_tools.add(tool_name)
 
-        profile = _string(phase_raw.get("profile"), f"phases[{index}].profile", required=False)
-        if profile is not None and (name != "recon" or profile not in profiles):
-            raise PlanValidationError(
-                "profile must be an allowlisted recon profile in the recon phase"
-            )
-
-        vuln_classes = _string_list(phase_raw.get("vuln_classes"), f"phases[{index}].vuln_classes")
-        if vuln_classes and name not in {"insertion-points", "payloads", "verification"}:
-            raise PlanValidationError(
-                "vulnerability classes are valid only in insertion-points, payloads, "
-                "or verification"
-            )
-        unknown_classes = sorted(set(vuln_classes) - allowed_classes)
-        if unknown_classes:
-            raise PlanValidationError(
-                f"unknown vulnerability classes: {', '.join(unknown_classes)}"
-            )
-
-        payload_refs = _string_list(phase_raw.get("payload_refs"), f"phases[{index}].payload_refs")
-        if payload_refs and name != "payloads":
-            raise PlanValidationError("payload references are valid only in the payloads phase")
-        unknown_payloads = sorted(set(payload_refs) - allowed_payloads)
-        if unknown_payloads:
-            raise PlanValidationError(f"unknown payload references: {', '.join(unknown_payloads)}")
-
         phases.append(
             PlanPhase(
                 name=name,
                 rationale=phase_rationale,
                 tools=tools,
-                profile=profile,
-                vuln_classes=vuln_classes,
-                payload_refs=payload_refs,
             )
         )
 

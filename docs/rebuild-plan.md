@@ -648,8 +648,53 @@ discipline as C1/C2 applied per sub-item.**
   4 pairs' confirm and deny paths, the no-bearer-token/no-OOB-domain guards,
   and that an unmapped pair is a complete no-op (zero requests fired).
   Whole tree: **1325 passed, 0 failed, 16 skipped.**
-- **Remaining in Phase D:** W2/W3 (plan-schema collapse), 20-client-class
-  collapse.
+**Status (2026-08-31): W2 done (plan-schema ceremony removed).**
+- Verified before touching anything: grepped every consumer of
+  `PlanPhase.vuln_classes`/`.payload_refs`/`.profile` — all three were read
+  ONLY inside `_emit(...)` display calls in `scan_all_classes`. The real
+  decisions were already made by separate, independent, more-granular calls
+  the upfront picks never fed: `profile_decision(base_url, ...)` (called with
+  no reference to the plan at all), `propose_vuln_targets` (per endpoint),
+  `propose_payload_choice` (per sink-matched bucket). Exactly "two LLM
+  decisions for one choice," confirmed by reading the call sites, not just
+  trusting the ledger's description.
+- Removed all three fields from `PlanPhase` (kept `name`/`rationale`/`tools`)
+  and `payload_refs` from `PlanningContext` (also display-only, fed only the
+  now-removed `payload_refs` schema hint). Shrank the model-facing JSON
+  schema and prompt instructions to match — real token savings every scan,
+  not just cleaner code. Removed the ~25 lines of validation logic that
+  existed purely to check fields nothing downstream consumed
+  (`profile`/`vuln_classes`/`payload_refs` parsing, allowlist checks against
+  `RECON_PROFILES`/`ALL_CLASSES`/`context.payload_refs`), and the two
+  `_emit(...)` display blocks that surfaced them.
+- Found and removed a second, independent bit of waste while tracing
+  `PlanningContext.payload_refs`'s only producer: `scan_all_classes` was
+  calling the uncached `_library()` (a full vendored-corpus disk parse) a
+  second time, before the real driver-loop's own `_library()` call later in
+  the same function, solely to populate the now-removed
+  `allowed_payload_refs` prompt field. One fewer full corpus load per scan.
+- Updated every affected test: `PlanningContext`/`PlanPhase` construction
+  sites and fixtures in `test_llm_planner.py` (`_context`/`_plan` shared
+  fixtures) and `test_recon_economy.py`'s fake planner client (a stale
+  `"vuln_classes": ["sqli"]` field in its execution-plan fixture caused a
+  `PlanValidationError` -> fixer-retry -> a second, unrelated validation
+  error when the fixer's generic "was rejected by strict validation" fake
+  response — shaped for the *recon-selection* fixer, not the *plan* fixer —
+  got fed to `validate_execution_plan`; fixing the stale fixture field
+  resolved it at the source rather than special-casing the fake client).
+- Deferred, not attempted this slice: the separate "planner phase vocab (7)
+  != control loop (5) != executed phases" naming mismatch W2 also names —
+  found no evidence of an actual bug from it (no failing test, no reported
+  confusion), just a naming-hygiene gap; unifying it would be a much larger
+  rename-everywhere change for a purely cosmetic payoff.
+- Whole tree: **1325 passed, 0 failed, 16 skipped** — identical count to
+  before this slice (pure refactor: no tests added or removed net, several
+  updated in place).
+- **Remaining in Phase D:** W3's other half, the 20-client-class collapse
+  (`OpenAI*Client`/protocol pairs across `report/llm_report.py`,
+  `recon/{vuln_tuning,live_tuning,payload_tuning}.py`, `llm/planner.py` — one
+  shared `propose_json(prompt, validator)` helper instead of ~10 near-
+  duplicate classes, now that C2 already deleted their Anthropic siblings).
 
 ### Phase E — Payload corpus hygiene
 *(read R7 corpora, R8 wordlists.)*
