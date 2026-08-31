@@ -45,15 +45,20 @@ def test_jwt_templates_resolve_to_precomputed_tokens() -> None:
     assert resolve("jwt_forgery/hs256-key-confusion") == (
         "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJhZG1pbiJ9.z3cU1wl_qNMB3_6Br3I7esH0TmClpmk6MbEtq9Q86-E"
     )
+    assert resolve("jwt_forgery/kid-injection") == (
+        "eyJhbGciOiJIUzI1NiIsImtpZCI6Ii4uLy4uLy4uLy4uLy4uLy4uL2Rldi9udWxsIn0"
+        ".eyJzdWIiOiJhZG1pbiJ9.GCCD4VHjHRm9OiOwtJmeADoUFCH4NvnOs0OQc9wzePI"
+    )
 
 
 def test_jwt_templates_need_no_slots() -> None:
     # Every JWT segment is base64url — no live {slot} position exists, so all
-    # three are fully-formed fixed tokens (required_slots empty).
+    # four are fully-formed fixed tokens (required_slots empty).
     for ref in (
         "jwt_forgery/none-alg",
         "jwt_forgery/weak-secret",
         "jwt_forgery/hs256-key-confusion",
+        "jwt_forgery/kid-injection",
     ):
         assert required_slots(ref) == frozenset()
 
@@ -66,8 +71,9 @@ def test_jwt_library_rows_load_and_sink_match() -> None:
         "jwt_forgery/none-alg",
         "jwt_forgery/weak-secret",
         "jwt_forgery/hs256-key-confusion",
+        "jwt_forgery/kid-injection",
     }
-    # All three are structural, sink-less authz entries.
+    # All four are structural, sink-less authz entries.
     assert all(e.oracle_type is OracleMechanism.STRUCTURAL for e in entries)
     assert all(e.inferred_sink_type is None for e in entries)
     assert all(e.graph_edge_on_success == "can_call" for e in entries)
@@ -323,6 +329,7 @@ def test_new_payload_entries_are_stimulus_only_and_correctly_tagged() -> None:
         "jwt_forgery/none-alg",
         "jwt_forgery/weak-secret",
         "jwt_forgery/hs256-key-confusion",
+        "jwt_forgery/kid-injection",
         "sqli_blind/oob-xxe-exfil",
         "command_injection/log4shell-oob",
     ):

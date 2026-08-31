@@ -127,6 +127,17 @@ payloads:
     payload_ref: jwt_forgery/weak-secret
     graph_edge_on_success: can_call
 
+  - vuln_class: jwt_forgery
+    context: >-
+      kid header path-traversal to /dev/null — a verifier that resolves `kid`
+      as a filesystem path for key lookup reads zero bytes back, so a token
+      signed with the empty-string HMAC key is accepted. Same STRUCTURAL
+      JWT_FORGERY confirmation.
+    inferred_sink_type: null
+    oracle_type: structural
+    payload_ref: jwt_forgery/kid-injection
+    graph_edge_on_success: can_call
+
   # -- OOB blind shapes: XXE exfil + Log4Shell (phase2a) ------------------------
   - vuln_class: sqli_blind
     context: >-
