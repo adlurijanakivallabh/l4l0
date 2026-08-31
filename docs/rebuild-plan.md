@@ -1059,6 +1059,20 @@ generic-coverage pass once the numbers were in front of the user.**
     check lives inside the existing STRUCTURAL family; six `OracleMechanism`
     values unchanged (re-verified by the audit above and by
     `test_six_oracle_families_unchanged`).
+- **Re-verification after the follow-on landed** (flagged by the user: the
+  DOM-XSS/cache-poisoning work shipped inside the phase Phase H itself
+  defines as capability-frozen, after the phase's own gate had already been
+  declared met — the original "done" claim needed re-checking against the
+  changed tree, not left standing). Brought VAmPI/crAPI back up and re-ran
+  every exit criterion fresh: **VAmPI live gate 13/13 passed**, **crAPI live
+  gate 8/8 passed** (both re-confirmed live, not assumed from the earlier
+  run), **tool-boundary audit re-run PASS, no violations** (explicitly
+  re-checked the new `cachepoisoning/detector.py` and the `structural.py`
+  `WEB_CACHE_POISONING` branch — both route through the same oracle-gateway
+  seam as their siblings, no validator import), **whole-tree suite: 1327
+  passed, 10 skipped, 0 failed** (skips are only Neo4j — stopped, not
+  provisioned this run — and the Docker-lifecycle-only juiceshop-ephemeral
+  test). Phase H's completion now stands on the tree as it actually is.
 - Docker cleanup per user request: VAmPI, crAPI (+ its mongodb/postgresdb/
   mailhog/chromadb/api.mypremiumdealership.com dependents), and Neo4j
   stopped (not removed — all pre-date this session by weeks per `docker ps
