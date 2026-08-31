@@ -88,6 +88,44 @@ def test_all_classes_enum_is_stable() -> None:
     # The orchestrator dispatches every class in the §9 coverage target.
     assert "sqli" in ALL_CLASSES
     assert "race" in ALL_CLASSES
+
+
+def test_tls_insecure_env_flag_disables_cert_verification(tmp_path, monkeypatch) -> None:  # noqa: ANN001
+    """REACHAGENT_TLS_INSECURE is opt-in only — never a silent default. A target
+    with an expired/self-signed cert (a legacy or intentionally-vulnerable demo
+    app) otherwise fails every single request at the transport layer."""
+    import reachagent.scan.orchestrator as orch
+
+    captured: list[dict[str, object]] = []
+    real_client = httpx.Client
+
+    class _CapturingClient(real_client):  # type: ignore[misc]
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            captured.append(dict(kwargs))
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr(orch.httpx, "Client", _CapturingClient)
+
+    monkeypatch.delenv("REACHAGENT_TLS_INSECURE", raising=False)
+    scan_all_classes(
+        base_url="https://example.com",
+        in_scope="example.com",
+        transport=httpx.MockTransport(_handler),
+        surface_path=_surface(tmp_path),
+        events=[],
+    )
+    assert captured[-1].get("verify", True) is not False
+
+    captured.clear()
+    monkeypatch.setenv("REACHAGENT_TLS_INSECURE", "1")
+    scan_all_classes(
+        base_url="https://example.com",
+        in_scope="example.com",
+        transport=httpx.MockTransport(_handler),
+        surface_path=_surface(tmp_path),
+        events=[],
+    )
+    assert captured[-1]["verify"] is False
     assert len(ALL_CLASSES) >= 22
 
 

@@ -2963,8 +2963,18 @@ def scan_all_classes(
     # Built before run_signal_tools (not after, as previously) so a real
     # reconfirm callback can be wired in — the same firer/seam every other
     # driver below uses, not a second execution path.
+    # Opt-in only (never a silent default): some legitimate authorized targets
+    # (an expired/self-signed cert on a legacy or intentionally-vulnerable demo
+    # app) fail TLS verification entirely. An operator must explicitly set this
+    # to acknowledge scanning past it — the same gating discipline as every
+    # other REACHAGENT_* opt-in flag.
+    _tls_kwargs: dict[str, Any] = (
+        {"verify": False} if os.environ.get("REACHAGENT_TLS_INSECURE") == "1" else {}
+    )
     firer = RequestFirer(
-        httpx.Client(transport=transport) if transport is not None else httpx.Client(),
+        httpx.Client(transport=transport, **_tls_kwargs)
+        if transport is not None
+        else httpx.Client(**_tls_kwargs),
         scope,
         audit,
         identity_stores=identities,
