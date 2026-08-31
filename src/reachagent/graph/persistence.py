@@ -148,8 +148,8 @@ def _serialize_edges(graph: ReachabilityGraph) -> list[dict[str, object]]:
     for src, dst, key, attrs in graph._g.edges(keys=True, data=True):  # noqa: SLF001 — raw store access, same package
         out.append(
             {
-                "src": _safe_text(src),
-                "dst": _safe_text(dst),
+                "src": _safe_text(src, secrets=False),
+                "dst": _safe_text(dst, secrets=False),
                 "key": key,
                 "attrs": _safe_value(dict(attrs)),
             }
@@ -158,10 +158,20 @@ def _serialize_edges(graph: ReachabilityGraph) -> list[dict[str, object]]:
     return out
 
 
-def _safe_text(value: object, *, handles: bool = True) -> str:
-    """Bound persisted text and remove credentials/ephemeral execution handles."""
+def _safe_text(value: object, *, handles: bool = True, secrets: bool = True) -> str:
+    """Bound persisted text and remove credentials/ephemeral execution handles.
+
+    ``secrets=False`` is for STRUCTURAL handles the graph owns by construction —
+    node ids and ``*_ref``/``*_id`` values such as ``token:owner`` — which are
+    secret-free references (the raw token/cookie value lives only in the in-memory
+    TokenStore) and MUST survive persistence for referential integrity. Without it
+    the secret scrubber mistakes the ``token:<identity>`` handle for a
+    ``token:<value>`` assignment and redacts it. Free text (evidence, audit, phase
+    state) keeps ``secrets=True``.
+    """
     text = str(value).replace("\x00", "")[:4_096]
-    text = _SECRET.sub("<redacted>", text)
+    if secrets:
+        text = _SECRET.sub("<redacted>", text)
     if handles:
         text = _HANDLE.sub("<opaque-handle>", text)
     return text
@@ -185,7 +195,11 @@ def _safe_value(value: object, *, key: str = "") -> object:
         # Stable identity/session handles are useful facts; transient fire and
         # verdict handles are deliberately removed from durable state.
         is_identifier = key.lower().endswith(("_ref", "_id"))
-        return _safe_text(value, handles=not is_identifier or bool(_HANDLE.search(value)))
+        return _safe_text(
+            value,
+            handles=not is_identifier or bool(_HANDLE.search(value)),
+            secrets=not is_identifier,
+        )
     if isinstance(value, int | float | bool) or value is None:
         return value
     return _safe_text(value)
@@ -238,7 +252,7 @@ def dump_graph(
             raise PersistenceError(f"node {node_id!r} has no kind — cannot persist")
         nodes.append(
             {
-                "id": _safe_text(node_id),
+                "id": _safe_text(node_id, secrets=False),
                 "kind": kind,
                 "fields": _safe_value(asdict(data[_DATA])),
             }

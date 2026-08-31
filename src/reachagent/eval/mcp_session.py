@@ -111,9 +111,21 @@ def mcp_for(sess: server._Session) -> object:
 
 
 def mcp_call(mcp: object, name: str, **arguments: object) -> dict[str, object]:
-    """Invoke tool through real mcp.call_tool boundary; return structured dict."""
+    """Invoke tool through real mcp.call_tool boundary; return the structured dict.
+
+    FastMCP wraps a tool whose return type is a union — e.g. ``fire_request`` ->
+    ``FireResultOut | BrowserResultOut`` — under a single ``{"result": {...}}``
+    key, whereas a single-dataclass tool serializes its fields flat. Normalize
+    that sole-``result`` dict wrapper away so every caller reads flat fields
+    (``fired["fire_ref"]``, ``verdict["verdict_ref"]``) regardless of the tool's
+    return annotation. A list result (e.g. ``get_payloads``) is left wrapped.
+    """
     _content, structured = asyncio.run(mcp.call_tool(name, arguments))  # type: ignore[attr-defined]
-    return dict(structured)
+    result = dict(structured)
+    inner = result.get("result")
+    if set(result) == {"result"} and isinstance(inner, dict):
+        return dict(inner)
+    return result
 
 
 def read_only_fire(

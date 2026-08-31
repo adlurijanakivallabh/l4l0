@@ -324,6 +324,15 @@ def measure_complexity_regression(
         center = mean(baseline_by_depth[depth])
         baseline_residuals.extend(value - center for value in baseline_by_depth[depth])
         probe_residuals.extend(value - center for value in probe_by_depth[depth])
+    # Per-depth centering yields signed residuals, but the timing oracle's evidence
+    # validator (Phase 6 hardening) requires non-negative samples. Shift BOTH arms
+    # by one shared constant so every sample is >= 0 — a common shift leaves the
+    # probe-minus-baseline mean gap and the baseline std (hence the verdict)
+    # exactly unchanged.
+    minimum = min([*baseline_residuals, *probe_residuals], default=0.0)
+    if minimum < 0:
+        baseline_residuals = [value - minimum for value in baseline_residuals]
+        probe_residuals = [value - minimum for value in probe_residuals]
     evidence = PairedTrialEvidence(
         probe_latencies_ms=tuple(probe_residuals),
         baseline_latencies_ms=tuple(baseline_residuals),

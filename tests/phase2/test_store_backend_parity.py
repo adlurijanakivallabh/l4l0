@@ -297,7 +297,10 @@ def test_session_node_carries_only_a_token_ref(backend: _Backend) -> None:
     assert props.get("token_ref") == "tok-derived"
     # No property holds a raw token value — only the secret-free handle set.
     assert "token" not in props
-    assert set(props) <= {"token_ref", "identity_ref", "live"}
+    # ``auth_kind`` (mechanism label "bearer"/"cookie") and ``expires_at`` are
+    # deliberately-public non-secret session metadata (see Session's docstring;
+    # the GUI surfaces auth_kind via _public_text) — not raw token material.
+    assert set(props) <= {"token_ref", "identity_ref", "live", "auth_kind", "expires_at"}
 
 
 # -- Invariant 1 (direct): the two backends return matching results -------
