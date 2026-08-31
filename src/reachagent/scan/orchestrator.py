@@ -1532,12 +1532,19 @@ def run_business_logic(
     Each check is fired as a sequential replay through the gated firer (a read-only probe
     precedes every state-changing step, so read-only-first holds), then confirmed by the
     ``business_rule_invariant`` oracle.
+
+    ``SINGLE_USE_REUSE`` checks are excluded here — ``run_race`` drives those exclusively
+    (sequential-first, escalating to concurrent delivery) so the same limited resource is
+    never consumed twice by two independent drivers.
     """
     from reachagent.business_logic.runner import SequentialReplayRunner
     from reachagent.business_logic.templates import instantiate_all
+    from reachagent.oracles.business_rule import BusinessRule
 
-    instantiated = instantiate_all(graph)
-    if not instantiated.checks:
+    checks = [
+        c for c in instantiate_all(graph).checks if c.rule is not BusinessRule.SINGLE_USE_REUSE
+    ]
+    if not checks:
         _emit(
             events,
             "payloads",
@@ -1547,7 +1554,7 @@ def run_business_logic(
         return []
     runner = SequentialReplayRunner(firer, base_url)
     found: list[str] = []
-    for check in instantiated.checks:
+    for check in checks:
         try:
             outcome = runner.run(identity, check)
         except Exception as exc:  # noqa: BLE001 — a refused replay is not a violation
@@ -1576,6 +1583,60 @@ def run_business_logic(
                     f"business-logic violation ({check.rule.value})",
                     rule=check.rule.value,
                 )
+    return found
+
+
+def run_race(
+    *,
+    graph: ReachabilityGraph,
+    firer: RequestFirer,
+    base_url: str,
+    identity: str,
+    seam: _ValidatorSeam,
+    events: list[ScanEvent],
+) -> list[str]:
+    """Sequential-first race probing over single-use/reuse resources (plan §7/§9).
+
+    Reuses ``race/module.py``'s ``probe_race`` + ``RequestFirerDeliveryRunner`` —
+    same ``business_rule_invariant`` oracle ``run_business_logic`` uses, no new
+    mechanism. ``run_business_logic`` explicitly excludes ``SINGLE_USE_REUSE``
+    checks so the same limited resource is never consumed twice by two drivers.
+
+    Concurrent single-packet delivery needs a fresh target-specific consumable
+    minted per resource (``FreshDeliveryProvider``) — a generic driver has no
+    way to mint one, so this stops at the sequential replay (still a genuine
+    confirmation: a secure app refuses the second redemption outright). The
+    opt-in PortSwigger live gate (``race/module.py``'s ``live_gate_config``)
+    is where the concurrent escalation is exercised.
+    """
+    from reachagent.business_logic.templates import instantiate_all
+    from reachagent.oracles.business_rule import BusinessRule
+    from reachagent.race import RequestFirerDeliveryRunner, probe_race
+
+    checks = [c for c in instantiate_all(graph).checks if c.rule is BusinessRule.SINGLE_USE_REUSE]
+    if not checks:
+        _emit(
+            events,
+            "payloads",
+            "not-applicable",
+            "race: no single-use/reuse resource in the graph",
+        )
+        return []
+    runner = RequestFirerDeliveryRunner(firer, base_url=base_url)
+    found: list[str] = []
+    for check in checks:
+        try:
+            _evidence, outcome = probe_race(graph, identity, check, runner, oracle_runner=seam.run)
+        except Exception as exc:  # noqa: BLE001, S112 — a refused replay is not a violation
+            _emit(events, "payloads", "error", f"race replay refused ({type(exc).__name__})")
+            continue
+        if outcome.is_violation:
+            nid = seam.write("race", seam.last, severity="high")
+            if nid:
+                found.append(nid)
+                _emit(events, "payloads", "finding", "race — single-use resource redeemed twice")
+    if not found:
+        _emit(events, "payloads", "not-applicable", "race: no reuse confirmed")
     return found
 
 
@@ -2187,6 +2248,15 @@ def scan_all_classes(
         seam=seam,
         events=events_out,
     )
+    check_cancel(cancel_check)
+    run_race(
+        graph=graph,
+        firer=firer,
+        base_url=base_url,
+        identity=identity,
+        seam=seam,
+        events=events_out,
+    )
 
     from reachagent.scan.xss_dom import run_xss_dom
 
@@ -2219,6 +2289,7 @@ def scan_all_classes(
         "bfla",
         "graphql",
         "business_logic",
+        "race",
         "sqli_blind",
         "mass_assignment",
         "xss_stored",

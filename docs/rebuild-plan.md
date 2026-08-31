@@ -385,11 +385,34 @@ the read-only-first + independent-confirmation discipline (§7/§9/§10).
   (mass_assignment, xss_stored, open_redirect — 18 total), all using the
   established `httpx.MockTransport`/`RequestFirer`/`_ValidatorSeam` harness.
   Whole tree: **1295 passed, 0 failed, 16 skipped** (unprovisioned live labs).
-- **Remaining in this insert:** race (needs a one-line `run_business_logic`
-  exclusion of `BusinessRule.SINGLE_USE_REUSE` first, to avoid double-firing
-  the same resource), xxe_blind_oob (new payload template, OOB-gated), idor
-  (gated behind an opt-in `allow_cross_user_writes: bool = False` — requires a
-  genuine cross-user write against another identity's live object).
+**Status (2026-08-31): race done.**
+- Fixed `run_business_logic` first (the one-line exclusion this class needed):
+  it now filters out `BusinessRule.SINGLE_USE_REUSE` checks from its own
+  sequential-replay loop, since a single-use resource (coupon/token) can only
+  be legitimately exercised once — if both drivers touched it, whichever ran
+  second would see an already-consumed resource instead of a fresh baseline.
+  Verified this is load-bearing by temporarily reverting the filter and
+  confirming a new regression test fails (it does — `run_business_logic` fired
+  both the baseline AND the reused-replay against the coupon endpoint before
+  the fix), then restored.
+- New `run_race` driver reuses `race/module.py`'s existing `probe_race` +
+  `RequestFirerDeliveryRunner` — same `business_rule_invariant` oracle,
+  no new mechanism. Stops at the sequential replay generically (a genuine
+  confirmation on its own: a secure app must refuse the second redemption
+  outright); concurrent single-packet delivery needs a fresh target-specific
+  consumable minted per resource (`FreshDeliveryProvider`), which a generic
+  driver has no way to synthesize — that escalation stays exclusive to the
+  opt-in PortSwigger live gate already in `race/module.py`. No §5 rating
+  change: the matrix's existing "Race Conditions — Partial —
+  sequential-replay-first, escalating..." row already described exactly this
+  shape.
+- 4 hermetic orchestrator driver tests (`tests/scan/test_race_driver.py`),
+  including one that pins the `run_business_logic` exclusivity fix directly.
+  Whole tree: **1299 passed, 0 failed, 16 skipped.**
+- **Remaining in this insert:** xxe_blind_oob (new payload template,
+  OOB-gated), idor (gated behind an opt-in
+  `allow_cross_user_writes: bool = False` — requires a genuine cross-user
+  write against another identity's live object).
 
 ### Phase D — Cut the planning/tuning tier
 *(read R2 orchestration, R3 unified loop.)*
