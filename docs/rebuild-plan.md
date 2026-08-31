@@ -336,6 +336,61 @@ backslash-powered scanning.)*
   cleanup (plan's recon-tool list is currently computed then discarded — W2),
   and the profile-computed-once-per-scan fix (currently recomputed per runner).
 
+### Coverage-completeness insert (user-directed, 2026-08-31, between Phases C and D)
+
+User instruction: "our project must detect all types of vulnerabilities." A
+targeted investigation found several classes already listed in
+`ALL_CLASSES`/the §5 coverage matrix that had no wired driver — every scan
+silently reported them `not-applicable` regardless of the target. This insert
+closes that gap before resuming the planned A-H phase order; each class keeps
+the read-only-first + independent-confirmation discipline (§7/§9/§10).
+
+**Status (2026-08-31): mass_assignment, xss_stored, open_redirect done.**
+- **mass_assignment** — new `src/reachagent/mass_assignment/detector.py` wires
+  the existing differential oracle (CROSS_REQUEST/PROBE_UNAUTHORIZED, no new
+  mechanism). New `run_mass_assignment` driver: OPTIONS-or-GET preflight
+  clears the write endpoint, then a legitimate write plus one injected
+  privileged field (`admin`/`isAdmin`/`is_admin`) fires, confirmed only if an
+  INDEPENDENT GET re-fetch (never the write's own response) shows the field
+  persisted.
+- **xss_stored** — no new detector module; reuses `xss/detector.py`'s existing
+  `StoredProbe`/`XssProber`/`detect_xss`. New `run_xss_stored` driver: same
+  preflight-then-write-then-independent-reread shape, injecting a
+  `<script>{canary}</script>` tag into a non-identifier body field (explicitly
+  NOT the field the reread URL is resolved from — corrupting that would break
+  the driver's own lookup, caught while writing the test before it ever ran
+  live) and confirming the tag reflects unencoded. `fire_dom` is a deliberate
+  no-op (empty flows, `executed=False`) since DOM XSS is already separately
+  driven by `run_xss_dom` — `detect_xss` falls straight through to the stored
+  path.
+- **open_redirect** — brand new class (not previously in `ALL_CLASSES`). New
+  `StructuralCheckType.OPEN_REDIRECT` branch in `oracles/structural.py`
+  (3xx status + attacker URL present verbatim in `Location` → violation) and
+  new `src/reachagent/openredirect/detector.py`. New `run_open_redirect`
+  driver probes only endpoints with a redirect-shaped query parameter
+  (`redirect`/`next`/`returnUrl`/`dest`/...); the firer's hardcoded
+  `follow_redirects=False` means the attacker destination is never actually
+  visited. New §5 coverage-matrix row (Full) + plan version bump to v1.15.
+- Also fixed a pre-existing `driven_classes` staleness bug found while adding
+  these: `xss_dom` IS driven (`run_xss_dom`) but was missing from the set,
+  producing a spurious contradictory not-applicable event on every all-class
+  scan even when xss_dom had just run.
+- Also landed in this slice (pre-existing uncommitted work, unrelated to the
+  three classes above): `DefaultLoopAdvisor.advise()` now retries once on a
+  transient empty model response, matching the retry policy `plan_execution`
+  already had — the adaptive control loop previously aborted on the exact
+  class of transient failure the planner path was already hardened against.
+- 5 pure-oracle unit tests (mass_assignment) + 4 detector/4 oracle-decide unit
+  tests (open_redirect) + 6 hermetic orchestrator driver tests per class
+  (mass_assignment, xss_stored, open_redirect — 18 total), all using the
+  established `httpx.MockTransport`/`RequestFirer`/`_ValidatorSeam` harness.
+  Whole tree: **1295 passed, 0 failed, 16 skipped** (unprovisioned live labs).
+- **Remaining in this insert:** race (needs a one-line `run_business_logic`
+  exclusion of `BusinessRule.SINGLE_USE_REUSE` first, to avoid double-firing
+  the same resource), xxe_blind_oob (new payload template, OOB-gated), idor
+  (gated behind an opt-in `allow_cross_user_writes: bool = False` — requires a
+  genuine cross-user write against another identity's live object).
+
 ### Phase D — Cut the planning/tuning tier
 *(read R2 orchestration, R3 unified loop.)*
 - Cut **C1** (3 orphan tuning modules), **C2** (5 Anthropic clients + the

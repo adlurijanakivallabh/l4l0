@@ -36,6 +36,12 @@ violations deterministically:
     NOT exploitable with credentials (browsers reject the pair), so it is never
     a violation. Client-side structural class (§5/§7, v1.5).
 
+  * **OPEN_REDIRECT** — a redirect-shaped query parameter (``redirect``,
+    ``next``, ``returnUrl``, ...) was echoed verbatim into the ``Location``
+    header of a 3xx response, sending the browser to an attacker-controlled
+    host. Read-only GET; the firer never follows the redirect (§10 — the
+    destination is never actually visited).
+
   * **CSRF_MISSING_PROTECTION** — a *structural precondition* for CSRF, not a
     confirmed exploit. Confirming a real CSRF would require firing a forged
     cross-origin state-change, which violates read-only-first (§10); we do not
@@ -78,6 +84,7 @@ class StructuralCheckType(StrEnum):
     JWT_FORGERY = "jwt_forgery"
     CLICKJACKING = "clickjacking"
     CORS_MISCONFIG = "cors_misconfig"
+    OPEN_REDIRECT = "open_redirect"
     CSRF_MISSING_PROTECTION = "csrf_missing_protection"
     # SSRF_RESPONSE (Task 24) — non-blind SSRF: a cloud-metadata / internal
     # endpoint the server fetched, confirmed by a known metadata response marker
@@ -129,6 +136,12 @@ class StructuralEvidence:
       Origin-reflected ACAO with credentials on → violation; ``ACAO: *`` with
       credentials is not exploitable → denied.
 
+    OPEN_REDIRECT:
+      ``probe_status``: the redirect probe's response status. ``sentinel``: the
+      exact attacker-controlled URL injected as the redirect parameter's value.
+      ``location``: the response's ``Location`` header value. A 3xx status with
+      the sentinel present verbatim in ``location`` → violation.
+
     CSRF_MISSING_PROTECTION:
       ``set_cookie``: the raw ``Set-Cookie`` header value from a normal read
       probe. ``csrf_token_present``: whether the app exposes an anti-CSRF token
@@ -152,6 +165,7 @@ class StructuralEvidence:
     acao: str = ""
     acac: str = ""
     probe_origin: str = ""
+    location: str = ""
     set_cookie: str = ""
     csrf_token_present: bool = False
     evidence_ref: str = ""
@@ -175,6 +189,7 @@ def _validate_evidence(evidence: StructuralEvidence) -> None:
         "acao",
         "acac",
         "probe_origin",
+        "location",
         "set_cookie",
     ):
         value = getattr(evidence, name)
@@ -329,6 +344,17 @@ def decide(evidence: StructuralEvidence) -> FindingStatus:
             return FindingStatus.CONFIRMED_DENIED
         return FindingStatus.INCONCLUSIVE
 
+    if evidence.check_type is StructuralCheckType.OPEN_REDIRECT:
+        if not (300 <= evidence.probe_status < 400):
+            return FindingStatus.INCONCLUSIVE
+        if evidence.sentinel and evidence.sentinel in evidence.location:
+            return FindingStatus.CONFIRMED_VIOLATION
+        # A redirect fired but not to the attacker-controlled target — the
+        # server validated/rewrote the destination.
+        if evidence.location:
+            return FindingStatus.CONFIRMED_DENIED
+        return FindingStatus.INCONCLUSIVE
+
     if evidence.check_type is StructuralCheckType.CSRF_MISSING_PROTECTION:
         samesite = _cookie_samesite(evidence.set_cookie)
         # SameSite=None ships the session cookie cross-site; with no token
@@ -356,6 +382,7 @@ def _reason(evidence: StructuralEvidence, status: FindingStatus) -> str:
         StructuralCheckType.JWT_FORGERY: "baseline_or_forged_token_not_decisive",
         StructuralCheckType.CLICKJACKING: "header_evidence_missing",
         StructuralCheckType.CORS_MISCONFIG: "credentialed_origin_reflection_absent",
+        StructuralCheckType.OPEN_REDIRECT: "redirect_target_not_attacker_controlled",
         StructuralCheckType.CSRF_MISSING_PROTECTION: "same_site_or_token_control_unknown",
     }.get(evidence.check_type, "unknown_structural_check")
     return decision_reason(OracleMechanism.STRUCTURAL, status, detail)
@@ -386,6 +413,7 @@ class StructuralOracle(Oracle):
                     ("content-security-policy", evidence.csp),
                     ("access-control-allow-origin", evidence.acao),
                     ("access-control-allow-credentials", evidence.acac),
+                    ("location", evidence.location),
                 )
                 if value
             )

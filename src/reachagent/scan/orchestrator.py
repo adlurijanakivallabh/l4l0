@@ -73,6 +73,7 @@ ALL_CLASSES: tuple[str, ...] = (
     "business_logic",
     "clickjacking",
     "cors_misconfig",
+    "open_redirect",
     "csrf_missing_protection",
     "graphql",
     "race",
@@ -1258,6 +1259,105 @@ def run_xss_stored(
     return found
 
 
+_REDIRECT_PARAM_NAMES = frozenset(
+    {
+        "redirect",
+        "redirecturl",
+        "redirect_uri",
+        "redirecturi",
+        "next",
+        "return",
+        "returnurl",
+        "return_to",
+        "returnto",
+        "url",
+        "target",
+        "dest",
+        "destination",
+        "continue",
+        "callback",
+        "callbackurl",
+        "redir",
+        "out",
+        "view",
+        "to",
+    }
+)
+
+
+def run_open_redirect(
+    *,
+    graph: ReachabilityGraph,
+    firer: RequestFirer,
+    base_url: str,
+    identity: str,
+    auth_headers: Mapping[str, str],
+    seam: _ValidatorSeam,
+    events: list[ScanEvent],
+) -> list[str]:
+    """Inject an attacker URL into a redirect-shaped query parameter; confirm
+    via the ``Location`` header of a 3xx response echoing it verbatim.
+
+    Read-only GET (§10): the firer never follows redirects (hardcoded in
+    ``RequestFirer.fire``), so the attacker destination is never visited.
+    Reuses ``openredirect/detector.py`` (no inline oracle wiring).
+    """
+    from reachagent.openredirect.detector import (
+        OpenRedirectProber,
+        RedirectProbe,
+        detect_open_redirect,
+    )
+
+    target = f"{_ATTACKER_ORIGIN}/reachagent-open-redirect-probe"
+    found: list[str] = []
+    for ep_node, ep in graph.endpoints():
+        if ep.method.upper() != "GET":
+            continue
+        redirect_params = [
+            p
+            for _n, p in graph.parameters_of(ep_node)
+            if p.location == "query" and p.name.lower() in _REDIRECT_PARAM_NAMES
+        ]
+        if not redirect_params:
+            continue
+        param_name = redirect_params[0].name
+        label = f"open_redirect {ep.path}?{param_name}"
+        probe_url = f"{base_url.rstrip('/')}{ep.path}?{param_name}={target}"
+
+        def _fire_probe(_url: str = probe_url, _label: str = label) -> RedirectProbe:
+            response = _fire_readonly(
+                firer, identity, "GET", _url, events=events, label=_label, headers=auth_headers
+            )
+            if response is None:
+                return RedirectProbe()
+            return RedirectProbe(
+                status=response.status_code,
+                location=str(response.headers.get("location", "")),
+            )
+
+        prober = OpenRedirectProber(
+            fire_probe=_fire_probe, probe_target=target, oracle_runner=seam.run
+        )
+        result = detect_open_redirect(prober, evidence_ref=f"orchestrator/open_redirect{ep.path}")
+        if result.confirmed and seam.last is not None:
+            nid = seam.write(
+                "open_redirect", seam.last, severity="medium", metadata={"param": param_name}
+            )
+            if nid:
+                found.append(nid)
+                _emit(
+                    events,
+                    "payloads",
+                    "finding",
+                    f"open redirect — {param_name} echoed into Location",
+                    path=ep.path,
+                )
+
+    if not found:
+        _emit(events, "payloads", "not-applicable", "open_redirect: no redirect param confirmed")
+    return found
+
+
 # ---------------------------------------------------------------------------
 # Phase 3 — authz (bola/bfla) via the generic BOLA detector
 # ---------------------------------------------------------------------------
@@ -2019,6 +2119,16 @@ def scan_all_classes(
         events=events_out,
     )
     check_cancel(cancel_check)
+    run_open_redirect(
+        graph=graph,
+        firer=firer,
+        base_url=base_url,
+        identity=identity,
+        auth_headers=auth_headers,
+        seam=seam,
+        events=events_out,
+    )
+    check_cancel(cancel_check)
     run_jwt_forgery(
         graph=graph,
         firer=firer,
@@ -2112,6 +2222,7 @@ def scan_all_classes(
         "sqli_blind",
         "mass_assignment",
         "xss_stored",
+        "open_redirect",
         # xss_dom IS driven (run_xss_dom above) — this set was stale, causing a
         # contradictory "no discovered precondition" event on every all-class
         # scan even when xss_dom just ran (and may have confirmed a finding).
