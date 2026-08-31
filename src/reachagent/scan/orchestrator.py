@@ -935,6 +935,330 @@ def run_command_injection(
 
 
 # ---------------------------------------------------------------------------
+# Phase 3 — mass assignment: write a privileged field, independently reread
+# ---------------------------------------------------------------------------
+
+_MASS_ASSIGN_PRIV_FIELDS: tuple[str, ...] = ("admin", "isAdmin", "is_admin")
+_PLACEHOLDER = re.compile(r"\{[^}]+\}")
+
+
+def _synth_body_value(param: Any) -> object:
+    """A per-run-unique benign value for a legitimate body field.
+
+    # ponytail: name-heuristic, not a schema-aware synthesizer — upgrade if a
+    # target needs typed/enum body fields (e.g. a required boolean/int).
+    """
+    if param.example:
+        return param.example
+    name = param.name.lower()
+    if any(tok in name for tok in ("id", "count", "amount", "price", "qty")):
+        return 1
+    if "email" in name or "mail" in name:
+        return f"ra-{uuid.uuid4().hex[:6]}@reachagent.test"
+    return f"ra-{uuid.uuid4().hex[:8]}"
+
+
+def _sibling_read_endpoint(
+    graph: ReachabilityGraph, write_path: str
+) -> tuple[str, Endpoint] | None:
+    """The read-back endpoint for a write path: same-path GET, else a sibling
+    prefix GET with an unresolved ``{placeholder}`` (registration-style create).
+    """
+    for node, ep in graph.endpoints():
+        if ep.method.upper() == "GET" and ep.path == write_path:
+            return node, ep
+    prefix = write_path.rsplit("/", 1)[0] + "/"
+    for node, ep in graph.endpoints():
+        if (
+            ep.method.upper() == "GET"
+            and ep.path.startswith(prefix)
+            and _PLACEHOLDER.search(ep.path)
+        ):
+            return node, ep
+    return None
+
+
+def run_mass_assignment(
+    *,
+    graph: ReachabilityGraph,
+    firer: RequestFirer,
+    base_url: str,
+    identity: str,
+    auth_headers: Mapping[str, str],
+    seam: _ValidatorSeam,
+    events: list[ScanEvent],
+) -> list[str]:
+    """Inject a privileged field alongside a legitimate write; confirm via
+    an INDEPENDENT re-read of the resource, never the write's own response.
+
+    Read-only-first: an OPTIONS-or-GET preflight must clear the write
+    endpoint's path before the state-changing fire (mirrors ``run_file_upload``
+    exactly). Stops at the first field that confirms per endpoint.
+    """
+    import json as _json
+
+    from reachagent.mass_assignment.detector import (
+        MassAssignmentProbe,
+        MassAssignmentProber,
+        detect_mass_assignment,
+    )
+    from reachagent.oracles.differential import Observation
+    from reachagent.payloads.payload_resolver import resolve
+
+    found: list[str] = []
+    for ep_node, ep in graph.endpoints():
+        if ep.method.upper() not in ("POST", "PUT", "PATCH"):
+            continue
+        body_params = [(n, p) for n, p in graph.parameters_of(ep_node) if p.location == "json"]
+        if not body_params:
+            continue
+        label = f"mass_assignment {ep.path}"
+        sibling = _sibling_read_endpoint(graph, ep.path)
+        if sibling is None:
+            _emit(
+                events,
+                "payloads",
+                "not-applicable",
+                f"{label}: no independent read-back endpoint discovered",
+            )
+            continue
+        _sibling_node, sibling_ep = sibling
+        write_url = f"{base_url.rstrip('/')}{ep.path}"
+        preflight = _fire_readonly(
+            firer,
+            identity,
+            "OPTIONS",
+            write_url,
+            events=events,
+            label=f"{label}/preflight",
+            headers=auth_headers,
+        )
+        if preflight is None or not (200 <= preflight.status_code < 300):
+            preflight = _fire_readonly(
+                firer,
+                identity,
+                "GET",
+                write_url,
+                events=events,
+                label=f"{label}/preflight-get",
+                headers=auth_headers,
+            )
+        if preflight is None or not (200 <= preflight.status_code < 300):
+            _emit(events, "payloads", "not-applicable", f"{label}: no read-only clearance")
+            continue
+        legit_body = {p.name: _synth_body_value(p) for _n, p in body_params}
+        confirmed_this_endpoint = False
+        for priv_field_name in _MASS_ASSIGN_PRIV_FIELDS:
+            if confirmed_this_endpoint:
+                break
+            injected = _json.loads(
+                resolve("mass-assignment/admin-flag-injection", priv_field=priv_field_name)
+            )
+            write_body = {**legit_body, **injected}
+            try:
+                write_result = firer.fire(
+                    identity,
+                    ep.method,
+                    write_url,
+                    state_changing=True,
+                    headers=dict(auth_headers),
+                    json=write_body,
+                )
+            except Exception:  # noqa: BLE001, S112 — a refused write is a dead lead
+                continue
+            if not (200 <= write_result.status_code < 300):
+                continue
+            read_id = (
+                write_body.get("username") or write_body.get("email") or write_body.get("id", "")
+            )
+            read_path = (
+                _PLACEHOLDER.sub(str(read_id), sibling_ep.path)
+                if _PLACEHOLDER.search(sibling_ep.path)
+                else sibling_ep.path
+            )
+            read_url = f"{base_url.rstrip('/')}{read_path}"
+            try:
+                reread = firer.fire(
+                    identity, "GET", read_url, state_changing=False, headers=dict(auth_headers)
+                )
+            except Exception:  # noqa: BLE001, S112 — a failed reread is a dead lead
+                continue
+            extracted = ""
+            try:
+                parsed = _json.loads(reread.body.decode("utf-8", errors="replace"))
+                if isinstance(parsed, dict) and priv_field_name in parsed:
+                    extracted = str(parsed[priv_field_name]).lower()
+            except Exception:  # noqa: BLE001, S110 — non-JSON reread body: no signal
+                pass
+
+            def _fire_probe(
+                status: int = reread.status_code,
+                value: str = extracted,
+                priv_field_name: str = priv_field_name,
+            ) -> MassAssignmentProbe:
+                return MassAssignmentProbe(
+                    reference=Observation("expected-privileged-value", 200, "true"),
+                    reread=Observation(f"reread-after-mutation:{priv_field_name}", status, value),
+                )
+
+            prober = MassAssignmentProber(fire_probe=_fire_probe, oracle_runner=seam.run)
+            result = detect_mass_assignment(
+                prober, evidence_ref=f"orchestrator/mass_assignment{ep.path}:{priv_field_name}"
+            )
+            if result.confirmed and seam.last is not None:
+                nid = seam.write(
+                    "mass_assignment",
+                    seam.last,
+                    severity="high",
+                    metadata={"field": priv_field_name, "endpoint": ep.path},
+                )
+                if nid:
+                    found.append(nid)
+                    confirmed_this_endpoint = True
+                    _emit(
+                        events,
+                        "payloads",
+                        "finding",
+                        f"mass assignment — {priv_field_name} persisted after write",
+                        path=ep.path,
+                        priv_field_name=priv_field_name,
+                    )
+    return found
+
+
+def run_xss_stored(
+    *,
+    graph: ReachabilityGraph,
+    firer: RequestFirer,
+    base_url: str,
+    identity: str,
+    auth_headers: Mapping[str, str],
+    seam: _ValidatorSeam,
+    events: list[ScanEvent],
+) -> list[str]:
+    """Inject a tagged script payload into one write field; confirm via an
+    INDEPENDENT re-read of the resource reflecting the tag verbatim.
+
+    Read-only-first: mirrors ``run_mass_assignment`` exactly — an OPTIONS-or-GET
+    preflight must clear the write endpoint before the state-changing fire.
+    Reuses ``xss/detector.py``'s stored path (no new oracle wiring): ``fire_dom``
+    is a no-op (no browser in this context, and DOM XSS is separately driven by
+    ``run_xss_dom``), so ``detect_xss`` falls through to the stored write→reread
+    confirmation on the first call.
+    """
+    from reachagent.browser.shim import BrowserFireResult
+    from reachagent.payloads.payload_resolver import resolve
+    from reachagent.xss.detector import DomProbe, StoredProbe, XssProber, detect_xss
+
+    found: list[str] = []
+    for ep_node, ep in graph.endpoints():
+        if ep.method.upper() not in ("POST", "PUT", "PATCH"):
+            continue
+        body_params = [(n, p) for n, p in graph.parameters_of(ep_node) if p.location == "json"]
+        if not body_params:
+            continue
+        label = f"xss_stored {ep.path}"
+        sibling = _sibling_read_endpoint(graph, ep.path)
+        if sibling is None:
+            _emit(
+                events,
+                "payloads",
+                "not-applicable",
+                f"{label}: no independent read-back endpoint discovered",
+            )
+            continue
+        _sibling_node, sibling_ep = sibling
+        write_url = f"{base_url.rstrip('/')}{ep.path}"
+        preflight = _fire_readonly(
+            firer,
+            identity,
+            "OPTIONS",
+            write_url,
+            events=events,
+            label=f"{label}/preflight",
+            headers=auth_headers,
+        )
+        if preflight is None or not (200 <= preflight.status_code < 300):
+            preflight = _fire_readonly(
+                firer,
+                identity,
+                "GET",
+                write_url,
+                events=events,
+                label=f"{label}/preflight-get",
+                headers=auth_headers,
+            )
+        if preflight is None or not (200 <= preflight.status_code < 300):
+            _emit(events, "payloads", "not-applicable", f"{label}: no read-only clearance")
+            continue
+
+        legit_body = {p.name: _synth_body_value(p) for _n, p in body_params}
+        tag = f"ra{uuid.uuid4().hex[:10]}"
+        # Never inject into the field the reread URL is resolved from below
+        # (username/email/id) — corrupting it would break our own lookup.
+        target_field = next(
+            (p.name for _n, p in body_params if p.name not in ("username", "email", "id")),
+            body_params[0][1].name,
+        )
+        payload = resolve("xss/reflected/script-tag-canary", canary=tag)
+        write_body = {**legit_body, target_field: payload}
+        try:
+            write_result = firer.fire(
+                identity,
+                ep.method,
+                write_url,
+                state_changing=True,
+                headers=dict(auth_headers),
+                json=write_body,
+            )
+        except Exception:  # noqa: BLE001, S112 — a refused write is a dead lead
+            continue
+        if not (200 <= write_result.status_code < 300):
+            continue
+
+        read_id = write_body.get("username") or write_body.get("email") or write_body.get("id", "")
+        read_path = (
+            _PLACEHOLDER.sub(str(read_id), sibling_ep.path)
+            if _PLACEHOLDER.search(sibling_ep.path)
+            else sibling_ep.path
+        )
+        read_url = f"{base_url.rstrip('/')}{read_path}"
+        try:
+            reread = firer.fire(
+                identity, "GET", read_url, state_changing=False, headers=dict(auth_headers)
+            )
+        except Exception:  # noqa: BLE001, S112 — a failed reread is a dead lead
+            continue
+        readback_body = reread.body.decode("utf-8", errors="replace")
+
+        def _fire_dom(_url: str = write_url, _identity: str = identity) -> DomProbe:
+            return DomProbe(result=BrowserFireResult(url=_url, identity=_identity))
+
+        def _fire_stored(_tag: str = tag, _body: str = readback_body) -> StoredProbe:
+            return StoredProbe(payload_tag=_tag, readback_body=_body, write_logged=True)
+
+        prober = XssProber(fire_dom=_fire_dom, fire_stored=_fire_stored, oracle_runner=seam.run)
+        result = detect_xss(prober, evidence_ref=f"orchestrator/xss_stored{ep.path}")
+        if result.confirmed and seam.last is not None:
+            nid = seam.write(
+                "xss_stored", seam.last, severity="high", metadata={"endpoint": ep.path}
+            )
+            if nid:
+                found.append(nid)
+                _emit(
+                    events,
+                    "payloads",
+                    "finding",
+                    f"stored xss — tag reflected in independent reread of {ep.path}",
+                    path=ep.path,
+                )
+
+    if not found:
+        _emit(events, "payloads", "not-applicable", "xss_stored: no stored injection confirmed")
+    return found
+
+
+# ---------------------------------------------------------------------------
 # Phase 3 — authz (bola/bfla) via the generic BOLA detector
 # ---------------------------------------------------------------------------
 
@@ -1675,6 +1999,26 @@ def scan_all_classes(
         events=events_out,
     )
     check_cancel(cancel_check)
+    run_mass_assignment(
+        graph=graph,
+        firer=firer,
+        base_url=base_url,
+        identity=identity,
+        auth_headers=auth_headers,
+        seam=seam,
+        events=events_out,
+    )
+    check_cancel(cancel_check)
+    run_xss_stored(
+        graph=graph,
+        firer=firer,
+        base_url=base_url,
+        identity=identity,
+        auth_headers=auth_headers,
+        seam=seam,
+        events=events_out,
+    )
+    check_cancel(cancel_check)
     run_jwt_forgery(
         graph=graph,
         firer=firer,
@@ -1766,6 +2110,12 @@ def scan_all_classes(
         "graphql",
         "business_logic",
         "sqli_blind",
+        "mass_assignment",
+        "xss_stored",
+        # xss_dom IS driven (run_xss_dom above) — this set was stale, causing a
+        # contradictory "no discovered precondition" event on every all-class
+        # scan even when xss_dom just ran (and may have confirmed a finding).
+        "xss_dom",
     }
     for vuln_class in ALL_CLASSES:
         if vuln_class not in driven_classes:
