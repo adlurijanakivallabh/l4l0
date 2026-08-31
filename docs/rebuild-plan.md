@@ -752,6 +752,59 @@ by user decision, not attempted.**
 - Gate: no dead handle / no orphan template; sink isolation holds; corpus census
   unchanged unless SecLists intentionally added.
 
+**Status (2026-08-31): Phase E done.**
+- `expand_encoding_variants` — already cut in the C4 slice (Phase D), before
+  Phase E started.
+- Stale reserved-token rationale: re-verified each of the 3 entries against
+  the actual vendored folders rather than assuming staleness. "JSON Web
+  Token" and "CORS Misconfiguration" are still accurate — their folders
+  genuinely contain only `README.md` (prose docs, no `Intruder/*.txt` line
+  lists), confirmed by listing `third_party/payloadsallthethings-snapshot/`
+  directly. "Server Side Request Forgery" WAS stale: it claimed "no
+  confirming oracle yet," but SSRF has had two working confirming oracles
+  (`SSRF_RESPONSE`, `OOB_CALLBACK`) since v1.11 — fixed to the same
+  format-based reason as JWT/CORS (also true: SSRF's folder is prose +
+  PoC files, no line list either) plus a note on how it's actually
+  confirmed (hand-tagged templates, not bulk ingest). Also fixed a second,
+  independent staleness bug found while touching this: the per-file ingest
+  loop logged a single hardcoded generic phrase
+  ("reserved: payloads available, no confirming oracle yet") for every
+  reserved file regardless of which class or its real reason — now looks up
+  and logs the actual per-class `_RESERVED_CLASS_TOKENS` rationale.
+- "Collapse the double per-line validation": investigated
+  `_is_acceptable_line` (per-line, pre-resolve) vs `_semantic_valid`
+  (per-entry, post-resolve) — these are NOT accidental duplication. The
+  code's own docstring already documents the two-tier design intentionally:
+  a cheap raw-line filter avoids constructing+resolving every line
+  (including comments/blanks/prose) before the stricter, resolved-value
+  check runs. Collapsing them would mean resolving every raw line
+  unconditionally — slower, not simpler. No change made; the ledger's
+  "duplicate" framing was already addressed in the code, just not in the
+  ledger's own text.
+- **D2 SecLists — wired as default** (checked with the user first: the
+  original "wire + cross-source dedup" resolution turned out to need real
+  dedup engineering from scratch — no existing dedup infra anywhere in the
+  codebase despite a memory note referencing one — which also compounds
+  with the uncached-corpus-load issue hit three times this session; user
+  chose to wire it without dedup, accepting some duplicate payload values
+  across the two corpora as a bounded cost the funnel methodology's
+  stop-at-first-confirmation behavior already limits). SecLists' folder
+  layout (`Fuzzing/<class>/...`) resolves through the exact same
+  `_FOLDER_MAP` path-token matching PayloadsAllTheThings uses — confirmed
+  by checking the actual vendored directory tree before assuming a new
+  mapping layer was needed; none was. One line change
+  (`load_corpus_report`'s default `sources`) adds **9,323 more reachable
+  entries** (far more than the ledger's "+~1200" estimate). Updated the one
+  test that explicitly locked in PATT-only-by-default as intentional,
+  tested behavior (a real, deliberate prior decision this change reverses,
+  not a bug fix) plus a payload-ref-prefix assertion. Also fixed a genuine,
+  measured inefficiency while wiring this: `_make_signal_reconfirm`
+  (W5/D3) was calling the now-even-more-expensive uncached `_library()` a
+  second time per scan; threaded the driver loop's already-built `lib`
+  through instead.
+- Whole tree: **1325 passed, 0 failed, 16 skipped** — identical count to
+  before this slice (renamed/updated existing tests, added none net).
+
 ### Phase F — GUI information-architecture rebuild (not from scratch)
 *(read R1 frontend, R6 viewer. The CSS/tokens are competent — keep them; the IA
 is the problem.)*

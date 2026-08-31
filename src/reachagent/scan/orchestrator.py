@@ -2182,6 +2182,7 @@ def _make_signal_reconfirm(
     identity: str,
     auth_headers: Mapping[str, str],
     events: list[ScanEvent],
+    library: Any | None = None,
 ) -> Callable[[Any], object]:
     """Build the ``reconfirm`` callback ``run_signal_tools`` calls per candidate.
 
@@ -2189,12 +2190,16 @@ def _make_signal_reconfirm(
     per candidate inside each builder — ``build_library()`` re-parses the whole
     vendored corpus from disk on every call and is uncached, so this is the
     difference between one library load per scan and one per candidate.
+    ``library`` lets the caller pass its own already-built instance (avoiding a
+    second full corpus parse in the same scan) when it has one.
     """
     from reachagent.recon.tools.signal_gated import reconfirm_candidate
     from reachagent.tools import validator
     from reachagent.tools.explorer_context import ExplorerContext
 
-    ctx = ExplorerContext(graph=graph, firer=firer, library=_library(), base_url=base_url)
+    ctx = ExplorerContext(
+        graph=graph, firer=firer, library=library or _library(), base_url=base_url
+    )
 
     def _finding_factory(candidate: Any, verdict: object) -> Finding:
         return Finding(
@@ -2744,6 +2749,7 @@ def scan_all_classes(
             identity=identity,
             auth_headers=auth_headers,
             events=events_out,
+            library=lib,
         ),
     )
     _adapt("verification", ("payloads", "report"))

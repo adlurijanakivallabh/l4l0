@@ -225,13 +225,19 @@ def test_ingest_census_is_sizable_and_covers_all_classes() -> None:
     assert {"sqli", "nosqli", "xss_reflected", "command_injection", "path_traversal"} <= classes
 
 
-def test_named_source_selection_keeps_default_patt_only() -> None:
+def test_named_source_selection_default_is_both_corpora() -> None:
+    # §4 D2: default sources are both vendored corpora; an explicit selection
+    # still isolates one. No cross-source dedup (measure first) -- the union
+    # is exactly the concatenation, not a strict superset check.
     patt = load_corpus_entries(["PayloadsAllTheThings"])
     seclists = load_corpus_entries(["SecLists"])
     default = load_corpus_entries()
     assert len(patt) > 0
     assert len(seclists) > 0
-    assert default == patt
+    assert len(default) == len(patt) + len(seclists)
+    default_refs = {e.payload_ref for e in default}
+    assert all(e.payload_ref in default_refs for e in patt)
+    assert all(e.payload_ref in default_refs for e in seclists)
 
 
 def test_ingest_report_keeps_rejections_out_of_fireable_entries() -> None:
@@ -239,7 +245,7 @@ def test_ingest_report_keeps_rejections_out_of_fireable_entries() -> None:
     refs = {entry.payload_ref for entry in report.entries}
     assert report.semantic_invalid_refs
     assert set(report.semantic_invalid_refs).isdisjoint(refs)
-    assert all(ref.startswith("PayloadsAllTheThings/") for ref in refs)
+    assert all(ref.startswith(("PayloadsAllTheThings/", "SecLists/")) for ref in refs)
     assert report.reserved_files
     assert any("XXE Injection" in path for path in report.reserved_files)
     assert all(entry.oracle_type in set(OracleMechanism) for entry in report.entries)

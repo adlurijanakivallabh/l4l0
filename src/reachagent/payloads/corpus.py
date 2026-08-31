@@ -152,7 +152,11 @@ _FOLDER_MAP: dict[str, _FolderClass] = {
 # No PATT machine-readable SSRF payload file exists at pinned commit. SSRF remains
 # reserved until a real line-oriented source and OOB adapter can consume it.
 _RESERVED_CLASS_TOKENS = {
-    "Server Side Request Forgery": "reserved: payloads available, no confirming oracle yet",
+    "Server Side Request Forgery": (
+        "reserved: no line-oriented payload file (README/markdown + PoC files only); "
+        "SSRF is confirmed instead via a hand-tagged {nonce}/{collab} template set "
+        "feeding the existing STRUCTURAL SSRF_RESPONSE and OOB_CALLBACK oracles"
+    ),
     "JSON Web Token": "reserved: payloads available, no line-oriented payload file",
     "CORS Misconfiguration": "reserved: payloads available, no line-oriented payload file",
     "XXE Injection": (
@@ -223,6 +227,15 @@ def _folder_class_for(relpath: Path) -> _FolderClass | None:
 def _is_reserved_path(relpath: Path) -> bool:
     """Whether path belongs to payload-bearing class without consuming oracle."""
     return any(token in relpath.parts for token in _RESERVED_CLASS_TOKENS)
+
+
+def _reserved_reason(relpath: Path) -> str:
+    """The specific §5-honest rationale for a reserved path, not a generic phrase."""
+    parts = set(relpath.parts)
+    for token, reason in _RESERVED_CLASS_TOKENS.items():
+        if token in parts:
+            return reason
+    return "reserved"  # pragma: no cover — unreachable when _is_reserved_path is true
 
 
 def _is_machine_readable(path: Path) -> bool:
@@ -322,8 +335,17 @@ def _semantic_valid(entry: PayloadEntry, value: str) -> bool:
 
 
 def load_corpus_report(sources: Iterable[str] | None = None) -> CorpusIngestReport:
-    """Load mapped payloads and return counts plus reserved/skipped ledger."""
-    names = list(sources) if sources is not None else ["PayloadsAllTheThings"]
+    """Load mapped payloads and return counts plus reserved/skipped ledger.
+
+    Default sources are both vendored corpora (§4 D2): SecLists' folder layout
+    (``Fuzzing/<class>/...``) already resolves through the same path-token
+    ``_FOLDER_MAP`` PayloadsAllTheThings uses — no separate mapping needed.
+    Cross-source value dedup is deliberately not attempted (measure first):
+    the funnel methodology already stops firing at the first confirmation, so
+    an occasional duplicate value between the two corpora is a bounded cost,
+    not a correctness issue.
+    """
+    names = list(sources) if sources is not None else ["PayloadsAllTheThings", "SecLists"]
     all_entries: list[PayloadEntry] = []
     counts: Counter[tuple[str, str]] = Counter()
     reserved_files: list[str] = []
@@ -348,7 +370,7 @@ def load_corpus_report(sources: Iterable[str] | None = None) -> CorpusIngestRepo
             if _is_reserved_path(relpath):
                 detail = f"{source}/{relpath.as_posix()}"
                 reserved_files.append(detail)
-                _log.info("reserved: payloads available, no confirming oracle yet: %s", detail)
+                _log.info("%s: %s", _reserved_reason(relpath), detail)
                 continue
             folder_class = _folder_class_for(relpath)
             if folder_class is None:
