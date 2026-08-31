@@ -288,6 +288,58 @@ def test_live_spawn_uses_shell_false_and_array(monkeypatch: pytest.MonkeyPatch) 
     assert _TARGET in captured["argv"]  # target is an element
 
 
+def test_live_run_result_carries_the_real_command_and_output_preview(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """GUI live-feed visibility: a live run's result must carry the exact argv
+    subprocess.run was handed, plus a short slice of real stdout — not just an
+    outcome enum with no evidence of what actually ran."""
+    import reachagent.recon.tools.base as base
+
+    class _Completed:
+        stdout = (
+            "/admin                (Status: 200) [Size: 1234]\n"
+            "/login                (Status: 301)\n"
+        )
+
+    def _fake_run(argv: object, **_kwargs: object) -> _Completed:
+        return _Completed()
+
+    monkeypatch.setattr(base.shutil, "which", lambda _b: "/usr/bin/gobuster")
+    monkeypatch.setattr(base.subprocess, "run", _fake_run)
+    runner = GobusterRunner(graph=ReachabilityGraph(), scope=_scope())
+
+    result = runner.run(_TARGET, environ={base.RECON_ENV_LIVE: "1"})
+
+    assert result.outcome is ReconOutcome.INGESTED
+    assert result.command == tuple(runner.command(_TARGET))
+    assert _TARGET in result.command
+    assert "/admin" in result.output_preview
+    assert result.output_preview  # non-empty for real output
+
+
+def test_ingest_result_carries_an_output_preview() -> None:
+    runner = GobusterRunner(graph=ReachabilityGraph(), scope=_scope())
+    result = runner.ingest(_TARGET, "/admin                (Status: 200) [Size: 1234]\n")
+    assert "/admin" in result.output_preview
+
+
+def test_output_preview_still_present_on_a_parse_error() -> None:
+    """A parse failure is exactly when a human most wants to see the raw output."""
+    runner = NmapRunner(graph=ReachabilityGraph(), scope=_scope())
+    result = runner.ingest(_TARGET, "not valid nmap XML at all")
+    assert result.outcome is ReconOutcome.ERRORED
+    assert "not valid nmap XML" in result.output_preview
+
+
+def test_output_preview_is_bounded_for_a_huge_output() -> None:
+    runner = GobusterRunner(graph=ReachabilityGraph(), scope=_scope())
+    huge = "\n".join(f"/path{i}          (Status: 200)" for i in range(5000))
+    result = runner.ingest(_TARGET, huge)
+    assert len(result.output_preview) < len(huge)
+    assert result.output_preview.endswith("…")
+
+
 # ---------------------------------------------------------------------------
 # 5. THE recon-tier invariant — zero findings / candidates / can_call
 # ---------------------------------------------------------------------------

@@ -430,6 +430,33 @@ def test_live_spawn_uses_shell_false_and_array(monkeypatch, tmp_path) -> None:
     assert captured["shell"] is False
 
 
+def test_live_run_result_carries_command_and_redacted_output_preview(monkeypatch, tmp_path) -> None:
+    """GUI live-feed visibility: the real command + a stdout preview must reach
+    the result metadata, but any secret-shaped text in that stdout must be
+    redacted first — this tier's tools can print extracted application data,
+    and the same redaction every candidate claim gets must apply here too."""
+    import reachagent.recon.tools.signal_gated as sg
+
+    def _fake_run(argv, **_kwargs):
+        class _P:
+            returncode = 0
+            stdout = "sqlmap: found password=hunter2 while dumping the users table"
+
+        return _P()
+
+    monkeypatch.setattr(sg.shutil, "which", lambda _b: "/usr/bin/sqlmap")
+    monkeypatch.setattr(sg.subprocess, "run", _fake_run)
+    out = tmp_path / "sqlmap-out.csv"
+    out.write_text(_fixture("sqlmap-results.csv"), encoding="utf-8")
+    runner = SqlmapRunner(graph=_graph_with_sql_signal(), scope=_scope())
+
+    result = runner.run(_TARGET, str(out), environ={"REACHAGENT_RECON_LIVE": "1"})
+
+    assert _TARGET in result.metadata.command
+    assert "hunter2" not in result.metadata.output_preview
+    assert "<redacted>" in result.metadata.output_preview
+
+
 def test_live_path_skipped_when_not_env_gated() -> None:
     runner = SqlmapRunner(graph=_graph_with_sql_signal(), scope=_scope())
     result = runner.run(_TARGET, "out.txt", environ={})  # env flag unset

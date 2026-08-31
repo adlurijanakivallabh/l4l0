@@ -31,3 +31,20 @@ def path_of(url: str) -> str:
         after = url.split("://", 1)[-1] if "://" in url else url
         slash = after.find("/")
         return (after[slash:].split("#", 1)[0] if slash != -1 else "/") or "/"
+
+
+# GUI live-feed preview cap — independent of any LLM-context truncation a caller
+# applies separately. Shared by both the recon-tier (ReconToolRunner) and
+# signal-gated (SignalGatedToolRunner) bases so an operator sees real tool
+# stdout ("what wordlist hit, what nmap printed"), not just an outcome enum.
+_PREVIEW_MAX_LINES = 20
+_PREVIEW_MAX_CHARS = 1_500
+
+
+def output_preview(raw: str) -> str:
+    """A short, human-readable slice of real tool stdout, bounded for display."""
+    lines = raw.splitlines()[:_PREVIEW_MAX_LINES]
+    preview = "\n".join(lines)[:_PREVIEW_MAX_CHARS]
+    if len(raw.splitlines()) > _PREVIEW_MAX_LINES or len(raw) > _PREVIEW_MAX_CHARS:
+        preview += "\n…"
+    return preview

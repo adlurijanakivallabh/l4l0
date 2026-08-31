@@ -190,5 +190,6 @@ def test_content_discovery_falls_back_when_primary_finds_nothing() -> None:
     )
     ran = {"ffuf", "gobuster", "feroxbuster", "dirb"} & set(result["recon_tools"])
     # Exactly the primary (empty) plus ONE fallback (which found something) —
-    # feroxbuster/dirb are never reached once gobuster satisfies the family.
-    assert ran == {"ffuf", "gobuster"}, f"expected primary + one fallback, got {ran}"
+    # gobuster/dirb are never reached once feroxbuster (first fallback) satisfies
+    # the family.
+    assert ran == {"ffuf", "feroxbuster"}, f"expected primary + one fallback, got {ran}"

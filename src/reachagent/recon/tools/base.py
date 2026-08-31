@@ -43,7 +43,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess  # noqa: S404 — argument-array only, shell=False, never a shell string
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from typing import ClassVar
 from urllib.parse import urlsplit
@@ -57,6 +57,7 @@ from reachagent.graph.store import ReachabilityGraph
 from reachagent.recon.tools._net import (
     host_of as _recon_host_of,  # noqa: F401 — re-export for 8 callers
 )
+from reachagent.recon.tools._net import output_preview as _recon_output_preview
 from reachagent.recon.tools._net import (
     path_of as _recon_path_of,  # noqa: F401 — re-export for 6 callers
 )
@@ -109,6 +110,8 @@ class ReconResult:
     ``nodes`` are the transport-tier node ids the parse landed (hosts, services,
     endpoints). ``outcome`` records why — so a caller can distinguish a clean
     ingest from a scope refusal, a missing binary, or an error, without exceptions.
+    ``output_preview`` is a short, bounded slice of the tool's raw stdout (GUI
+    live-feed display only — never used for graph facts, which come from ``parse``).
     """
 
     tool: str
@@ -116,6 +119,8 @@ class ReconResult:
     outcome: ReconOutcome
     nodes: tuple[str, ...] = ()
     detail: str = ""
+    output_preview: str = ""
+    command: tuple[str, ...] = ()
 
 
 @dataclass
@@ -207,10 +212,24 @@ class ReconToolRunner:
             self.audit.record(
                 self.name, "RECON", target, f"{ReconOutcome.ERRORED}:{type(exc).__name__}"
             )
-            return ReconResult(self.name, target, ReconOutcome.ERRORED, detail=type(exc).__name__)
+            # A parse failure is exactly when the raw output matters most for a
+            # human to see — never withhold the preview just because parsing failed.
+            return ReconResult(
+                self.name,
+                target,
+                ReconOutcome.ERRORED,
+                detail=type(exc).__name__,
+                output_preview=_recon_output_preview(raw_output),
+            )
 
         self.audit.record(self.name, "RECON", target, ReconOutcome.INGESTED)
-        return ReconResult(self.name, target, ReconOutcome.INGESTED, nodes=tuple(nodes))
+        return ReconResult(
+            self.name,
+            target,
+            ReconOutcome.INGESTED,
+            nodes=tuple(nodes),
+            output_preview=_recon_output_preview(raw_output),
+        )
 
     # -- the live path: env-gated, scope-first, command-array, missing-binary skip --
 
@@ -281,7 +300,13 @@ class ReconToolRunner:
             self.audit.record(
                 self.name, "RECON", target, f"{ReconOutcome.ERRORED}:{type(exc).__name__}"
             )
-            return ReconResult(self.name, target, ReconOutcome.ERRORED, detail=type(exc).__name__)
+            return ReconResult(
+                self.name,
+                target,
+                ReconOutcome.ERRORED,
+                detail=type(exc).__name__,
+                command=tuple(argv),
+            )
 
         # Gate 4: parse output into transport-tier facts (re-checks scope).
         raw = completed.stdout
@@ -300,7 +325,7 @@ class ReconToolRunner:
                 _os2.unlink(file_output_arg)
             except OSError:
                 pass
-        return self.ingest(target, raw)
+        return replace(self.ingest(target, raw), command=tuple(argv))
 
 
 def _scope_url(target: str) -> httpx.URL:

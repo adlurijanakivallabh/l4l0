@@ -53,6 +53,7 @@ from reachagent.graph.store import ReachabilityGraph
 from reachagent.oracles import OracleMechanism
 from reachagent.oracles.base import OracleVerdict
 from reachagent.oracles.registry import UnknownOracleError, get_oracle
+from reachagent.recon.tools._net import output_preview as _recon_output_preview
 from reachagent.recon.tools.base import RECON_ENV_LIVE, _scope_url
 from reachagent.tools.candidate import Candidate, ResponseSignal
 
@@ -82,6 +83,8 @@ class SignalGatedMetadata:
     output_chars: int = 0
     partial_output: bool = False
     dropped_candidates: int = 0
+    command: str = ""
+    output_preview: str = ""
 
     def __post_init__(self) -> None:
         if not isinstance(self.command_policy, str) or not self.command_policy:
@@ -90,6 +93,12 @@ class SignalGatedMetadata:
             not isinstance(self.tool_version, str) or len(self.tool_version) > 128
         ):
             raise ValueError("tool_version must be bounded text")
+        for text_value, label in (
+            (self.command, "command"),
+            (self.output_preview, "output_preview"),
+        ):
+            if not isinstance(text_value, str) or len(text_value) > 2_000:
+                raise ValueError(f"{label} must be bounded text")
         if (
             isinstance(self.duration_seconds, bool)
             or not isinstance(self.duration_seconds, (int, float))
@@ -118,6 +127,8 @@ class SignalGatedMetadata:
             "output_chars": max(0, self.output_chars),
             "partial_output": self.partial_output,
             "dropped_candidates": max(0, self.dropped_candidates),
+            "command": self.command,
+            "output_preview": self.output_preview,
         }
 
 
@@ -565,6 +576,13 @@ class SignalGatedToolRunner:
                 ),
                 output_chars=len(bounded_output),
                 partial_output=partial,
+                # Redact before preview, not after: this tier's tools (sqlmap etc.)
+                # can print extracted application data in their own stdout, and a
+                # future wrapper could embed a header/cookie in argv — the same
+                # secret-redaction pass every candidate claim already goes through
+                # (_safe_claim_text) applies here too, never the raw bytes.
+                command=_safe_claim_text(" ".join(argv), 2_000),
+                output_preview=_recon_output_preview(_safe_claim_text(bounded_output, 4_000)),
             )
         except FileNotFoundError:
             metadata = replace(

@@ -605,13 +605,18 @@ def scan_target(
                     WhatWebRunner,
                     KatanaRunner,
                     # Content-discovery family, ffuf-primary (native -ac
-                    # auto-calibration) with gobuster/feroxbuster/dirb as
+                    # auto-calibration) with feroxbuster/gobuster/dirb as
                     # successive fallbacks — the dispatch loop below stops the
                     # family after the first one yields a useful path, so in the
                     # common case only ONE of these four ever actually fires.
+                    # feroxbuster ranks ahead of gobuster: Rust/tokio async I/O
+                    # gives materially higher request throughput than gobuster's
+                    # Go implementation, plus native recursive/adaptive scanning
+                    # and wildcard filtering gobuster lacks — a fallback that
+                    # finishes faster and self-tunes better should go first.
                     FfufRunner,
-                    GobusterRunner,
                     FeroxbusterRunner,
+                    GobusterRunner,
                     DirbRunner,
                 ]
 
@@ -838,6 +843,7 @@ def scan_target(
                         _tool_event(
                             name,
                             ingest_result.outcome.value,
+                            output=ingest_result.output_preview or None,
                             nodes=len(result_nodes),
                             detail=ingest_result.detail,
                         )
@@ -860,6 +866,8 @@ def scan_target(
                     _tool_event(
                         name,
                         run_result.outcome.value,
+                        command=" ".join(run_result.command) if run_result.command else None,
+                        output=run_result.output_preview or None,
                         nodes=len(result_nodes),
                         detail=run_result.detail,
                     )
