@@ -690,11 +690,59 @@ discipline as C1/C2 applied per sub-item.**
 - Whole tree: **1325 passed, 0 failed, 16 skipped** — identical count to
   before this slice (pure refactor: no tests added or removed net, several
   updated in place).
-- **Remaining in Phase D:** W3's other half, the 20-client-class collapse
-  (`OpenAI*Client`/protocol pairs across `report/llm_report.py`,
-  `recon/{vuln_tuning,live_tuning,payload_tuning}.py`, `llm/planner.py` — one
-  shared `propose_json(prompt, validator)` helper instead of ~10 near-
-  duplicate classes, now that C2 already deleted their Anthropic siblings).
+**Status (2026-08-31): Phase D closed — W3's client-class collapse skipped
+by user decision, not attempted.**
+- Investigated before asking: after C2's cut, ~17 classes remain across 7
+  modules (8 `Protocol`s + 8 `OpenAI*Client` implementations + the shared
+  base). Each `propose()` method has a genuinely different signature and
+  prompt per domain (recon tuning needs different inputs than vuln
+  targeting than payload choice than reporting) — that variation is the
+  actual reasoning content, not duplication. The only literally-shared code
+  is the `__init__`/`self._client.propose_json(...)` glue: ~4-6 lines per
+  class, ~40 LOC total to collapse. The ledger's "20 client classes
+  reimplement prompt→JSON→validate" framing overstated the real win — the
+  "validate" step already lives in one separate function per domain
+  (`_validate_choice` etc.), never duplicated inside the client classes.
+  Flagged the size/value mismatch (small mechanical win, real risk to
+  already-working, already-tested LLM-calling glue in 7 files) rather than
+  either pushing it through or silently dropping it. User chose to skip it.
+- Phase D's original gate ("full suite green; net LOC down; invariants
+  intact; a planner/provider failure degrades, never aborts") is honestly
+  mixed once measured against the actual work done, because the user's own
+  priorities evolved mid-phase (the coverage-completeness insert was
+  explicitly added between Phases C and D, and W5/D3 was explicitly chosen
+  as a real feature build, not a cut): full suite green throughout, always
+  — never once left red across 20 commits. Invariants intact — nothing in
+  Phase D touched role boundaries or the run_oracle-only Finding gate; the
+  reconfirm seam explicitly reinforces it (a claim becomes a Finding only
+  via a fresh `run_oracle` verdict). A provider failure still degrades where
+  it always did (report/tuning call sites) and still fails loud where it
+  always did by design (the planner itself — no silent fallback, matching
+  CLAUDE.md's "LLM drives orchestration"); C2 replaced an unhandled SDK
+  `ImportError` crash with a clean, already-handled `RuntimeError` in both
+  cases. "Net LOC down" is true for the cut-only sub-items (C2 -334, C4
+  -60, W2 -51 net in `src/`, verified per-commit via `git show --shortstat`)
+  but not for Phase D as a whole, since W5/D3 was
+  a deliberate ~250 LOC feature addition, not cleanup — measuring the whole
+  phase against a cut-forward bar that predates the user's own
+  feature-wiring decisions would be dishonest bookkeeping, not a real gate
+  failure.
+- Phase D scorecard: **C1** wired (GUI toggle) rather than cut — verified
+  the code was a real, tested, deliberately-flag-gated feature, not dead.
+  **C2** cut (6 dead `AnthropicClient` classes, closed a genuine live crash
+  trap). **C4** cut 4 of 5 items (`RunConfig`/`VulnTuningChoice` aliases,
+  `_wordlist.py` dead branches, `expand_encoding_variants`); kept
+  `build_phase_summary` (re-flagged, not silently dropped — real tests
+  still exercise its fallback branch even though the one production caller
+  never hits it). **W2** done (removed the unconsumed
+  `profile`/`vuln_classes`/`payload_refs` plan-schema ceremony, plus a
+  second uncached corpus-load it was hiding). **W5/D3** done, narrow MVP
+  (wired the signal-gated reconfirm seam for 4 of ~10
+  vuln_class/oracle pairs, per the user's explicit scoping choice). **W3**
+  (client collapse) skipped, per the user's explicit choice, once its real
+  value/risk was measured rather than assumed from the ledger. All six
+  coverage-completeness classes plus every Phase D change landed in 20
+  clean, individually-tested commits with zero net test regressions.
 
 ### Phase E — Payload corpus hygiene
 *(read R7 corpora, R8 wordlists.)*
