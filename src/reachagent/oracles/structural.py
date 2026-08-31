@@ -106,6 +106,12 @@ class StructuralCheckType(StrEnum):
     # one new check type inside the existing STRUCTURAL family (§7-authorized
     # "new evidence type inside an existing family" pattern; six families held).
     SSRF_RESPONSE = "ssrf_response"
+    # SUBDOMAIN_TAKEOVER — a Host's DNS CNAME points at a third-party service
+    # that no longer claims it; a GET to the CNAME target returns one of that
+    # service's own well-known "unclaimed" markers. Same sentinel-in-body shape
+    # as PATH_TRAVERSAL/UNION_EXTRACTION/SSRF_RESPONSE — one more evidence type
+    # inside the existing STRUCTURAL family, six families held.
+    SUBDOMAIN_TAKEOVER = "subdomain_takeover"
 
 
 @dataclass(frozen=True)
@@ -174,6 +180,16 @@ class StructuralEvidence:
       first response to the second, unrelated request → violation. Marker in
       ``response_body`` only → per-request reflection, no cache involved →
       denied.
+
+    SUBDOMAIN_TAKEOVER:
+      ``probe_status``: the CNAME target's response status (must be 2xx —
+      most "unclaimed service" pages themselves render successfully; a 4xx/5xx
+      proves nothing about claim state). ``sentinel``: one service's known
+      "unclaimed" body marker (e.g. an S3 ``NoSuchBucket`` error page, a
+      GitHub Pages "there isn't a GitHub Pages site here" message).
+      ``response_body``: the CNAME target's response body. Sentinel present in
+      a successful response → the service genuinely reports itself unclaimed
+      → violation.
 
     ``evidence_ref``: short, secret-free provenance handle (§13).
     """
@@ -396,6 +412,15 @@ def decide(evidence: StructuralEvidence) -> FindingStatus:
             return FindingStatus.CONFIRMED_DENIED
         return FindingStatus.INCONCLUSIVE
 
+    if evidence.check_type is StructuralCheckType.SUBDOMAIN_TAKEOVER:
+        if (
+            200 <= evidence.probe_status < 300
+            and evidence.sentinel
+            and evidence.sentinel in evidence.response_body
+        ):
+            return FindingStatus.CONFIRMED_VIOLATION
+        return FindingStatus.INCONCLUSIVE
+
     if evidence.check_type is StructuralCheckType.CSRF_MISSING_PROTECTION:
         samesite = _cookie_samesite(evidence.set_cookie)
         # SameSite=None ships the session cookie cross-site; with no token
@@ -426,6 +451,7 @@ def _reason(evidence: StructuralEvidence, status: FindingStatus) -> str:
         StructuralCheckType.OPEN_REDIRECT: "redirect_target_not_attacker_controlled",
         StructuralCheckType.CSRF_MISSING_PROTECTION: "same_site_or_token_control_unknown",
         StructuralCheckType.WEB_CACHE_POISONING: "marker_not_replayed_from_cache",
+        StructuralCheckType.SUBDOMAIN_TAKEOVER: "unclaimed_service_marker_not_observed",
     }.get(evidence.check_type, "unknown_structural_check")
     return decision_reason(OracleMechanism.STRUCTURAL, status, detail)
 

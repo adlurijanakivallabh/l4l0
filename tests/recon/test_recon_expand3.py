@@ -36,6 +36,12 @@ def _scope() -> ScopeGuard:
 _NAABU_TEXT = "1.2.3.4:80\n1.2.3.4:443\n1.2.3.4:8080\n"
 _NAABU_JSON = json.dumps({"host": "93.184.216.34", "port": 443}) + "\n"
 _DNSX = "api.target.test [10.0.0.1]\nmail.target.test [10.0.0.2, 10.0.0.3]\n# comment\n"
+# Real dnsx output once -cname joins -a (both type flags): one tagged line
+# per (hostname, record type) instead of the untagged single-flag shape above.
+_DNSX_WITH_CNAME = (
+    "assets.target.test [A] [10.0.0.9]\n"
+    "forgotten.target.test [CNAME] [forgotten.s3.amazonaws.com]\n"
+)
 _SHUFFLEDNS = "dev.target.test\nstaging.target.test\n# noise\ndev.target.test\n"
 _WAYBACK = "https://target.test/admin\nhttps://target.test/api/users?id=1\nhttps://target.test/\n"
 _GAU = "https://target.test/login\nhttps://sub.target.test/search?q=x\nnot-a-url\n"
@@ -89,6 +95,19 @@ def test_dnsx_resolved() -> None:
     hosts = {h.hostname: h for _, h in g.hosts()}
     assert "api.target.test" in hosts
     assert hosts["api.target.test"].address == "10.0.0.1"
+
+
+def test_dnsx_captures_cname_target() -> None:
+    """dnsx -cname output (type-tagged lines) resolves a Host's CNAME fact —
+    the input a dangling-CNAME subdomain-takeover check needs."""
+    g = ReachabilityGraph()
+    runner = DnsxRunner(graph=g, scope=_scope())
+    result = runner.ingest(_TARGET, _DNSX_WITH_CNAME)
+    assert result.outcome is ReconOutcome.INGESTED
+    hosts = {h.hostname: h for _, h in g.hosts()}
+    assert hosts["assets.target.test"].address == "10.0.0.9"
+    assert hosts["assets.target.test"].cname is None
+    assert hosts["forgotten.target.test"].cname == "forgotten.s3.amazonaws.com"
 
 
 def test_shuffledns_dedup() -> None:

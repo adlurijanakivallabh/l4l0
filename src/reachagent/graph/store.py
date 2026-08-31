@@ -200,6 +200,7 @@ def _merge_host(existing: Host, incoming: Host) -> Host:
         source=_merge_csv(existing.source, incoming.source),
         technology=_merge_csv(existing.technology, incoming.technology),
         detected_version=existing.detected_version or incoming.detected_version,
+        cname=existing.cname or incoming.cname,
     )
 
 

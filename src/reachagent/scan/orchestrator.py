@@ -78,6 +78,7 @@ ALL_CLASSES: tuple[str, ...] = (
     "csrf_missing_protection",
     "web_cache_poisoning",
     "request_smuggling",
+    "subdomain_takeover",
     "graphql",
     "race",
 )
@@ -1508,6 +1509,93 @@ def run_request_smuggling(
             )
     else:
         _emit(events, "payloads", "not-applicable", "request_smuggling: no CL.TE timing signal")
+    return found
+
+
+# ---------------------------------------------------------------------------
+# Subdomain takeover — dangling-CNAME fingerprint match
+# ---------------------------------------------------------------------------
+
+
+def run_subdomain_takeover(
+    *,
+    graph: ReachabilityGraph,
+    seam: _ValidatorSeam,
+    events: list[ScanEvent],
+    transport: httpx.BaseTransport | None = None,
+) -> list[str]:
+    """Probe dangling CNAME targets for a known "unclaimed service" marker (§7, §10).
+
+    A subdomain's CNAME pointing at a known cloud-service pattern (S3, GitHub
+    Pages, Heroku, ...) is checked with exactly one read-only GET to that CNAME
+    target — a third-party domain the target's OWN DNS configuration points
+    at, never the target itself and never attacker-controlled. That target
+    falls outside the scanned host's own ScopeGuard by construction (the whole
+    point of this class is a name pointing OFF the target's domain), so this
+    deliberately does not go through RequestFirer — the same reasoning that
+    gives ``smuggling/raw_probe.py`` its own dedicated transport outside the
+    firer. Never state-changing (GET only); every probe URL and outcome is
+    narrated into the live event feed since it bypasses the firer's own audit.
+    """
+    from reachagent.subdomain_takeover.detector import (
+        SubdomainTakeoverProbe,
+        SubdomainTakeoverProber,
+        detect_subdomain_takeover,
+        match_fingerprint,
+    )
+
+    found: list[str] = []
+    checked = 0
+    for _node, host in graph.hosts():
+        if not host.cname:
+            continue
+        sentinel = match_fingerprint(host.cname)
+        if sentinel is None:
+            continue
+        checked += 1
+        cname = host.cname
+        url = f"https://{cname}/"
+        _emit(
+            events,
+            "payloads",
+            "step",
+            f"subdomain_takeover: probing CNAME target {cname}",
+            path=host.hostname or host.address,
+        )
+
+        def _fire_probe(_url: str = url) -> SubdomainTakeoverProbe:
+            try:
+                with httpx.Client(
+                    transport=transport, timeout=10.0, follow_redirects=True
+                ) as client:
+                    response = client.get(_url)
+                return SubdomainTakeoverProbe(status=response.status_code, body=response.text)
+            except httpx.HTTPError:
+                return SubdomainTakeoverProbe(status=0, body="")
+
+        prober = SubdomainTakeoverProber(fire_probe=_fire_probe, oracle_runner=seam.run)
+        result = detect_subdomain_takeover(
+            prober, sentinel=sentinel, evidence_ref=f"orchestrator/subdomain_takeover/{cname}"
+        )
+        if result.confirmed and seam.last is not None:
+            nid = seam.write("subdomain_takeover", seam.last, severity="high")
+            if nid:
+                found.append(nid)
+                _emit(
+                    events,
+                    "payloads",
+                    "finding",
+                    f"subdomain takeover — {cname} reports itself unclaimed",
+                    path=host.hostname or host.address,
+                )
+
+    if checked == 0:
+        _emit(
+            events,
+            "payloads",
+            "not-applicable",
+            "subdomain_takeover: no CNAME matched a known unclaimed-service pattern",
+        )
     return found
 
 
@@ -2975,6 +3063,13 @@ def scan_all_classes(
         events=events_out,
     )
     check_cancel(cancel_check)
+    run_subdomain_takeover(
+        graph=graph,
+        seam=seam,
+        events=events_out,
+        transport=transport,
+    )
+    check_cancel(cancel_check)
     run_jwt_forgery(
         graph=graph,
         firer=firer,
@@ -3102,6 +3197,7 @@ def scan_all_classes(
         "open_redirect",
         "web_cache_poisoning",
         "request_smuggling",
+        "subdomain_takeover",
         "xxe",
         # xss_dom IS driven (run_xss_dom above) — this set was stale, causing a
         # contradictory "no discovered precondition" event on every all-class

@@ -182,6 +182,7 @@ class Host:
     source: str | None = None
     technology: str | None = None
     detected_version: str | None = None
+    cname: str | None = None  # a DNS CNAME target — a takeover surface when it's dangling
 
 
 @dataclass
