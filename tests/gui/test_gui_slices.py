@@ -136,7 +136,7 @@ def test_scan_endpoint_passes_checked_tuning_flags_as_env_overrides(
         },
     )
     assert response.status_code == 200
-    env_overrides = captured[-1]
+    env_overrides = captured[-2]
     assert env_overrides["REACHAGENT_SURFACE_TUNING"] == "1"
     assert env_overrides["REACHAGENT_SIGNAL_TUNING"] == "1"
     assert "REACHAGENT_TRANSPORT_TUNING" not in env_overrides
@@ -163,7 +163,7 @@ def test_scan_endpoint_omits_tuning_flags_when_nothing_checked(
         },
     )
     assert response.status_code == 200
-    env_overrides = captured[-1]
+    env_overrides = captured[-2]
     assert not any(k.endswith("_TUNING") for k in env_overrides)
     _scans.pop(response.json()["scan_id"], None)
 
@@ -235,3 +235,134 @@ def test_report_export_requires_stored_phase4_for_narrative_formats() -> None:
             assert response.json()["error"] == "report not ready"
     finally:
         _scans.pop(scan_id, None)
+
+
+# === Chat-intent extraction (/api/parse-intent) ==============================
+
+
+def test_parse_intent_requires_a_message() -> None:
+    response = TestClient(app).post("/api/parse-intent", json={"message": ""})
+    assert response.status_code == 400
+
+
+def test_parse_intent_degrades_gracefully_with_no_provider_configured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(gui_app, "_load_providers", lambda: [])
+    monkeypatch.setattr("reachagent.llm.runtime.selected_provider", lambda: "")
+    response = TestClient(app).post(
+        "/api/parse-intent", json={"message": "pentest https://demo.example"}
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["extracted"] is False
+    assert body["credentials"] == []
+    assert body["goal"] == "pentest https://demo.example"
+
+
+def test_parse_intent_extracts_and_normalizes_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
+    _stub_named_provider(monkeypatch)
+
+    class _FakeClient:
+        def propose_json(self, prompt: str, *, max_tokens: int = 600) -> dict[str, object]:
+            return {
+                "target": "https://demo.example",
+                "in_scope": "demo.example, api.demo.example",
+                "credentials": [
+                    {"username": "admin", "password": "admin123", "role": "ADMIN"},
+                    {"username": "", "password": "dropped-no-username"},
+                    {"username": "no-password"},
+                    "not-a-dict",
+                ],
+                "goal": "find authorization bugs",
+            }
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(gui_app, "_build_llm_client", lambda *_a, **_k: _FakeClient())
+    response = TestClient(app).post(
+        "/api/parse-intent",
+        json={
+            "message": "pentest this site, admin/admin123",
+            "llm_provider": "named:unit-provider",
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["extracted"] is True
+    assert body["target"] == "https://demo.example"
+    assert body["in_scope"] == "demo.example, api.demo.example"
+    assert body["goal"] == "find authorization bugs"
+    assert body["credentials"] == [{"username": "admin", "password": "admin123", "role": "admin"}]
+
+
+def test_parse_intent_degrades_on_malformed_llm_reply(monkeypatch: pytest.MonkeyPatch) -> None:
+    _stub_named_provider(monkeypatch)
+
+    class _BoomClient:
+        def propose_json(self, prompt: str, *, max_tokens: int = 600) -> dict[str, object]:
+            raise ValueError("no JSON object in model response")
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(gui_app, "_build_llm_client", lambda *_a, **_k: _BoomClient())
+    response = TestClient(app).post(
+        "/api/parse-intent",
+        json={"message": "pentest this site", "llm_provider": "named:unit-provider"},
+    )
+    assert response.status_code == 200
+    assert response.json()["extracted"] is False
+
+
+# === Inline chat-provided identities (/api/scan) ==============================
+
+
+def test_scan_endpoint_forwards_inline_identities(monkeypatch: pytest.MonkeyPatch) -> None:
+    _stub_named_provider(monkeypatch)
+    captured: list[object] = []
+
+    async def capturing_scan(*args: object, **_kwargs: object) -> None:
+        captured.extend(args)
+
+    monkeypatch.setattr(gui_app, "_run_scan", capturing_scan)
+    response = TestClient(app).post(
+        "/api/scan",
+        json={
+            "target": "https://demo.example",
+            "in_scope": "demo.example",
+            "use_llm": True,
+            "llm_provider": "named:unit-provider",
+            "identities": [{"username": "admin", "password": "admin123", "role": "admin"}],
+        },
+    )
+    assert response.status_code == 200
+    identities_inline = captured[-1]
+    assert identities_inline == [{"username": "admin", "password": "admin123", "role": "admin"}]
+    _scans.pop(response.json()["scan_id"], None)
+
+
+def test_scan_endpoint_omits_identities_inline_when_not_a_list(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _stub_named_provider(monkeypatch)
+    captured: list[object] = []
+
+    async def capturing_scan(*args: object, **_kwargs: object) -> None:
+        captured.extend(args)
+
+    monkeypatch.setattr(gui_app, "_run_scan", capturing_scan)
+    response = TestClient(app).post(
+        "/api/scan",
+        json={
+            "target": "https://demo.example",
+            "in_scope": "demo.example",
+            "use_llm": True,
+            "llm_provider": "named:unit-provider",
+            "identities": "not-a-list",
+        },
+    )
+    assert response.status_code == 200
+    assert captured[-1] is None
+    _scans.pop(response.json()["scan_id"], None)

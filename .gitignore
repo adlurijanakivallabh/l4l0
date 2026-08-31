@@ -17,3 +17,4 @@ reachagentchat/
 config/providers.json
 .playwright-cli/
 output/playwright/
+.playwright-mcp/

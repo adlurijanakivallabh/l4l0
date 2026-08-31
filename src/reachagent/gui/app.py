@@ -328,17 +328,19 @@ def _validate_named_provider(config: dict[str, str]) -> None:
     client.close()
 
 
-@app.post("/api/scan")
-async def start_scan(payload: dict[str, Any]) -> JSONResponse:
-    target = str(payload.get("target", "") or "").strip()
-    in_scope = str(payload.get("in_scope", "") or "").strip() or target
-    out_of_scope = _opt_str(payload.get("out_of_scope"))
-    use_llm = payload.get("use_llm") is True
+def _resolve_llm_provider(
+    payload: dict[str, Any],
+) -> tuple[str | None, dict[str, str] | None, JSONResponse | None]:
+    """Resolve which LLM provider config a request should use.
+
+    A single saved provider is the unambiguous GUI default. Callers send an
+    empty value when the browser still has "Server default" selected; an
+    empty provider is now a clear "no provider configured" error, not a
+    silent default, so try the single-saved-provider shortcut first. Returns
+    ``(llm_provider, named_overrides, error_response)`` — ``error_response``
+    is non-``None`` only for an explicitly-named but unknown provider id.
+    """
     llm_provider_raw = _opt_str(payload.get("llm_provider"))
-    # A single saved provider is the unambiguous GUI default.  The launch form
-    # sends an empty value when the browser still has "Server default" selected;
-    # an empty provider is now a clear "no provider configured" error, not a
-    # silent default, so try the single-saved-provider shortcut first.
     if not llm_provider_raw:
         from reachagent.llm.runtime import selected_provider
 
@@ -346,15 +348,20 @@ async def start_scan(payload: dict[str, Any]) -> JSONResponse:
             saved = [p for p in _load_providers() if str(p.get("id", "")).strip()]
             if len(saved) == 1:
                 llm_provider_raw = f"named:{saved[0]['id']}"
-    llm_provider: str | None = None
-    named_overrides: dict[str, str] | None = None
     if llm_provider_raw and llm_provider_raw.startswith("named:"):
         named_id = llm_provider_raw[len("named:") :]
         entry = next((p for p in _load_providers() if p.get("id") == named_id), None)
         if entry is None:
-            return JSONResponse(
-                {"error": f"unknown provider id {named_id!r}", "code": "llm_provider_unavailable"},
-                status_code=400,
+            return (
+                None,
+                None,
+                JSONResponse(
+                    {
+                        "error": f"unknown provider id {named_id!r}",
+                        "code": "llm_provider_unavailable",
+                    },
+                    status_code=400,
+                ),
             )
         named_overrides = {
             "REACHAGENT_LLM_PROVIDER": entry["provider"],
@@ -363,9 +370,106 @@ async def start_scan(payload: dict[str, Any]) -> JSONResponse:
             "REACHAGENT_LLM_MODEL": entry.get("model", ""),
             "REACHAGENT_LLM_API_STYLE": entry.get("api_style", "chat_completions"),
         }
-        llm_provider = entry["provider"]
-    else:
-        llm_provider = llm_provider_raw
+        return entry["provider"], named_overrides, None
+    return llm_provider_raw, None, None
+
+
+def _build_llm_client(llm_provider: str | None, named_overrides: dict[str, str] | None) -> Any:
+    """Build a ready-to-use LLM client from a resolved provider selection."""
+    from reachagent.llm.client import OpenAICompatibleClient
+
+    if named_overrides is not None:
+        return OpenAICompatibleClient(
+            provider=named_overrides["REACHAGENT_LLM_PROVIDER"],
+            api_key=named_overrides.get("REACHAGENT_LLM_API_KEY") or None,
+            base_url=named_overrides.get("REACHAGENT_LLM_BASE_URL") or None,
+            model=named_overrides.get("REACHAGENT_LLM_MODEL") or None,
+            api_style=named_overrides.get("REACHAGENT_LLM_API_STYLE") or None,
+            timeout=30.0,
+        )
+    return OpenAICompatibleClient(provider=llm_provider, timeout=30.0)
+
+
+_INTENT_PROMPT = """Extract a penetration-test request from the operator's message into strict JSON.
+
+Message:
+\"\"\"
+{message}
+\"\"\"
+
+Return ONLY a JSON object with exactly these keys, no prose, no markdown fences:
+- "target": the base URL or hostname to test, e.g. "https://example.com" (empty string if none mentioned)
+- "in_scope": comma-separated additional in-scope hosts beyond target (empty string if none)
+- "credentials": a JSON list of objects {{"username": "...", "password": "...", "role": "user" or "admin"}} for every login/credential pair mentioned (empty list if none)
+- "goal": one short sentence restating what the operator wants tested, in your own words (empty string if unclear)
+"""
+
+
+@app.post("/api/parse-intent")
+def parse_intent(payload: dict[str, Any]) -> JSONResponse:
+    """Best-effort free-text → ``{target, in_scope, credentials, goal}`` proposal.
+
+    Never executes anything — this only proposes fields for the operator to
+    review/edit in the chat UI before a scan is actually started via
+    ``POST /api/scan``. An unconfigured provider or a flaky/malformed LLM
+    reply degrades to an unextracted proposal (``extracted: false``), never
+    a hard error the chat flow can't recover from.
+    """
+    message = str(payload.get("message", "") or "").strip()
+    if not message:
+        return JSONResponse({"error": "message required"}, status_code=400)
+    empty = {"target": "", "in_scope": "", "credentials": [], "goal": message, "extracted": False}
+    llm_provider, named_overrides, err = _resolve_llm_provider(payload)
+    if err is not None:
+        return err
+    try:
+        client = _build_llm_client(llm_provider, named_overrides)
+    except Exception:  # noqa: BLE001 — no usable provider → unextracted proposal
+        return JSONResponse(empty)
+    try:
+        result = client.propose_json(_INTENT_PROMPT.format(message=message), max_tokens=600)
+    except Exception:  # noqa: BLE001 — a flaky/malformed LLM reply must not break the chat flow
+        return JSONResponse(empty)
+    finally:
+        client.close()
+    credentials: list[dict[str, str]] = []
+    raw_credentials = result.get("credentials")
+    if isinstance(raw_credentials, list):
+        for row in raw_credentials[:20]:
+            if not isinstance(row, dict):
+                continue
+            username = str(row.get("username", "") or "").strip()
+            password = str(row.get("password", "") or "").strip()
+            if not username or not password:
+                continue
+            role = str(row.get("role", "") or "user").strip().lower()
+            credentials.append(
+                {
+                    "username": username,
+                    "password": password,
+                    "role": role if role in ("user", "admin") else "user",
+                }
+            )
+    return JSONResponse(
+        {
+            "target": str(result.get("target", "") or "").strip(),
+            "in_scope": str(result.get("in_scope", "") or "").strip(),
+            "credentials": credentials,
+            "goal": str(result.get("goal", "") or "").strip() or message,
+            "extracted": True,
+        }
+    )
+
+
+@app.post("/api/scan")
+async def start_scan(payload: dict[str, Any]) -> JSONResponse:
+    target = str(payload.get("target", "") or "").strip()
+    in_scope = str(payload.get("in_scope", "") or "").strip() or target
+    out_of_scope = _opt_str(payload.get("out_of_scope"))
+    use_llm = payload.get("use_llm") is True
+    llm_provider, named_overrides, err = _resolve_llm_provider(payload)
+    if err is not None:
+        return err
     operator_prompt = _opt_str(payload.get("prompt"))
     try:
         max_attempts = max(1, min(int(payload.get("max_attempts", 20)), 200))
@@ -374,6 +478,12 @@ async def start_scan(payload: dict[str, Any]) -> JSONResponse:
             {"error": "max_attempts must be an integer", "code": "invalid_input"}, status_code=400
         )
     identities_path = _opt_str(payload.get("identities_path"))
+    identities_inline_raw = payload.get("identities")
+    identities_inline = (
+        [row for row in identities_inline_raw if isinstance(row, dict)][:20]
+        if isinstance(identities_inline_raw, list)
+        else None
+    ) or None
     # Opt-in recon tuning layers (surface priority / signal tools / transport) —
     # built and tested, but flag-gated off by default (§9); these three checkboxes
     # are the only place a scan can turn them on, since named_overrides above is
@@ -441,6 +551,7 @@ async def start_scan(payload: dict[str, Any]) -> JSONResponse:
             llm_provider,
             operator_prompt,
             env_overrides,
+            identities_inline,
         )
     )
     return JSONResponse({"scan_id": scan_id, "status": "queued", "lifecycle": "queued"})
@@ -511,10 +622,22 @@ def cancel_scan(scan_id: str) -> JSONResponse:
     return JSONResponse(_scan_summary(scan_id, data))
 
 
-def _load_identities(path: str | None) -> tuple[Any | None, str | None]:
-    """Seed an IdentityStore from a GUI-provided secrets YAML (or env); ``(None, None)`` if unset."""
+def _load_identities(
+    path: str | None, inline: list[dict[str, Any]] | None = None
+) -> tuple[Any | None, str | None]:
+    """Seed an IdentityStore from GUI-provided inline rows, a secrets YAML, or env.
+
+    ``(None, None)`` means no identities configured — a valid unauthenticated scan.
+    Inline rows (typed straight into the chat, never written to disk) take
+    priority over a secrets-file path when both are somehow present.
+    """
     from reachagent.identity.store import IdentityStore
 
+    if inline:
+        try:
+            return IdentityStore.from_identities_list(inline), None
+        except Exception as exc:  # noqa: BLE001 — bad inline identities must not kill the scan
+            return None, f"identities error: {exc}"
     if path:
         try:
             return IdentityStore.from_secrets_file(path), None
@@ -537,6 +660,7 @@ async def _run_scan(
     llm_provider: str | None = None,
     operator_prompt: str | None = None,
     env_overrides: dict[str, str] | None = None,
+    identities_inline: list[dict[str, Any]] | None = None,
 ) -> None:
     """``env_overrides`` merges LLM-provider config and the opt-in tuning-flag
     checkboxes into one plain os.environ save/set/restore for the scan's duration.
@@ -562,6 +686,7 @@ async def _run_scan(
                 max_attempts,
                 identities_path,
                 operator_prompt,
+                identities_inline,
             )
     finally:
         for key, old_value in saved.items():
@@ -580,9 +705,10 @@ async def _run_scan_body(
     max_attempts: int,
     identities_path: str | None,
     operator_prompt: str | None,
+    identities_inline: list[dict[str, Any]] | None = None,
 ) -> None:
     try:
-        identities, id_error = _load_identities(identities_path)
+        identities, id_error = _load_identities(identities_path, identities_inline)
         if id_error:
             _scan_update(
                 scan_id,

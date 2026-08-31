@@ -13,7 +13,7 @@ the owning identity's isolated store, so secrets never enter the graph.
 from __future__ import annotations
 
 import os
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -363,6 +363,24 @@ class IdentityStore:
             store.add(Credential.from_mapping(name, row), provenance=Provenance.SEEDED)
         if not store._credentials:
             raise IdentityConfigError("secrets file listed no identities")
+        return store
+
+    @classmethod
+    def from_identities_list(cls, rows: Iterable[Mapping[str, str]]) -> IdentityStore:
+        """Seed identities from an in-memory list of rows (GUI inline credentials, §10).
+
+        Same shape as a secrets-file row; ``role`` defaults to ``"user"`` when
+        omitted since a free-text extraction rarely states one explicitly.
+        """
+        store = cls()
+        for row in rows:
+            name = row.get("name") or row.get("username")
+            if not name:
+                raise IdentityConfigError("each identity entry needs a 'name' or 'username'")
+            data = {**row, "role": row.get("role") or "user"}
+            store.add(Credential.from_mapping(name, data))
+        if not store._credentials:
+            raise IdentityConfigError("identities list is empty")
         return store
 
     def add(

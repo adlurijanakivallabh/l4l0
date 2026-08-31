@@ -139,3 +139,22 @@ def test_seeds_from_local_secrets_file(tmp_path: Path) -> None:
     assert set(store.names()) == {"user_a", "admin"}
     assert store.identity("admin").auth_state is AuthState.ADMIN
     assert store.credential("user_a").username == "alice"
+
+
+def test_seeds_from_inline_identities_list() -> None:
+    store = IdentityStore.from_identities_list(
+        [{"username": "alice", "password": "alice-secret", "role": "admin"}]
+    )
+    assert store.names() == ["alice"]
+    assert store.identity("alice").auth_state is AuthState.ADMIN
+    assert store.credential("alice").password == "alice-secret"
+
+
+def test_inline_identities_role_defaults_to_user() -> None:
+    store = IdentityStore.from_identities_list([{"username": "bob", "password": "x"}])
+    assert store.identity("bob").auth_state is AuthState.USER
+
+
+def test_inline_identities_empty_list_raises() -> None:
+    with pytest.raises(IdentityConfigError):
+        IdentityStore.from_identities_list([])
