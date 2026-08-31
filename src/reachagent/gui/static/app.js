@@ -323,7 +323,21 @@ document.querySelectorAll(".landing-chip").forEach((chip) => {
   });
 });
 
-$("new-chat").onclick = showLanding;
+function openMobileSidebar() {
+  $("sidebar").classList.add("open");
+  $("sidebar-backdrop").classList.add("open");
+}
+function closeMobileSidebar() {
+  $("sidebar").classList.remove("open");
+  $("sidebar-backdrop").classList.remove("open");
+}
+$("mobile-menu-btn").onclick = openMobileSidebar;
+$("sidebar-backdrop").addEventListener("click", closeMobileSidebar);
+
+$("new-chat").onclick = () => {
+  closeMobileSidebar();
+  showLanding();
+};
 
 // ---------------------------------------------------------------------------
 // Live tracking: fast /events poll (terminal) + slower full-scan poll (findings/etc.)
@@ -834,6 +848,7 @@ async function renderConvoList() {
 }
 
 async function openExistingConversation(scanId) {
+  closeMobileSidebar();
   showConversation(scanId);
   try {
     const r = await fetch("/api/scan/" + scanId, { cache: "no-store" });
