@@ -76,6 +76,7 @@ ALL_CLASSES: tuple[str, ...] = (
     "cors_misconfig",
     "open_redirect",
     "csrf_missing_protection",
+    "web_cache_poisoning",
     "graphql",
     "race",
 )
@@ -1356,6 +1357,96 @@ def run_open_redirect(
 
     if not found:
         _emit(events, "payloads", "not-applicable", "open_redirect: no redirect param confirmed")
+    return found
+
+
+# ---------------------------------------------------------------------------
+# Web cache poisoning — unkeyed-header reflection replayed from a shared cache
+# ---------------------------------------------------------------------------
+
+_UNKEYED_HEADER = "X-Forwarded-Host"
+
+
+def run_cache_poisoning(
+    *,
+    graph: ReachabilityGraph,
+    firer: RequestFirer,
+    base_url: str,
+    identity: str,
+    auth_headers: Mapping[str, str],
+    seam: _ValidatorSeam,
+    events: list[ScanEvent],
+) -> list[str]:
+    """Inject a run-unique marker into an unkeyed header; confirm via replay
+    into an independent, header-free re-read of the same cache-busted URL.
+
+    Read-only GETs (§10). Every candidate URL carries its own run-unique
+    cache-buster query param, so a poisoned entry only ever exists at a URL
+    this run itself minted — no other visitor can ever request it. Reuses
+    ``cachepoisoning/detector.py`` (no inline oracle wiring).
+    """
+    from reachagent.cachepoisoning.detector import (
+        CachePoisoningProbe,
+        CachePoisoningProber,
+        detect_cache_poisoning,
+    )
+
+    targets: list[str] = []
+    for _, ep in graph.endpoints():
+        if ep.method == "GET" and ep.path not in targets:
+            targets.append(ep.path)
+    targets = (["/"] + targets)[:5]
+    found: list[str] = []
+
+    for path in targets:
+        cache_buster = uuid.uuid4().hex[:12]
+        marker = f"reachagent-cache-poison-{uuid.uuid4().hex[:12]}"
+        url = f"{base_url.rstrip('/')}{path}?_rachk={cache_buster}"
+        label = f"cache_poisoning {path}"
+
+        def _fire_probe(
+            _url: str = url, _label: str = label, _marker: str = marker
+        ) -> CachePoisoningProbe:
+            poison_headers = dict(auth_headers)
+            poison_headers[_UNKEYED_HEADER] = _marker
+            poisoned = _fire_readonly(
+                firer, identity, "GET", _url, events=events, label=_label, headers=poison_headers
+            )
+            if poisoned is None:
+                return CachePoisoningProbe()
+            reread = _fire_readonly(
+                firer,
+                identity,
+                "GET",
+                _url,
+                events=events,
+                label=f"{_label}/reread",
+                headers=auth_headers,
+            )
+            return CachePoisoningProbe(
+                poisoned_status=poisoned.status_code,
+                poisoned_body=poisoned.body.decode("utf-8", errors="replace"),
+                reread_body=reread.body.decode("utf-8", errors="replace") if reread else "",
+            )
+
+        prober = CachePoisoningProber(fire_probe=_fire_probe, marker=marker, oracle_runner=seam.run)
+        result = detect_cache_poisoning(prober, evidence_ref=f"orchestrator/cache_poisoning{path}")
+        if result.confirmed and seam.last is not None:
+            nid = seam.write("web_cache_poisoning", seam.last, severity="medium")
+            if nid:
+                found.append(nid)
+                _emit(
+                    events,
+                    "payloads",
+                    "finding",
+                    f"web cache poisoning — {_UNKEYED_HEADER} replayed from cache",
+                    path=path,
+                )
+
+    if not found:
+        _emit(
+            events, "payloads", "not-applicable", "cache_poisoning: no marker replayed from cache"
+        )
     return found
 
 
@@ -2807,6 +2898,16 @@ def scan_all_classes(
         events=events_out,
     )
     check_cancel(cancel_check)
+    run_cache_poisoning(
+        graph=graph,
+        firer=firer,
+        base_url=base_url,
+        identity=identity,
+        auth_headers=auth_headers,
+        seam=seam,
+        events=events_out,
+    )
+    check_cancel(cancel_check)
     run_jwt_forgery(
         graph=graph,
         firer=firer,
@@ -2932,6 +3033,7 @@ def scan_all_classes(
         "mass_assignment",
         "xss_stored",
         "open_redirect",
+        "web_cache_poisoning",
         "xxe",
         # xss_dom IS driven (run_xss_dom above) — this set was stale, causing a
         # contradictory "no discovered precondition" event on every all-class

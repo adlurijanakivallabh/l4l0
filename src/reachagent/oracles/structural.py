@@ -42,6 +42,19 @@ violations deterministically:
     host. Read-only GET; the firer never follows the redirect (§10 — the
     destination is never actually visited).
 
+  * **WEB_CACHE_POISONING** — an unkeyed request header (e.g. ``X-Forwarded-
+    Host``) is reflected into a cacheable response, and a second, independent
+    GET to the exact same cache-busted URL — sent with no special headers —
+    still carries the injected marker. The marker can only have reached the
+    second request through a shared cache serving the first response back to
+    it; that is the confirmed poisoning. A marker reflected only in the
+    poisoning probe's own response (not the clean re-read) proves per-request
+    reflection with no cache involved — not exploitable, denied. Every probe
+    URL carries a run-unique cache-buster, so a real poisoned cache entry is
+    never created at a URL another visitor could ever request (§10 spirit —
+    no collateral impact on live traffic). Client-side structural class
+    (§5/§7, v1.16).
+
   * **CSRF_MISSING_PROTECTION** — a *structural precondition* for CSRF, not a
     confirmed exploit. Confirming a real CSRF would require firing a forged
     cross-origin state-change, which violates read-only-first (§10); we do not
@@ -86,6 +99,7 @@ class StructuralCheckType(StrEnum):
     CORS_MISCONFIG = "cors_misconfig"
     OPEN_REDIRECT = "open_redirect"
     CSRF_MISSING_PROTECTION = "csrf_missing_protection"
+    WEB_CACHE_POISONING = "web_cache_poisoning"
     # SSRF_RESPONSE (Task 24) — non-blind SSRF: a cloud-metadata / internal
     # endpoint the server fetched, confirmed by a known metadata response marker
     # (sentinel) in the body. Same sentinel-in-body shape as UNION_EXTRACTION —
@@ -151,6 +165,16 @@ class StructuralEvidence:
       exploit: no forged cross-origin state-change is fired, so read-only-first
       (§10) is preserved.
 
+    WEB_CACHE_POISONING:
+      ``probe_status``: the poisoning probe's response status (must be 2xx).
+      ``sentinel``: the run-unique marker injected into an unkeyed header.
+      ``response_body``: the poisoning probe's own response body. ``reread_
+      response_body``: a second, independent GET to the same cache-busted URL,
+      sent with no special headers. Marker in both → a shared cache served the
+      first response to the second, unrelated request → violation. Marker in
+      ``response_body`` only → per-request reflection, no cache involved →
+      denied.
+
     ``evidence_ref``: short, secret-free provenance handle (§13).
     """
 
@@ -160,6 +184,7 @@ class StructuralEvidence:
     sentinel: str = ""
     union_sentinel: str = ""
     response_body: str = ""
+    reread_response_body: str = ""
     x_frame_options: str = ""
     csp: str = ""
     acao: str = ""
@@ -184,6 +209,7 @@ def _validate_evidence(evidence: StructuralEvidence) -> None:
         "sentinel",
         "union_sentinel",
         "response_body",
+        "reread_response_body",
         "x_frame_options",
         "csp",
         "acao",
@@ -195,7 +221,7 @@ def _validate_evidence(evidence: StructuralEvidence) -> None:
         value = getattr(evidence, name)
         if not isinstance(value, str):
             raise TypeError(f"{name} must be a string")
-        limit = 1_000_000 if name == "response_body" else 16_384
+        limit = 1_000_000 if name in ("response_body", "reread_response_body") else 16_384
         if len(value) > limit:
             raise ValueError(f"{name} exceeds its evidence size limit")
         if any(ord(char) < 32 and char not in "\t\n\r" for char in value):
@@ -355,6 +381,21 @@ def decide(evidence: StructuralEvidence) -> FindingStatus:
             return FindingStatus.CONFIRMED_DENIED
         return FindingStatus.INCONCLUSIVE
 
+    if evidence.check_type is StructuralCheckType.WEB_CACHE_POISONING:
+        if not (200 <= evidence.probe_status < 300) or not evidence.sentinel:
+            return FindingStatus.INCONCLUSIVE
+        reflected = evidence.sentinel in evidence.response_body
+        replayed = evidence.sentinel in evidence.reread_response_body
+        # Marker survived into an independent, header-free re-read of the same
+        # cache-busted URL — only a shared cache could have carried it there.
+        if reflected and replayed:
+            return FindingStatus.CONFIRMED_VIOLATION
+        # Reflected in the poisoning probe's own response but gone on re-read —
+        # per-request reflection, no cache serving it back. Not exploitable.
+        if reflected:
+            return FindingStatus.CONFIRMED_DENIED
+        return FindingStatus.INCONCLUSIVE
+
     if evidence.check_type is StructuralCheckType.CSRF_MISSING_PROTECTION:
         samesite = _cookie_samesite(evidence.set_cookie)
         # SameSite=None ships the session cookie cross-site; with no token
@@ -384,6 +425,7 @@ def _reason(evidence: StructuralEvidence, status: FindingStatus) -> str:
         StructuralCheckType.CORS_MISCONFIG: "credentialed_origin_reflection_absent",
         StructuralCheckType.OPEN_REDIRECT: "redirect_target_not_attacker_controlled",
         StructuralCheckType.CSRF_MISSING_PROTECTION: "same_site_or_token_control_unknown",
+        StructuralCheckType.WEB_CACHE_POISONING: "marker_not_replayed_from_cache",
     }.get(evidence.check_type, "unknown_structural_check")
     return decision_reason(OracleMechanism.STRUCTURAL, status, detail)
 

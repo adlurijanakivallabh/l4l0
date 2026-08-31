@@ -1,9 +1,11 @@
 """Browser taint-tracking shim — DOM XSS source→sink discovery (§7, §9; Task 5).
 
 Installs a JavaScript shim via ``addInitScript`` that hooks common DOM XSS sinks
-(``innerHTML``, ``document.write``, ``eval``, ``location`` assignments) and
-sources (``location.hash``, ``postMessage``) to discover candidate source→sink
-flows systematically, without relying on reflection in HTTP responses.
+(``innerHTML``, ``outerHTML``, ``insertAdjacentHTML``, ``document.write``,
+``eval``, string-argument ``setTimeout``/``setInterval``, ``location``
+assignments) and sources (``location.hash``, ``postMessage``) to discover
+candidate source→sink flows systematically, without relying on reflection in
+HTTP responses.
 
 **EXECUTION_CONFIRMATION oracle is deferred to Task 6 (#24).** This module
 discovers candidates and tags them ``EXECUTION_CONFIRMATION``; the oracle that
@@ -44,7 +46,7 @@ from typing import Protocol, runtime_checkable
 # Taint-tracking shim JavaScript
 # ---------------------------------------------------------------------------
 
-# Installed via addInitScript before page load. Hooks the six most common
+# Installed via addInitScript before page load. Hooks the common
 # DOM XSS sinks and two sources; records each source→sink flow as a JSON
 # object on window.__reachagent_flows so the Python driver can read it back.
 TAINT_SHIM_JS = r"""
@@ -89,6 +91,34 @@ TAINT_SHIM_JS = r"""
     if (window.__reachagent_taint_source) record(window.__reachagent_taint_source, 'eval', v);
     return _origEval(v);
   };
+
+  var _origOuterHTML = Object.getOwnPropertyDescriptor(Element.prototype, 'outerHTML');
+  Object.defineProperty(Element.prototype, 'outerHTML', {
+    set: function(v) {
+      var ts = window.__reachagent_taint_source;
+      if (ts) record(ts, 'outerHTML', v);
+      _origOuterHTML.set.call(this, v);
+    },
+    get: _origOuterHTML.get
+  });
+
+  var _origInsertAdjacentHTML = Element.prototype.insertAdjacentHTML;
+  Element.prototype.insertAdjacentHTML = function(position, v) {
+    var ts = window.__reachagent_taint_source;
+    if (ts) record(ts, 'insertAdjacentHTML', v);
+    return _origInsertAdjacentHTML.call(this, position, v);
+  };
+
+  // setTimeout/setInterval with a string handler implicitly eval it — the
+  // function-handler form (the vast majority of real call sites) is untouched.
+  ['setTimeout', 'setInterval'].forEach(function(name) {
+    var orig = window[name];
+    window[name] = function(handler) {
+      var ts = window.__reachagent_taint_source;
+      if (ts && typeof handler === 'string') record(ts, name, handler);
+      return orig.apply(window, arguments);
+    };
+  });
 
   var _locDesc = Object.getOwnPropertyDescriptor(window, 'location') ||
                  Object.getOwnPropertyDescriptor(Location.prototype, 'href');

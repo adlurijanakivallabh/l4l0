@@ -351,6 +351,7 @@ class PortswiggerResult:
     clean_variant_required: bool = False
     lab_type: str = ""
     mechanism: str = ""
+    skip_reason: str = ""  # why available=False, e.g. a live-probe network failure
     evidence_ref: str = ""
 
     @property
@@ -430,7 +431,7 @@ class Phase3GateResult:
             ]
         )
         if not ps.available:
-            lines.append("SKIPPED — lab credentials not provisioned")
+            lines.append(f"SKIPPED — {ps.skip_reason or 'lab credentials not provisioned'}")
         else:
             lines += [
                 f"Vuln lab confirmed  : {ps.vuln_lab_confirmed} "

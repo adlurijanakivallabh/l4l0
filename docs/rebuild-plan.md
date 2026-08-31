@@ -948,6 +948,123 @@ already satisfied, the E2E addition deferred as a documented gap.**
   skipped; net LOC down vs. v1; release report with exact command/results +
   commit hash.
 
+**Status (2026-08-31): Phase H done — live gates run, one real bug found and
+fixed via a live run, tool-boundary audit clean, plus a follow-on
+generic-coverage pass once the numbers were in front of the user.**
+- **VAmPI live gate — PASSED.** `on_base_url=:5000` (vulnerable) /
+  `off_base_url=:5002` (secure): 100% precision/recall on `bola`,
+  `mass_assignment`, `idor` toggle-ON; 0 findings toggle-OFF.
+- **crAPI live gate — PASSED.** `test_live_crapi_bola_gate` + 7 hermetic
+  tests, 8/8, against the real `reachagent-crapi` compose stack.
+- **Neo4j store-backend-parity — 19/19 passed** (`NEO4J_PASSWORD=
+  reachagent-dev-2026`, a local dev-only credential read from the running
+  container's own env — not a production secret).
+- **Real bug found via the live Juice Shop run, then fixed:** the first clean
+  numeric-gate attempt crashed with an unhandled `httpx.ReadTimeout` from
+  `eval/portswigger_blind_sqli.py`'s `_timing_probe` — a leftover
+  `REACHAGENT_PORTSWIGGER_LIVE=1` session from earlier in this session had
+  expired (the target academy.net lab instance itself returned live `504
+  Gateway Timeout`s once probed). Root cause: `juiceshop.py`'s
+  `_portswigger_result()` ran the optional PortSwigger invariant with no
+  exception guard *after* the primary Juice Shop scan had already completed
+  — a transient failure in that bolt-on invariant crashed the whole process
+  before `gate.report()` ever printed, discarding an already-good Juice Shop
+  measurement. Fixed: wrapped the call in `try/except (httpx.HTTPError,
+  IdentityConfigError)`, degrading to `PortswiggerResult(available=False,
+  skip_reason=...)` — new `skip_reason` field on `PortswiggerResult`
+  (`juiceshop_harness.py`) so the report states the real reason instead of
+  the generic "credentials not provisioned" message. Verified two ways: a
+  scratch mock proving the catch fires on a simulated `ReadTimeout` (deleted
+  after use), and live — rerunning against the actual expired lab produced
+  the real `504`/`ReadTimeout` sequence and the process survived it, unlike
+  the first crash.
+- **Juice Shop clean-container numeric gate — PASSED: 66.7% coverage (6/9),
+  0% FP rate**, matching the documented ceiling exactly. Getting an
+  uncontaminated measurement took two container recreations: the first
+  crashing run had already solved several challenges for real (genuine
+  exploitation, not stale state) before it crashed in the PortSwigger step,
+  so the next attempt's baseline read them as already-solved. Confirmed no
+  Docker volumes are attached (a fresh container has zero persisted state),
+  ruling out multi-week-old contamination.
+- **PortSwigger blind-SQLi lab — expired mid-phase, not re-provisioned.**
+  Confirmed via live `504 Gateway Timeout` responses from the lab itself, not
+  inferred. Re-provisioning needs a human to relaunch the Academy lab
+  instance and copy a fresh session token — left honestly as
+  expired/unmeasured this phase, not skipped by choice.
+- **DVGA — honestly unprovisioned.** No `docker-compose*.yml` and no running
+  container anywhere in this repo/session for it; never brought up.
+- **Tool-boundary audit (fresh, whole-tree, via `tool-boundary-auditor`) —
+  PASS, no violations.** Re-derived from the current files, not from any
+  prior summary: Explorer exposes exactly `fingerprint_parameter`,
+  `get_payloads`, `fire_request`, `classify_response`, `fire_browser` (no
+  `write_finding`/`run_oracle`, including a check that the two words only
+  ever appear as docstring prose, never bound as a callable); Coordinator
+  exposes exactly `query_graph`, `score_and_select`, `check_budget` (zero
+  matches for `write_finding`/`run_oracle`/`fire_request`, not even in
+  prose); Validator is the sole definer of `run_oracle`/`write_finding`/
+  `mark_inconclusive`, and `write_finding` rejects anything that isn't a
+  confirmed `OracleVerdict`. All 11 `*/detector.py` packages plus
+  `sqli/blind_detector.py` route confirmation through the oracle-gateway
+  seam or the MCP tool-name boundary — none import `reachagent.tools.
+  validator` directly.
+- **Whole tree: 1324 passed, 13 skipped, 11 deselected (`not integration`
+  run) / 9 passed, 2 skipped (`integration`-only run) — 0 failed across
+  both.** Skip counts are higher than Phase G's because VAmPI/crAPI/Neo4j
+  containers were deliberately stopped once their gates had already passed
+  (see below), so their live tests correctly self-skip rather than run.
+- **Follow-on: generic vulnerability-coverage pass**, triggered by the user
+  pushing on the Juice Shop 66.7% number and then explicitly redirecting to
+  "detect all types of attacks, not Juice-Shop specific." Investigated
+  *why* the remaining 3/9 Juice Shop challenges are uncredited before
+  touching anything: `localXssChallenge`'s generic DOM-XSS technique already
+  finds a real flow (commit `a6eada8`, reverted in `15d6054`) but Juice
+  Shop's own tracker only credits its one exact hardcoded payload — matching
+  it would mean hardcoding Juice Shop's specific answer, which the harness's
+  own docstring explicitly rejects ("no Juice Shop challenge name appears in
+  this module"). `uploadSizeChallenge`/`uploadTypeChallenge` are worse:
+  `_detect_file_upload` is a no-op because Juice Shop's `/file-upload`
+  returns an identical `204` regardless of validity — zero observable
+  differential exists to build an oracle on. Both are genuine target-specific
+  walls, not engineering gaps, and the user agreed to leave Juice Shop's 6/9
+  as the honest number rather than special-case it. Instead, two real,
+  generic capability upgrades went into the coverage matrix (§5) itself:
+  - **DOM XSS sink list expanded** (Partial, ceiling unchanged but broader):
+    `browser/shim.py`'s taint shim gains four hooks — `outerHTML`,
+    `insertAdjacentHTML`, and string-argument `setTimeout`/`setInterval`
+    (guarded by `typeof handler === 'string'`, so the function-handler form
+    used by the vast majority of real call sites is untouched). Verified
+    against a **real Chromium browser**, not just unit fakes: three new
+    pages + tests added to `test_browser_integration.py`, all passing
+    (5/5 real-browser tests total).
+  - **Web cache poisoning: Weak → Partial, a brand-new class.** New
+    `StructuralCheckType.WEB_CACHE_POISONING` branch in `oracles/
+    structural.py`: an unkeyed header (`X-Forwarded-Host`) injected with a
+    run-unique marker, confirmed only when that marker survives into a
+    *second*, independent, header-free GET to the exact same URL — proof a
+    shared cache replayed the first response to an unrelated request.
+    Reflection with no replay → `CONFIRMED_DENIED` (per-request behavior,
+    not exploitable), not just "inconclusive." Every probe URL carries its
+    own run-unique cache-buster query param, so a genuinely poisoned cache
+    entry can only ever exist at a URL this run itself minted — no real
+    visitor traffic is ever put at risk (§10 spirit, applied to a class the
+    §10 text doesn't literally name). New `cachepoisoning/detector.py`
+    (prober-injection pattern, same shape as `cors`/`openredirect`), wired
+    into `scan_all_classes` as `run_cache_poisoning`, added to `ALL_CLASSES`
+    and `driven_classes`. 13 new hermetic tests (9 oracle/detector-level +
+    4 driver-level, the driver test using a real in-memory simulated cache
+    to prove the replay behavior, not a string assertion).
+  - Both additions are target-agnostic — they improve real-world detection
+    breadth against any target, not Juice Shop's scoreboard specifically,
+    per the user's explicit redirect. No seventh oracle family: the cache
+    check lives inside the existing STRUCTURAL family; six `OracleMechanism`
+    values unchanged (re-verified by the audit above and by
+    `test_six_oracle_families_unchanged`).
+- Docker cleanup per user request: VAmPI, crAPI (+ its mongodb/postgresdb/
+  mailhog/chromadb/api.mypremiumdealership.com dependents), and Neo4j
+  stopped (not removed — all pre-date this session by weeks per `docker ps
+  --format {{.CreatedAt}}`, so no data lost, clean restart later). Only
+  Juice Shop stayed up, since it was the container the active work needed.
+
 ---
 
 ## 4. Decisions (resolved 2026-08-30, before Phase A)

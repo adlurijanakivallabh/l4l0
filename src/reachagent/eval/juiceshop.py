@@ -15,6 +15,8 @@ import argparse
 import os
 import sys
 
+import httpx
+
 from reachagent.eval.juiceshop_ephemeral import (
     EphemeralJuiceshopError,
     run_ephemeral_gate,
@@ -30,6 +32,7 @@ from reachagent.eval.portswigger_blind_sqli import (
     build_configured_runner,
 )
 from reachagent.graph.store import ReachabilityGraph
+from reachagent.identity.store import IdentityConfigError
 from reachagent.tools import validator
 
 _ENV_URL = "REACHAGENT_JUICESHOP_URL"
@@ -37,19 +40,28 @@ _DEFAULT_URL = "http://127.0.0.1:3000"
 
 
 def _portswigger_result() -> PortswiggerResult:
-    """Run optional PortSwigger gate through injected Validator seams."""
-    config = PortswiggerLabConfig.from_env()
-    if not config.enabled:
-        return PortswiggerResult(available=False)
-    graph = ReachabilityGraph()
-    runner = build_configured_runner(
-        graph,
-        oracle_runner=validator.run_oracle,
-        write_finding=lambda finding, verdict: validator.write_finding(graph, finding, verdict),
-    )
-    if runner is None:
-        raise RuntimeError("PortSwigger runner disabled after enabled config validation")
-    return runner.run()
+    """Run optional PortSwigger gate through injected Validator seams.
+
+    A live lab session can expire mid-scan (PortSwigger Academy instances are
+    ephemeral). This invariant is a bolt-on to the primary Juice Shop measurement,
+    so a network failure here must degrade to "not measurable" rather than an
+    unhandled crash that discards an already-completed Juice Shop result.
+    """
+    try:
+        config = PortswiggerLabConfig.from_env()
+        if not config.enabled:
+            return PortswiggerResult(available=False)
+        graph = ReachabilityGraph()
+        runner = build_configured_runner(
+            graph,
+            oracle_runner=validator.run_oracle,
+            write_finding=lambda finding, verdict: validator.write_finding(graph, finding, verdict),
+        )
+        if runner is None:
+            raise RuntimeError("PortSwigger runner disabled after enabled config validation")
+        return runner.run()
+    except (httpx.HTTPError, IdentityConfigError) as exc:
+        return PortswiggerResult(available=False, skip_reason=f"live probe failed: {exc}")
 
 
 def _parser() -> argparse.ArgumentParser:

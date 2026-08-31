@@ -44,6 +44,33 @@ _CLEAN_PAGE = b"""<!DOCTYPE html>
 </body></html>
 """
 
+_OUTER_HTML_PAGE = b"""<!DOCTYPE html>
+<html><body>
+<div id="out"><span>x</span></div>
+<script>
+  document.getElementById('out').outerHTML = decodeURIComponent(location.hash.slice(1));
+</script>
+</body></html>
+"""
+
+_INSERT_ADJACENT_HTML_PAGE = b"""<!DOCTYPE html>
+<html><body>
+<div id="out"></div>
+<script>
+  var v = decodeURIComponent(location.hash.slice(1));
+  document.getElementById('out').insertAdjacentHTML('beforeend', v);
+</script>
+</body></html>
+"""
+
+_SET_TIMEOUT_STRING_PAGE = b"""<!DOCTYPE html>
+<html><body>
+<script>
+  setTimeout(decodeURIComponent(location.hash.slice(1)), 0);
+</script>
+</body></html>
+"""
+
 
 class _Handler(BaseHTTPRequestHandler):
     def log_message(self, *args: object) -> None:  # silence access log
@@ -55,6 +82,12 @@ class _Handler(BaseHTTPRequestHandler):
             body = _XSS_PAGE
         elif path == "/clean":
             body = _CLEAN_PAGE
+        elif path == "/outer-html":
+            body = _OUTER_HTML_PAGE
+        elif path == "/insert-adjacent-html":
+            body = _INSERT_ADJACENT_HTML_PAGE
+        elif path == "/set-timeout-string":
+            body = _SET_TIMEOUT_STRING_PAGE
         else:
             self.send_response(404)
             self.end_headers()
@@ -82,12 +115,9 @@ def local_server() -> str:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.integration
-def test_real_browser_detects_dom_xss_flow(local_server: str) -> None:
-    """Positive case: innerHTML sink fed from location.hash → ≥1 taint flow."""
+def _run_shim_in_real_browser(url: str):
     from playwright.sync_api import sync_playwright
 
-    url = f"{local_server}/xss#<img src=x onerror=alert(1)>"
     with sync_playwright() as pw:
         try:
             browser = pw.chromium.launch(headless=True)
@@ -96,9 +126,16 @@ def test_real_browser_detects_dom_xss_flow(local_server: str) -> None:
         try:
             page = browser.new_page()
             driver = PlaywrightDriver(page)
-            result = run_taint_shim(driver, "user", url)
+            return run_taint_shim(driver, "user", url)
         finally:
             browser.close()
+
+
+@pytest.mark.integration
+def test_real_browser_detects_dom_xss_flow(local_server: str) -> None:
+    """Positive case: innerHTML sink fed from location.hash → ≥1 taint flow."""
+    url = f"{local_server}/xss#<img src=x onerror=alert(1)>"
+    result = _run_shim_in_real_browser(url)
 
     assert result.shim_installed is True
     assert result.url == url
@@ -112,20 +149,34 @@ def test_real_browser_detects_dom_xss_flow(local_server: str) -> None:
 @pytest.mark.integration
 def test_real_browser_clean_page_finds_no_flows(local_server: str) -> None:
     """Negative case: page with no injectable sink → 0 flows."""
-    from playwright.sync_api import sync_playwright
-
-    url = f"{local_server}/clean"
-    with sync_playwright() as pw:
-        try:
-            browser = pw.chromium.launch(headless=True)
-        except Exception as exc:  # noqa: BLE001 — browser not installed → skip, not fail
-            pytest.skip(f"Chromium not available: {exc}")
-        try:
-            page = browser.new_page()
-            driver = PlaywrightDriver(page)
-            result = run_taint_shim(driver, "user", url)
-        finally:
-            browser.close()
+    result = _run_shim_in_real_browser(f"{local_server}/clean")
 
     assert result.shim_installed is True
     assert result.flows == ()
+
+
+@pytest.mark.integration
+def test_real_browser_detects_outer_html_sink(local_server: str) -> None:
+    url = f"{local_server}/outer-html#<img src=x onerror=alert(1)>"
+    result = _run_shim_in_real_browser(url)
+
+    sinks = {f.sink for f in result.flows}
+    assert "outerHTML" in sinks
+
+
+@pytest.mark.integration
+def test_real_browser_detects_insert_adjacent_html_sink(local_server: str) -> None:
+    url = f"{local_server}/insert-adjacent-html#<img src=x onerror=alert(1)>"
+    result = _run_shim_in_real_browser(url)
+
+    sinks = {f.sink for f in result.flows}
+    assert "insertAdjacentHTML" in sinks
+
+
+@pytest.mark.integration
+def test_real_browser_detects_settimeout_string_sink(local_server: str) -> None:
+    url = f"{local_server}/set-timeout-string#window.__reachagent_exec=1"
+    result = _run_shim_in_real_browser(url)
+
+    sinks = {f.sink for f in result.flows}
+    assert "setTimeout" in sinks
