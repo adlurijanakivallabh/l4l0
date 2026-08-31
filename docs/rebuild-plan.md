@@ -819,6 +819,58 @@ is the problem.)*
 - Gate: GUI static markers + Playwright smoke (launch/live/surface/findings/
   report/export) pass; every displayed value sourced from real graph/audit state.
 
+**Status (2026-08-31): Phase F partially done — small safe fixes only, by
+user decision.**
+- This session already shipped a full visual redesign (richer palette,
+  atmospheric hero, real toggle-chip checkboxes, polished empty states —
+  see the earlier "gui: redesign the visual design system" commit) plus the
+  recon-tuning GUI toggle, both per explicit user request, before this
+  phase's own investigation started.
+- Investigated the remaining items with a live Playwright session before
+  touching anything (not just reading the plan's diagnosis on faith):
+  confirmed nav clicks only toggle `.active` for highlighting (no
+  show/hide) and rely on native `href="#id"` anchor scroll — genuinely
+  anchor-scroll, not view routing, exactly as the plan said. Confirmed
+  `#findings-panel` is a literal HTML descendant of `#surface-panel`, not a
+  sibling section like every other nav target.
+- Flagged two real couplings/tensions before proceeding, rather than
+  executing the whole remaining list: (1) cleanly fixing the
+  `#findings-panel` nesting means either doing the view-routing rewrite, or
+  splitting it into a second stacked section now — which would visibly
+  regress today's side-by-side Surface/Findings layout without the routing
+  payoff; (2) "collapse the hero to a launch bar" is the plan's own
+  pre-session diagnosis and is in direct tension with today's redesign,
+  which deliberately made the hero *more* prominent (glow, gradient
+  headline) per the user's own "look like the best" request. User chose:
+  small safe fixes only, leave the rest as documented gaps rather than
+  rework a currently-working GUI's navigation/live-update core this late in
+  the session.
+- Fixed 2 confusing `<select>` labels (B4): both the launch form's
+  `#llm-provider` and the provider-management form's `#pf-provider`
+  labeled the `deepseek` option "Compatible provider" and the `openai`
+  option "OpenAI-compatible" — nearly identical wording for two different
+  values, indistinguishable from the actual "Custom OpenAI-compatible"
+  entry. Relabeled to plain provider names; values/backend unchanged.
+- Deleted the two confirmed zero-consumer endpoints (`/api/scan/{id}/reasoning`,
+  `/api/scan/{id}/chains`) — grepped the entire frontend JS and the whole
+  test tree first: neither is referenced anywhere outside their own route
+  definitions. `_chains_for` (the helper `/chains` called) has a second,
+  live caller inside the findings-list builder the frontend does consume,
+  so findings already carry chain data today — the standalone endpoint was
+  purely redundant, not a capability gap. Discovered, while reading the
+  code right next to `/reasoning`, that `/api/scan/{id}/events` (the exact
+  delta-polling endpoint W4 asks to wire) already exists, fully
+  implemented — the frontend just never calls it; left as a documented gap
+  alongside the rest of the polling rewrite.
+- **Left as documented, known gaps** (not attempted, per the user's
+  explicit choice): real view routing; the `#findings-panel` nesting;
+  hero size (kept intentionally prominent, superseding this item); wiring
+  `/events` delta polling and stopping the 1s full-DOM-rebuild poll;
+  keep/wire decision for `/evidence` and `/scans/compare`; sub-10px label
+  sizes.
+- Whole tree: **1325 passed, 0 failed, 16 skipped** — identical count
+  (endpoint deletion had zero test coverage to remove).
+
 ### Phase G — Test + correctness truth-up
 - Add drivers OR downgrade ratings for `idor`/`mass_assignment`/`xss_stored`/
   `race`; fix **B6** (stale `driven_classes`, xss_dom).

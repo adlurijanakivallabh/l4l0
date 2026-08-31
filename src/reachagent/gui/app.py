@@ -275,23 +275,6 @@ def _event_dict(e: ScanEvent) -> dict[str, Any]:
     }
 
 
-@app.get("/api/scan/{scan_id}/reasoning")
-def get_reasoning(scan_id: str) -> JSONResponse:
-    """The LLM reasoning stream: plan rationale, per-phase decisions, transport
-    and tool picks — every proposal the loop made and why, in order."""
-    with _scan_lock:
-        data = _scans.get(scan_id)
-    if data is None:
-        return JSONResponse({"error": "not found"}, status_code=404)
-    events = data.get("events", [])
-    reasoning_events = [
-        _event_dict(e)
-        for e in events[-_MAX_EVENTS:]
-        if e.kind in ("plan", "step") or "LLM" in e.message or "decision" in e.message.lower()
-    ]
-    return JSONResponse({"scan_id": scan_id, "reasoning": reasoning_events})
-
-
 @app.get("/api/scan/{scan_id}/events")
 def get_events(scan_id: str, after: int = 0, limit: int = 300) -> JSONResponse:
     """Return a bounded event delta for low-latency polling clients."""
@@ -947,26 +930,6 @@ def get_audit(scan_id: str, limit: int = 200) -> JSONResponse:
         return JSONResponse({"error": "not found"}, status_code=404)
     limit = max(0, min(limit, 1000))
     return JSONResponse({"scan_id": scan_id, "entries": _audit_rows(data.get("audit"))[-limit:]})
-
-
-@app.get("/api/scan/{scan_id}/chains")
-def get_chains(scan_id: str) -> JSONResponse:
-    """Return connected chain paths for the real confirmed findings."""
-    with _scan_lock:
-        data = _scans.get(scan_id)
-    if data is None or "graph" not in data:
-        return JSONResponse({"error": "not found"}, status_code=404)
-    graph: ReachabilityGraph = data["graph"]
-    return JSONResponse(
-        {
-            "scan_id": scan_id,
-            "chains": [
-                {"finding_id": finding_id, "paths": _chains_for(graph, finding_id)}
-                for finding_id, finding in graph.findings()
-                if getattr(getattr(finding, "status", None), "value", "") == "confirmed_violation"
-            ],
-        }
-    )
 
 
 @app.get("/api/report/{scan_id}")
