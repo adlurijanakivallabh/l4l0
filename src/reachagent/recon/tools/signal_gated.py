@@ -53,11 +53,15 @@ from reachagent.graph.store import ReachabilityGraph
 from reachagent.oracles import OracleMechanism
 from reachagent.oracles.base import OracleVerdict
 from reachagent.oracles.registry import UnknownOracleError, get_oracle
+from reachagent.recon.tools._net import available_memory_mb as _available_memory_mb
 from reachagent.recon.tools._net import output_preview as _recon_output_preview
 from reachagent.recon.tools.base import RECON_ENV_LIVE, _scope_url
 from reachagent.tools.candidate import Candidate, ResponseSignal
 
 _LIVE_TIMEOUT = 300.0
+# Same rationale as base.py's _MIN_FREE_MEMORY_MB — this tier includes
+# memory-heavy tools too (sqlmap).
+_MIN_FREE_MEMORY_MB = 300.0
 _MAX_CANDIDATES = 100
 _MAX_CLAIM_OUTPUT_CHARS = 1_000_000
 _MAX_CLAIM_TEXT_CHARS = 2_000
@@ -338,6 +342,7 @@ class SignalGatedOutcome(StrEnum):
     REFUSED_OUT_OF_SCOPE = "refused_out_of_scope"  # scope gate refused — no spawn
     SKIPPED_MISSING_BINARY = "skipped_missing_binary"  # tool absent — graceful skip
     SKIPPED_NOT_LIVE = "skipped_not_live"  # live path off (env flag unset)
+    SKIPPED_LOW_MEMORY = "skipped_low_memory"  # system critically low on memory — no spawn
     ERRORED = "errored"  # spawn/parse error — audited, never crashes the run
 
 
@@ -549,6 +554,16 @@ class SignalGatedToolRunner:
                 self.name,
                 target,
                 SignalGatedOutcome.SKIPPED_MISSING_BINARY,
+                metadata=base_metadata,
+            )
+
+        free_mb = _available_memory_mb()
+        if free_mb is not None and free_mb < _MIN_FREE_MEMORY_MB:
+            self._audit(target, SignalGatedOutcome.SKIPPED_LOW_MEMORY, base_metadata)
+            return SignalGatedResult(
+                self.name,
+                target,
+                SignalGatedOutcome.SKIPPED_LOW_MEMORY,
                 metadata=base_metadata,
             )
 

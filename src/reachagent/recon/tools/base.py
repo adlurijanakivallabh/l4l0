@@ -54,6 +54,7 @@ from reachagent.execution.audit import AuditLog
 from reachagent.execution.scope import OutOfScopeError, ScopeGuard
 from reachagent.graph.nodes import Endpoint, Host
 from reachagent.graph.store import ReachabilityGraph
+from reachagent.recon.tools._net import available_memory_mb as _available_memory_mb
 from reachagent.recon.tools._net import (
     host_of as _recon_host_of,  # noqa: F401 — re-export for 8 callers
 )
@@ -80,6 +81,12 @@ RECON_ENV_LIVE = "REACHAGENT_RECON_LIVE"
 # tools can hang; a bounded timeout keeps the run from stalling.
 _LIVE_TIMEOUT = 300.0
 
+# Below this, the system is close to swapping hard — spawning another process
+# (some of these are memory-heavy: katana, sqlmap) risks tipping it into a
+# freeze rather than just running slowly. Advisory only; skipped when
+# unmeasurable (see available_memory_mb()).
+_MIN_FREE_MEMORY_MB = 300.0
+
 # Output truncation (context-efficiency, reference-informed): a recon tool that
 # emits huge output (minified JS bundles, verbose XML) would flood the LLM
 # context. Cap at _OUTPUT_MAX_CHARS normally; when the content looks minified,
@@ -100,6 +107,7 @@ class ReconOutcome(StrEnum):
     REFUSED_OUT_OF_SCOPE = "refused_out_of_scope"  # scope gate refused — no spawn
     SKIPPED_MISSING_BINARY = "skipped_missing_binary"  # tool absent — graceful skip
     SKIPPED_NOT_LIVE = "skipped_not_live"  # live path off (REACHAGENT_RECON_LIVE unset)
+    SKIPPED_LOW_MEMORY = "skipped_low_memory"  # system critically low on memory — no spawn
     ERRORED = "errored"  # spawn/parse error — audited, never crashes the run
 
 
@@ -267,6 +275,13 @@ class ReconToolRunner:
         if shutil.which(self.binary) is None:
             self.audit.record(self.name, "RECON", target, ReconOutcome.SKIPPED_MISSING_BINARY)
             return ReconResult(self.name, target, ReconOutcome.SKIPPED_MISSING_BINARY)
+
+        # Gate 2.5: system memory — spawning another process while critically
+        # low risks a freeze rather than just a slow run (§9 resilience).
+        free_mb = _available_memory_mb()
+        if free_mb is not None and free_mb < _MIN_FREE_MEMORY_MB:
+            self.audit.record(self.name, "RECON", target, ReconOutcome.SKIPPED_LOW_MEMORY)
+            return ReconResult(self.name, target, ReconOutcome.SKIPPED_LOW_MEMORY)
 
         # Gate 3: spawn via an argument ARRAY, shell=False (command-injection guard).
         argv = self.command(target)

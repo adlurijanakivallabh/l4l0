@@ -234,6 +234,65 @@ def test_missing_binary_skips_cleanly(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 # ---------------------------------------------------------------------------
+# 3b. Critically low system memory → clean, audited skip (never a spawn)
+# ---------------------------------------------------------------------------
+
+
+def test_low_memory_skips_cleanly_without_spawning(monkeypatch: pytest.MonkeyPatch) -> None:
+    import reachagent.recon.tools.base as base
+
+    monkeypatch.setattr(base, "_available_memory_mb", lambda: 50.0)
+    monkeypatch.setattr(
+        base.subprocess,
+        "run",
+        lambda *_a, **_k: (_ for _ in ()).throw(
+            AssertionError("must not spawn when memory is critically low")
+        ),
+    )
+    graph = ReachabilityGraph()
+    runner = NmapRunner(graph=graph, scope=_scope())
+
+    result = runner.run(_TARGET, environ={base.RECON_ENV_LIVE: "1"})
+
+    assert result.outcome is ReconOutcome.SKIPPED_LOW_MEMORY
+    assert graph.node_count() == 0
+    assert runner.audit.entries[-1].outcome == ReconOutcome.SKIPPED_LOW_MEMORY
+
+
+def test_unmeasurable_memory_does_not_block_a_spawn(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``None`` (can't measure) must fail OPEN — this is advisory, not a scope gate."""
+    import reachagent.recon.tools.base as base
+
+    class _Completed:
+        stdout = ""
+
+    monkeypatch.setattr(base, "_available_memory_mb", lambda: None)
+    monkeypatch.setattr(base.shutil, "which", lambda _b: "/usr/bin/gobuster")
+    monkeypatch.setattr(base.subprocess, "run", lambda *_a, **_k: _Completed())
+    runner = GobusterRunner(graph=ReachabilityGraph(), scope=_scope())
+
+    result = runner.run(_TARGET, environ={base.RECON_ENV_LIVE: "1"})
+
+    assert result.outcome is not ReconOutcome.SKIPPED_LOW_MEMORY
+
+
+def test_ample_memory_does_not_block_a_spawn(monkeypatch: pytest.MonkeyPatch) -> None:
+    import reachagent.recon.tools.base as base
+
+    class _Completed:
+        stdout = ""
+
+    monkeypatch.setattr(base, "_available_memory_mb", lambda: 4_000.0)
+    monkeypatch.setattr(base.shutil, "which", lambda _b: "/usr/bin/gobuster")
+    monkeypatch.setattr(base.subprocess, "run", lambda *_a, **_k: _Completed())
+    runner = GobusterRunner(graph=ReachabilityGraph(), scope=_scope())
+
+    result = runner.run(_TARGET, environ={base.RECON_ENV_LIVE: "1"})
+
+    assert result.outcome is not ReconOutcome.SKIPPED_LOW_MEMORY
+
+
+# ---------------------------------------------------------------------------
 # 4. Command safety — argument array, shell=False, target as a distinct element
 # ---------------------------------------------------------------------------
 

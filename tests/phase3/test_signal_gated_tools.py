@@ -381,6 +381,36 @@ def test_missing_binary_skips_cleanly(monkeypatch) -> None:
     ]
 
 
+def test_low_memory_skips_cleanly_without_spawning(monkeypatch) -> None:
+    import reachagent.recon.tools.signal_gated as sg
+
+    def _boom(*a, **k):
+        raise AssertionError("subprocess.run must not be called when memory is critically low")
+
+    monkeypatch.setattr(sg.shutil, "which", lambda _b: "/usr/bin/nuclei")
+    monkeypatch.setattr(sg, "_available_memory_mb", lambda: 50.0)
+    monkeypatch.setattr(sg.subprocess, "run", _boom)
+    runner = NucleiRunner(graph=_graph_with_tech_signal(), scope=_scope())
+    result = runner.run(_TARGET, "out.txt", environ={"REACHAGENT_RECON_LIVE": "1"})
+    assert result.outcome is SignalGatedOutcome.SKIPPED_LOW_MEMORY
+    assert str(SignalGatedOutcome.SKIPPED_LOW_MEMORY) in [e.outcome for e in runner.audit.entries]
+
+
+def test_unmeasurable_memory_does_not_block_a_signal_gated_spawn(monkeypatch) -> None:
+    """``None`` (can't measure) must fail OPEN — this is advisory, not a scope gate."""
+    import reachagent.recon.tools.signal_gated as sg
+
+    class _P:
+        returncode = 0
+
+    monkeypatch.setattr(sg.shutil, "which", lambda _b: "/usr/bin/nuclei")
+    monkeypatch.setattr(sg, "_available_memory_mb", lambda: None)
+    monkeypatch.setattr(sg.subprocess, "run", lambda *a, **k: _P())
+    runner = NucleiRunner(graph=_graph_with_tech_signal(), scope=_scope())
+    result = runner.run(_TARGET, "out.txt", environ={"REACHAGENT_RECON_LIVE": "1"})
+    assert result.outcome is not SignalGatedOutcome.SKIPPED_LOW_MEMORY
+
+
 @pytest.mark.parametrize(
     ("runner_cls", "graph_fn"),
     [

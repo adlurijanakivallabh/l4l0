@@ -48,3 +48,21 @@ def output_preview(raw: str) -> str:
     if len(raw.splitlines()) > _PREVIEW_MAX_LINES or len(raw) > _PREVIEW_MAX_CHARS:
         preview += "\n…"
     return preview
+
+
+def available_memory_mb() -> float | None:
+    """Free-for-allocation memory in MB, or ``None`` when it can't be measured.
+
+    Reads ``/proc/meminfo``'s ``MemAvailable`` (Linux-only — the whole recon
+    toolchain this guards is Linux-oriented already). Advisory hygiene, not a
+    security gate: an unmeasurable platform (no ``/proc/meminfo``, unexpected
+    format) returns ``None`` and never blocks a scan.
+    """
+    try:
+        with open("/proc/meminfo", encoding="utf-8") as fh:
+            for line in fh:
+                if line.startswith("MemAvailable:"):
+                    return int(line.split()[1]) / 1024
+    except (OSError, ValueError, IndexError):
+        return None
+    return None
