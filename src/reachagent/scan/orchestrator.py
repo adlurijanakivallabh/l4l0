@@ -648,6 +648,293 @@ def run_sqli_blind(
 
 
 # ---------------------------------------------------------------------------
+# Phase 3 — blind / auth-bypass injection drivers (nosqli / ldap / command
+# injection). Their sinks now route (B1a), but the refused->granted auth-bypass
+# and blind time-delay patterns are only confirmable by their dedicated
+# deterministic detectors — the generic fire-and-diff chain cannot express them
+# (methodology: auth/blind classes are not payload spray). Every probe is a
+# read-only GET through the gated firer; the oracles fail closed (auth-bypass
+# needs a 4xx baseline -> 2xx probe, timing needs >=10 paired trials past a
+# 3-sigma control), so a non-vulnerable param yields no finding.
+# ---------------------------------------------------------------------------
+
+# Canonical, best-effort injection primitives (stimulus only; the oracle, not the
+# payload, decides). Kept here, not in the corpus, because these drive a fixed
+# detector rather than the tagged-library chain.
+_NOSQL_BYPASS_VALUE = '{"$ne": null}'
+_NOSQL_TIMING_VALUE = '{"$where": "sleep(5000)"}'
+_LDAP_BYPASS_VALUE = "*)(uid=*))(|(uid=*"
+_LDAP_TIMING_VALUE = "*)(&(uid=*)(|(sleep=5)))"
+_CMD_TIMING_VALUE = ";sleep 5"
+_INJECTABLE_LOCATIONS = ("query", "path", "body")
+
+
+def _fire_value_fn(ctx: Any, identity: str, base_url: str, ep: Endpoint, param: Any) -> Any:
+    """A ``fire(value) -> FireResult | None`` closure for one param (read-only GET)."""
+    from reachagent.tools.explorer import _fire_with_value
+
+    url = f"{base_url.rstrip('/')}{ep.path}"
+
+    def _fire(value: str) -> Any | None:
+        try:
+            return _fire_with_value(
+                ctx,
+                identity,
+                "GET",
+                url,
+                param.location,
+                param.name,
+                value,
+                state_changing=False,
+            )
+        except Exception:  # noqa: BLE001 — a failed probe is a dead lead, never a finding
+            return None
+
+    return _fire
+
+
+def _paired_timing(fire: Any, delay_value: str) -> tuple[tuple[float, ...], tuple[float, ...]]:
+    """``_TIMING_TRIALS`` paired (delay, baseline) latencies in ms for the timing oracle."""
+    probe_ms: list[float] = []
+    baseline_ms: list[float] = []
+    for _ in range(_TIMING_TRIALS):
+        probe = fire(delay_value)
+        if probe is not None:
+            probe_ms.append(probe.elapsed_seconds * 1000)
+        base = fire("baseline")
+        if base is not None:
+            baseline_ms.append(base.elapsed_seconds * 1000)
+    return tuple(probe_ms), tuple(baseline_ms)
+
+
+def _drives_param(param: Any, sink: SinkType) -> bool:
+    """A param is a candidate only once it is OBSERVED/hinted as this class's sink.
+
+    Strict match — the same rule ``run_sqli_blind`` uses for ``SinkType.SQL`` — not
+    "sink or None". These sinks have no canary fingerprint of their own (B1a): a
+    param only reaches ``sink`` once something has already tagged it (the generic
+    loop trying this vuln_class's hint, or a prior probe). Requiring the match
+    (rather than accepting an untyped ``None`` param too) is a plausibility gate,
+    not a formality: the timing fallback below is a NOISY statistical oracle, and
+    spraying it across every untyped param in the graph turns rare scheduler
+    jitter into a near-certain false positive over a whole-graph scan (the exact
+    "blind-probe every field" anti-pattern the funnel methodology forbids — blind
+    escalation is reserved for points whose type makes the class plausible).
+    """
+    return param.location in _INJECTABLE_LOCATIONS and param.inferred_sink_type is sink
+
+
+def run_nosqli(
+    *,
+    graph: ReachabilityGraph,
+    firer: RequestFirer,
+    base_url: str,
+    identity: str,
+    seam: _ValidatorSeam,
+    events: list[ScanEvent],
+    library: Any | None = None,
+) -> list[str]:
+    """NoSQL injection via the dedicated detector — auth-bypass first, timing fallback."""
+    from reachagent.nosql.detector import (
+        AuthBypassProbe,
+        NoSqliProber,
+        TimingProbe,
+        detect_nosqli,
+    )
+    from reachagent.oracles.differential import Observation
+    from reachagent.tools.explorer_context import ExplorerContext
+
+    ctx = ExplorerContext(
+        graph=graph, firer=firer, library=library or _library(), base_url=base_url
+    )
+    found: list[str] = []
+
+    def _probe(ep: Endpoint, param: Any) -> None:
+        fire = _fire_value_fn(ctx, identity, base_url, ep, param)
+
+        def _obs(value: str, label: str) -> Observation:
+            result = fire(value)
+            body = result.body.decode("utf-8", errors="replace") if result is not None else ""
+            status = result.status_code if result is not None else 0
+            return Observation(label=label, status_code=status, body=body)
+
+        def fire_auth_bypass() -> AuthBypassProbe:
+            return AuthBypassProbe(
+                baseline=_obs("baseline", "benign"),
+                probe=_obs(_NOSQL_BYPASS_VALUE, "injected"),
+            )
+
+        def fire_timing() -> TimingProbe:
+            probe_ms, baseline_ms = _paired_timing(fire, _NOSQL_TIMING_VALUE)
+            return TimingProbe(probe_ms, baseline_ms)
+
+        prober = NoSqliProber(
+            fire_auth_bypass=fire_auth_bypass, fire_timing=fire_timing, oracle_runner=seam.run
+        )
+        result = detect_nosqli(prober, evidence_ref=f"orchestrator/nosqli {ep.path} {param.name}")
+        if result.confirmed and seam.last is not None:
+            mech = result.mechanism.value if result.mechanism is not None else "unknown"
+            nid = seam.write("nosqli", seam.last, severity="high", metadata={"mechanism": mech})
+            if nid:
+                _emit(
+                    events,
+                    "payloads",
+                    "finding",
+                    f"nosqli via {mech}",
+                    path=ep.path,
+                    param=param.name,
+                )
+                found.append(nid)
+
+    for ep_node, ep in graph.endpoints():
+        for _param_node, param in graph.parameters_of(ep_node):
+            if _drives_param(param, SinkType.NOSQL):
+                _probe(ep, param)
+    return found
+
+
+def run_ldap(
+    *,
+    graph: ReachabilityGraph,
+    firer: RequestFirer,
+    base_url: str,
+    identity: str,
+    seam: _ValidatorSeam,
+    events: list[ScanEvent],
+    library: Any | None = None,
+) -> list[str]:
+    """LDAP injection via the dedicated detector — wildcard auth-bypass, timing fallback.
+
+    No OOB path: LDAP has no out-of-band channel (§5) — the detector omits it.
+    """
+    from reachagent.ldap.detector import (
+        AuthBypassProbe,
+        LdapiProber,
+        TimingProbe,
+        detect_ldapi,
+    )
+    from reachagent.oracles.differential import Observation
+    from reachagent.tools.explorer_context import ExplorerContext
+
+    ctx = ExplorerContext(
+        graph=graph, firer=firer, library=library or _library(), base_url=base_url
+    )
+    found: list[str] = []
+
+    def _probe(ep: Endpoint, param: Any) -> None:
+        fire = _fire_value_fn(ctx, identity, base_url, ep, param)
+
+        def _obs(value: str, label: str) -> Observation:
+            result = fire(value)
+            body = result.body.decode("utf-8", errors="replace") if result is not None else ""
+            status = result.status_code if result is not None else 0
+            return Observation(label=label, status_code=status, body=body)
+
+        def fire_auth_bypass() -> AuthBypassProbe:
+            return AuthBypassProbe(
+                baseline=_obs("baseline", "benign-bind"),
+                probe=_obs(_LDAP_BYPASS_VALUE, "wildcard-inject"),
+            )
+
+        def fire_timing() -> TimingProbe:
+            probe_ms, baseline_ms = _paired_timing(fire, _LDAP_TIMING_VALUE)
+            return TimingProbe(probe_ms, baseline_ms)
+
+        prober = LdapiProber(
+            fire_auth_bypass=fire_auth_bypass, fire_timing=fire_timing, oracle_runner=seam.run
+        )
+        result = detect_ldapi(
+            prober, evidence_ref=f"orchestrator/ldap_injection {ep.path} {param.name}"
+        )
+        if result.confirmed and seam.last is not None:
+            mech = result.mechanism.value if result.mechanism is not None else "unknown"
+            nid = seam.write(
+                "ldap_injection", seam.last, severity="high", metadata={"mechanism": mech}
+            )
+            if nid:
+                _emit(
+                    events,
+                    "payloads",
+                    "finding",
+                    f"ldap injection via {mech}",
+                    path=ep.path,
+                    param=param.name,
+                )
+                found.append(nid)
+
+    for ep_node, ep in graph.endpoints():
+        for _param_node, param in graph.parameters_of(ep_node):
+            if _drives_param(param, SinkType.LDAP):
+                _probe(ep, param)
+    return found
+
+
+def run_command_injection(
+    *,
+    graph: ReachabilityGraph,
+    firer: RequestFirer,
+    base_url: str,
+    identity: str,
+    seam: _ValidatorSeam,
+    events: list[ScanEvent],
+    library: Any | None = None,
+) -> list[str]:
+    """Blind command injection via time-delay (the shared blind prober, timing path).
+
+    OOB (DNS/HTTP callback) is the higher-confidence path but requires a live
+    collaborator; the honest default without one is the statistical timing oracle,
+    exactly as blind SQLi falls back.
+    """
+    from reachagent.sqli.blind_detector import BlindSqliProber, TimingProbe, detect_blind_sqli
+    from reachagent.tools.explorer_context import ExplorerContext
+
+    ctx = ExplorerContext(
+        graph=graph, firer=firer, library=library or _library(), base_url=base_url
+    )
+    found: list[str] = []
+
+    def _probe(ep: Endpoint, param: Any) -> None:
+        fire = _fire_value_fn(ctx, identity, base_url, ep, param)
+
+        def fire_timing() -> TimingProbe:
+            probe_ms, baseline_ms = _paired_timing(fire, _CMD_TIMING_VALUE)
+            return TimingProbe(probe_ms, baseline_ms)
+
+        prober = BlindSqliProber(
+            fire_oob=lambda: None,
+            observed_nonces=frozenset,
+            fire_timing=fire_timing,
+            oracle_runner=seam.run,
+        )
+        result = detect_blind_sqli(
+            prober,
+            evidence_ref=f"orchestrator/command_injection {ep.path} {param.name}",
+            try_boolean=False,
+        )
+        if result.confirmed and seam.last is not None:
+            mech = result.mechanism.value if result.mechanism is not None else "timing_statistical"
+            nid = seam.write(
+                "command_injection", seam.last, severity="high", metadata={"mechanism": mech}
+            )
+            if nid:
+                _emit(
+                    events,
+                    "payloads",
+                    "finding",
+                    f"command injection via {mech}",
+                    path=ep.path,
+                    param=param.name,
+                )
+                found.append(nid)
+
+    for ep_node, ep in graph.endpoints():
+        for _param_node, param in graph.parameters_of(ep_node):
+            if _drives_param(param, SinkType.SHELL):
+                _probe(ep, param)
+    return found
+
+
+# ---------------------------------------------------------------------------
 # Phase 3 — authz (bola/bfla) via the generic BOLA detector
 # ---------------------------------------------------------------------------
 
@@ -1399,6 +1686,17 @@ def scan_all_classes(
         events=events_out,
         library=lib,
     )
+    for _blind_driver in (run_nosqli, run_ldap, run_command_injection):
+        check_cancel(cancel_check)
+        _blind_driver(
+            graph=graph,
+            firer=firer,
+            base_url=base_url,
+            identity=identity,
+            seam=seam,
+            events=events_out,
+            library=lib,
+        )
     if identities is not None:
         check_cancel(cancel_check)
         run_authz_bola(

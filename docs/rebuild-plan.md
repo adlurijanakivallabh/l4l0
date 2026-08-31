@@ -257,13 +257,31 @@ backslash-powered scanning.)*
   all four now fingerprint the right sink and attempt payloads (27/40/40/15 vs.
   "no payloads matched"). **SSRF now confirms E2E** via the existing structural
   `ssrf_response` oracle; NoSQLi confirms for the 2xx-divergence pattern.
-- **B1b — precise drivers (pending).** ldap/command-injection do NOT confirm the
-  refused→granted auth-bypass / blind patterns through the generic chain (the
-  methodology's exact point). Plan: wire dedicated `detect_nosqli`/`detect_ldapi`
-  (auth-bypass-first + timing — already built & tested) and a command-injection
-  OOB/timing driver into `scan_all_classes` (mirroring `run_sqli_blind`), and
-  drop nosqli/ldap/command-injection from `_GENERIC_CLASSES` so auth classes are
-  not imprecisely sprayed. Then a hermetic E2E per class.
+- **B1b — precise drivers (done).** Wired `run_nosqli`/`run_ldap`/
+  `run_command_injection` into `scan_all_classes` (mirrors `run_sqli_blind`'s
+  shape exactly: iterate sink-matched params → build the detector's prober →
+  `detect_*(..., oracle_runner=seam.run)` → `seam.write`). `detect_nosqli`/
+  `detect_ldapi` run auth-bypass first (definitive), timing fallback second;
+  `run_command_injection` reuses the shared blind prober (timing path, OOB
+  dormant without a collaborator — same honest default as blind SQLi).
+  Hermetic E2E: `tests/scan/test_blind_injection_drivers.py` (6 tests) —
+  nosqli/ldap confirm via auth-bypass, command-injection confirms via a small
+  injected latency, clean target confirms nothing, GET-only.
+  **Found + fixed a real false-positive during validation:** the first cut
+  gated params on `sink in (target, None)` (to also cover not-yet-typed
+  params), which sprayed the noisy `timing_statistical` oracle across every
+  untyped param in the graph — exactly the "blind-probe every field"
+  anti-pattern the funnel methodology forbids for blind classes. On a
+  near-zero-latency MockTransport this produced a real flaky false positive
+  (`tests/scan/test_orchestrator.py::test_clean_target_zero_findings` failed
+  ~1-in-3 full-suite runs). Fixed by requiring a **strict** sink match
+  (`param.inferred_sink_type is sink`, no `None`), matching the established
+  `run_sqli_blind` convention exactly — a plausibility gate, not a formality:
+  a param only reaches the timing fallback once something has already typed
+  it. Locked in with a deterministic regression test asserting **zero requests
+  fire** on an untyped param (not just "no finding," which a lucky RNG could
+  satisfy). Verified stable across 10 repeated runs + one full-tree run.
+  Whole tree: **1260 passed, 0 failed, 16 skipped.**
 
 ### Phase C — Recon economy
 *(read R5 recon, R6 preflight/runner, R8 wordlists.)*
