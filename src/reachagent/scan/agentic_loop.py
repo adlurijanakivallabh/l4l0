@@ -364,7 +364,11 @@ class DefaultLoopAdvisor:
         remaining_phases: tuple[str, ...],
         operator_prompt: str,
     ) -> dict[str, object]:
-        from reachagent.llm.client import build_openai_compatible_client, extract_json_object
+        from reachagent.llm.client import (
+            build_openai_compatible_client,
+            extract_json_object,
+            is_model_output_error,
+        )
 
         client = build_openai_compatible_client()
         if client is None:
@@ -381,8 +385,14 @@ class DefaultLoopAdvisor:
             '"hint":"","target_phase":null}.'
         )
         try:
-            text = client.complete(prompt, max_tokens=512)
-            return extract_json_object(text)
+            for attempt in range(2):
+                try:
+                    text = client.complete(prompt, max_tokens=2_048)
+                    return extract_json_object(text)
+                except Exception as exc:  # noqa: BLE001 — retry only an empty model response
+                    if not is_model_output_error(exc) or attempt == 1:
+                        raise
+            raise ModelControlError("adaptive model returned no proposal")
         except ModelControlError:
             raise
         except Exception as exc:  # noqa: BLE001 - caller classifies provider failure

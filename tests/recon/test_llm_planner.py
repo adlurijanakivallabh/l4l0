@@ -135,3 +135,19 @@ def test_planner_propagates_model_failure_without_a_fallback() -> None:
 
     with pytest.raises(RuntimeError, match="provider unavailable"):
         plan_execution(_context(), FailingClient())
+
+
+def test_planner_retries_transient_empty_model_response() -> None:
+    calls = 0
+
+    class FlakyClient:
+        def propose_json(self, prompt: str, *, max_tokens: int = 512) -> dict[str, object]:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise ValueError("LLM Responses API returned no output text")
+            return _plan()
+
+    result = plan_execution(_context(), FlakyClient())
+    assert calls == 2
+    assert result.phases[0].name == "recon"
