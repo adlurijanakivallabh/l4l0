@@ -604,8 +604,13 @@ def scan_target(
                     TheHarvesterRunner,
                     WhatWebRunner,
                     KatanaRunner,
-                    GobusterRunner,
+                    # Content-discovery family, ffuf-primary (native -ac
+                    # auto-calibration) with gobuster/feroxbuster/dirb as
+                    # successive fallbacks — the dispatch loop below stops the
+                    # family after the first one yields a useful path, so in the
+                    # common case only ONE of these four ever actually fires.
                     FfufRunner,
+                    GobusterRunner,
                     FeroxbusterRunner,
                     DirbRunner,
                 ]
@@ -724,8 +729,37 @@ def scan_target(
                 rationale = str(getattr(selection, "rationale", ""))
                 return names, stop, rationale
 
+            def _safe_select(
+                state: dict[str, str], candidates: tuple[str, ...], completed: tuple[str, ...]
+            ) -> object:
+                """Call ``recon_selector``; degrade to a clean stop on any failure.
+
+                A planner/provider failure (bad response, exhausted validation
+                retries, a transient API error) must never abort the whole scan —
+                the deterministic tool set already selected still ran. Degrading to
+                "stop adaptive selection, continue with what's collected" is the
+                honest, safe default; the scan proceeds past recon with whatever
+                facts already landed instead of raising out of scan_target entirely.
+                """
+                if recon_selector is None:
+                    raise RuntimeError("_safe_select called without a recon_selector")
+                try:
+                    return recon_selector(state, candidates, completed)
+                except Exception as exc:  # noqa: BLE001 — degrade, never abort the scan
+                    _tool_event(
+                        "recon-planner",
+                        "degraded",
+                        phase="recon",
+                        detail=f"{type(exc).__name__}: {exc}"[:300],
+                    )
+                    from types import SimpleNamespace
+
+                    return SimpleNamespace(
+                        tools=(), stop=True, rationale="recon planner failed — degrading"
+                    )
+
             if recon_selector is not None:
-                selection = recon_selector(
+                selection = _safe_select(
                     _recon_state_snapshot(
                         g, a, base_url, target_type, completed_names, pending_names
                     ),
@@ -792,6 +826,7 @@ def scan_target(
                     completed_tools=completed_names,
                     pending_tools=(name, *pending_names),
                 )
+                result_nodes: tuple[str, ...] = ()
                 if fixtures is not None:
                     raw = fixtures.get(name, "")
                     if not raw:
@@ -799,10 +834,11 @@ def scan_target(
                     else:
                         allowed_raw = _filter_fixture_by_scope(raw, scope, name)
                         ingest_result = runner.ingest(target_arg, allowed_raw)
+                        result_nodes = ingest_result.nodes
                         _tool_event(
                             name,
                             ingest_result.outcome.value,
-                            nodes=len(ingest_result.nodes),
+                            nodes=len(result_nodes),
                             detail=ingest_result.detail,
                         )
                 elif not dry_run:
@@ -820,12 +856,35 @@ def scan_target(
                             last_error=type(exc).__name__,
                         )
                         raise
+                    result_nodes = run_result.nodes
                     _tool_event(
                         name,
                         run_result.outcome.value,
-                        nodes=len(run_result.nodes),
+                        nodes=len(result_nodes),
                         detail=run_result.detail,
                     )
+                # A content-discovery adapter always touches its target Host node
+                # (recon-facts-only — every runner does this even on zero hits), so
+                # counting ALL touched nodes would make the family look "satisfied"
+                # on a genuinely empty result. Count Endpoint nodes specifically —
+                # the actual useful yield the primary+fallback economy cares about.
+                endpoint_yield = sum(1 for n in result_nodes if n.startswith("endpoint:"))
+                if name in content_discovery and endpoint_yield > 0:
+                    # Primary+fallback economy (§C): one content brute-forcer's
+                    # useful yield satisfies the family — drop the rest of the
+                    # queued fallbacks rather than re-crawling the same paths
+                    # 3 more times. A fallback only ever fires when the one ahead
+                    # of it in `pending_names` returned zero useful paths.
+                    dropped = [n for n in pending_names if n in content_discovery]
+                    if dropped:
+                        pending_names = [n for n in pending_names if n not in content_discovery]
+                        _tool_event(
+                            "content-discovery",
+                            "family-satisfied",
+                            phase="recon",
+                            detail=f"{name} yielded {endpoint_yield} endpoint(s)",
+                            skipped=dropped,
+                        )
                 completed_names.append(name)
                 if name not in selected_recon_tools:
                     selected_recon_tools += (name,)
@@ -844,7 +903,7 @@ def scan_target(
                 )
                 if not remaining_candidates:
                     continue
-                selection = recon_selector(
+                selection = _safe_select(
                     _recon_state_snapshot(
                         g, a, base_url, target_type, completed_names, remaining_candidates
                     ),

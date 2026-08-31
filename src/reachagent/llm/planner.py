@@ -13,7 +13,11 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Protocol
 
-from reachagent.llm.client import build_openai_compatible_client, extract_json_object
+from reachagent.llm.client import (
+    build_openai_compatible_client,
+    extract_json_object,
+    is_model_output_error,
+)
 from reachagent.recon.live_tuning import RECON_PROFILES
 from reachagent.recon.tools import (
     AmassRunner,
@@ -665,15 +669,22 @@ def select_recon_tools(
     continue with an unreasoned sequence.
     """
 
-    raw = client.propose_json(
-        recon_selection_prompt(
-            context,
-            state=state,
-            available_tools=available_tools,
-            completed_tools=completed_tools,
-        ),
-        max_tokens=1_024,
+    prompt = recon_selection_prompt(
+        context,
+        state=state,
+        available_tools=available_tools,
+        completed_tools=completed_tools,
     )
+    raw: dict[str, object] | None = None
+    for attempt in range(2):
+        try:
+            raw = client.propose_json(prompt, max_tokens=4_096)
+            break
+        except Exception as exc:  # noqa: BLE001 — retry only an empty model response
+            if not is_model_output_error(exc) or attempt == 1:
+                raise
+    if raw is None:
+        raise RuntimeError("recon planner returned no proposal")
     last_error: PlanValidationError | None = None
     for _attempt in range(3):
         try:
@@ -688,13 +699,19 @@ def select_recon_tools(
             last_error = exc
             if _attempt == 2:
                 break
+            limit_hint = (
+                f" The enforced tool-count limit for this turn is {max_tools}."
+                if max_tools is not None
+                else ""
+            )
             raw = client.propose_json(
                 "The recon selection JSON was rejected by strict validation. "
-                f"VALIDATION ERROR: {exc}. Return one corrected JSON object only; "
-                "preserve the evidence-based intent, choose only available fact "
-                "emitters, and never include commands or vulnerability claims.\n"
+                f"VALIDATION ERROR: {exc}.{limit_hint} Return one corrected JSON "
+                "object only; preserve the evidence-based intent, choose only "
+                "available fact emitters, and never include commands or "
+                "vulnerability claims.\n"
                 f"Previous JSON: {json.dumps(raw, sort_keys=True)[:4_000]}",
-                max_tokens=1_024,
+                max_tokens=4_096,
             )
     raise last_error or PlanValidationError("recon selection failed without a validation error")
 
@@ -877,7 +894,17 @@ def plan_execution(
     are fixable.
     """
     entries = tuple(catalog or build_tool_catalog())
-    raw = client.propose_json(planning_prompt(context, entries), max_tokens=4096)
+    prompt = planning_prompt(context, entries)
+    raw: dict[str, object] | None = None
+    for attempt in range(2):
+        try:
+            raw = client.propose_json(prompt, max_tokens=4096)
+            break
+        except Exception as exc:  # noqa: BLE001 — retry only an empty model response
+            if not is_model_output_error(exc) or attempt == 1:
+                raise
+    if raw is None:
+        raise RuntimeError("planner returned no proposal")
     last_error: PlanValidationError | None = None
     for _attempt in range(3):
         try:

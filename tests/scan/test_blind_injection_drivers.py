@@ -4,6 +4,19 @@ nosqli/ldap confirm via the differential AUTH_BYPASS oracle (refused baseline ->
 granted probe); command_injection confirms via the statistical timing oracle
 (a small injected latency on the sleep payload). A clean target confirms nothing
 (the oracle fail-closed contract), and every probe is a read-only GET.
+
+The timing-fallback tests bump ``_TIMING_TRIALS`` well above the production
+default. A near-zero-latency MockTransport call has a MUCH tighter baseline std
+than a real HTTP round trip (real network jitter is milliseconds; an in-process
+mock call's jitter is scheduler noise, sub-millisecond) — so a single stray GC
+pause among only 10 trials can shift the mean enough to cross the oracle's
+3-sigma threshold purely by chance, exactly the flakiness the codebase's own
+convention avoids by testing oracle DECISION math with fabricated latencies,
+never real wall-clock measurement. These are deliberately real-wall-clock E2E
+tests (proving the driver actually wires _paired_timing through a live firer),
+so the fix is to dilute a single outlier's weight on the mean with more trials —
+the same "repeat-to-denoise before trusting" rule the timing oracle itself
+documents — not to weaken the production oracle's threshold.
 """
 
 from __future__ import annotations
@@ -15,12 +28,15 @@ import httpx
 from reachagent.execution import RequestFirer, ScopeGuard
 from reachagent.graph.nodes import Endpoint, Parameter, SinkType
 from reachagent.graph.store import ReachabilityGraph
+from reachagent.scan import orchestrator as _orchestrator
 from reachagent.scan.orchestrator import (
     _ValidatorSeam,
     run_command_injection,
     run_ldap,
     run_nosqli,
 )
+
+_DENOISED_TRIALS = 40
 
 _BASE = "http://t.test"
 
@@ -75,7 +91,9 @@ def test_ldap_authbypass_confirms() -> None:
     assert "ldap_injection" in {f.vuln_class for _fid, f in findings}
 
 
-def test_command_injection_timing_confirms() -> None:
+def test_command_injection_timing_confirms(monkeypatch) -> None:  # noqa: ANN001
+    monkeypatch.setattr(_orchestrator, "_TIMING_TRIALS", _DENOISED_TRIALS)
+
     def handler(request: httpx.Request) -> httpx.Response:
         value = request.url.params.get("user", "")
         if "sleep" in value:  # the injected time-delay payload
@@ -87,7 +105,9 @@ def test_command_injection_timing_confirms() -> None:
     assert "command_injection" in {f.vuln_class for _fid, f in findings}
 
 
-def test_clean_target_confirms_nothing() -> None:
+def test_clean_target_confirms_nothing(monkeypatch) -> None:  # noqa: ANN001
+    monkeypatch.setattr(_orchestrator, "_TIMING_TRIALS", _DENOISED_TRIALS)
+
     # Benign target: never refuses, never delays -> no auth-bypass, no timing signal.
     def clean(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json={"ok": True})

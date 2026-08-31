@@ -297,6 +297,45 @@ backslash-powered scanning.)*
 - Gate: one content tool runs per surface; calibration suppresses catch-all;
   budget never exceeded; recon-tier still emits zero findings/candidates/can_call.
 
+**Status (2026-08-31): slice 1 done (B2, B5, W1).**
+- **B2** fixed in `orchestrator._select_recon`: the prompt now shows the SAME
+  number the validator enforces (`max(1, min(remaining_budget, len(available)))`,
+  computed once, used for both), plus the fixer-retry prompt now states the
+  actual numeric limit. Root-caused: on every selector call after the first
+  (`completed > 0`), the model was told the FULL static `tool_budget` while the
+  validator only allowed `tool_budget - len(completed)` — a budget-aware model
+  requesting exactly what it was shown got rejected with "recon selection
+  exceeds the remaining tool budget."
+- **B5** fixed: both `entrypoint.py` call sites route through a new
+  `_safe_select` wrapper — any `recon_selector` failure (provider outage,
+  exhausted validation retries) now degrades to "stop adaptive selection,
+  continue with what's collected" instead of propagating out of `scan_target`
+  and aborting the whole scan.
+- **W1** fixed: `default_types`' content-discovery family reordered to
+  ffuf-primary (native `-ac` auto-calibration), with gobuster/feroxbuster/dirb
+  as successive fallbacks. The dispatch loop now counts **Endpoint-node**
+  yield specifically (not raw `.nodes` — every recon adapter always touches its
+  target Host node even on zero hits, which would have made the very first
+  content-discovery call look "satisfied" regardless of real yield, a bug I
+  caught via behavioral probing before it shipped) and drops the rest of the
+  family from `pending_names` once one tool yields ≥1 endpoint. Verified: only
+  the primary fires on success; the fallback fires (and only one) when the
+  primary yields zero.
+- **New test file** `tests/scan/test_recon_economy.py` (4 tests) is the first
+  test in the whole codebase to drive `scan_all_classes(require_llm=True, ...)`
+  end to end with a fake planner client — this exact path had ZERO coverage
+  before, which is presumably how B2 shipped unnoticed. Sanity-checked the
+  B2 regression test itself by temporarily reverting the orchestrator fix and
+  confirming the test fails (it does — via a `fixer_rounds` counter tracking
+  whether the validation-fixer prompt ever fired, since the B5 fallback
+  otherwise MASKS a budget-divergence abort as a silently "successful" scan);
+  restored the fix, confirmed green.
+- Whole tree: **1264 passed, 0 failed, 16 skipped** (unprovisioned live labs).
+- **Deferred to this phase's next slice:** spec-first short-circuit for content
+  discovery, `ReconProfile.tools` wiring/cut decision, single recon-authority
+  cleanup (plan's recon-tool list is currently computed then discarded — W2),
+  and the profile-computed-once-per-scan fix (currently recomputed per runner).
+
 ### Phase D — Cut the planning/tuning tier
 *(read R2 orchestration, R3 unified loop.)*
 - Cut **C1** (3 orphan tuning modules), **C2** (5 Anthropic clients + the

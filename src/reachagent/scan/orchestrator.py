@@ -1382,6 +1382,19 @@ def scan_all_classes(
         ) -> object:
             if plan_client is None:
                 raise RuntimeError("adaptive recon planner client is unavailable")
+            remaining_budget = execution_plan.tool_budget - len(completed)
+            if remaining_budget <= 0:
+                from reachagent.llm.planner import ReconSelection
+
+                return ReconSelection((), "recon tool budget exhausted", True)
+            # The enforced limit IS remaining_budget (validate_recon_selection's
+            # `max_tools`), not the plan's full tool_budget — the prompt must show
+            # the same number the validator enforces. Building the context with the
+            # full static budget here (while the validator checked the remaining
+            # one) is exactly the divergence that made a correct, budget-aware
+            # selection get rejected with "recon selection exceeds the remaining
+            # tool budget": the model was never told the real, shrinking limit.
+            max_tools = min(remaining_budget, len(available))
             adaptive_context = PlanningContext(
                 target=context.target,
                 target_type=context.target_type,
@@ -1390,20 +1403,15 @@ def scan_all_classes(
                 operator_prompt=context.operator_prompt,
                 payload_refs=(),
                 max_request_budget=context.max_request_budget,
-                max_tool_budget=execution_plan.tool_budget,
+                max_tool_budget=max(1, max_tools),
             )
-            remaining_budget = execution_plan.tool_budget - len(completed)
-            if remaining_budget <= 0:
-                from reachagent.llm.planner import ReconSelection
-
-                return ReconSelection((), "recon tool budget exhausted", True)
             return select_recon_tools(
                 adaptive_context,
                 plan_client,
                 state=state,
                 available_tools=available,
                 completed_tools=completed,
-                max_tools=min(remaining_budget, len(available)),
+                max_tools=max_tools,
             )
 
         recon_selector = _select_recon
