@@ -247,6 +247,24 @@ backslash-powered scanning.)*
   case E2E; clean target = zero findings; six-family + role-boundary invariants
   hold.
 
+**Status (2026-08-30):**
+- **B1a — reachability (done).** Root cause (verified): all four classes were in
+  `_GENERIC_CLASSES` → generic `payload_chain` → `get_payloads`, but the sink
+  hint map + `_HINTABLE_SINKS` only covered file_path/template and `_CLASS_SINKS`
+  lacked `ssrf`, so `get_payloads` returned nothing (0% reachable). Fix: added
+  `nosqli→nosql`, `ldap_injection→ldap`, `command_injection→shell`, `ssrf→url`
+  to the hint map + `_HINTABLE_SINKS`, and `ssrf→URL` to `_CLASS_SINKS`. Probe:
+  all four now fingerprint the right sink and attempt payloads (27/40/40/15 vs.
+  "no payloads matched"). **SSRF now confirms E2E** via the existing structural
+  `ssrf_response` oracle; NoSQLi confirms for the 2xx-divergence pattern.
+- **B1b — precise drivers (pending).** ldap/command-injection do NOT confirm the
+  refused→granted auth-bypass / blind patterns through the generic chain (the
+  methodology's exact point). Plan: wire dedicated `detect_nosqli`/`detect_ldapi`
+  (auth-bypass-first + timing — already built & tested) and a command-injection
+  OOB/timing driver into `scan_all_classes` (mirroring `run_sqli_blind`), and
+  drop nosqli/ldap/command-injection from `_GENERIC_CLASSES` so auth classes are
+  not imprecisely sprayed. Then a hermetic E2E per class.
+
 ### Phase C — Recon economy
 *(read R5 recon, R6 preflight/runner, R8 wordlists.)*
 - Fix **B2** (budget prompt/validator divergence) + **B5** (degrade-to-

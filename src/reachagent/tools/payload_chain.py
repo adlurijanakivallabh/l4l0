@@ -569,7 +569,18 @@ def run_payload_chain(
         "param_node": param_node,
         "method": method,
     }
-    hint = {"path_traversal": "file_path", "ssti": "template"}.get(vuln_class)
+    # Classes whose sink has no observational canary fingerprint get a class-bound
+    # hint so the live path routes them by their canonical sink when the canary is
+    # silent (observed signal still wins in the explorer). Without this, get_payloads
+    # returns nothing for these classes and they are 0% reachable at fire time.
+    hint = {
+        "path_traversal": "file_path",
+        "ssti": "template",
+        "nosqli": "nosql",
+        "ldap_injection": "ldap",
+        "command_injection": "shell",
+        "ssrf": "url",
+    }.get(vuln_class)
     if hint is not None:
         fingerprint_args["sink_hint"] = hint
         fingerprint_args["vuln_class"] = vuln_class

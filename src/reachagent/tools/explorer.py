@@ -74,6 +74,7 @@ _CLASS_SINKS = {
     "path_traversal": _nodes.SinkType.FILE_PATH,
     "ssti": _nodes.SinkType.TEMPLATE,
     "ldap_injection": _nodes.SinkType.LDAP,
+    "ssrf": _nodes.SinkType.URL,
     "xss_reflected": _nodes.SinkType.HTML_REFLECTION,
 }
 
@@ -316,7 +317,18 @@ def fingerprint_parameter(
     # HTML heuristic cannot distinguish) — and only when it matches the class the
     # caller named. It never overrides positive evidence: an observed SQL error
     # or HTML reflection always wins.
-    _HINTABLE_SINKS = {_nodes.SinkType.FILE_PATH, _nodes.SinkType.TEMPLATE}
+    # Sinks with no observational canary fingerprint: a class-bound hint is the
+    # only way to route them (the benign canary can't provoke a NoSQL/shell/LDAP/
+    # SSRF signal the way a SQL error or HTML reflection is observable). observed
+    # evidence still always wins over the hint (checked below).
+    _HINTABLE_SINKS = {
+        _nodes.SinkType.FILE_PATH,
+        _nodes.SinkType.TEMPLATE,
+        _nodes.SinkType.NOSQL,
+        _nodes.SinkType.SHELL,
+        _nodes.SinkType.LDAP,
+        _nodes.SinkType.URL,
+    }
 
     observed = _infer_sink_type(
         reflected=reflected, sql_errors=sql_errors, content_type=content_type
