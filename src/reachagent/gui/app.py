@@ -354,7 +354,8 @@ async def start_scan(payload: dict[str, Any]) -> JSONResponse:
     llm_provider_raw = _opt_str(payload.get("llm_provider"))
     # A single saved provider is the unambiguous GUI default.  The launch form
     # sends an empty value when the browser still has "Server default" selected;
-    # do not route that case through the legacy Anthropic default.
+    # an empty provider is now a clear "no provider configured" error, not a
+    # silent default, so try the single-saved-provider shortcut first.
     if not llm_provider_raw:
         from reachagent.llm.runtime import selected_provider
 

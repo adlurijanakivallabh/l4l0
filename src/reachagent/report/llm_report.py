@@ -14,7 +14,6 @@ in depth), fallback to deterministic renderer on failure.
 from __future__ import annotations
 
 import logging
-import os
 from typing import Protocol
 
 from reachagent.graph.store import ReachabilityGraph
@@ -38,59 +37,6 @@ class ReportClient(Protocol):
     def propose(self, findings_context: dict[str, object]) -> dict[str, str]:
         """Return raw proposal dict with key ``narrative`` (markdown prose)."""
         ...
-
-
-class AnthropicReportClient:
-    """Anthropic-only report generator."""
-
-    def __init__(
-        self, *, api_key: str | None = None, model: str = "claude-3-5-sonnet-20240620"
-    ) -> None:
-        self._api_key = api_key or os.environ.get("ANTHROPIC_API_KEY", "")
-        self._model = model
-
-    def propose(self, findings_context: dict[str, object]) -> dict[str, str]:
-        if not self._api_key:
-            raise RuntimeError("ANTHROPIC_API_KEY not set")
-        try:
-            import anthropic  # type: ignore
-        except Exception as exc:  # noqa: BLE001
-            raise RuntimeError(f"anthropic SDK not available: {exc}") from exc
-        client = anthropic.Anthropic(api_key=self._api_key)
-        findings = findings_context.get("findings", [])
-        objective = str(findings_context.get("operator_goal", ""))[:500]
-        # Keep context compact: only finding_id/vuln_class/severity/evidence_ref, capped.
-        import json as _json
-
-        ctx_str = _json.dumps(findings, indent=2)[:4000]
-        prompt = (
-            "You are a security-assessment documentation assistant. Given ONLY "
-            "the verified records below, write a concise markdown summary of "
-            "the observed results, severity, evidence reference, and safe "
-            "reproduction notes for each record. Do not add tests, payloads, "
-            "procedures, or unverified claims. Respond as JSON "
-            '{"narrative": "<markdown>"}. '
-            f"Testing objective: {objective}\nConfirmed findings: {ctx_str}"
-        )
-        resp = client.messages.create(
-            model=self._model,
-            max_tokens=4096,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        text = ""
-        for block in resp.content:
-            if getattr(block, "type", "") == "text":
-                text += getattr(block, "text", "")
-        try:
-            data = _json.loads(text)
-        except Exception as exc:
-            import re as _re
-
-            m = _re.search(r"\{.*\}", text, flags=_re.DOTALL)
-            if not m:
-                raise ValueError(f"no JSON in model response: {text[:500]!r}") from exc
-            data = _json.loads(m.group(0))
-        return {"narrative": str(data.get("narrative", ""))}
 
 
 class OpenAIReportClient:
@@ -173,7 +119,9 @@ def generate_llm_report(
             tuner = client
         else:
             compatible = build_openai_compatible_client()
-            tuner = OpenAIReportClient(client=compatible) if compatible else AnthropicReportClient()
+            if compatible is None:
+                raise RuntimeError("no LLM provider configured for report generation")
+            tuner = OpenAIReportClient(client=compatible)
         context: dict[str, object] = {"findings": findings_ctx, "count": len(findings_ctx)}
         if operator_prompt:
             context["operator_goal"] = operator_prompt[:500]

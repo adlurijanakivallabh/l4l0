@@ -17,7 +17,6 @@ classes fail.
 from __future__ import annotations
 
 import logging
-import os
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -98,64 +97,11 @@ class InsertionPointSignals:
 
 
 class VulnTunerClient(Protocol):
-    """Thin swappable LLM client — Anthropic now, OpenAI later."""
+    """Thin swappable LLM client."""
 
     def propose(self, signals: dict[str, str], allowlist: tuple[str, ...]) -> dict[str, object]:
         """Return raw proposal dict with key ``vuln_classes`` (list of strings)."""
         ...
-
-
-class AnthropicVulnClient:
-    """Anthropic-only implementation."""
-
-    def __init__(
-        self, *, api_key: str | None = None, model: str = "claude-3-5-sonnet-20240620"
-    ) -> None:
-        self._api_key = api_key or os.environ.get("ANTHROPIC_API_KEY", "")
-        self._model = model
-
-    def propose(self, signals: dict[str, str], allowlist: tuple[str, ...]) -> dict[str, object]:
-        if not self._api_key:
-            raise RuntimeError("ANTHROPIC_API_KEY not set")
-        try:
-            import anthropic  # type: ignore
-        except Exception as exc:  # noqa: BLE001
-            raise RuntimeError(f"anthropic SDK not available: {exc}") from exc
-        client = anthropic.Anthropic(api_key=self._api_key)
-        allowed = ", ".join(allowlist)
-        sig_str = "; ".join(f"{k}={v}" for k, v in sorted(signals.items()))
-        prompt = (
-            "You are a defensive coverage planner for an authorized application. "
-            "Map this insertion-point schema to a prioritized checklist of "
-            "deterministic security-validation modules. Do not provide payloads, "
-            "exploit steps, or attack instructions. Choose module names only "
-            "from the allowlist (for example, a file field maps to file_upload; "
-            "a URL field maps to ssrf). Respond as JSON "
-            '{"vuln_classes": ["class_from_allowlist"]}. '
-            f"Signals: {sig_str}. Allowlist: {allowed}. "
-            "Pick only from the allowlist, no invented strings, most relevant first."
-        )
-        resp = client.messages.create(
-            model=self._model,
-            max_tokens=2048,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        text = ""
-        for block in resp.content:
-            if getattr(block, "type", "") == "text":
-                text += getattr(block, "text", "")
-        import json as _json
-
-        try:
-            data = _json.loads(text)
-        except Exception as exc:
-            import re as _re
-
-            m = _re.search(r"\{.*\}", text, flags=_re.DOTALL)
-            if not m:
-                raise ValueError(f"no JSON in model response: {text[:500]!r}") from exc
-            data = _json.loads(m.group(0))
-        return {"vuln_classes": data.get("vuln_classes", [])}
 
 
 class OpenAIVulnClient:
@@ -218,7 +164,7 @@ def propose_vuln_targets(
 ) -> VulnTargetChoice:
     """Propose vuln classes for an endpoint shape, allowlist-validated.
 
-    Model-agnostic entry — ``client`` swappable (Anthropic now, OpenAI later).
+    Model-agnostic entry — ``client`` is swappable.
     In compatibility mode, failures and non-allowlisted/invented strings fall
     back to the safe default and log why; strict scan-local LLM requirements
     re-raise provider failures.
@@ -228,7 +174,9 @@ def propose_vuln_targets(
             tuner = client
         else:
             compatible = build_openai_compatible_client()
-            tuner = OpenAIVulnClient(client=compatible) if compatible else AnthropicVulnClient()
+            if compatible is None:
+                raise RuntimeError("no LLM provider configured for vuln-class tuning")
+            tuner = OpenAIVulnClient(client=compatible)
         raw = tuner.propose(endpoint_signals, VULN_CLASS_ALLOWLIST)
         validated = _validate_choice(raw)
         if validated is not None:

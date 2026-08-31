@@ -535,10 +535,41 @@ order at Phase D next.
   state actually reaches `_run_scan`'s `env_overrides` argument with the right
   keys, and that unchecked flags never appear. Whole tree: **1318 passed,
   0 failed, 16 skipped.**
-- **Remaining in Phase D:** C2 (5 AnthropicClient classes + config-validation
-  trap), C4 (tui/, dead aliases, build_phase_summary, wordlist branches),
-  W2/W3 (plan-schema collapse), 20-client-class collapse, D3 (signal-gated
-  reconfirm wiring).
+**Status (2026-08-31): C2 done — the crash trap is real and fixed.**
+- Re-verified before cutting (same discipline as C1): the ledger undercounted
+  by one — there are 6 `Anthropic*Client` classes, not 5
+  (`AnthropicReportClient`, `AnthropicPayloadClient`, `AnthropicTunerClient`,
+  `AnthropicProfileClient`, `AnthropicVulnClient`, `AnthropicPlannerClient`),
+  none reachable without a live `import anthropic` (package not in
+  `pyproject.toml` — confirmed absent). Unlike C1, this one really is exactly
+  what the ledger described: `require_provider_config` special-cased
+  `provider in (unset, "anthropic")` as always-valid whenever
+  `ANTHROPIC_API_KEY` happened to be set (very plausible for anyone using
+  Claude Code to build this very project) — greenlighting a scan that then
+  hard-crashes the moment `build_planner_client()` builds an
+  `AnthropicPlannerClient` and its first `propose_json` call hits the missing
+  SDK. The 5 report/tuning classes degrade gracefully today (each call site
+  already wraps construction+call in a broad except that falls back to a
+  safe default) — but the planner path does NOT, by design (CLAUDE.md: LLM
+  drives orchestration, no silent fallback), so this was a live, easily
+  triggered crash for exactly this project's own likely users.
+- Deleted all 6 classes. `require_provider_config`/`build_openai_compatible_client`
+  no longer special-case the string `"anthropic"` — an unset provider now
+  raises a clear `RuntimeError` immediately at scan-launch preflight (GUI's
+  `/api/scan` calls this before creating the scan), instead of validating
+  successfully and crashing minutes later. `build_planner_client` mirrors the
+  same fix. The 5 non-planner call sites replace
+  `else: Anthropic...Client()` with `if compatible is None: raise
+  RuntimeError(...)` inline — same exception, same surrounding try/except,
+  identical externally-observable safe-fallback behavior, zero SDK dependency.
+- Fixed 3 stale test names/comments that referenced the deleted classes and
+  the old `ANTHROPIC_API_KEY`-based fallback trigger; added 2 new tests
+  (`test_provider_preflight_requires_a_provider`,
+  `test_provider_preflight_rejects_anthropic_as_unsupported`) pinning the new
+  behavior. Whole tree: **1319 passed, 0 failed, 16 skipped.**
+- **Remaining in Phase D:** C4 (tui/, dead aliases, build_phase_summary,
+  wordlist branches), W2/W3 (plan-schema collapse), 20-client-class collapse,
+  D3 (signal-gated reconfirm wiring).
 
 ### Phase E — Payload corpus hygiene
 *(read R7 corpora, R8 wordlists.)*

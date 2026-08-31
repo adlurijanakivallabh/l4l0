@@ -1,9 +1,8 @@
 """Hermetic tests for live-reasoning recon tuning — proposal-only, allowlist-gated.
 
-No live Anthropic API is ever hit: every test injects a mock ``ReconTunerClient``
-or patches ``AnthropicTunerClient``. Valid allowlisted proposals are returned
-verbatim; outside-allowlist proposals, errors and timeouts fall back to the safe
-default and log why.
+No live LLM API is ever hit: every test injects a mock ``ReconTunerClient``.
+Valid allowlisted proposals are returned verbatim; outside-allowlist proposals,
+errors and timeouts fall back to the safe default and log why.
 """
 
 from __future__ import annotations
@@ -207,11 +206,12 @@ def test_propose_mocked_generic_exception_fallback_cleanly() -> None:
     assert choice.wordlist_path == _SAFE_DEFAULT_WORDLIST
 
 
-def test_propose_no_api_key_fallback_when_client_is_none() -> None:
-    # When client is None the default AnthropicTunerClient is built from env;
-    # without ANTHROPIC_API_KEY it raises RuntimeError -> safe default.
+def test_propose_no_provider_fallback_when_client_is_none() -> None:
+    # When client is None and no LLM provider is configured, building the
+    # default OpenAI-compatible client returns None -> RuntimeError -> safe
+    # default (never crashes trying to reach an unconfigured/unsupported provider).
     with patch.dict(os.environ, {}, clear=False):
-        os.environ.pop("ANTHROPIC_API_KEY", None)
+        os.environ.pop("REACHAGENT_LLM_PROVIDER", None)
         choice = propose_recon_tuning({"target": "http://example.com"}, client=None)
     assert choice.wordlist_path == _SAFE_DEFAULT_WORDLIST
     assert choice.flags == _SAFE_DEFAULT_FLAGS

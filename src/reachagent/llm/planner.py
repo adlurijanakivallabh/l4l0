@@ -8,14 +8,12 @@ caller must translate the accepted tool names into the existing scoped runners.
 from __future__ import annotations
 
 import json
-import os
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Protocol
 
 from reachagent.llm.client import (
     build_openai_compatible_client,
-    extract_json_object,
     is_model_output_error,
 )
 from reachagent.recon.live_tuning import RECON_PROFILES
@@ -76,37 +74,6 @@ class PlannerClient(Protocol):
     def propose_json(self, prompt: str, *, max_tokens: int = 512) -> dict[str, object]: ...
 
 
-class AnthropicPlannerClient:
-    """Small Anthropic adapter for the same JSON-only planner boundary."""
-
-    def __init__(self, *, api_key: str | None = None, model: str | None = None) -> None:
-        self.api_key = api_key or os.environ.get("ANTHROPIC_API_KEY", "")
-        self.model = model or os.environ.get(
-            "REACHAGENT_ANTHROPIC_MODEL", "claude-3-5-sonnet-20240620"
-        )
-
-    def propose_json(self, prompt: str, *, max_tokens: int = 512) -> dict[str, object]:
-        if not self.api_key:
-            raise RuntimeError("ANTHROPIC_API_KEY is required for LLM scans")
-        try:
-            import anthropic  # type: ignore
-        except Exception as exc:  # noqa: BLE001 - optional provider dependency
-            raise RuntimeError(f"anthropic SDK not available: {exc}") from exc
-        client = anthropic.Anthropic(api_key=self.api_key)
-        response = client.messages.create(
-            model=self.model,
-            max_tokens=max_tokens,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        text = "".join(
-            getattr(block, "text", "")
-            for block in response.content
-            if getattr(block, "type", "") == "text"
-        )
-        value = extract_json_object(text)
-        return value
-
-
 def build_planner_client(provider: str | None = None) -> PlannerClient:
     """Build the selected provider adapter; never silently switches providers."""
 
@@ -115,8 +82,8 @@ def build_planner_client(provider: str | None = None) -> PlannerClient:
 
         provider = selected_provider()
     selected = provider.strip().lower()
-    if not selected or selected == "anthropic":
-        return AnthropicPlannerClient()
+    if not selected:
+        raise RuntimeError("no LLM provider configured — select one or set REACHAGENT_LLM_PROVIDER")
     client = build_openai_compatible_client(provider=selected)
     if client is None:
         raise RuntimeError(f"unsupported LLM provider: {provider!r}")

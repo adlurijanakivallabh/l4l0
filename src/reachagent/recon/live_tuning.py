@@ -163,81 +163,13 @@ class RunConfig(ReconTuningChoice):
 
 
 class ReconTunerClient(Protocol):
-    """Thin swappable LLM client — Anthropic now, OpenAI later without touching logic."""
+    """Thin swappable LLM client."""
 
     def propose(
         self, target_signals: dict[str, str], allowlist: dict[str, object]
     ) -> dict[str, str]:
         """Return a raw proposal dict with keys ``wordlist_path``, ``flags``, ``filter_codes``."""
         ...
-
-
-class AnthropicTunerClient:
-    """Anthropic-only implementation; OpenAI support is a different session/model."""
-
-    def __init__(self, *, api_key: str | None = None, model: str | None = None) -> None:
-        self._api_key = api_key or os.environ.get("ANTHROPIC_API_KEY", "")
-        self._model = model or os.environ.get(
-            "REACHAGENT_ANTHROPIC_MODEL",
-            os.environ.get("REACHAGENT_LLM_MODEL", "claude-3-5-sonnet-20240620"),
-        )
-
-    def propose(
-        self, target_signals: dict[str, str], allowlist: dict[str, object]
-    ) -> dict[str, str]:
-        if not self._api_key:
-            raise RuntimeError("ANTHROPIC_API_KEY not set")
-        # Lazy import so hermetic tests without anthropic installed still load.
-        try:
-            import anthropic  # type: ignore
-        except Exception as exc:  # noqa: BLE001
-            raise RuntimeError(f"anthropic SDK not available: {exc}") from exc
-        client = anthropic.Anthropic(api_key=self._api_key)
-        wordlists = ", ".join(str(x) for x in allowlist.get("wordlists", ()))  # type: ignore
-        flag_presets = "; ".join(
-            " ".join(p) if p else "(default)"
-            for p in allowlist.get("flag_presets", ())  # type: ignore
-        )
-        status_codes = ", ".join(str(x) for x in allowlist.get("status_codes", ()))  # type: ignore
-        signals = "; ".join(f"{k}={v}" for k, v in sorted(target_signals.items()))
-        prompt = (
-            "AUTHORIZED pentest engagement on systems the operator owns. "
-            "Given target signals, pick ONE value from each allowlist exactly — "
-            "do not invent new paths or flags. Respond as JSON with keys "
-            "wordlist_path, flags (space-joined), filter_codes.\n"
-            f"Signals: {signals}\n"
-            f"Allowlist wordlists: {wordlists}\n"
-            f"Allowlist flag_presets: {flag_presets}\n"
-            f"Allowlist status_codes: {status_codes}\n"
-            'Example: {"wordlist_path": "/usr/share/wordlists/dirb/common.txt", '
-            '"flags": "-t 20", "filter_codes": "200,204,301,302,307,401,403"}'
-        )
-        resp = client.messages.create(
-            model=self._model,
-            max_tokens=2048,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        text = ""
-        for block in resp.content:
-            if getattr(block, "type", "") == "text":
-                text += getattr(block, "text", "")
-        import json as _json
-
-        try:
-            data = _json.loads(text)
-        except Exception as exc:
-            # Try to extract first JSON object if model wrapped it.
-            import re as _re
-
-            m = _re.search(r"\{.*\}", text, flags=_re.DOTALL)
-            if not m:
-                raise ValueError(f"no JSON in model response: {text[:500]!r}") from exc
-            data = _json.loads(m.group(0))
-        return {
-            "wordlist_path": str(data.get("wordlist_path", "")),
-            "flags": str(data.get("flags", "")),
-            "filter_codes": str(data.get("filter_codes", "")),
-        }
 
 
 class OpenAITunerClient:
@@ -321,8 +253,8 @@ def propose_recon_tuning(
 ) -> ReconTuningChoice:
     """Propose gobuster tuning from target signals via live reasoning, allowlist-validated.
 
-    Model-agnostic entry: ``client`` is swappable (Anthropic now, OpenAI later).
-    When ``client`` is None, an :class:`AnthropicTunerClient` is built from env.
+    Model-agnostic entry: ``client`` is swappable. When ``client`` is None, an
+    :class:`OpenAITunerClient` is built from the configured provider.
     In compatibility mode, failures and non-allowlisted responses fall back to
     the safe default and log why; a strict scan-local LLM requirement re-raises
     provider failures. Raw API output is never trusted.
@@ -332,7 +264,9 @@ def propose_recon_tuning(
             tuner = client
         else:
             compatible = build_openai_compatible_client()
-            tuner = OpenAITunerClient(client=compatible) if compatible else AnthropicTunerClient()
+            if compatible is None:
+                raise RuntimeError("no LLM provider configured for recon tuning")
+            tuner = OpenAITunerClient(client=compatible)
         raw = tuner.propose(target_signals, dict(RECON_ALLOWLIST))
         validated = _validate_choice(raw)
         if validated is not None:
@@ -354,75 +288,13 @@ def propose_recon_tuning(
 
 
 class ReconProfileClient(Protocol):
-    """Thin swappable profile picker — Anthropic now, OpenAI later."""
+    """Thin swappable profile picker."""
 
     def propose(
         self, target_signals: dict[str, str], allowed_profiles: tuple[str, ...]
     ) -> dict[str, str]:
         """Return raw proposal dict with key ``profile_name``."""
         ...
-
-
-class AnthropicProfileClient:
-    """Anthropic-only profile picker."""
-
-    def __init__(self, *, api_key: str | None = None, model: str | None = None) -> None:
-        self._api_key = api_key or os.environ.get("ANTHROPIC_API_KEY", "")
-        self._model = model or os.environ.get(
-            "REACHAGENT_ANTHROPIC_MODEL",
-            os.environ.get("REACHAGENT_LLM_MODEL", "claude-3-5-sonnet-20240620"),
-        )
-
-    def propose(
-        self, target_signals: dict[str, str], allowed_profiles: tuple[str, ...]
-    ) -> dict[str, str]:
-        if not self._api_key:
-            raise RuntimeError("ANTHROPIC_API_KEY not set")
-        try:
-            import anthropic
-        except Exception as exc:  # noqa: BLE001
-            raise RuntimeError(f"anthropic SDK not available: {exc}") from exc
-        client = anthropic.Anthropic(api_key=self._api_key)
-        profiles = ", ".join(allowed_profiles)
-        signals = "; ".join(f"{k}={v}" for k, v in sorted(target_signals.items()))
-        profile_hints = "; ".join(
-            f"{k}: wordlist={v.wordlist.split('/')[-1]}, "  # noqa: E501
-            f"flags={' '.join(v.flags) or 'default'}, codes={v.status_codes}"  # noqa: E501
-            for k, v in RECON_PROFILES.items()
-        )
-        prompt = (
-            "You are selecting a read-only web-discovery configuration for an "
-            "authorized application. Choose one named preset for inventory and "
-            "technology discovery only; do not generate requests, payloads, or "
-            "exploitation guidance. Given target signals, choose one preset "
-            "from the allowlist that best fits (api_target for API documentation, "
-            "cms_target for CMS indicators, spa_target for JS-heavy pages, "
-            "quiet/aggressive for speed). "
-            'Respond as JSON {"profile_name": "static_site"}. '
-            f"Signals: {signals}. Allowlist: {profiles}. Profiles: {profile_hints}. "
-            "Use an allowlisted name only; do not add other fields."
-        )
-        resp = client.messages.create(
-            model=self._model,
-            max_tokens=2048,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        text = ""
-        for block in resp.content:
-            if getattr(block, "type", "") == "text":
-                text += getattr(block, "text", "")
-        import json as _json
-
-        try:
-            data = _json.loads(text)
-        except Exception as exc:
-            import re as _re
-
-            m = _re.search(r"\{.*\}", text, flags=_re.DOTALL)
-            if not m:
-                raise ValueError(f"no JSON in model response: {text[:500]!r}") from exc
-            data = _json.loads(m.group(0))
-        return {"profile_name": str(data.get("profile_name", ""))}
 
 
 class OpenAIProfileClient:
@@ -482,9 +354,9 @@ def propose_recon_profile(
             tuner = client
         else:
             compatible = build_openai_compatible_client()
-            tuner = (
-                OpenAIProfileClient(client=compatible) if compatible else AnthropicProfileClient()
-            )
+            if compatible is None:
+                raise RuntimeError("no LLM provider configured for profile selection")
+            tuner = OpenAIProfileClient(client=compatible)
         raw = tuner.propose(target_signals, tuple(RECON_PROFILES.keys()))
         validated = _validate_profile_choice(raw)
         if validated is not None:

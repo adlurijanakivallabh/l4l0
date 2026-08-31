@@ -12,7 +12,6 @@ pattern as recon/live_tuning.py. No new payload invented, no Finding written.
 from __future__ import annotations
 
 import logging
-import os
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Protocol
@@ -54,7 +53,7 @@ class PayloadAttemptContext:
 
 
 class PayloadTunerClient(Protocol):
-    """Thin swappable LLM client — Anthropic now, OpenAI later."""
+    """Thin swappable LLM client."""
 
     def propose(
         self,
@@ -65,70 +64,6 @@ class PayloadTunerClient(Protocol):
     ) -> dict[str, object]:
         """Return refs plus optional parent-preserving mutation descriptors."""
         ...
-
-
-class AnthropicPayloadClient:
-    """Anthropic-only implementation."""
-
-    def __init__(
-        self, *, api_key: str | None = None, model: str = "claude-3-5-sonnet-20240620"
-    ) -> None:
-        self._api_key = api_key or os.environ.get("ANTHROPIC_API_KEY", "")
-        self._model = model
-
-    def propose(
-        self,
-        signals: dict[str, str],
-        vuln_class: str,
-        candidate_refs: list[str],
-        prior_attempts: tuple[PayloadAttemptContext, ...] = (),
-    ) -> dict[str, object]:
-        if not self._api_key:
-            raise RuntimeError("ANTHROPIC_API_KEY not set")
-        try:
-            import anthropic  # type: ignore
-        except Exception as exc:  # noqa: BLE001
-            raise RuntimeError(f"anthropic SDK not available: {exc}") from exc
-        client = anthropic.Anthropic(api_key=self._api_key)
-        sig_str = "; ".join(f"{k}={v}" for k, v in sorted(signals.items()))
-        cands = ", ".join(candidate_refs[:20])
-        prompt = (
-            "You are a defensive coverage planner for an authorized application. "
-            "Choose the order of existing validation-reference labels for this "
-            "insertion point. Do not generate payload content, exploit steps, "
-            "or new references. The labels are opaque handles selected only "
-            "from the supplied bucket. Respond as JSON "
-            '{"payload_refs": ["reference_from_bucket"]}. '
-            f"Signals: {sig_str}. Bucket: {cands}. "
-            "Return bucket labels verbatim, most relevant first. You may also return "
-            "`mutations`: up to four objects `{parent_ref, kind}` where kind is one "
-            "of `url`, `double-url`, `delimiter`, `casing`, or `wrapper`; never emit "
-            "payload text."
-        )
-        resp = client.messages.create(
-            model=self._model,
-            max_tokens=4096,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        text = ""
-        for block in resp.content:
-            if getattr(block, "type", "") == "text":
-                text += getattr(block, "text", "")
-        import json as _json
-
-        try:
-            data = _json.loads(text)
-        except Exception as exc:
-            import re as _re
-
-            m = _re.search(r"\{.*\}", text, flags=_re.DOTALL)
-            if not m:
-                raise ValueError(f"no JSON in model response: {text[:500]!r}") from exc
-            data = _json.loads(m.group(0))
-        return {
-            "payload_refs": data.get("payload_refs", []),
-            "mutations": data.get("mutations", []),
-        }
 
 
 class OpenAIPayloadClient:
@@ -248,7 +183,7 @@ def propose_payload_choice(
 ) -> PayloadChoice:
     """Propose payload ordering for a bucket, dynamic-allowlist-validated.
 
-    Model-agnostic entry — ``client`` swappable (Anthropic now, OpenAI later).
+    Model-agnostic entry — ``client`` is swappable.
     Any failure, timeout, or non-bucket ref falls back to original confidence
     order (first 20) and logs why — never trusts raw API output.
     """
@@ -260,9 +195,9 @@ def propose_payload_choice(
             tuner = client
         else:
             compatible = build_openai_compatible_client()
-            tuner = (
-                OpenAIPayloadClient(client=compatible) if compatible else AnthropicPayloadClient()
-            )  # noqa: E501 — type annotation needed for mypy
+            if compatible is None:
+                raise RuntimeError("no LLM provider configured for payload tuning")
+            tuner = OpenAIPayloadClient(client=compatible)
         raw = tuner.propose(endpoint_signals, vuln_class, candidate_refs, prior_attempts)
         validated = _validate_choice(raw, candidate_refs)
         if validated is not None:

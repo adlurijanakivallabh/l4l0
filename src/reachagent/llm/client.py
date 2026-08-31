@@ -310,9 +310,8 @@ def build_openai_compatible_client(
 ) -> OpenAICompatibleClient | None:
     """Build the adapter only when the env explicitly selects a compatible provider.
 
-    Returning ``None`` for unset/Anthropic keeps existing Anthropic call sites
-    unchanged. The caller can pass the returned object to its provider-neutral
-    wrapper and retain its current allowlist/fallback behavior.
+    Returning ``None`` for an unset provider lets the caller apply its own
+    provider-neutral fallback behavior instead of crashing.
     """
 
     if provider is None:
@@ -320,18 +319,16 @@ def build_openai_compatible_client(
 
         provider = selected_provider()
     selected = provider.strip().lower()
-    if not selected or selected == "anthropic":
+    if not selected:
         return None
     return OpenAICompatibleClient(provider=selected, transport=transport)
 
 
 def require_provider_config(provider: str | None = None) -> None:
-    """Fail fast when the selected provider has no server-side API key.
+    """Fail fast when no LLM provider is configured, or it has no API key.
 
     This is a local configuration check only; it never sends a request. The
-    library's compatibility mode still allows callers to omit credentials and
-    receive their existing deterministic fallback. The GUI's strict path calls
-    this before creating a scan.
+    GUI's strict path calls this before creating a scan.
     """
 
     if provider is None:
@@ -339,10 +336,8 @@ def require_provider_config(provider: str | None = None) -> None:
 
         provider = selected_provider()
     selected = provider.strip().lower()
-    if not selected or selected == "anthropic":
-        if not _first_env("ANTHROPIC_API_KEY"):
-            raise RuntimeError("ANTHROPIC_API_KEY is required for LLM scans")
-        return
+    if not selected:
+        raise RuntimeError("no LLM provider configured — select one or set REACHAGENT_LLM_PROVIDER")
 
     client = build_openai_compatible_client(provider=selected)
     if client is None:

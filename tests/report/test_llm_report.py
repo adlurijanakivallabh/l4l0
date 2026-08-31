@@ -94,14 +94,14 @@ def test_mocked_empty_narrative_fallback() -> None:
     assert out.strip().startswith("|") or out.strip().startswith("No findings") or "ref-0" in out
 
 
-def test_no_api_key_fallback_when_client_none() -> None:
+def test_no_provider_fallback_when_client_none() -> None:
     g = _confirmed_graph(1)
-    # client=None will build AnthropicReportClient which needs key -> fallback
+    # client=None with no LLM provider configured -> RuntimeError -> fallback
     import os
     from unittest.mock import patch
 
     with patch.dict(os.environ, {}, clear=False):
-        os.environ.pop("ANTHROPIC_API_KEY", None)
+        os.environ.pop("REACHAGENT_LLM_PROVIDER", None)
         out = generate_llm_report(g, client=None)
     assert "ref-0" in out
 

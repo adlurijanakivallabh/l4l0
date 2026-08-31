@@ -162,7 +162,7 @@ def test_json_extraction_handles_fence_and_rejects_invalid() -> None:
         extract_json_object("not json")
 
 
-def test_factory_preserves_anthropic_default(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_factory_returns_none_for_unset_provider(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("REACHAGENT_LLM_PROVIDER", raising=False)
     for name in (
         "REACHAGENT_LLM_API_KEY",
@@ -178,9 +178,19 @@ def test_factory_preserves_anthropic_default(monkeypatch: pytest.MonkeyPatch) ->
     client.close()
 
 
-def test_provider_preflight_requires_anthropic_key(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    with pytest.raises(RuntimeError, match="ANTHROPIC_API_KEY is required"):
+def test_provider_preflight_requires_a_provider(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("REACHAGENT_LLM_PROVIDER", raising=False)
+    with pytest.raises(RuntimeError, match="no LLM provider configured"):
+        require_provider_config(None)
+    with pytest.raises(RuntimeError, match="no LLM provider configured"):
+        require_provider_config("")
+
+
+def test_provider_preflight_rejects_anthropic_as_unsupported() -> None:
+    # anthropic was never a real supported provider (no SDK dependency, no
+    # config) -- it must now fail clearly, not silently validate then crash
+    # later trying to import a package that was never installed.
+    with pytest.raises(ValueError, match="unsupported"):
         require_provider_config("anthropic")
 
 
