@@ -409,8 +409,35 @@ the read-only-first + independent-confirmation discipline (§7/§9/§10).
 - 4 hermetic orchestrator driver tests (`tests/scan/test_race_driver.py`),
   including one that pins the `run_business_logic` exclusivity fix directly.
   Whole tree: **1299 passed, 0 failed, 16 skipped.**
-- **Remaining in this insert:** xxe_blind_oob (new payload template,
-  OOB-gated), idor (gated behind an opt-in
+**Status (2026-08-31): xxe done.**
+- New `run_xxe` driver — no new payload template needed after all: an
+  existing template (`sqli_blind/oob-xxe-exfil`, `<!ENTITY xxe SYSTEM
+  "http://{nonce}.{collab}/xxe">`) had been sitting fully unfired since
+  whenever it was authored, tracked honestly in
+  `corpus._RESERVED_CLASS_TOKENS["XXE Injection"]` as "payloads available, no
+  confirming structural/OOB adapter" — reworded now that `run_xxe` confirms
+  it via the existing `oob_callback` oracle (no new mechanism).
+- Targeting is sink-matched, not a content-type guess: only endpoints whose
+  spec-declared request `Content-Type` is XML (`Endpoint.content_type`,
+  populated from OpenAPI/form `enctype` during recon) are probed — the graph
+  has no other honest signal that a request body will actually be parsed as
+  XML. OPTIONS-or-GET preflight clears read-only-first before the XML body
+  fires, mirroring `run_mass_assignment`/`run_xss_stored`. Gated on
+  `REACHAGENT_OOB_BASE_DOMAIN`: no collaborator configured means no channel
+  to ever observe a callback on, so the class is honestly skipped rather
+  than firing a payload nothing could confirm.
+- New §5 coverage-matrix row: **Partial** (not Full like SSRF-blind) — no
+  non-OOB fallback exists for this class at all, and only spec-discovered
+  XML endpoints are reachable; the bulk PATT/SecLists XXE folder stays
+  reserved (no per-line XML-body sink to match payload variants against).
+- 6 hermetic orchestrator driver tests (`tests/scan/test_xxe_driver.py`).
+  Since confirmation is out-of-band, the collaborator itself is faked
+  (`InteractshCollaborator` is pure in-memory, no real network polling
+  implemented yet — same seam `run_sqli_blind`'s OOB path already uses) and
+  `uuid.uuid4` is monkeypatched deterministic so the test can assert the
+  collaborator's `observed_nonces()` return value against the exact nonce
+  the driver generated. Whole tree: **1305 passed, 0 failed, 16 skipped.**
+- **Remaining in this insert:** idor (gated behind an opt-in
   `allow_cross_user_writes: bool = False` — requires a genuine cross-user
   write against another identity's live object).
 

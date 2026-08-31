@@ -155,7 +155,11 @@ _RESERVED_CLASS_TOKENS = {
     "Server Side Request Forgery": "reserved: payloads available, no confirming oracle yet",
     "JSON Web Token": "reserved: payloads available, no line-oriented payload file",
     "CORS Misconfiguration": "reserved: payloads available, no line-oriented payload file",
-    "XXE Injection": "reserved: payloads available, no confirming structural/OOB adapter",
+    "XXE Injection": (
+        "reserved: one hand-authored OOB template (sqli_blind/oob-xxe-exfil) is now "
+        "confirmed via orchestrator.run_xxe's oob_callback wiring; the bulk corpus folder "
+        "stays unconsumed — XML-body payloads have no per-line sink to match against"
+    ),
 }
 
 _FILENAME_MAP: dict[str, _FolderClass] = {

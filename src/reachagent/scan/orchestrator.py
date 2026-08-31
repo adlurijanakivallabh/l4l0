@@ -63,6 +63,7 @@ ALL_CLASSES: tuple[str, ...] = (
     "xss_dom",
     "ssti",
     "ssrf",
+    "xxe",
     "path_traversal",
     "file_upload",
     "jwt_forgery",
@@ -1640,6 +1641,119 @@ def run_race(
     return found
 
 
+def run_xxe(
+    *,
+    graph: ReachabilityGraph,
+    firer: RequestFirer,
+    base_url: str,
+    identity: str,
+    auth_headers: Mapping[str, str],
+    seam: _ValidatorSeam,
+    events: list[ScanEvent],
+) -> list[str]:
+    """Blind XXE — OOB external-entity exfiltration (§7 ``oob_callback``).
+
+    Fires the existing ``sqli_blind/oob-xxe-exfil`` template (previously
+    reserved: payloads available, no confirming adapter — see
+    ``corpus._RESERVED_CLASS_TOKENS``) as a raw XML body against endpoints
+    whose spec-declared request Content-Type is XML — sink-matched (§9), never
+    a content-type guess. Gated on ``REACHAGENT_OOB_BASE_DOMAIN``: with no
+    collaborator there is no channel to ever observe a callback on, so the
+    class is honestly skipped rather than firing a payload nothing could
+    confirm. OPTIONS-or-GET preflight clears read-only-first (§10) before the
+    XML body fires, mirroring ``run_mass_assignment``/``run_xss_stored``.
+    """
+    if not os.environ.get("REACHAGENT_OOB_BASE_DOMAIN"):
+        _emit(events, "payloads", "not-applicable", "xxe: no REACHAGENT_OOB_BASE_DOMAIN configured")
+        return []
+
+    xml_endpoints = [
+        (ep_node, ep)
+        for ep_node, ep in graph.endpoints()
+        if ep.method.upper() in ("POST", "PUT", "PATCH")
+        and "xml" in (ep.content_type or "").lower()
+    ]
+    if not xml_endpoints:
+        _emit(events, "payloads", "not-applicable", "xxe: no endpoint declares an XML request body")
+        return []
+
+    from reachagent.oob.collaborator import InteractshCollaborator
+    from reachagent.oracles.oob_callback import OOBCallbackEvidence
+    from reachagent.payloads.payload_resolver import resolve
+
+    try:
+        collaborator = InteractshCollaborator()
+    except Exception:  # noqa: BLE001, S110 — no OOB domain configured is valid
+        _emit(events, "payloads", "not-applicable", "xxe: OOB collaborator unavailable")
+        return []
+
+    found: list[str] = []
+    for _ep_node, ep in xml_endpoints:
+        label = f"xxe {ep.path}"
+        url = f"{base_url.rstrip('/')}{ep.path}"
+        preflight = _fire_readonly(
+            firer,
+            identity,
+            "OPTIONS",
+            url,
+            events=events,
+            label=f"{label}/preflight",
+            headers=auth_headers,
+        )
+        if preflight is None or not (200 <= preflight.status_code < 300):
+            preflight = _fire_readonly(
+                firer,
+                identity,
+                "GET",
+                url,
+                events=events,
+                label=f"{label}/preflight-get",
+                headers=auth_headers,
+            )
+        if preflight is None or not (200 <= preflight.status_code < 300):
+            _emit(events, "payloads", "not-applicable", f"{label}: no read-only clearance")
+            continue
+
+        nonce = "ra" + uuid.uuid4().hex[:12]
+        body = resolve("sqli_blind/oob-xxe-exfil", nonce=nonce, collab=collaborator._base_domain)
+        try:
+            firer.fire(
+                identity,
+                ep.method,
+                url,
+                state_changing=False,
+                headers={**dict(auth_headers), "Content-Type": "application/xml"},
+                content=body.encode("utf-8"),
+            )
+        except Exception as exc:  # noqa: BLE001, S112 — a refused probe is not a violation
+            _emit(events, "payloads", "error", f"{label}: fire refused ({type(exc).__name__})")
+            continue
+
+        verdict = seam.run(
+            OracleMechanism.OOB_CALLBACK,
+            OOBCallbackEvidence(
+                probe_nonce=nonce,
+                observed_nonces=collaborator.observed_nonces(),
+                evidence_ref=f"orchestrator/{label}",
+            ),
+        )
+        if verdict.is_violation:
+            nid = seam.write("xxe", seam.last, severity="critical")
+            if nid:
+                found.append(nid)
+                _emit(
+                    events,
+                    "payloads",
+                    "finding",
+                    f"blind xxe — oob callback at {ep.path}",
+                    path=ep.path,
+                )
+
+    if not found:
+        _emit(events, "payloads", "not-applicable", "xxe: no OOB callback observed")
+    return found
+
+
 # ---------------------------------------------------------------------------
 # Main orchestrator
 # ---------------------------------------------------------------------------
@@ -2257,6 +2371,16 @@ def scan_all_classes(
         seam=seam,
         events=events_out,
     )
+    check_cancel(cancel_check)
+    run_xxe(
+        graph=graph,
+        firer=firer,
+        base_url=base_url,
+        identity=identity,
+        auth_headers=auth_headers,
+        seam=seam,
+        events=events_out,
+    )
 
     from reachagent.scan.xss_dom import run_xss_dom
 
@@ -2294,6 +2418,7 @@ def scan_all_classes(
         "mass_assignment",
         "xss_stored",
         "open_redirect",
+        "xxe",
         # xss_dom IS driven (run_xss_dom above) — this set was stale, causing a
         # contradictory "no discovered precondition" event on every all-class
         # scan even when xss_dom just ran (and may have confirmed a finding).
