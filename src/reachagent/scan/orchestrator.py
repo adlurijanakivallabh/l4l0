@@ -317,11 +317,28 @@ class _ValidatorSeam:
     ) -> str | None:
         if verdict is None or not verdict.is_violation:
             return None
+        # LLM-confidence annotation (Build Order 5): computed here, strictly
+        # after verdict.is_violation is already True, so it can never
+        # influence whether this finding gets written — an additional
+        # signal on an already-confirmed finding, never a substitute for
+        # the oracle. Kept on dedicated Finding fields, deliberately never
+        # merged into `metadata` (that dict's documented contract is
+        # deterministic provenance only — see Finding's own docstring).
+        # Flag-gated, fails open to no annotation on any error.
+        from reachagent.confirmation.confidence import annotate_confidence
+
+        confidence, rationale = ("", "")
+        annotation = annotate_confidence(vuln_class, severity, verdict.reason)
+        if annotation:
+            confidence = annotation.get("llm_confidence", "")
+            rationale = annotation.get("llm_confidence_rationale", "")
         finding = Finding(
             vuln_class=vuln_class,
             severity=severity,
             oracle_used="",
             evidence_ref="",
+            llm_confidence=confidence,
+            llm_confidence_rationale=rationale,
         )
         return validator.write_finding(self.graph, finding, verdict, metadata=metadata)
 

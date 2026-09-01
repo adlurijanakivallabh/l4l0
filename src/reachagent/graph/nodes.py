@@ -217,6 +217,17 @@ class Finding:
     """A confirmed vulnerability — only ever written by the Validator (§4, §13).
 
     Never constructed from anything but a ``confirmed`` ``run_oracle`` result.
+
+    ``llm_confidence``/``llm_confidence_rationale`` (Build Order 5) are kept
+    as dedicated fields, deliberately separate from ``metadata``: metadata's
+    documented contract (validator.write_finding) is deterministic
+    provenance the caller derives from the fired evidence, never LLM
+    judgment. Confidence is an LLM's own advisory annotation, added strictly
+    after the finding is already oracle-confirmed — it can never influence
+    whether the finding exists, only add a second opinion alongside it, and
+    keeping it out of ``metadata`` means a report/audit consumer can trust
+    every ``metadata`` key came from deterministic evidence without having
+    to parse key-name conventions to tell the two apart.
     """
 
     vuln_class: str
@@ -225,3 +236,5 @@ class Finding:
     evidence_ref: str
     status: FindingStatus = FindingStatus.INCONCLUSIVE
     metadata: dict[str, str] = field(default_factory=dict)
+    llm_confidence: str = ""
+    llm_confidence_rationale: str = ""
