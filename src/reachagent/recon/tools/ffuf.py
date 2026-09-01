@@ -35,7 +35,7 @@ class FfufRunner(ReconToolRunner):
 
         from reachagent.recon.live_tuning import profile_argv  # ponytail: 5× copy → 1
 
-        if (profile := profile_argv(target, [])) is not None:
+        if (profile := profile_argv(target, [], graph=self.graph)) is not None:
             fd, path = tempfile.mkstemp(suffix=".json", prefix="ffuf-")  # noqa: S108
             _os2.close(fd)
             argv: list[str] = [

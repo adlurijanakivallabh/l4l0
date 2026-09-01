@@ -34,7 +34,7 @@ class FeroxbusterRunner(ReconToolRunner):
 
         from reachagent.recon.live_tuning import profile_argv  # ponytail: 5× copy → 1
 
-        if (profile := profile_argv(target, [])) is not None:
+        if (profile := profile_argv(target, [], graph=self.graph)) is not None:
             fd, path = tempfile.mkstemp(suffix=".json", prefix="ferox-")  # noqa: S108
             os.close(fd)
             argv: list[str] = [

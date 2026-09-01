@@ -35,7 +35,7 @@ class DirbRunner(ReconToolRunner):
         """dirb <target> <wordlist> -S — silent, results to stdout."""
         from reachagent.recon.live_tuning import profile_argv  # ponytail: 5× copy → 1
 
-        if (profile := profile_argv(target, [])) is not None:
+        if (profile := profile_argv(target, [], graph=self.graph)) is not None:
             return ["dirb", target, profile.wordlist, "-S"]
         wordlist = preferred_wordlist("REACHAGENT_DIRB_WORDLIST")
         return ["dirb", target, wordlist, "-S"]

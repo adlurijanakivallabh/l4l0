@@ -32,7 +32,7 @@ class X8Runner(ReconToolRunner):
         """x8 -u <target> -w <wordlist> — hidden param discovery, reflected check."""
         from reachagent.recon.live_tuning import profile_argv  # ponytail: 5× copy → 1
 
-        if (profile := profile_argv(target, [])) is not None:
+        if (profile := profile_argv(target, [], graph=self.graph)) is not None:
             wordlist = preferred_wordlist("REACHAGENT_X8_WORDLIST", x8=True)
             argv: list[str] = ["x8", "-u", target, "-w", wordlist]
             argv += list(profile.flags)

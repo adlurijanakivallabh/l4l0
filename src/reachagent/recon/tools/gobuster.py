@@ -135,7 +135,7 @@ class GobusterRunner(ReconToolRunner):
         """
         from reachagent.recon.live_tuning import profile_argv  # ponytail: 5× copy → 1
 
-        if (profile := profile_argv(target, [])) is not None:
+        if (profile := profile_argv(target, [], graph=self.graph)) is not None:
             return [
                 "gobuster",
                 "dir",

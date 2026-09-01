@@ -373,7 +373,43 @@ def _profile_name_of(profile: ReconProfile) -> str:
     return _SAFE_DEFAULT_PROFILE
 
 
-def _collect_target_signals(target: str, operator_prompt: str | None = None) -> dict[str, str]:
+def _graph_tech_signal(target: str, graph: object | None) -> tuple[str, str] | None:
+    """Look up an already-fingerprinted ``Host.technology``/version for ``target``.
+
+    whatweb/wpscan (fact-only recon runners) typically complete before the
+    content-discovery tools that call this picker, so by the time gobuster/
+    ffuf/feroxbuster/dirb ask "what wordlist?", the graph often already knows
+    the stack (e.g. "React, webpack" or "WordPress, PHP") — a far richer,
+    free-form signal than the old body-substring guess below, and it covers
+    any technology whatweb detects, not just a hardcoded wordpress/api pair.
+    """
+    if graph is None:
+        return None
+    from reachagent.recon.tools._net import host_of
+
+    try:
+        target_host = host_of(target).lower()
+    except Exception:  # noqa: BLE001 — malformed target, fall through to the ad-hoc probe
+        return None
+    hosts = getattr(graph, "hosts", None)
+    if not callable(hosts):
+        return None
+    try:
+        for _node, host in hosts():
+            hostname = getattr(host, "hostname", "") or getattr(host, "address", "") or ""
+            if hostname.lower() != target_host:
+                continue
+            technology = getattr(host, "technology", None)
+            if technology:
+                return str(technology), str(getattr(host, "detected_version", "") or "")
+    except Exception:  # noqa: BLE001 — a broken graph iterator must not break tuning
+        return None
+    return None
+
+
+def _collect_target_signals(
+    target: str, operator_prompt: str | None = None, *, graph: object | None = None
+) -> dict[str, str]:
     """Lightweight target signals for profile picker — headers + body hint (ponytail: stdlib)."""  # noqa: E501
     signals: dict[str, str] = {"target": target}
     if operator_prompt:
@@ -381,6 +417,12 @@ def _collect_target_signals(target: str, operator_prompt: str | None = None) -> 
     hint = os.environ.get("REACHAGENT_GOBUSTER_TECH_HINT") or os.environ.get("REACHAGENT_TECH_HINT")
     if hint:
         signals["tech"] = hint
+        return signals
+    if (graph_tech := _graph_tech_signal(target, graph)) is not None:
+        technology, version = graph_tech
+        signals["detected_technology"] = technology[:200]
+        if version:
+            signals["detected_version"] = version[:80]
         return signals
     try:
         import httpx
@@ -403,9 +445,10 @@ def get_profile_for_target(
     target: str,
     *,
     client: ReconProfileClient | None = None,
+    graph: object | None = None,
 ) -> ReconProfile | None:
     """Flag-gated, double-validated profile lookup — single helper for 5 runners."""  # noqa: E501  # ponytail: 5× copy → 1
-    decision = profile_decision(target, client=client)
+    decision = profile_decision(target, client=client, graph=graph)
     name = decision.get("profile", "default")
     if name == "default":
         return None
@@ -417,13 +460,17 @@ def profile_decision(
     *,
     client: ReconProfileClient | None = None,
     operator_prompt: str | None = None,
+    graph: object | None = None,
 ) -> dict[str, str]:
     """The recon-profile decision for ``target`` as display data (real, not a stub).
 
     The GUI's live scan-progress view shows exactly what the runners would use:
     the LLM pick (or the fallback) plus *why*. ``profile`` is the chosen profile name
     or ``"default"``; ``reason`` explains the pick / fallback / disabled state;
-    ``signals`` is the target-signal summary that drove the pick.
+    ``signals`` is the target-signal summary that drove the pick. ``graph``, when
+    supplied, lets the signal collector prefer an already-fingerprinted
+    ``Host.technology`` (e.g. from whatweb, which typically runs earlier in the
+    recon order) over the cruder ad-hoc HTTP probe below.
     """
     from reachagent.llm.runtime import flag_enabled
 
@@ -435,7 +482,7 @@ def profile_decision(
             "signals": "",
         }
     try:
-        signals = _collect_target_signals(target, operator_prompt)
+        signals = _collect_target_signals(target, operator_prompt, graph=graph)
         profile = propose_recon_profile(signals, client=client)
         # Defense in depth: second allowlist check even after propose validates.
         allowed_wl = set(RECON_ALLOWLIST["wordlists"])
@@ -480,6 +527,7 @@ def profile_argv(  # ponytail: 5× copy → 1
     base_argv: list[str] | None = None,  # noqa: ARG001 — uniformity
     *,
     client: ReconProfileClient | None = None,
+    graph: object | None = None,
 ) -> ReconProfile | None:
     """Single helper for 5 runners — replaces copy-pasted profile block."""
-    return get_profile_for_target(target, client=client)
+    return get_profile_for_target(target, client=client, graph=graph)

@@ -46,7 +46,7 @@ def test_strict_profile_decision_does_not_return_default_on_error(
 ) -> None:
     monkeypatch.setattr(
         "reachagent.recon.live_tuning._collect_target_signals",
-        lambda _target, _operator_prompt=None: {"target": "https://example.test"},
+        lambda _target, _operator_prompt=None, **_kw: {"target": "https://example.test"},
     )
     with override(enabled=True, provider="deepseek", required=True):
         with pytest.raises(RuntimeError, match="provider unavailable"):

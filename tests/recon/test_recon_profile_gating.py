@@ -6,6 +6,7 @@ import os
 from unittest.mock import patch
 
 from reachagent.execution.audit import AuditLog
+from reachagent.graph.nodes import Host
 from reachagent.graph.store import ReachabilityGraph
 from reachagent.recon.live_tuning import RECON_PROFILES, ReconProfile
 from reachagent.recon.tools.base import ScopeGuard
@@ -16,8 +17,8 @@ from reachagent.recon.tools.gobuster import GobusterRunner
 from reachagent.recon.tools.x8 import X8Runner
 
 
-def _runner(cls):  # type: ignore[no-untyped-def]
-    g = ReachabilityGraph()
+def _runner(cls, *, graph: ReachabilityGraph | None = None):  # type: ignore[no-untyped-def]
+    g = graph if graph is not None else ReachabilityGraph()
     a = AuditLog()
     scope = ScopeGuard.from_hosts(["example.com"])
     return cls(graph=g, scope=scope, audit=a)  # type: ignore[call-arg]
@@ -109,6 +110,58 @@ def test_flag_on_proposer_error_fallback_original() -> None:
     # fallback still produces a valid gobuster argv with target
     assert "gobuster" in argv[0]
     assert "http://example.com" in argv
+
+
+def test_flag_on_gobuster_prefers_graph_technology_over_ad_hoc_probe() -> None:
+    # whatweb (or wpscan) already fingerprinted this host before gobuster runs —
+    # the picker must see that fact instead of re-guessing via a fresh HTTP GET.
+    graph = ReachabilityGraph()
+    graph.add_host(
+        Host(
+            address="example.com",
+            hostname="example.com",
+            source="whatweb",
+            technology="WordPress, PHP",
+            detected_version="6.4",
+        )
+    )
+    seen_signals: dict[str, str] = {}
+
+    def _capture(signals: dict[str, str], **_kw):  # type: ignore[no-untyped-def]
+        seen_signals.update(signals)
+        return RECON_PROFILES["cms_target"]
+
+    with patch.dict(os.environ, {"REACHAGENT_RECON_PROFILE": "1"}, clear=False):
+        with patch("reachagent.recon.live_tuning.propose_recon_profile", side_effect=_capture):
+            r = _runner(GobusterRunner, graph=graph)
+            argv = r.command("http://example.com")
+    assert seen_signals.get("detected_technology") == "WordPress, PHP"
+    assert seen_signals.get("detected_version") == "6.4"
+    assert "server" not in seen_signals  # ad-hoc HTTP probe never ran
+    assert RECON_PROFILES["cms_target"].wordlist in argv
+
+
+def test_flag_on_falls_back_to_ad_hoc_probe_when_no_matching_host_in_graph() -> None:
+    graph = ReachabilityGraph()
+    graph.add_host(
+        Host(
+            address="other.example",
+            hostname="other.example",
+            source="whatweb",
+            technology="Nginx",
+        )
+    )
+    seen_signals: dict[str, str] = {}
+
+    def _capture(signals: dict[str, str], **_kw):  # type: ignore[no-untyped-def]
+        seen_signals.update(signals)
+        return RECON_PROFILES["static_site"]
+
+    with patch.dict(os.environ, {"REACHAGENT_RECON_PROFILE": "1"}, clear=False):
+        with patch("reachagent.recon.live_tuning.propose_recon_profile", side_effect=_capture):
+            r = _runner(GobusterRunner, graph=graph)
+            r.command("http://example.com")
+    assert "detected_technology" not in seen_signals
 
 
 def test_profile_outside_allowlist_filtered_even_if_validated_bypass_attempt() -> None:
