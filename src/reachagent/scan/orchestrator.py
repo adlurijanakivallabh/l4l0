@@ -66,6 +66,7 @@ _PHASE3_CLASS_ORDER: tuple[str, ...] = (
     "request_smuggling",
     "subdomain_takeover",
     "cloud_bucket_exposure",
+    "known_vulnerable_version",
     "jwt_forgery",
     "sqli_blind",
     "nosqli",
@@ -102,6 +103,7 @@ _SPECIALIST_OF_CLASS: dict[str, str] = {
     "request_smuggling": "protocol",
     "subdomain_takeover": "protocol",
     "cloud_bucket_exposure": "protocol",
+    "known_vulnerable_version": "protocol",
     "jwt_forgery": "auth",
     "authz_bola": "auth",
     "authz_idor": "auth",
@@ -1910,6 +1912,103 @@ def run_cloud_bucket_exposure(
     return found
 
 
+def run_known_vulnerable_version(
+    *,
+    graph: ReachabilityGraph,
+    firer: RequestFirer,
+    base_url: str,
+    identity: str,
+    seam: _ValidatorSeam,
+    events: list[ScanEvent],
+) -> list[str]:
+    """Fingerprinted version + live NVD lookup -> known-CVE structural check
+    (§7 Build Order 4, hexstrike-ai audit refinement).
+
+    Reads the graph's own already-fingerprinted ``Host.technology``/
+    ``detected_version`` (a whatweb/recon fact — no new probing here) and
+    asks NVD whether that exact product/version has known CVEs. A version
+    with no known CVEs is not applicable, not worth an oracle call — same
+    "generate/look up candidates, ask the oracle only about ones already
+    worth it" shape as ``run_cloud_bucket_exposure``. When matches exist,
+    one live re-probe confirms the RAW fingerprinted version substring
+    (never the full reconstructed "product/version" banner, which the
+    live text may not format identically) is genuinely present right now,
+    not stale graph data from an earlier recon pass, before writing a
+    finding.
+    """
+    from reachagent.cve_intel.detector import (
+        VersionProbe,
+        VersionProber,
+        detect_known_vulnerable_version,
+    )
+    from reachagent.cve_intel.nvd_client import enrich_with_epss, lookup_cves
+
+    found: list[str] = []
+    technology = ""
+    version = ""
+    for _node, host in graph.hosts():
+        if host.technology and host.detected_version:
+            technology, version = host.technology, host.detected_version
+            break
+    if not technology or not version:
+        _emit(
+            events,
+            "payloads",
+            "not-applicable",
+            "known_vulnerable_version: no fingerprinted product+version in the graph",
+        )
+        return found
+
+    matches = tuple(lookup_cves(technology, version))
+    if not matches:
+        _emit(
+            events,
+            "payloads",
+            "not-applicable",
+            f"known_vulnerable_version: no known CVEs for {technology} {version}",
+        )
+        return found
+    matches = tuple(enrich_with_epss(list(matches)))
+
+    def _fire_probe() -> VersionProbe:
+        result = firer.fire(identity, "GET", base_url)
+        haystack = f"{dict(result.headers)}\n{result.body.decode('utf-8', errors='replace')}"
+        return VersionProbe(status=result.status_code, haystack=haystack)
+
+    prober = VersionProber(fire_probe=_fire_probe, oracle_runner=seam.run)
+    result = detect_known_vulnerable_version(
+        prober,
+        version_string=version,
+        cve_matches=matches,
+        evidence_ref=f"orchestrator/known_vulnerable_version/{base_url}",
+    )
+    if result.confirmed and seam.last is not None:
+        worst = max((match.cvss_score or 0.0 for match in result.matches), default=0.0)
+        severity = "critical" if worst >= 9.0 else "high" if worst >= 7.0 else "medium"
+        metadata = {
+            "cve_ids": ",".join(match.cve_id for match in result.matches),
+            "worst_cvss": str(worst),
+            "epss_scores": ",".join(
+                f"{match.cve_id}={match.epss_score:.3f}"
+                for match in result.matches
+                if match.epss_score is not None
+            ),
+        }
+        nid = seam.write(
+            "known_vulnerable_version", seam.last, severity=severity, metadata=metadata
+        )
+        if nid:
+            found.append(nid)
+            _emit(
+                events,
+                "payloads",
+                "finding",
+                f"known-vulnerable version {technology} {version} — "
+                f"{len(result.matches)} CVE match(es)",
+            )
+    return found
+
+
 def run_default_credentials(
     *,
     graph: ReachabilityGraph,
@@ -3693,6 +3792,14 @@ def scan_all_classes(
             seam=seam,
             events=events_out,
             transport=transport,
+        ),
+        "known_vulnerable_version": lambda: run_known_vulnerable_version(
+            graph=graph,
+            firer=firer,
+            base_url=base_url,
+            identity=identity,
+            seam=seam,
+            events=events_out,
         ),
         "jwt_forgery": lambda: run_jwt_forgery(
             graph=graph,

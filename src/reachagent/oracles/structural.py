@@ -147,6 +147,18 @@ class StructuralCheckType(StrEnum):
     # not applicable (try the next candidate name); a 403/AccessDenied means
     # the bucket exists but is properly secured — denied, not a finding.
     CLOUD_BUCKET_EXPOSURE = "cloud_bucket_exposure"
+    # KNOWN_VULNERABLE_VERSION — a fingerprinted Host.technology/detected_version
+    # (e.g. "Apache Tomcat/7.0.92") has at least one known CVE per a live NVD
+    # lookup (reachagent.cve_intel.nvd_client — a threat-intel enrichment of a
+    # deterministic fact, never a scanner import per CLAUDE.md §9). Same
+    # sentinel-in-response shape as PATH_TRAVERSAL/SUBDOMAIN_TAKEOVER, but with
+    # NO status-code gate: unlike a traversal payload, a version banner is just
+    # as real on a 403/404/500 error page as on a 2xx. This oracle confirms only
+    # that the exact version string is genuinely present in the CURRENT live
+    # response, not stale graph data from an earlier recon pass — the CVE match
+    # itself is an already-established external-database fact, decided before
+    # the oracle ever runs (same role as DEFAULT_CREDENTIALS's login attempt).
+    KNOWN_VULNERABLE_VERSION = "known_vulnerable_version"
 
 
 @dataclass(frozen=True)
@@ -258,6 +270,17 @@ class StructuralEvidence:
       detector's own determination. A complete burst with no lockout signal
       → violation (no rate limiting); a lockout signal observed → denied
       (rate limiting works); an incomplete burst → inconclusive.
+
+    KNOWN_VULNERABLE_VERSION:
+      ``sentinel``: the fingerprinted version string (e.g.
+      ``Apache Tomcat/7.0.92``). ``response_body``: the live re-probe's
+      searchable text (headers and body both concatenated in by the
+      detector — a version banner may live in either). ``probe_status``:
+      the live re-probe's status, carried for evidence only — NOT gated on,
+      since a version banner is just as real on an error page as a 2xx.
+      Sentinel present anywhere in the live response → the fingerprint is
+      current, not stale → violation (the CVE match itself was already
+      established, before this oracle ever ran, by a live NVD lookup).
 
     ``evidence_ref``: short, secret-free provenance handle (§13).
     """
@@ -526,6 +549,14 @@ def decide(evidence: StructuralEvidence) -> FindingStatus:
             return FindingStatus.CONFIRMED_VIOLATION
         return FindingStatus.INCONCLUSIVE
 
+    if evidence.check_type is StructuralCheckType.KNOWN_VULNERABLE_VERSION:
+        # Deliberately no status-code gate: a version banner is just as real
+        # on a 403/404/500 error page as on a 2xx (unlike a traversal payload,
+        # where a non-2xx usually means "access denied", not "here it is").
+        if evidence.sentinel and evidence.sentinel in evidence.response_body:
+            return FindingStatus.CONFIRMED_VIOLATION
+        return FindingStatus.INCONCLUSIVE
+
     if evidence.check_type is StructuralCheckType.RATE_LIMIT_ABSENT:
         if (
             evidence.attempts_planned <= 0
@@ -571,6 +602,7 @@ def _reason(evidence: StructuralEvidence, status: FindingStatus) -> str:
         StructuralCheckType.DEFAULT_CREDENTIALS: "login_status_not_decisive",
         StructuralCheckType.RATE_LIMIT_ABSENT: "burst_incomplete",
         StructuralCheckType.CLOUD_BUCKET_EXPOSURE: "listing_marker_not_observed",
+        StructuralCheckType.KNOWN_VULNERABLE_VERSION: "version_string_not_observed",
     }.get(evidence.check_type, "unknown_structural_check")
     return decision_reason(OracleMechanism.STRUCTURAL, status, detail)
 
