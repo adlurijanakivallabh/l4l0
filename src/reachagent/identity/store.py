@@ -13,6 +13,7 @@ the owning identity's isolated store, so secrets never enter the graph.
 from __future__ import annotations
 
 import os
+import threading
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -163,12 +164,21 @@ class TokenStore:
     A distinct instance per identity with no shared backing state — the property
     that makes cross-identity token bleed impossible by construction rather than
     by discipline.
+
+    Concurrent-specialist safety (Build Order 2c): two threads firing requests
+    for the SAME identity at once can both observe an expired token and both
+    race to refresh it — a real, exercised path once concurrent specialists can
+    call ``RequestFirer.fire()`` from multiple threads. ``self._lock`` (a
+    reentrant lock, since methods below call each other on ``self``) makes
+    every read-or-mutate of ``_material``/``_refresh_callback`` a single
+    atomic step; at most one thread ever runs a refresh at a time.
     """
 
     def __init__(self, identity: str) -> None:
         self._identity = identity
         self._material: SessionMaterial | None = None
         self._refresh_callback: RefreshCallback | None = None
+        self._lock = threading.RLock()
 
     @property
     def identity(self) -> str:
@@ -176,8 +186,9 @@ class TokenStore:
 
     @property
     def has_token(self) -> bool:
-        material = self._material
-        return material is not None and bool(material.token or material.cookies)
+        with self._lock:
+            material = self._material
+            return material is not None and bool(material.token or material.cookies)
 
     def set_token(
         self,
@@ -203,30 +214,33 @@ class TokenStore:
 
     def set_material(self, material: SessionMaterial) -> None:
         """Replace this identity's complete private session material."""
-        self._material = material
+        with self._lock:
+            self._material = material
 
     def merge_cookies(self, cookies: Mapping[str, str]) -> None:
         """Merge browser cookies into this identity without dropping a bearer token."""
-        current = self._material
-        if current is None:
-            self._material = SessionMaterial(kind="cookie", cookies=tuple(cookies.items()))
-            return
-        merged = dict(current.cookies)
-        merged.update({str(k): str(v) for k, v in cookies.items()})
-        kind = "mixed" if current.token else "cookie"
-        self._material = SessionMaterial(
-            kind=kind,
-            token=current.token,
-            cookies=tuple(merged.items()),
-            expires_at=current.expires_at,
-            refresh_token=current.refresh_token,
-            refresh_url=current.refresh_url,
-            token_type=current.token_type,
-        )
+        with self._lock:
+            current = self._material
+            if current is None:
+                self._material = SessionMaterial(kind="cookie", cookies=tuple(cookies.items()))
+                return
+            merged = dict(current.cookies)
+            merged.update({str(k): str(v) for k, v in cookies.items()})
+            kind = "mixed" if current.token else "cookie"
+            self._material = SessionMaterial(
+                kind=kind,
+                token=current.token,
+                cookies=tuple(merged.items()),
+                expires_at=current.expires_at,
+                refresh_token=current.refresh_token,
+                refresh_url=current.refresh_url,
+                token_type=current.token_type,
+            )
 
     def set_refresh_callback(self, callback: RefreshCallback | None) -> None:
         """Install an in-memory refresh function; never persist the callback."""
-        self._refresh_callback = callback
+        with self._lock:
+            self._refresh_callback = callback
 
     def get_token(self) -> str | None:
         material = self._live_material()
@@ -242,73 +256,87 @@ class TokenStore:
 
     @property
     def expires_at(self) -> datetime | None:
-        return self._material.expires_at if self._material is not None else None
+        with self._lock:
+            return self._material.expires_at if self._material is not None else None
 
     @property
     def kind(self) -> str | None:
-        return self._material.kind if self._material is not None else None
+        with self._lock:
+            return self._material.kind if self._material is not None else None
 
     def refresh_if_needed(self) -> bool:
         """Refresh expired bearer material when a callback was supplied.
 
         A missing/failed callback fails closed by clearing the material.  This
         prevents an expired token from silently being reused on later requests.
+        Locked end to end: two threads racing an expired token's refresh must
+        never both invoke the refresh callback or overwrite each other's result.
         """
-        material = self._material
-        if material is None or not material.expired:
-            return bool(material)
-        if not material.refresh_token or self._refresh_callback is None:
-            self.clear()
-            return False
-        try:
-            refreshed = self._refresh_callback(material.refresh_token)
-        except Exception:  # noqa: BLE001 - refresh failure is a closed session
-            refreshed = None
-        if refreshed is None:
-            self.clear()
-            return False
-        self.set_material(refreshed)
-        return True
+        with self._lock:
+            material = self._material
+            if material is None or not material.expired:
+                return bool(material)
+            if not material.refresh_token or self._refresh_callback is None:
+                self.clear()
+                return False
+            try:
+                refreshed = self._refresh_callback(material.refresh_token)
+            except Exception:  # noqa: BLE001 - refresh failure is a closed session
+                refreshed = None
+            if refreshed is None:
+                self.clear()
+                return False
+            self.set_material(refreshed)
+            return True
 
     def _live_material(self) -> SessionMaterial | None:
-        if self._material is None:
-            return None
-        if self._material.expired and not self.refresh_if_needed():
-            return None
-        return self._material
+        with self._lock:
+            if self._material is None:
+                return None
+            if self._material.expired and not self.refresh_if_needed():
+                return None
+            return self._material
 
     def clear(self) -> None:
-        self._material = None
-        self._refresh_callback = None
+        with self._lock:
+            self._material = None
+            self._refresh_callback = None
 
     def safe_summary(self) -> dict[str, object]:
-        material = self._material
-        return (
-            material.safe_dict()
-            if material is not None
-            else {
-                "kind": None,
-                "has_token": False,
-                "cookie_names": [],
-                "expires_at": None,
-                "has_refresh": False,
-            }
-        )
+        with self._lock:
+            material = self._material
+            return (
+                material.safe_dict()
+                if material is not None
+                else {
+                    "kind": None,
+                    "has_token": False,
+                    "cookie_names": [],
+                    "expires_at": None,
+                    "has_refresh": False,
+                }
+            )
 
     def redact(self, value: str) -> str:
         """Replace this identity's private material in a model-facing string."""
         text = str(value)
-        material = self._material
-        if material is None:
-            return text
-        for secret in (material.token, material.refresh_token, *(v for _, v in material.cookies)):
+        with self._lock:
+            material = self._material
+            if material is None:
+                return text
+            secrets = (material.token, material.refresh_token, *(v for _, v in material.cookies))
+        for secret in secrets:
             if secret:
                 text = text.replace(secret, "<redacted>")
         return text
 
     def __repr__(self) -> str:  # never echo the token value
-        kind = self._material.kind if self._material is not None else None
-        return f"TokenStore(identity={self._identity!r}, has_token={self.has_token}, kind={kind!r})"
+        with self._lock:
+            kind = self._material.kind if self._material is not None else None
+            return (
+                f"TokenStore(identity={self._identity!r}, "
+                f"has_token={self.has_token}, kind={kind!r})"
+            )
 
 
 class IdentityStore:
@@ -317,6 +345,13 @@ class IdentityStore:
     Derived identities/sessions are those spawned by the Chain Solver via a
     ``derived_credential`` edge (§8); the Coordinator treats them as first-class
     and weights them heaviest in the §4 scoring rule.
+
+    Concurrent-specialist safety (Build Order 2c): ``add()`` can run mid-scan
+    (a Chain Solver credential derivation), and concurrently-running
+    specialists can each try to derive/register one at the same time.
+    ``self._lock`` (reentrant — methods below call each other on ``self``)
+    makes every read or mutation of the four backing dicts and the sessions
+    map a single atomic step.
     """
 
     def __init__(self) -> None:
@@ -324,6 +359,7 @@ class IdentityStore:
         self._identities: dict[str, Identity] = {}
         self._token_stores: dict[str, TokenStore] = {}
         self._sessions: dict[str, Session] = {}
+        self._lock = threading.RLock()
 
     # -- seeding -----------------------------------------------------------
 
@@ -388,37 +424,43 @@ class IdentityStore:
     ) -> Identity:
         """Register a credential, its Identity node, and its isolated TokenStore."""
         name = credential.identity
-        self._credentials[name] = credential
         identity = Identity(
             role=credential.role,
             auth_state=credential.auth_state,
             provenance=provenance,
         )
-        self._identities[name] = identity
-        # One dedicated store per identity — the isolation boundary (§10).
-        self._token_stores[name] = TokenStore(name)
+        with self._lock:
+            self._credentials[name] = credential
+            self._identities[name] = identity
+            # One dedicated store per identity — the isolation boundary (§10).
+            self._token_stores[name] = TokenStore(name)
         return identity
 
     # -- access ------------------------------------------------------------
 
     def names(self) -> list[str]:
-        return list(self._credentials)
+        with self._lock:
+            return list(self._credentials)
 
     def __iter__(self) -> Iterator[str]:
-        return iter(self._credentials)
+        return iter(self.names())
 
     def __contains__(self, identity: str) -> bool:
-        return identity in self._credentials
+        with self._lock:
+            return identity in self._credentials
 
     def credential(self, identity: str) -> Credential:
-        return self._require(self._credentials, identity)
+        with self._lock:
+            return self._require(self._credentials, identity)
 
     def identity(self, identity: str) -> Identity:
-        return self._require(self._identities, identity)
+        with self._lock:
+            return self._require(self._identities, identity)
 
     def token_store(self, identity: str) -> TokenStore:
         """Return the isolated token store for one identity (§10)."""
-        return self._require(self._token_stores, identity)
+        with self._lock:
+            return self._require(self._token_stores, identity)
 
     # -- sessions ----------------------------------------------------------
 
@@ -460,29 +502,32 @@ class IdentityStore:
             expires_at=material.expires_at.isoformat() if material.expires_at else None,
             live=live,
         )
-        self._sessions[identity] = session
+        with self._lock:
+            self._sessions[identity] = session
         return session
 
     def ensure_session(self, identity: str, *, live: bool = True) -> Session | None:
         """Create a graph-safe Session for already-captured private material."""
-        existing = self._sessions.get(identity)
-        if existing is not None:
-            return existing
-        material = self.token_store(identity).get_material()
-        if material is None:
-            return None
-        session = Session(
-            token_ref=self._token_ref(identity),
-            identity_ref=identity,
-            auth_kind=material.kind,
-            expires_at=material.expires_at.isoformat() if material.expires_at else None,
-            live=live,
-        )
-        self._sessions[identity] = session
-        return session
+        with self._lock:
+            existing = self._sessions.get(identity)
+            if existing is not None:
+                return existing
+            material = self.token_store(identity).get_material()
+            if material is None:
+                return None
+            session = Session(
+                token_ref=self._token_ref(identity),
+                identity_ref=identity,
+                auth_kind=material.kind,
+                expires_at=material.expires_at.isoformat() if material.expires_at else None,
+                live=live,
+            )
+            self._sessions[identity] = session
+            return session
 
     def session(self, identity: str) -> Session | None:
-        return self._sessions.get(identity)
+        with self._lock:
+            return self._sessions.get(identity)
 
     def resolve_token(self, session: Session) -> str | None:
         """Resolve a Session's ``token_ref`` back to its value via the owning store.
@@ -496,15 +541,16 @@ class IdentityStore:
         """Return the selected identity's live headers for a runtime request."""
         store = self.token_store(identity)
         headers = store.headers()
-        session = self._sessions.get(identity)
-        if session is not None:
-            session.live = bool(headers)
-            material = store.get_material()
-            if material is not None:
-                session.auth_kind = material.kind
-                session.expires_at = (
-                    material.expires_at.isoformat() if material.expires_at else None
-                )
+        with self._lock:
+            session = self._sessions.get(identity)
+            if session is not None:
+                session.live = bool(headers)
+                material = store.get_material()
+                if material is not None:
+                    session.auth_kind = material.kind
+                    session.expires_at = (
+                        material.expires_at.isoformat() if material.expires_at else None
+                    )
         return headers
 
     def redact(self, identity: str, value: str) -> str:
