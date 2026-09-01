@@ -3709,6 +3709,18 @@ def scan_all_classes(
                 specialist=specialist,
             )
         phase3_drivers[class_name]()
+        # Real per-class work just happened — refresh the idle-timeout clock
+        # here, not only at the coarse phase boundary after ALL Phase-3
+        # classes finish. Build Order 2's continuous re-ranking turned one
+        # ranking call into one per remaining class (~22), and every driver
+        # call in between does real, visible work (an LLM call, HTTP
+        # probes) — none of that resets AdaptiveControlState's activity
+        # clock on its own, so a Phase 3 whose cumulative wall-clock time
+        # exceeds idle_timeout was being flagged as "stuck" the instant it
+        # finished, even when it was making continuous real progress
+        # throughout (confirmed live: a genuine finding landed mid-phase,
+        # then the very next coarse-phase check raised IdleTimeout anyway).
+        control_state.touch()
 
     findings = [fid for fid, _ in graph.findings()]
     _emit(events_out, "payloads", "info", "phase 3 done", findings=len(findings))

@@ -233,6 +233,45 @@ def test_phase3_dispatch_re_ranks_after_every_class_not_just_once(tmp_path, monk
     assert calls[-1] == (_PHASE3_CLASS_ORDER[-1],)
 
 
+def test_phase3_dispatch_refreshes_the_idle_clock_once_per_class(tmp_path, monkeypatch) -> None:  # noqa: ANN001
+    """Bug found live (Build Order 2 follow-up): AdaptiveControlState's idle
+    clock was only refreshed at the 5 coarse phase boundaries
+    (recon/endpoints/payloads/verification/report) via a single touch()
+    call after ALL of Phase 3 finishes. Once Phase 3 became ~22 per-class
+    re-ranking calls instead of one upfront call, a real scan's cumulative
+    Phase-3 wall-clock time could exceed idle_timeout even while making
+    continuous real progress throughout (confirmed live: a genuine finding
+    landed mid-phase, then the very next coarse-phase check raised
+    IdleTimeout anyway). Spies on AdaptiveControlState.touch directly
+    (patched on the source class, since orchestrator.py imports it locally
+    inside scan_all_classes) to prove it's called at least once per
+    dispatched class, not just once at the end.
+    """
+    from reachagent.payloads import PayloadLibrary
+    from reachagent.scan import agentic_loop as _agentic_loop
+
+    calls = {"n": 0}
+    real_touch = _agentic_loop.AdaptiveControlState.touch
+
+    def _spy_touch(self: object) -> None:
+        calls["n"] += 1
+        real_touch(self)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(_agentic_loop.AdaptiveControlState, "touch", _spy_touch)
+    scan_all_classes(
+        base_url="https://safe.example",
+        in_scope="safe.example",
+        transport=httpx.MockTransport(_clean_handler),
+        surface_path=_surface(tmp_path),
+        library=PayloadLibrary.from_file(),
+    )
+    # At least one touch() per dispatched Phase-3 class, on top of whatever
+    # coarse-phase touches already happened (recon/endpoints/etc.) — the
+    # old behavior would have left this at just the coarse-phase count,
+    # far below len(_PHASE3_CLASS_ORDER).
+    assert calls["n"] >= len(_PHASE3_CLASS_ORDER)
+
+
 def test_rank_vuln_classes_applies_a_valid_llm_order(monkeypatch) -> None:  # noqa: ANN001
     from reachagent.llm import runtime as _runtime
 
