@@ -350,6 +350,15 @@ def _harvest_baseline_value(
     return None
 
 
+def _wind_down_hint(remaining: int) -> str:
+    """Steering-hint text for the forced graceful wind-down (Agentic Coordinator, Phase 4)."""
+    return (
+        f"Only {remaining} candidate-selection attempts remain in this scan's budget "
+        "— prioritize the highest-confidence remaining candidates rather than exploring "
+        "broadly."
+    )
+
+
 def scan_target(
     *,
     base_url: str,
@@ -1146,10 +1155,25 @@ def scan_target(
         # The solver owns the real per-path cap (40 by default). Keep this matching
         # ceiling as a second guard for a graph-mutating plugin that creates candidates.
         max_iterations = 40
+        # Repeat-candidate throttling (PentAGI's repeat-tool-call pattern) is
+        # already covered below: attempted_edges refuses to reselect the same
+        # (identity, endpoint, parameter) tuple within this run.
         attempted_edges: set[tuple[str, str, str | None]] = set()
+        wind_down_notified = False
+        _WIND_DOWN_WINDOW = 3
         while iterations < max_iterations and solver.budget_remaining("scan") > 0:
             check_cancel(cancel_check)
             iterations += 1
+            # Forced graceful wind-down (Agentic Coordinator, Phase 4): once
+            # near the iteration ceiling, inject one steering note so the
+            # next LLM decision point wraps up deliberately instead of the
+            # loop just stopping mid-thought. Reuses Phase 3's steering-hint
+            # queue — no new plumbing.
+            if not wind_down_notified and max_iterations - iterations <= _WIND_DOWN_WINDOW:
+                wind_down_notified = True
+                add_hint = getattr(cancel_check, "add_steering_hint", None)
+                if callable(add_hint):
+                    add_hint(_wind_down_hint(max_iterations - iterations))
             _checkpoint("payloads", iteration=iterations)
             cands = _coordinator.query_graph(context)
             if resumed:
