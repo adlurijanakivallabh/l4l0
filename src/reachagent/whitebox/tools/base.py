@@ -189,7 +189,17 @@ class SourceToolRunner:
                 command=tuple(argv),
             )
 
-        return replace(self.ingest(repo_path, completed.stdout), command=tuple(argv))
+        # Bound BEFORE parse, not just the returned preview (adversarial
+        # review): subprocess.run's capture_output buffers the tool's full
+        # stdout into THIS (parent) process — not the RLIMIT_AS-capped
+        # child — so an unbounded string here is an unbounded parent-memory
+        # cost regardless of how tightly the child itself is capped. Mirrors
+        # ReconToolRunner.run()'s identical truncate-before-ingest ordering.
+        # A truncated JSON/JSON-lines payload can fail to parse; that is a
+        # clean, audited WhiteboxOutcome.ERRORED (ingest's own parse-error
+        # handling), never a crash, and a smaller cost than buffering an
+        # unbounded string twice (once here, once inside json.loads).
+        return replace(self.ingest(repo_path, _truncate(completed.stdout)), command=tuple(argv))
 
 
 def _truncate(raw: str) -> str:

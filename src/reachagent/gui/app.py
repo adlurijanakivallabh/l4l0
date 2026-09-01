@@ -423,8 +423,15 @@ def app_js() -> Response:
 
 
 def _opt_str(value: Any) -> str | None:
-    """Coerce an optional JSON string: ``None``/empty → ``None``, never the literal "None"."""
-    return str(value).strip() if value else None
+    """Coerce an optional JSON string: ``None``/empty/whitespace-only → ``None``,
+    never the literal "None" and never a value that only LOOKS non-empty
+    before stripping (adversarial review: ``"   "`` used to survive as
+    ``""`` — a real gap for any caller that then does a filesystem check on
+    the result, e.g. ``Path("").is_dir()`` resolving to the server's own
+    working directory instead of correctly refusing the input).
+    """
+    text = str(value).strip() if value else ""
+    return text or None
 
 
 def _validate_named_provider(config: dict[str, str]) -> None:

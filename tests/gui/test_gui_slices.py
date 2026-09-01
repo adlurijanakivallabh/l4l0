@@ -689,6 +689,40 @@ def test_concurrent_specialists_flag_reaches_scan_all_classes(monkeypatch) -> No
     assert captured.get("concurrent_specialists") is True
 
 
+def test_opt_str_treats_whitespace_only_as_none() -> None:
+    """Adversarial review: _opt_str("   ") used to survive as "" (truthy
+    check ran before stripping) -- a real gap for any caller that then does
+    a filesystem check on the result, e.g. Path("").is_dir() resolving to
+    the server's own working directory instead of correctly refusing."""
+    assert gui_app._opt_str("   ") is None
+    assert gui_app._opt_str("") is None
+    assert gui_app._opt_str(None) is None
+    assert gui_app._opt_str("  real-value  ") == "real-value"
+
+
+def test_repo_path_whitespace_only_is_ignored_not_treated_as_cwd(monkeypatch) -> None:  # noqa: ANN001
+    _stub_named_provider(monkeypatch)
+
+    async def noop_scan(*_args: object, **_kwargs: object) -> None:
+        return None
+
+    monkeypatch.setattr(gui_app, "_run_scan", noop_scan)
+    response = TestClient(app).post(
+        "/api/scan",
+        json={
+            "target": "https://demo.example",
+            "in_scope": "demo.example",
+            "use_llm": True,
+            "llm_provider": "named:unit-provider",
+            "repo_path": "   ",
+        },
+    )
+    # Never 400 (the field is simply absent, not an invalid path) and
+    # never silently treated as the server's own working directory.
+    assert response.status_code == 200
+    _scans.pop(response.json()["scan_id"], None)
+
+
 def test_repo_path_rejected_when_not_an_existing_directory() -> None:
     response = TestClient(app).post(
         "/api/scan",

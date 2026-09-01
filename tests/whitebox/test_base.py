@@ -173,6 +173,45 @@ def test_live_spawn_uses_shell_false_and_an_argument_array(
     assert captured["preexec_fn"] is base._limit_child_memory
 
 
+def test_live_spawn_truncates_output_before_parse_not_just_the_preview(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,  # noqa: ANN001
+) -> None:
+    """Adversarial review: ingest() used to receive the FULL, untruncated
+    stdout -- subprocess.run's capture_output buffers the whole thing into
+    THIS (parent) process, not the RLIMIT_AS-capped child, so an unbounded
+    string here was an unbounded parent-memory cost. run() must truncate
+    before ever calling ingest()/parse(), mirroring the recon tier."""
+    import reachagent.whitebox.tools.base as base
+
+    huge = "x" * (base._OUTPUT_MAX_CHARS + 5_000)
+    seen_lengths: list[int] = []
+
+    class _RecordingRunner(SourceToolRunner):
+        name = "recording"
+        binary = "recording-tool"
+
+        def command(self, repo_path: str) -> list[str]:
+            return ["recording-tool", repo_path]
+
+        def parse(self, repo_path: str, raw_output: str) -> tuple[str, ...]:
+            seen_lengths.append(len(raw_output))
+            return ()
+
+    @dataclass
+    class _Completed:
+        stdout: str = huge
+
+    monkeypatch.setattr(base.shutil, "which", lambda _b: "/usr/bin/recording-tool")
+    monkeypatch.setattr(base.subprocess, "run", lambda *_a, **_k: _Completed())
+    runner = _RecordingRunner(graph=ReachabilityGraph())
+
+    runner.run(str(tmp_path), environ={"REACHAGENT_RECON_LIVE": "1"})
+
+    assert len(seen_lengths) == 1
+    assert seen_lengths[0] <= base._OUTPUT_MAX_CHARS + 100  # truncation marker overhead only
+
+
 def test_missing_binary_at_spawn_time_race_is_still_a_clean_skip(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,  # noqa: ANN001

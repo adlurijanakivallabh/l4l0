@@ -35,6 +35,13 @@ _REAL_SHAPE_OUTPUT = json.dumps(
 )
 
 
+def test_command_disables_metrics_telemetry() -> None:
+    """Adversarial review: --config=auto alone phones scan telemetry home to
+    semgrep.dev by default. --metrics=off must always be present."""
+    runner = SemgrepRunner(graph=ReachabilityGraph())
+    assert "--metrics=off" in runner.command("/some/repo")
+
+
 def test_ingest_parses_a_real_shaped_semgrep_result() -> None:
     graph = ReachabilityGraph()
     runner = SemgrepRunner(graph=graph)
