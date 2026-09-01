@@ -112,6 +112,31 @@ class StructuralCheckType(StrEnum):
     # as PATH_TRAVERSAL/UNION_EXTRACTION/SSRF_RESPONSE — one more evidence type
     # inside the existing STRUCTURAL family, six families held.
     SUBDOMAIN_TAKEOVER = "subdomain_takeover"
+    # INFO_DISCLOSURE — a response body contains a known framework/language
+    # stack-trace or debug-page marker (e.g. a Java JSP exception trace, a
+    # Python traceback, a Django/Spring/PHP debug page), proving the app
+    # leaked implementation detail in an error response. Same sentinel-in-body
+    # shape as the checks above — the fixed marker table lives with the
+    # detector (`reachagent.info_disclosure.detector`), not here; this oracle
+    # only reconfirms a specific, already-identified marker is verbatim
+    # present, exactly like every other sentinel-in-body check.
+    INFO_DISCLOSURE = "info_disclosure"
+    # DEFAULT_CREDENTIALS — a well-known username/password pair authenticated
+    # successfully against a discovered login form. Same accept-or-reject
+    # shape as JWT_FORGERY (a credential either produced a real session or it
+    # didn't) — the detector (`reachagent.default_creds.detector`) determines
+    # `session_captured` from the login attempt's actual response (real
+    # token/cookies present, not just a 2xx status); this oracle only
+    # reconfirms that determination deterministically.
+    DEFAULT_CREDENTIALS = "default_credentials"
+    # RATE_LIMIT_ABSENT — a small, bounded burst of login attempts (never a
+    # real brute force) never triggered any defensive signal (a 429 status,
+    # or a known lockout/throttle body marker). Same "was a specific
+    # defensive mechanism present or absent" shape as CLICKJACKING/CORS —
+    # the detector runs the bounded burst and determines
+    # `lockout_signal_observed`; this oracle only reconfirms the completeness
+    # + presence/absence logic deterministically.
+    RATE_LIMIT_ABSENT = "rate_limit_absent"
 
 
 @dataclass(frozen=True)
@@ -191,6 +216,31 @@ class StructuralEvidence:
       a successful response → the service genuinely reports itself unclaimed
       → violation.
 
+    INFO_DISCLOSURE:
+      ``sentinel``: the specific known stack-trace/debug-page marker the
+      detector already identified as a candidate match. ``response_body``:
+      the probed response body. ``probe_status``: the probe's status code —
+      unrestricted (a leak can appear on a 200, 404, or 500 alike; the marker
+      itself, not the status, is the evidence). Sentinel present verbatim →
+      violation.
+
+    DEFAULT_CREDENTIALS:
+      ``session_captured``: whether the login attempt actually returned real
+      session material (a token or cookies) — the detector's own login
+      submission determined this, not a status-code guess. ``probe_status``:
+      the login response's status. A captured session on a non-error status
+      → violation; no session material → the credential pair failed.
+
+    RATE_LIMIT_ABSENT:
+      ``attempts_planned``/``attempts_completed``: the bounded burst size and
+      how many attempts actually got a real HTTP response (a partial burst —
+      network failures, a safety-gate refusal — carries no trustworthy
+      signal). ``lockout_signal_observed``: whether ANY attempt in the burst
+      showed a 429 status or a known lockout/throttle body marker — the
+      detector's own determination. A complete burst with no lockout signal
+      → violation (no rate limiting); a lockout signal observed → denied
+      (rate limiting works); an incomplete burst → inconclusive.
+
     ``evidence_ref``: short, secret-free provenance handle (§13).
     """
 
@@ -209,6 +259,10 @@ class StructuralEvidence:
     location: str = ""
     set_cookie: str = ""
     csrf_token_present: bool = False
+    session_captured: bool = False
+    attempts_planned: int = 0
+    attempts_completed: int = 0
+    lockout_signal_observed: bool = False
     evidence_ref: str = ""
     metadata: EvidenceMetadata = field(default_factory=EvidenceMetadata)
 
@@ -244,6 +298,16 @@ def _validate_evidence(evidence: StructuralEvidence) -> None:
             raise ValueError(f"{name} contains a control character")
     if not isinstance(evidence.csrf_token_present, bool):
         raise TypeError("csrf_token_present must be a boolean")
+    if not isinstance(evidence.session_captured, bool):
+        raise TypeError("session_captured must be a boolean")
+    if not isinstance(evidence.lockout_signal_observed, bool):
+        raise TypeError("lockout_signal_observed must be a boolean")
+    for name in ("attempts_planned", "attempts_completed"):
+        value = getattr(evidence, name)
+        if not isinstance(value, int) or isinstance(value, bool):
+            raise TypeError(f"{name} must be an int")
+        if value < 0:
+            raise ValueError(f"{name} must be non-negative")
 
 
 def _xfo_is_effective(xfo: str) -> bool:
@@ -421,6 +485,30 @@ def decide(evidence: StructuralEvidence) -> FindingStatus:
             return FindingStatus.CONFIRMED_VIOLATION
         return FindingStatus.INCONCLUSIVE
 
+    if evidence.check_type is StructuralCheckType.INFO_DISCLOSURE:
+        # No status-code gate: the marker itself proves the leak regardless of
+        # whether the app happened to return 200, 404, or 500 for it.
+        if evidence.sentinel and evidence.sentinel in evidence.response_body:
+            return FindingStatus.CONFIRMED_VIOLATION
+        return FindingStatus.INCONCLUSIVE
+
+    if evidence.check_type is StructuralCheckType.DEFAULT_CREDENTIALS:
+        if not (200 <= evidence.probe_status < 400):
+            return FindingStatus.INCONCLUSIVE
+        if evidence.session_captured:
+            return FindingStatus.CONFIRMED_VIOLATION
+        return FindingStatus.CONFIRMED_DENIED
+
+    if evidence.check_type is StructuralCheckType.RATE_LIMIT_ABSENT:
+        if (
+            evidence.attempts_planned <= 0
+            or evidence.attempts_completed < evidence.attempts_planned
+        ):
+            return FindingStatus.INCONCLUSIVE
+        if evidence.lockout_signal_observed:
+            return FindingStatus.CONFIRMED_DENIED
+        return FindingStatus.CONFIRMED_VIOLATION
+
     if evidence.check_type is StructuralCheckType.CSRF_MISSING_PROTECTION:
         samesite = _cookie_samesite(evidence.set_cookie)
         # SameSite=None ships the session cookie cross-site; with no token
@@ -452,6 +540,9 @@ def _reason(evidence: StructuralEvidence, status: FindingStatus) -> str:
         StructuralCheckType.CSRF_MISSING_PROTECTION: "same_site_or_token_control_unknown",
         StructuralCheckType.WEB_CACHE_POISONING: "marker_not_replayed_from_cache",
         StructuralCheckType.SUBDOMAIN_TAKEOVER: "unclaimed_service_marker_not_observed",
+        StructuralCheckType.INFO_DISCLOSURE: "disclosure_marker_not_observed",
+        StructuralCheckType.DEFAULT_CREDENTIALS: "login_status_not_decisive",
+        StructuralCheckType.RATE_LIMIT_ABSENT: "burst_incomplete",
     }.get(evidence.check_type, "unknown_structural_check")
     return decision_reason(OracleMechanism.STRUCTURAL, status, detail)
 

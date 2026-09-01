@@ -55,6 +55,8 @@ _log = logging.getLogger(__name__)
 # REACHAGENT_VULN_TUNING call), these ~20 drivers run in one fixed, hardcoded
 # sequence with zero LLM input. This is the default/fallback order.
 _PHASE3_CLASS_ORDER: tuple[str, ...] = (
+    "default_credentials",
+    "rate_limit_absence",
     "structural_headers",
     "file_upload",
     "mass_assignment",
@@ -83,6 +85,8 @@ _PHASE3_CLASS_ORDER: tuple[str, ...] = (
 # without changing what actually runs. Every class still routes through the
 # exact same driver function and oracle it always did.
 _SPECIALIST_OF_CLASS: dict[str, str] = {
+    "default_credentials": "auth",
+    "rate_limit_absence": "auth",
     "structural_headers": "client_side",
     "open_redirect": "client_side",
     "cache_poisoning": "client_side",
@@ -1753,6 +1757,169 @@ def run_subdomain_takeover(
     return found
 
 
+def run_default_credentials(
+    *,
+    graph: ReachabilityGraph,
+    firer: RequestFirer,
+    base_url: str,
+    identity: str,
+    seam: _ValidatorSeam,
+    events: list[ScanEvent],
+) -> list[str]:
+    """Try well-known default credentials against a discovered login form (§7, Build Order 0).
+
+    Reuses the exact login-submission mechanism already used for a real
+    operator-supplied identity (``identity.login.submit_login``) — a login
+    attempt is a normal authentication action, not a new capability. The
+    credential pairs themselves are a closed, fixed allowlist; the LLM may
+    only reorder/subset that allowlist from target-tech context, never
+    invent a pair (`default_creds.propose_credential_order`).
+    """
+    from reachagent.default_creds.detector import (
+        detect_default_credentials,
+        propose_credential_order,
+    )
+    from reachagent.identity.login import CapturedSession, detect_login_forms, submit_login
+    from reachagent.recon.live_tuning import _graph_tech_signal
+
+    found: list[str] = []
+    try:
+        forms = detect_login_forms(firer, base_url, identity, graph)
+    except Exception as exc:  # noqa: BLE001 — discovery failure is not a violation
+        _emit(events, "payloads", "error", f"default_credentials: login discovery failed ({exc})")
+        return found
+    if not forms:
+        _emit(events, "payloads", "not-applicable", "default_credentials: no login form found")
+        return found
+
+    tech_signal = _graph_tech_signal(base_url, graph)
+    signals = {"target": base_url}
+    if tech_signal is not None:
+        signals["detected_technology"] = tech_signal[0]
+    order = propose_credential_order(signals)
+
+    for form in forms[:3]:  # bounded: at most 3 discovered forms tried
+        _emit(
+            events,
+            "payloads",
+            "step",
+            f"default_credentials: trying {len(order)} known pairs against {form.url}",
+        )
+
+        def _attempt(username: str, password: str, _form: object = form) -> CapturedSession:
+            return submit_login(firer, identity, _form, username, password)  # type: ignore[arg-type]
+
+        result = detect_default_credentials(
+            form,
+            attempt_login=_attempt,
+            order=order,
+            oracle_runner=seam.run,
+            evidence_ref=f"orchestrator/default_credentials/{form.url}",
+        )
+        if result.confirmed and seam.last is not None:
+            nid = seam.write("default_credentials", seam.last, severity="high")
+            if nid:
+                found.append(nid)
+                _emit(
+                    events,
+                    "payloads",
+                    "finding",
+                    f"default credentials — {result.username}:*** works at {form.url}",
+                )
+                break  # one confirmed default-credential login is enough
+    return found
+
+
+# A deliberately-wrong pair — never a real credential, never mutating state,
+# used only to observe whether repeated failed attempts ever change behavior.
+_RATE_LIMIT_PROBE_CREDENTIAL = ("ra-probe-user", "ra-probe-wrong-password")
+
+
+def run_rate_limit_absence(
+    *,
+    graph: ReachabilityGraph,
+    firer: RequestFirer,
+    base_url: str,
+    identity: str,
+    seam: _ValidatorSeam,
+    events: list[ScanEvent],
+) -> list[str]:
+    """Bounded burst of wrong-credential login attempts (§7, Build Order 0).
+
+    Fires a small, fixed number of attempts (never a real brute force — see
+    ``rate_limit.detector._BURST_SIZE``) and checks whether any of them ever
+    triggered a defensive signal. Every attempt uses the same deliberately-
+    wrong, never-real credential pair — the point is observing whether
+    *behavior* changes across repeats, not guessing a real password.
+    """
+    from reachagent.identity.login import detect_login_forms
+    from reachagent.rate_limit.detector import (
+        RateLimitProbe,
+        RateLimitProber,
+        detect_rate_limit_absence,
+    )
+
+    found: list[str] = []
+    try:
+        forms = detect_login_forms(firer, base_url, identity, graph)
+    except Exception as exc:  # noqa: BLE001 — discovery failure is not a violation
+        _emit(events, "payloads", "error", f"rate_limit_absence: login discovery failed ({exc})")
+        return found
+    if not forms:
+        _emit(events, "payloads", "not-applicable", "rate_limit_absence: no login form found")
+        return found
+
+    form = forms[0]
+    if form.kind != "html_form":
+        # Scoped ceiling: only the common HTML-form login shape is probed
+        # here (graphql/generic-JSON login forms are a different firing
+        # shape this driver doesn't build) — not applicable, not a miss.
+        _emit(
+            events,
+            "payloads",
+            "not-applicable",
+            f"rate_limit_absence: login form kind {form.kind!r} not supported",
+        )
+        return found
+    username, password = _RATE_LIMIT_PROBE_CREDENTIAL
+    _emit(events, "payloads", "step", f"rate_limit_absence: bounded burst against {form.url}")
+
+    def _fire_attempt(_index: int) -> RateLimitProbe:
+        data = dict(form.extra_fields)
+        if form.username_field:
+            data[form.username_field] = username
+        data[form.password_field] = password
+        result = firer.fire(
+            identity,
+            form.method,
+            form.url,
+            state_changing=True,
+            authentication=True,
+            data=data,
+            headers={"Content-Type": form.enctype},
+        )
+        return RateLimitProbe(
+            status=result.status_code, body=result.body.decode("utf-8", errors="replace")
+        )
+
+    prober = RateLimitProber(fire_attempt=_fire_attempt, oracle_runner=seam.run)
+    result = detect_rate_limit_absence(
+        prober, evidence_ref=f"orchestrator/rate_limit_absence/{form.url}"
+    )
+    if result.confirmed and seam.last is not None:
+        nid = seam.write("rate_limit_absence", seam.last, severity="medium")
+        if nid:
+            found.append(nid)
+            _emit(
+                events,
+                "payloads",
+                "finding",
+                f"no login rate limiting observed after {result.attempts_completed} attempts "
+                f"at {form.url}",
+            )
+    return found
+
+
 # ---------------------------------------------------------------------------
 # Phase 3 — authz (bola/bfla) via the generic BOLA detector
 # ---------------------------------------------------------------------------
@@ -2560,11 +2727,45 @@ def _reconfirm_sqli(
     )
 
 
+def _reconfirm_information_exposure(
+    candidate: Any,
+    *,
+    graph: ReachabilityGraph,
+    firer: RequestFirer,
+    base_url: str,
+    identity: str,
+    auth_headers: Mapping[str, str],
+    events: list[ScanEvent],
+    ctx: Any,
+) -> object | None:
+    del ctx  # unused — a plain read-only GET is all this check needs
+    from reachagent.info_disclosure.detector import match_marker
+    from reachagent.oracles.structural import StructuralCheckType, StructuralEvidence
+
+    ep = graph.endpoint(candidate.endpoint_node)
+    url = f"{base_url.rstrip('/')}{ep.path}"
+    label = f"signal-reconfirm information_exposure {ep.path}"
+    probe = _fire_readonly(
+        firer, identity, "GET", url, events=events, label=label, headers=auth_headers
+    )
+    if probe is None:
+        return None
+    body = probe.body.decode("utf-8", errors="replace")
+    return StructuralEvidence(
+        check_type=StructuralCheckType.INFO_DISCLOSURE,
+        sentinel=match_marker(body) or "",
+        probe_status=probe.status_code,
+        response_body=body,
+        evidence_ref=f"signal-reconfirm/info-disclosure{ep.path}",
+    )
+
+
 _RECONFIRM_BUILDERS: dict[tuple[str, OracleMechanism], Callable[..., object | None]] = {
     ("jwt_forgery", OracleMechanism.STRUCTURAL): _reconfirm_jwt_forgery,
     ("xss_reflected", OracleMechanism.EXECUTION_CONFIRMATION): _reconfirm_xss_reflected,
     ("command_injection", OracleMechanism.OOB_CALLBACK): _reconfirm_command_injection,
     ("sqli", OracleMechanism.DIFFERENTIAL): _reconfirm_sqli,
+    ("information_exposure", OracleMechanism.STRUCTURAL): _reconfirm_information_exposure,
 }
 
 
@@ -2596,8 +2797,11 @@ def _make_signal_reconfirm(
     )
 
     def _finding_factory(candidate: Any, verdict: object) -> Finding:
+        # information_exposure is a leaked-implementation-detail signal, not an
+        # exploitable access/injection primitive — "high" would overstate it.
+        severity = "informational" if candidate.vuln_class == "information_exposure" else "high"
         return Finding(
-            vuln_class=candidate.vuln_class, severity="high", oracle_used="", evidence_ref=""
+            vuln_class=candidate.vuln_class, severity=severity, oracle_used="", evidence_ref=""
         )
 
     def _reconfirm(candidate: Any) -> object:
@@ -3190,6 +3394,22 @@ def scan_all_classes(
             )
 
     phase3_drivers: dict[str, Callable[[], None]] = {
+        "default_credentials": lambda: run_default_credentials(
+            graph=graph,
+            firer=firer,
+            base_url=base_url,
+            identity=identity,
+            seam=seam,
+            events=events_out,
+        ),
+        "rate_limit_absence": lambda: run_rate_limit_absence(
+            graph=graph,
+            firer=firer,
+            base_url=base_url,
+            identity=identity,
+            seam=seam,
+            events=events_out,
+        ),
         "structural_headers": lambda: run_structural_headers(
             graph=graph,
             firer=firer,

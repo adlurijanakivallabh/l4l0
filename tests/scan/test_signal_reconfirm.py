@@ -275,6 +275,53 @@ def test_command_injection_skipped_without_oob_domain(monkeypatch) -> None:  # n
     assert seen == []
 
 
+def test_information_exposure_confirms_on_known_stack_trace_marker() -> None:
+    graph = _graph()
+    ep = graph.add_endpoint(Endpoint(method="GET", path="/index.jsp"))
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            500, text="HTTP Status 500\norg.apache.jasper.JasperException\nApache Tomcat/7.0.92"
+        )
+
+    reconfirm = _reconfirm(graph, handler)
+    candidate = Candidate(
+        identity="nikto",
+        endpoint_node=ep,
+        param_node=None,
+        vuln_class="information_exposure",
+        suggested_oracle=OracleMechanism.STRUCTURAL,
+        payload_ref=None,
+        signal=_SIGNAL,
+    )
+    node_id = reconfirm(candidate)
+    assert node_id is not None
+    findings = dict(graph.findings())
+    assert findings[node_id].vuln_class == "information_exposure"
+    assert findings[node_id].severity == "informational"
+
+
+def test_information_exposure_no_finding_on_a_plain_error_page() -> None:
+    graph = _graph()
+    ep = graph.add_endpoint(Endpoint(method="GET", path="/index.jsp"))
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, text="<html>Internal Server Error</html>")
+
+    reconfirm = _reconfirm(graph, handler)
+    candidate = Candidate(
+        identity="nikto",
+        endpoint_node=ep,
+        param_node=None,
+        vuln_class="information_exposure",
+        suggested_oracle=OracleMechanism.STRUCTURAL,
+        payload_ref=None,
+        signal=_SIGNAL,
+    )
+    assert reconfirm(candidate) is None
+    assert graph.findings() == []
+
+
 def test_command_injection_confirms_when_callback_observed(monkeypatch) -> None:  # noqa: ANN001
     monkeypatch.setenv("REACHAGENT_OOB_BASE_DOMAIN", "oob.test")
     monkeypatch.setattr(_orchestrator.uuid, "uuid4", lambda: _FIXED_UUID)
