@@ -65,6 +65,7 @@ _PHASE3_CLASS_ORDER: tuple[str, ...] = (
     "cache_poisoning",
     "request_smuggling",
     "subdomain_takeover",
+    "cloud_bucket_exposure",
     "jwt_forgery",
     "sqli_blind",
     "nosqli",
@@ -100,6 +101,7 @@ _SPECIALIST_OF_CLASS: dict[str, str] = {
     "xxe": "injection",
     "request_smuggling": "protocol",
     "subdomain_takeover": "protocol",
+    "cloud_bucket_exposure": "protocol",
     "jwt_forgery": "auth",
     "authz_bola": "auth",
     "authz_idor": "auth",
@@ -1753,6 +1755,83 @@ def run_subdomain_takeover(
             "payloads",
             "not-applicable",
             "subdomain_takeover: no CNAME matched a known unclaimed-service pattern",
+        )
+    return found
+
+
+def run_cloud_bucket_exposure(
+    *,
+    graph: ReachabilityGraph,
+    seam: _ValidatorSeam,
+    events: list[ScanEvent],
+    transport: httpx.BaseTransport | None = None,
+) -> list[str]:
+    """Probe generated cloud-bucket-name candidates for public listing (§7, §10).
+
+    Mirrors ``run_subdomain_takeover``: every candidate bucket host is a
+    third-party cloud-storage domain (S3/GCS/Azure) derived from the
+    target's own hostname, never the target itself, so this deliberately
+    does not go through ``RequestFirer`` — the same reasoning that gives
+    this class its own dedicated transport outside the firer. Never
+    state-changing (GET only); every probe URL and outcome is narrated into
+    the live event feed since it bypasses the firer's own audit.
+    """
+    from reachagent.cloud_bucket.detector import (
+        BucketProbe,
+        BucketProber,
+        candidate_bucket_probes,
+        detect_cloud_bucket_exposure,
+    )
+
+    found: list[str] = []
+    seen_hostnames: set[str] = set()
+    for _node, host in graph.hosts():
+        hostname = host.hostname or host.address
+        if not hostname or hostname in seen_hostnames:
+            continue
+        seen_hostnames.add(hostname)
+        probes = candidate_bucket_probes(hostname)
+        if not probes:
+            continue
+        _emit(
+            events,
+            "payloads",
+            "step",
+            f"cloud_bucket_exposure: trying {len(probes)} generated bucket names for {hostname}",
+        )
+
+        def _fire_probe(url: str) -> BucketProbe:
+            try:
+                with httpx.Client(
+                    transport=transport, timeout=10.0, follow_redirects=True
+                ) as client:
+                    response = client.get(url)
+                return BucketProbe(status=response.status_code, body=response.text)
+            except httpx.HTTPError:
+                return BucketProbe(status=0, body="")
+
+        prober = BucketProber(fire_probe=_fire_probe, oracle_runner=seam.run)
+        result = detect_cloud_bucket_exposure(
+            prober, probes=probes, evidence_ref=f"orchestrator/cloud_bucket_exposure/{hostname}"
+        )
+        if result.confirmed and seam.last is not None:
+            nid = seam.write("cloud_bucket_exposure", seam.last, severity="high")
+            if nid:
+                found.append(nid)
+                _emit(
+                    events,
+                    "payloads",
+                    "finding",
+                    f"cloud bucket publicly listable — {result.exposed_url}",
+                    path=hostname,
+                )
+                break  # one confirmed exposure per scan is enough
+    if not found:
+        _emit(
+            events,
+            "payloads",
+            "not-applicable" if seen_hostnames else "info",
+            "cloud_bucket_exposure: no generated bucket name was publicly listable",
         )
     return found
 
@@ -3471,6 +3550,12 @@ def scan_all_classes(
             events=events_out,
         ),
         "subdomain_takeover": lambda: run_subdomain_takeover(
+            graph=graph,
+            seam=seam,
+            events=events_out,
+            transport=transport,
+        ),
+        "cloud_bucket_exposure": lambda: run_cloud_bucket_exposure(
             graph=graph,
             seam=seam,
             events=events_out,

@@ -137,6 +137,16 @@ class StructuralCheckType(StrEnum):
     # `lockout_signal_observed`; this oracle only reconfirms the completeness
     # + presence/absence logic deterministically.
     RATE_LIMIT_ABSENT = "rate_limit_absent"
+    # CLOUD_BUCKET_EXPOSURE — a generated cloud-storage bucket name (S3/GCS/
+    # Azure naming convention derived from the target) turns out to both
+    # exist AND be publicly listable without authentication. Same
+    # sentinel-in-body shape as SUBDOMAIN_TAKEOVER/PATH_TRAVERSAL: a known
+    # "this is a real, listable bucket" marker (e.g. S3/GCS's
+    # ``<ListBucketResult``, Azure's ``<EnumerationResults``) present in a
+    # 2xx response confirms exposure. A "no such bucket" response is simply
+    # not applicable (try the next candidate name); a 403/AccessDenied means
+    # the bucket exists but is properly secured — denied, not a finding.
+    CLOUD_BUCKET_EXPOSURE = "cloud_bucket_exposure"
 
 
 @dataclass(frozen=True)
@@ -230,6 +240,14 @@ class StructuralEvidence:
       submission determined this, not a status-code guess. ``probe_status``:
       the login response's status. A captured session on a non-error status
       → violation; no session material → the credential pair failed.
+
+    CLOUD_BUCKET_EXPOSURE:
+      ``probe_status``: the guessed bucket URL's response status (must be
+      2xx — a listable bucket renders its listing successfully; a 4xx
+      proves nothing about listability). ``sentinel``: the provider's own
+      "this is a real listing" body marker. ``response_body``: the probed
+      response body. Sentinel present in a successful response → the
+      bucket is genuinely publicly listable → violation.
 
     RATE_LIMIT_ABSENT:
       ``attempts_planned``/``attempts_completed``: the bounded burst size and
@@ -499,6 +517,15 @@ def decide(evidence: StructuralEvidence) -> FindingStatus:
             return FindingStatus.CONFIRMED_VIOLATION
         return FindingStatus.CONFIRMED_DENIED
 
+    if evidence.check_type is StructuralCheckType.CLOUD_BUCKET_EXPOSURE:
+        if (
+            200 <= evidence.probe_status < 300
+            and evidence.sentinel
+            and evidence.sentinel in evidence.response_body
+        ):
+            return FindingStatus.CONFIRMED_VIOLATION
+        return FindingStatus.INCONCLUSIVE
+
     if evidence.check_type is StructuralCheckType.RATE_LIMIT_ABSENT:
         if (
             evidence.attempts_planned <= 0
@@ -543,6 +570,7 @@ def _reason(evidence: StructuralEvidence, status: FindingStatus) -> str:
         StructuralCheckType.INFO_DISCLOSURE: "disclosure_marker_not_observed",
         StructuralCheckType.DEFAULT_CREDENTIALS: "login_status_not_decisive",
         StructuralCheckType.RATE_LIMIT_ABSENT: "burst_incomplete",
+        StructuralCheckType.CLOUD_BUCKET_EXPOSURE: "listing_marker_not_observed",
     }.get(evidence.check_type, "unknown_structural_check")
     return decision_reason(OracleMechanism.STRUCTURAL, status, detail)
 

@@ -110,6 +110,17 @@ def test_tls_insecure_env_flag_disables_cert_verification(tmp_path, monkeypatch)
 
     monkeypatch.setattr(orch.httpx, "Client", _CapturingClient)
 
+    # A full scan constructs more than one httpx.Client: the main firer's
+    # (which must track REACHAGENT_TLS_INSECURE), plus side-channel clients
+    # for classes that deliberately probe third-party infrastructure with
+    # real, valid certs outside the target's own scope (subdomain_takeover,
+    # cloud_bucket_exposure) — those never pass verify= at all, by design,
+    # since there's no reason to disable cert checking against
+    # s3.amazonaws.com just because the target site has a bad cert. So the
+    # property under test is "at least one captured client reflects the
+    # flag", not "the last one captured does" — the latter depends on
+    # incidental class-dispatch ordering, not on what this test actually
+    # cares about.
     monkeypatch.delenv("REACHAGENT_TLS_INSECURE", raising=False)
     scan_all_classes(
         base_url="https://example.com",
@@ -118,7 +129,7 @@ def test_tls_insecure_env_flag_disables_cert_verification(tmp_path, monkeypatch)
         surface_path=_surface(tmp_path),
         events=[],
     )
-    assert captured[-1].get("verify", True) is not False
+    assert all(kwargs.get("verify", True) is not False for kwargs in captured)
 
     captured.clear()
     monkeypatch.setenv("REACHAGENT_TLS_INSECURE", "1")
@@ -129,7 +140,7 @@ def test_tls_insecure_env_flag_disables_cert_verification(tmp_path, monkeypatch)
         surface_path=_surface(tmp_path),
         events=[],
     )
-    assert captured[-1]["verify"] is False
+    assert any(kwargs.get("verify") is False for kwargs in captured)
     assert len(ALL_CLASSES) >= 22
 
 
