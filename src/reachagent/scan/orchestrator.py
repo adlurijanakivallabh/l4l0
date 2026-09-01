@@ -148,6 +148,22 @@ def _class_priority_signals(
     techs = sorted({h.technology for _, h in graph.hosts() if h.technology})
     if techs:
         signals["host_tech"] = ",".join(techs)[:200]
+        # Cross-engagement pattern memory ("My additions"): a hunt-priority
+        # hint only — every class in ALL_CLASSES still runs regardless, this
+        # can only reorder. Values are our own fixed vuln_class vocabulary,
+        # never target-controlled text, so this carries no prompt-injection
+        # surface the way echoing response content would.
+        from reachagent.memory.pattern_db import patterns_for_technology
+
+        seen_classes: set[str] = set()
+        past_classes: list[str] = []
+        for tech in techs:
+            for pattern in patterns_for_technology(tech, limit=5):
+                if pattern.vuln_class not in seen_classes:
+                    seen_classes.add(pattern.vuln_class)
+                    past_classes.append(pattern.vuln_class)
+        if past_classes:
+            signals["past_confirmed_for_similar_stack"] = ",".join(past_classes[:8])
     if graph.sessions():
         signals["auth_surface"] = "yes"
     if operator_prompt:
@@ -340,7 +356,21 @@ class _ValidatorSeam:
             llm_confidence=confidence,
             llm_confidence_rationale=rationale,
         )
-        return validator.write_finding(self.graph, finding, verdict, metadata=metadata)
+        finding_id = validator.write_finding(self.graph, finding, verdict, metadata=metadata)
+        # Cross-engagement pattern memory ("My additions"): recorded ONLY here,
+        # strictly after write_finding already committed a confirmed violation —
+        # never from LLM narrative or an unconfirmed candidate (memory-poisoning
+        # guard). Advisory-only; a write error never breaks the scan.
+        from reachagent.memory.pattern_db import record_confirmed_pattern
+
+        technology = ""
+        for _node, host in self.graph.hosts():
+            if getattr(host, "technology", None):
+                technology = str(host.technology)
+                break
+        if technology:
+            record_confirmed_pattern(vuln_class, technology, finding.oracle_used, severity)
+        return finding_id
 
 
 def _fire_readonly(

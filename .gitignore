@@ -18,6 +18,9 @@ logs/
 
 # Runtime provider configs (contain API keys)
 config/providers.json
+
+# Cross-engagement pattern memory — local runtime state, not source
+data/pattern_db.jsonl
 .playwright-cli/
 output/playwright/
 .playwright-mcp/

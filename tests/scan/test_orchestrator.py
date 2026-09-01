@@ -319,6 +319,53 @@ def test_rank_vuln_classes_falls_back_when_client_raises(monkeypatch) -> None:  
     assert "unavailable" in reason
 
 
+class _PromptCapturingClient:
+    def __init__(self) -> None:
+        self.prompts: list[str] = []
+
+    def propose_json(self, prompt: str, *, max_tokens: int = 512) -> dict:  # noqa: ANN001
+        self.prompts.append(prompt)
+        return {"order": [], "reason": "test"}
+
+
+def test_rank_vuln_classes_surfaces_pattern_memory_as_a_signal(monkeypatch, tmp_path) -> None:  # noqa: ANN001
+    """Cross-engagement pattern memory ("My additions") reaches the ranking
+    prompt as one more bounded, fixed-vocabulary signal — order-only, never
+    a coverage gate; the class list itself is unaffected either way."""
+    from reachagent.graph.nodes import Host
+    from reachagent.llm import runtime as _runtime
+    from reachagent.memory.pattern_db import record_confirmed_pattern
+
+    monkeypatch.setattr(_runtime, "flag_enabled", lambda _name: True)
+    pattern_path = tmp_path / "patterns.jsonl"
+    record_confirmed_pattern("sqli", "WordPress, PHP", "differential", "high", path=pattern_path)
+    monkeypatch.setattr("reachagent.memory.pattern_db._DEFAULT_PATH", pattern_path)
+
+    graph = ReachabilityGraph()
+    graph.add_host(Host(address="1.2.3.4", hostname="t.test", technology="WordPress, PHP"))
+    client = _PromptCapturingClient()
+
+    order, _reason = rank_vuln_classes(_CLASSES, graph, client=client)
+
+    assert order == _CLASSES  # order-only signal, never drops/adds a class
+    assert client.prompts
+    assert "past_confirmed_for_similar_stack: sqli" in client.prompts[0]
+
+
+def test_rank_vuln_classes_omits_pattern_signal_with_no_tech_or_no_history(
+    monkeypatch, tmp_path
+) -> None:  # noqa: ANN001
+    from reachagent.llm import runtime as _runtime
+
+    monkeypatch.setattr(_runtime, "flag_enabled", lambda _name: True)
+    monkeypatch.setattr("reachagent.memory.pattern_db._DEFAULT_PATH", tmp_path / "empty.jsonl")
+    client = _PromptCapturingClient()
+
+    rank_vuln_classes(_CLASSES, ReachabilityGraph(), client=client)
+
+    assert "past_confirmed_for_similar_stack" not in client.prompts[0]
+
+
 # === Named specialist personas — hand-off narration (Agentic Coordinator, Phase 2) ===
 
 
