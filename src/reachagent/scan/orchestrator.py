@@ -49,6 +49,124 @@ if TYPE_CHECKING:
 
 _log = logging.getLogger(__name__)
 
+# The "Phase 3: structural + authz + advanced classes" dispatch order (below,
+# in scan_all_classes) — unlike the generic sink-matched classes (which get
+# real per-candidate LLM class targeting via scan_target()'s nested
+# REACHAGENT_VULN_TUNING call), these ~20 drivers run in one fixed, hardcoded
+# sequence with zero LLM input. This is the default/fallback order.
+_PHASE3_CLASS_ORDER: tuple[str, ...] = (
+    "structural_headers",
+    "file_upload",
+    "mass_assignment",
+    "xss_stored",
+    "open_redirect",
+    "cache_poisoning",
+    "request_smuggling",
+    "subdomain_takeover",
+    "jwt_forgery",
+    "sqli_blind",
+    "nosqli",
+    "ldap",
+    "command_injection",
+    "authz_bola",
+    "authz_idor",
+    "graphql",
+    "business_logic",
+    "race",
+    "xxe",
+    "xss_dom",
+)
+
+_PHASE3_RANK_PROMPT = """You are prioritizing the ORDER in which vulnerability-class \
+checks run against a web/API target, given what recon has discovered so far. You are \
+NOT deciding whether anything is vulnerable, and every class listed still runs \
+regardless of order — only sequencing changes.
+
+Return ONLY a JSON object: {{"order": [...], "reason": "one sentence"}}. "order" must \
+contain every one of these class names exactly once, spelled exactly as given, in your \
+preferred priority order (most relevant to this target first):
+
+{classes}
+
+Target signals:
+{signals}
+"""
+
+
+def _class_priority_signals(
+    graph: ReachabilityGraph, operator_prompt: str | None
+) -> dict[str, str]:
+    """Compact, bounded graph-derived signals for the class-priority LLM call."""
+    signals: dict[str, str] = {}
+    endpoints = list(graph.endpoints())
+    signals["endpoint_count"] = str(len(endpoints))
+    methods = sorted({ep.method for _, ep in endpoints if ep.method})
+    if methods:
+        signals["methods"] = ",".join(methods)[:120]
+    techs = sorted({h.technology for _, h in graph.hosts() if h.technology})
+    if techs:
+        signals["host_tech"] = ",".join(techs)[:200]
+    if graph.sessions():
+        signals["auth_surface"] = "yes"
+    if operator_prompt:
+        signals["operator_goal"] = operator_prompt[:500]
+    return signals
+
+
+def rank_vuln_classes(
+    class_names: tuple[str, ...],
+    graph: ReachabilityGraph,
+    *,
+    operator_prompt: str | None = None,
+    client: object | None = None,
+) -> tuple[tuple[str, ...], str]:
+    """LLM-proposed priority ORDER for the Phase 3 class dispatch (§9 resilience).
+
+    Order only — every class in ``class_names`` still runs; the LLM can never
+    remove one (any name it omits or hallucinates past is appended back in
+    its original relative order). Flag-gated on ``REACHAGENT_VULN_TUNING``
+    (already enabled for every GUI scan via ``llm.runtime.override``, so this
+    activates with zero new configuration). Falls back to the original order
+    on any failure or invalid response — this is a strategy convenience, not
+    something a scan should ever abort over.
+    """
+    from reachagent.llm.runtime import flag_enabled
+
+    if not flag_enabled("REACHAGENT_VULN_TUNING"):
+        return class_names, (
+            "class-priority tuning disabled (REACHAGENT_VULN_TUNING unset) — default order"
+        )
+    try:
+        from reachagent.llm.client import build_openai_compatible_client
+
+        tuner = client or build_openai_compatible_client()
+        if tuner is None:
+            raise RuntimeError("no LLM provider configured for class-priority ranking")
+        signals = _class_priority_signals(graph, operator_prompt)
+        prompt = _PHASE3_RANK_PROMPT.format(
+            classes=", ".join(class_names),
+            signals="\n".join(f"{k}: {v}" for k, v in signals.items()) or "(none collected)",
+        )
+        raw = tuner.propose_json(prompt, max_tokens=512)
+        proposed = raw.get("order")
+        reason = str(raw.get("reason", "") or "")[:300]
+        if not isinstance(proposed, list):
+            raise ValueError("response missing a valid 'order' list")
+        seen: set[str] = set()
+        ordered: list[str] = []
+        for name in proposed:
+            if isinstance(name, str) and name in class_names and name not in seen:
+                ordered.append(name)
+                seen.add(name)
+        ordered.extend(name for name in class_names if name not in seen)
+        return tuple(ordered), reason or "LLM-prioritized class order"
+    except Exception as exc:  # noqa: BLE001 — an ordering convenience must never break a scan
+        _log.warning("class-priority ranking failed (%s); falling back to default order", exc)
+        return class_names, (
+            f"class-priority ranking unavailable ({type(exc).__name__}) — default order"
+        )
+
+
 # Every attack class the orchestrator can dispatch. This is the §9 coverage target —
 # each class below maps to one of the six §7 oracle families; nothing here invents a
 # seventh family or a non-§6 edge.
@@ -3004,104 +3122,113 @@ def scan_all_classes(
     )
     _adapt("verification", ("payloads", "report"))
 
-    # Phase 3 — the classes the sink loop does not drive.
+    # Phase 3 — the classes the sink loop does not drive. Dispatch order is
+    # LLM-ranked (rank_vuln_classes, above) when REACHAGENT_VULN_TUNING is
+    # enabled — already the case for every GUI scan — falling back to the
+    # order below otherwise. Every class still runs regardless; only
+    # sequencing is LLM-influenced.
     _emit(events_out, "payloads", "info", "phase 3: structural + authz + advanced classes")
-    check_cancel(cancel_check)
-    run_structural_headers(
-        graph=graph,
-        firer=firer,
-        base_url=base_url,
-        identity=identity,
-        auth_headers=auth_headers,
-        seam=seam,
-        events=events_out,
-    )
-    check_cancel(cancel_check)
-    run_file_upload(
-        graph=graph,
-        firer=firer,
-        base_url=base_url,
-        identity=identity,
-        auth_headers=auth_headers,
-        seam=seam,
-        events=events_out,
-    )
-    check_cancel(cancel_check)
-    run_mass_assignment(
-        graph=graph,
-        firer=firer,
-        base_url=base_url,
-        identity=identity,
-        auth_headers=auth_headers,
-        seam=seam,
-        events=events_out,
-    )
-    check_cancel(cancel_check)
-    run_xss_stored(
-        graph=graph,
-        firer=firer,
-        base_url=base_url,
-        identity=identity,
-        auth_headers=auth_headers,
-        seam=seam,
-        events=events_out,
-    )
-    check_cancel(cancel_check)
-    run_open_redirect(
-        graph=graph,
-        firer=firer,
-        base_url=base_url,
-        identity=identity,
-        auth_headers=auth_headers,
-        seam=seam,
-        events=events_out,
-    )
-    check_cancel(cancel_check)
-    run_cache_poisoning(
-        graph=graph,
-        firer=firer,
-        base_url=base_url,
-        identity=identity,
-        auth_headers=auth_headers,
-        seam=seam,
-        events=events_out,
-    )
-    check_cancel(cancel_check)
-    run_request_smuggling(
-        base_url=base_url,
-        seam=seam,
-        events=events_out,
-    )
-    check_cancel(cancel_check)
-    run_subdomain_takeover(
-        graph=graph,
-        seam=seam,
-        events=events_out,
-        transport=transport,
-    )
-    check_cancel(cancel_check)
-    run_jwt_forgery(
-        graph=graph,
-        firer=firer,
-        base_url=base_url,
-        identity=identity,
-        auth_headers=auth_headers,
-        seam=seam,
-        events=events_out,
-    )
-    check_cancel(cancel_check)
-    run_sqli_blind(
-        graph=graph,
-        firer=firer,
-        base_url=base_url,
-        identity=identity,
-        seam=seam,
-        events=events_out,
-        library=lib,
-    )
-    for _blind_driver in (run_nosqli, run_ldap, run_command_injection):
-        check_cancel(cancel_check)
-        _blind_driver(
+
+    from reachagent.scan.xss_dom import run_xss_dom
+
+    def _run_authz_bola_if_identities() -> None:
+        if identities is not None:
+            run_authz_bola(
+                graph=graph,
+                base_url=base_url,
+                identities=identities,
+                events=events_out,
+                transport=transport,
+            )
+
+    def _run_authz_idor_if_identities() -> None:
+        if identities is not None:
+            run_authz_idor(
+                graph=graph,
+                firer=firer,
+                base_url=base_url,
+                identities=identities,
+                seam=seam,
+                events=events_out,
+                allow_cross_user_writes=allow_cross_user_writes,
+            )
+
+    phase3_drivers: dict[str, Callable[[], None]] = {
+        "structural_headers": lambda: run_structural_headers(
+            graph=graph,
+            firer=firer,
+            base_url=base_url,
+            identity=identity,
+            auth_headers=auth_headers,
+            seam=seam,
+            events=events_out,
+        ),
+        "file_upload": lambda: run_file_upload(
+            graph=graph,
+            firer=firer,
+            base_url=base_url,
+            identity=identity,
+            auth_headers=auth_headers,
+            seam=seam,
+            events=events_out,
+        ),
+        "mass_assignment": lambda: run_mass_assignment(
+            graph=graph,
+            firer=firer,
+            base_url=base_url,
+            identity=identity,
+            auth_headers=auth_headers,
+            seam=seam,
+            events=events_out,
+        ),
+        "xss_stored": lambda: run_xss_stored(
+            graph=graph,
+            firer=firer,
+            base_url=base_url,
+            identity=identity,
+            auth_headers=auth_headers,
+            seam=seam,
+            events=events_out,
+        ),
+        "open_redirect": lambda: run_open_redirect(
+            graph=graph,
+            firer=firer,
+            base_url=base_url,
+            identity=identity,
+            auth_headers=auth_headers,
+            seam=seam,
+            events=events_out,
+        ),
+        "cache_poisoning": lambda: run_cache_poisoning(
+            graph=graph,
+            firer=firer,
+            base_url=base_url,
+            identity=identity,
+            auth_headers=auth_headers,
+            seam=seam,
+            events=events_out,
+        ),
+        "request_smuggling": lambda: run_request_smuggling(
+            base_url=base_url,
+            seam=seam,
+            events=events_out,
+        ),
+        "subdomain_takeover": lambda: run_subdomain_takeover(
+            graph=graph,
+            seam=seam,
+            events=events_out,
+            transport=transport,
+        ),
+        "jwt_forgery": lambda: run_jwt_forgery(
+            graph=graph,
+            firer=firer,
+            base_url=base_url,
+            identity=identity,
+            auth_headers=auth_headers,
+            seam=seam,
+            events=events_out,
+        ),
+        "sqli_blind": lambda: run_sqli_blind(
             graph=graph,
             firer=firer,
             base_url=base_url,
@@ -3109,76 +3236,93 @@ def scan_all_classes(
             seam=seam,
             events=events_out,
             library=lib,
-        )
-    if identities is not None:
-        check_cancel(cancel_check)
-        run_authz_bola(
-            graph=graph,
-            base_url=base_url,
-            identities=identities,
-            events=events_out,
-            transport=transport,
-        )
-        check_cancel(cancel_check)
-        run_authz_idor(
+        ),
+        "nosqli": lambda: run_nosqli(
             graph=graph,
             firer=firer,
             base_url=base_url,
-            identities=identities,
+            identity=identity,
             seam=seam,
             events=events_out,
-            allow_cross_user_writes=allow_cross_user_writes,
-        )
-    check_cancel(cancel_check)
-    run_graphql(
-        graph=graph,
-        firer=firer,
-        base_url=base_url,
-        identity=identity,
-        seam=seam,
-        events=events_out,
-        identities=identities,
-    )
-    check_cancel(cancel_check)
-    run_business_logic(
-        graph=graph,
-        firer=firer,
-        base_url=base_url,
-        identity=identity,
-        seam=seam,
-        events=events_out,
-    )
-    check_cancel(cancel_check)
-    run_race(
-        graph=graph,
-        firer=firer,
-        base_url=base_url,
-        identity=identity,
-        seam=seam,
-        events=events_out,
-    )
-    check_cancel(cancel_check)
-    run_xxe(
-        graph=graph,
-        firer=firer,
-        base_url=base_url,
-        identity=identity,
-        auth_headers=auth_headers,
-        seam=seam,
-        events=events_out,
-    )
+            library=lib,
+        ),
+        "ldap": lambda: run_ldap(
+            graph=graph,
+            firer=firer,
+            base_url=base_url,
+            identity=identity,
+            seam=seam,
+            events=events_out,
+            library=lib,
+        ),
+        "command_injection": lambda: run_command_injection(
+            graph=graph,
+            firer=firer,
+            base_url=base_url,
+            identity=identity,
+            seam=seam,
+            events=events_out,
+            library=lib,
+        ),
+        "authz_bola": _run_authz_bola_if_identities,
+        "authz_idor": _run_authz_idor_if_identities,
+        "graphql": lambda: run_graphql(
+            graph=graph,
+            firer=firer,
+            base_url=base_url,
+            identity=identity,
+            seam=seam,
+            events=events_out,
+            identities=identities,
+        ),
+        "business_logic": lambda: run_business_logic(
+            graph=graph,
+            firer=firer,
+            base_url=base_url,
+            identity=identity,
+            seam=seam,
+            events=events_out,
+        ),
+        "race": lambda: run_race(
+            graph=graph,
+            firer=firer,
+            base_url=base_url,
+            identity=identity,
+            seam=seam,
+            events=events_out,
+        ),
+        "xxe": lambda: run_xxe(
+            graph=graph,
+            firer=firer,
+            base_url=base_url,
+            identity=identity,
+            auth_headers=auth_headers,
+            seam=seam,
+            events=events_out,
+        ),
+        "xss_dom": lambda: run_xss_dom(
+            graph=graph,
+            firer=firer,
+            base_url=base_url,
+            identity=identity,
+            seam=seam,
+            events=events_out,
+        ),
+    }
 
-    from reachagent.scan.xss_dom import run_xss_dom
-
-    check_cancel(cancel_check)
-    run_xss_dom(
-        graph=graph,
-        firer=firer,
-        base_url=base_url,
-        identity=identity,
-        seam=seam,
-        events=events_out,
+    ranked_order, rank_reason = rank_vuln_classes(
+        _PHASE3_CLASS_ORDER, graph, operator_prompt=operator_prompt
     )
+    _emit(
+        events_out,
+        "payloads",
+        "info",
+        f"phase 3 class order: {rank_reason}",
+        order=list(ranked_order),
+    )
+    for class_name in ranked_order:
+        check_cancel(cancel_check)
+        phase3_drivers[class_name]()
 
     findings = [fid for fid, _ in graph.findings()]
     _emit(events_out, "payloads", "info", "phase 3 done", findings=len(findings))

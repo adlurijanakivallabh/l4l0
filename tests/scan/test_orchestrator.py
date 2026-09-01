@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import httpx
 
+from reachagent.graph.store import ReachabilityGraph
 from reachagent.scan.orchestrator import (
     ALL_CLASSES,
     ScanEvent,
+    rank_vuln_classes,
     scan_all_classes,
 )
 
@@ -160,3 +162,72 @@ def test_clean_target_zero_findings(tmp_path) -> None:  # noqa: ANN001
     )
     assert result["graph"].findings() == []
     assert result["findings"] == []
+
+
+# === rank_vuln_classes — LLM-advised Phase 3 dispatch order ================
+# Order only: every input class must still appear in the output, regardless
+# of what the (fake) LLM proposes. This is a strategy convenience, never a
+# coverage gate.
+
+_CLASSES = ("jwt_forgery", "xxe", "graphql")
+
+
+class _FakeRankClient:
+    def __init__(self, response: dict) -> None:  # noqa: ANN001
+        self._response = response
+
+    def propose_json(self, prompt: str, *, max_tokens: int = 512) -> dict:  # noqa: ANN001
+        return self._response
+
+
+def test_rank_vuln_classes_disabled_by_default_returns_original_order() -> None:
+    order, reason = rank_vuln_classes(_CLASSES, ReachabilityGraph())
+    assert order == _CLASSES
+    assert "disabled" in reason
+
+
+def test_rank_vuln_classes_applies_a_valid_llm_order(monkeypatch) -> None:  # noqa: ANN001
+    from reachagent.llm import runtime as _runtime
+
+    monkeypatch.setattr(_runtime, "flag_enabled", lambda _name: True)
+    client = _FakeRankClient({"order": ["xxe", "graphql", "jwt_forgery"], "reason": "test"})
+    order, reason = rank_vuln_classes(_CLASSES, ReachabilityGraph(), client=client)
+    assert order == ("xxe", "graphql", "jwt_forgery")
+    assert reason == "test"
+
+
+def test_rank_vuln_classes_never_drops_a_hallucinated_or_missing_class(monkeypatch) -> None:  # noqa: ANN001
+    from reachagent.llm import runtime as _runtime
+
+    monkeypatch.setattr(_runtime, "flag_enabled", lambda _name: True)
+    # "sqli" isn't in _CLASSES (hallucinated); "graphql" is silently omitted.
+    client = _FakeRankClient({"order": ["xxe", "sqli", "jwt_forgery"], "reason": "test"})
+    order, _reason = rank_vuln_classes(_CLASSES, ReachabilityGraph(), client=client)
+    assert set(order) == set(_CLASSES)
+    assert order[0] == "xxe"
+    assert order[1] == "jwt_forgery"
+    assert order[2] == "graphql"  # appended back in original relative order
+
+
+def test_rank_vuln_classes_falls_back_on_malformed_response(monkeypatch) -> None:  # noqa: ANN001
+    from reachagent.llm import runtime as _runtime
+
+    monkeypatch.setattr(_runtime, "flag_enabled", lambda _name: True)
+    client = _FakeRankClient({"order": "not-a-list"})
+    order, reason = rank_vuln_classes(_CLASSES, ReachabilityGraph(), client=client)
+    assert order == _CLASSES
+    assert "unavailable" in reason
+
+
+def test_rank_vuln_classes_falls_back_when_client_raises(monkeypatch) -> None:  # noqa: ANN001
+    from reachagent.llm import runtime as _runtime
+
+    monkeypatch.setattr(_runtime, "flag_enabled", lambda _name: True)
+
+    class _BoomClient:
+        def propose_json(self, prompt: str, *, max_tokens: int = 512) -> dict:  # noqa: ANN001
+            raise RuntimeError("provider down")
+
+    order, reason = rank_vuln_classes(_CLASSES, ReachabilityGraph(), client=_BoomClient())
+    assert order == _CLASSES
+    assert "unavailable" in reason
