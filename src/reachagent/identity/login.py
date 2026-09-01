@@ -23,7 +23,21 @@ from reachagent.identity.store import SessionMaterial
 
 _log = logging.getLogger(__name__)
 _AUTH_PATH_HINTS = ("login", "signin", "sign-in", "auth", "session", "token")
-_USERNAME_NAMES = {"username", "user", "email", "login", "account", "mail"}
+_USERNAME_NAMES = {
+    "username",
+    "user",
+    "email",
+    "login",
+    "account",
+    "mail",
+    "uid",
+    "userid",
+    "user_id",
+    "uname",
+    "loginid",
+    "login_id",
+    "j_username",
+}
 _PASSWORD_TYPE = re.compile(r"\btype\s*=\s*(['\"]?)password\1", re.IGNORECASE)
 _ATTR = re.compile(
     r"(?P<name>[A-Za-z_:][-A-Za-z0-9_:.]*)\s*=\s*(?P<quote>['\"]?)(?P<value>[^\s>]*?)(?P=quote)(?=\s|>|/|$)",
@@ -31,6 +45,27 @@ _ATTR = re.compile(
 )
 _FORM = re.compile(r"<form\b(?P<attrs>[^>]*)>(?P<body>[\s\S]*?)</form>", re.IGNORECASE)
 _INPUT = re.compile(r"<(?:input|textarea|select)\b(?P<attrs>[^>]*)>", re.IGNORECASE)
+_ANCHOR = re.compile(r"<a\b(?P<attrs>[^>]*)>(?P<text>[\s\S]*?)</a>", re.IGNORECASE)
+_TAG_STRIP = re.compile(r"<[^>]+>")
+_LOGIN_LINK_HINTS = ("login", "signin", "sign in", "log in", "sign-in")
+# Legacy server-rendered apps (JSP/PHP/ASP.NET, or Spring's classic form-login
+# filter) commonly put the login form on its own page under one of these —
+# a bounded fallback here is cheap; the anchor-link crawl below covers
+# anything this list still misses.
+_LOGIN_PATH_ALIASES = (
+    "/login",
+    "/signin",
+    "/auth",
+    "/login.jsp",
+    "/login.php",
+    "/login.aspx",
+    "/Login",
+    "/signin.jsp",
+    "/user/login",
+    "/account/login",
+    "/j_spring_security_check",
+    "/doLogin",
+)
 _GRAPHQL_MUTATION = re.compile(r"\bmutation(?:\s+[A-Za-z_][\w]*)?\s*\{", re.IGNORECASE)
 _TOKEN_KEYS = ("access_token", "token", "jwt", "id_token", "session_token")
 _DEFAULT_TOKEN_SCHEME = "Bearer"  # noqa: S105 - HTTP auth scheme, not a credential
@@ -140,6 +175,29 @@ def redact_message(value: object, secrets: tuple[str, ...] = ()) -> str:
 
 def _attrs(raw: str) -> dict[str, str]:
     return {m.group("name").lower(): m.group("value").strip("'\"") for m in _ATTR.finditer(raw)}
+
+
+def _extract_login_links(html_body: str, page_url: str) -> list[str]:
+    """Follow a homepage's own "Sign In" / "Login" navigation link.
+
+    A login form frequently lives on its own page (e.g. a legacy JSP/PHP/
+    ASP.NET app's /login.jsp), reachable only through a nav link the
+    homepage itself advertises via href or visible link text — never
+    through a form embedded on the homepage. A bounded alias list alone
+    misses this shape entirely; this closes that gap generically instead of
+    hardcoding one more path per framework.
+    """
+    links: list[str] = []
+    for match in _ANCHOR.finditer(html_body):
+        attrs = _attrs(match.group("attrs"))
+        href = attrs.get("href", "")
+        if not href or href.startswith(("#", "javascript:", "mailto:")):
+            continue
+        text = _TAG_STRIP.sub("", match.group("text")).strip().lower()
+        haystack = f"{href.lower()} {text}"
+        if any(hint in haystack for hint in _LOGIN_LINK_HINTS):
+            links.append(urljoin(page_url, href))
+    return links
 
 
 def _parse_html_login_form(html_body: str, page_url: str) -> DetectedLoginForm | None:
@@ -287,9 +345,23 @@ def detect_login_forms(
             ):
                 candidates.append(urljoin(base_url, path))
 
-    # Common aliases are only bounded fallback probes; observed routes/root are
-    # always attempted first, so a non-standard login path is discoverable.
-    candidates.extend(urljoin(base_url, path) for path in ("/login", "/signin", "/auth"))
+    # A homepage frequently doesn't embed its login form at all — it links to
+    # one ("Sign In" / "Login") on its own page. Harvest those links before
+    # falling back to bounded generic aliases, so a real nav-linked login
+    # page is found even when it's neither the root page nor a common path.
+    try:
+        home = firer.fire(identity, "GET", base_url, state_changing=False)  # type: ignore[attr-defined]
+        if 200 <= home.status_code < 400:
+            candidates.extend(
+                _extract_login_links(home.body.decode("utf-8", errors="replace"), base_url)
+            )
+    except Exception as exc:  # noqa: BLE001
+        _log.debug("login link discovery skipped %s: %s", _safe_url(base_url), type(exc).__name__)
+
+    # Common aliases are only bounded fallback probes; observed routes/root/
+    # linked pages above are always attempted first, so a non-standard login
+    # path is still discoverable.
+    candidates.extend(urljoin(base_url, path) for path in _LOGIN_PATH_ALIASES)
     for url in candidates[:24]:
         try:
             result = firer.fire(identity, "GET", url, state_changing=False)  # type: ignore[attr-defined]

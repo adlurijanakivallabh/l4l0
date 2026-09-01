@@ -102,6 +102,52 @@ class TestDetectLoginForms:
         html_forms = [f for f in forms if f.kind == "html_form"]
         assert html_forms[0].password_field == "passwd"
 
+    def test_follows_a_homepage_sign_in_link_to_a_legacy_login_page(self) -> None:
+        """Reproduces the real demo.testfire.net (Altoro Mutual) shape: the
+        homepage has no form of its own, only a "Sign In" nav link to a
+        JSP-style login page with non-standard field names (uid/passw)."""
+        homepage = """
+        <html><body>
+        <div id="header">
+          <a id="LoginLink" href="/login.jsp">Sign In</a>
+        </div>
+        </body></html>
+        """
+        login_page = """
+        <html><body>
+        <form action="doLogin" method="post" name="login">
+          <input type="text" name="uid"/>
+          <input type="password" id="passw" name="passw"/>
+        </form>
+        </body></html>
+        """
+        firer = MockFirer()
+        # More specific pattern registered first: MockFirer.fire() matches by
+        # substring in insertion order, and _BASE is itself a prefix of every
+        # URL fired in this test.
+        firer.responses["/login.jsp"] = FakeFireResult(200, login_page)
+        firer.responses[_BASE] = FakeFireResult(200, homepage)
+
+        forms = detect_login_forms(firer, _BASE, "seed")
+
+        html_forms = [f for f in forms if f.kind == "html_form"]
+        assert html_forms, "must follow the homepage's own Sign In link"
+        form = html_forms[0]
+        assert form.username_field == "uid"
+        assert form.password_field == "passw"
+        assert form.url == _BASE + "/doLogin"
+
+    def test_falls_back_to_a_legacy_jsp_login_path_alias(self) -> None:
+        """No nav link and no graph hint at all — the bounded alias list is
+        the last resort, and must include legacy .jsp-style paths, not just
+        extensionless REST-style ones."""
+        firer = MockFirer()
+        firer.responses["/login.jsp"] = FakeFireResult(200, _LOGIN_HTML)
+
+        forms = detect_login_forms(firer, _BASE, "seed")
+
+        assert any(f.kind == "html_form" for f in forms)
+
 
 class TestSubmitLogin:
     def _html_form(self) -> DetectedLoginForm:
