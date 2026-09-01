@@ -23,6 +23,7 @@ Classes that need conditions the discovered surface does not provide are reporte
 from __future__ import annotations
 
 import concurrent.futures
+import contextvars
 import copy
 import logging
 import os
@@ -3445,18 +3446,31 @@ def _run_phase3_concurrent(
     Dependency-aware scheduling (plan §2c), kept deliberately simple rather
     than a generic per-endpoint dependency graph: "auth" (default_credentials,
     rate_limit_absence, jwt_forgery, authz_bola, authz_idor, mass_assignment)
-    is the one specialist category whose drivers can derive a NEW usable
-    credential/session (a ``derived_credential`` chain edge) that another
-    specialist's test might depend on — so it always runs first,
-    sequentially, on the PARENT graph directly (identical to the pre-2c
-    dispatch loop, just scoped to auth's classes). The remaining specialists
-    (client_side/injection/protocol/api_logic) have no such dependency on
-    EACH OTHER, so once auth finishes they run concurrently, each against
-    its own deep-copied graph snapshot (the plan's chosen default: per-child
-    graph + merge at defined sync points, not a lock around every graph
-    mutation — ``ReachabilityGraph``/``AdaptiveControlState`` are confirmed
-    unsynchronized) — bounded to ``_MAX_CONCURRENT_SPECIALISTS`` threads,
-    no spawn depth to guard since a child never spawns its own children.
+    runs first, sequentially, on the PARENT graph directly (identical to the
+    pre-2c dispatch loop, just scoped to auth's classes) — a defensive,
+    forward-looking precaution, not a fix for a dependency that exists in
+    the code TODAY: verified by reading every Phase-3 driver, none of them
+    (auth included) currently calls the Chain Solver or writes a
+    ``derived_credential`` edge mid-Phase-3 — that machinery today runs
+    only in Phase 1/2 recon (``scan/entrypoint.py``). ``jwt_forgery``,
+    ``nosql/detector.py``, and ``ldap/detector.py`` all separately DOCUMENT
+    an intent to spawn one once wired up — and ``nosqli``/``ldap`` currently
+    live in the "injection" group, which runs CONCURRENTLY, not
+    sequentially-first (an adversarial-review finding, disclosed here
+    rather than silently left). If that wiring is completed for any driver
+    outside "auth", this grouping must be revisited then — moving the newly
+    credential-deriving class into "auth" (or introducing an equivalent
+    first-run bucket) — rather than assuming today's split already accounts
+    for it.
+
+    The remaining specialists (client_side/injection/protocol/api_logic)
+    have no CURRENT dependency on each other, so once auth finishes they run
+    concurrently, each against its own deep-copied graph snapshot (the
+    plan's chosen default: per-child graph + merge at defined sync points,
+    not a lock around every graph mutation — ``ReachabilityGraph``/
+    ``AdaptiveControlState`` are confirmed unsynchronized) — bounded to
+    ``_MAX_CONCURRENT_SPECIALISTS`` threads, no spawn depth to guard since a
+    child never spawns its own children.
 
     A confirmed finding only becomes visible to a sibling specialist (or the
     parent) once that specialist's thread finishes and merges — a
@@ -3583,8 +3597,21 @@ def _run_phase3_concurrent(
     max_workers = min(_MAX_CONCURRENT_SPECIALISTS, len(other_by_specialist))
     saw_cancel = False
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
+        # ThreadPoolExecutor.submit() does NOT propagate the calling thread's
+        # contextvars.Context to the worker thread (confirmed by adversarial
+        # review + direct repro) — the GUI's LLM-tuning flags (REACHAGENT_
+        # VULN_TUNING and friends) are set via llm.runtime.override()'s
+        # ContextVar, never os.environ, so without this every concurrent
+        # specialist would silently run with tuning disabled while the
+        # sequential auth phase (same thread as the caller) kept it enabled.
+        # copy_context() is called ONCE PER SPECIALIST, in this (parent)
+        # thread, before submission — a single Context object cannot be
+        # .run() from more than one thread at a time, so each specialist
+        # needs its own independent snapshot, not one shared across all four.
         futures = {
-            pool.submit(_run_one, specialist, tuple(classes)): specialist
+            pool.submit(contextvars.copy_context().run, _run_one, specialist, tuple(classes)): (
+                specialist
+            )
             for specialist, classes in other_by_specialist.items()
         }
         for future in concurrent.futures.as_completed(futures):

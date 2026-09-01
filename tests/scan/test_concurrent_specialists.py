@@ -244,6 +244,33 @@ def test_cancellation_mid_fanout_still_merges_partial_work_then_raises(monkeypat
     assert "clickjacking" in classes
 
 
+def test_llm_tuning_contextvar_propagates_into_every_specialist_thread(monkeypatch) -> None:  # noqa: ANN001
+    """Adversarial-review finding: ThreadPoolExecutor.submit() does not
+    propagate contextvars.Context on its own. The GUI enables
+    REACHAGENT_VULN_TUNING (and friends) via llm.runtime.override()'s
+    ContextVar, never os.environ -- without copy_context().run() wrapping
+    each submission, every concurrent specialist would silently see the
+    flag as disabled while the sequential auth phase (same thread as the
+    caller) kept seeing it enabled."""
+    from reachagent.llm.runtime import flag_enabled, override
+
+    seen_per_class: dict[str, bool] = {}
+    lock = threading.Lock()
+
+    def run(class_name: str, graph: ReachabilityGraph) -> None:
+        with lock:
+            seen_per_class[class_name] = flag_enabled("REACHAGENT_VULN_TUNING")
+
+    _patch_fake_drivers(monkeypatch, run=run)
+    graph = ReachabilityGraph()
+    with override(enabled=True, required=False):
+        _run_concurrent(run=run, graph=graph, control_state=_control_state(), events=[])
+
+    non_auth_classes = [c for c in _PHASE3_CLASS_ORDER if _SPECIALIST_OF_CLASS.get(c) != "auth"]
+    assert non_auth_classes  # sanity: there is something to check
+    assert all(seen_per_class[c] is True for c in non_auth_classes), seen_per_class
+
+
 def test_control_state_touched_for_every_class_plus_once_per_specialist_merge(
     monkeypatch,  # noqa: ANN001
 ) -> None:

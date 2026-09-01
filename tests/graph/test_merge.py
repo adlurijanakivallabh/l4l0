@@ -44,6 +44,44 @@ def test_already_present_finding_is_not_re_merged() -> None:
     assert fid in {f for f, _ in target.findings()}
 
 
+def test_same_content_reencountered_never_warns(caplog) -> None:  # noqa: ANN001
+    """The common, harmless case (a repeated merge of unchanged content)
+    must stay quiet -- only a genuinely DIFFERING second confirmation
+    (disclosed limit, adversarial review) should ever warn."""
+    import logging
+
+    source = ReachabilityGraph()
+    target = ReachabilityGraph()
+    source.add_finding(_finding("sqli", "ref-1"))
+    target.add_finding(_finding("sqli", "ref-1"))
+
+    with caplog.at_level(logging.WARNING, logger="reachagent.graph.merge"):
+        merge_new_findings(source, target)
+
+    assert caplog.records == []
+
+
+def test_differing_content_for_the_same_finding_id_logs_a_warning(caplog) -> None:  # noqa: ANN001
+    """Disclosed precondition: two separate merge calls supplying different
+    content for the same deterministic finding id keep whichever landed
+    first -- silently, except for this warning."""
+    import logging
+
+    source = ReachabilityGraph()
+    target = ReachabilityGraph()
+    source.add_finding(_finding("sqli", "ref-1", metadata={"note": "second"}))
+    target.add_finding(_finding("sqli", "ref-1", metadata={"note": "first"}))
+
+    with caplog.at_level(logging.WARNING, logger="reachagent.graph.merge"):
+        new_ids = merge_new_findings(source, target)
+
+    assert new_ids == []
+    assert len(caplog.records) == 1
+    assert "different content" in caplog.records[0].getMessage()
+    _fid, kept = target.findings()[0]
+    assert kept.metadata["note"] == "first"  # whichever landed first wins
+
+
 def test_repeated_merge_of_the_same_source_is_idempotent() -> None:
     source = ReachabilityGraph()
     target = ReachabilityGraph()

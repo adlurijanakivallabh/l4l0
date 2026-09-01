@@ -105,9 +105,23 @@ class RequestFirer:
         # from the callback (e.g. the scan was cancelled while paused) aborts
         # this fire attempt the same way a refused probe already does —
         # callers already treat any exception from fire() as "not sent".
+        #
+        # A genuine barrier, not just "notify once" (adversarial review,
+        # Build Order 2c): with concurrent specialists sharing one firer, a
+        # SECOND thread reaching this gate while the FIRST is still paused
+        # waiting on the operator must not fall through just because the
+        # "already notified" flag is set — it must wait for that same
+        # checkpoint to actually resolve (resume or cancel) before either
+        # thread's request is allowed to fire. The winning thread runs the
+        # (blocking) callback; every other thread blocks on
+        # ``_checkpoint_done`` until it finishes, then replays the same
+        # outcome (including re-raising a cancellation) rather than
+        # silently proceeding as if it had been individually cleared.
         self._first_state_change_checkpoint = first_state_change_checkpoint
-        self._first_state_change_notified = False
+        self._checkpoint_started = False
         self._checkpoint_lock = threading.Lock()
+        self._checkpoint_done = threading.Event()
+        self._checkpoint_error: BaseException | None = None
         # Optional per-identity auth material. Values are kept in this runtime
         # collaborator, never copied into graph nodes or audit entries.
         self._identity_headers = {
@@ -328,15 +342,31 @@ class RequestFirer:
         # Gate 1.4: operator checkpoint ("My additions") — the whole scan's
         # very first state-changing action pauses once for a human look
         # before anything automated (Gate 1.5's guardian, then Gate 2)
-        # decides. Never fires again after the first state-changing request
-        # for this firer, whether that first one is ultimately cleared or
-        # refused downstream.
+        # decides. A genuine barrier under concurrent specialists (Build
+        # Order 2c fix): the winning thread runs the blocking callback;
+        # every other thread WAITS for that same checkpoint to resolve
+        # (resume or cancel) instead of falling through once "notified" —
+        # otherwise a second thread could fire its own state-changing
+        # request while the first is still paused waiting on the operator,
+        # defeating the whole point of the checkpoint. Never re-runs after
+        # the first state-changing request for this firer, whether that
+        # first one is ultimately cleared or refused downstream.
         if not read_only and not authentication and self._first_state_change_checkpoint is not None:
             with self._checkpoint_lock:
-                already_notified = self._first_state_change_notified
-                self._first_state_change_notified = True
-            if not already_notified:
-                self._first_state_change_checkpoint(method, target, identity)
+                is_owner = not self._checkpoint_started
+                self._checkpoint_started = True
+            if is_owner:
+                try:
+                    self._first_state_change_checkpoint(method, target, identity)
+                except BaseException as exc:
+                    self._checkpoint_error = exc
+                    self._checkpoint_done.set()
+                    raise
+                self._checkpoint_done.set()
+            else:
+                self._checkpoint_done.wait()
+                if self._checkpoint_error is not None:
+                    raise self._checkpoint_error
 
         # Gate 1.5: isolated LLM guardian advisor (Build Order 3) — an add-on
         # second opinion, consulted only for state-changing actions (a GET

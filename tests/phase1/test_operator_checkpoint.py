@@ -122,3 +122,106 @@ def test_checkpoint_raising_aborts_the_fire_without_sending() -> None:
     with pytest.raises(RuntimeError, match="cancelled"):
         firer.fire("anon", "POST", "http://target.test/submit", state_changing=True)
     assert seen == []
+
+
+# === Concurrent specialists (Build Order 2c) — the checkpoint must be a real
+# barrier, not just a "notified once" flag, when multiple threads share one
+# firer. Adversarial-review finding: a second thread must never fall through
+# just because the first already flipped "notified" while still paused.
+
+
+def test_second_thread_blocks_until_the_first_threads_checkpoint_resolves() -> None:
+    import threading
+    import time
+
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.method)
+        return httpx.Response(200, text="ok")
+
+    release = threading.Event()
+    checkpoint_entered = threading.Event()
+
+    def _checkpoint(method: str, target: str, identity: str) -> None:
+        checkpoint_entered.set()
+        release.wait(timeout=5)  # simulates the operator not having resumed yet
+
+    firer = _firer(handler, _checkpoint)
+    firer.fire("anon", "GET", "http://target.test/a", state_changing=False)
+    firer.fire("anon", "GET", "http://target.test/b", state_changing=False)
+    seen.clear()
+
+    results: list[str] = []
+
+    def _fire_a() -> None:
+        firer.fire("anon", "POST", "http://target.test/a", state_changing=True)
+        results.append("a")
+
+    def _fire_b() -> None:
+        firer.fire("anon", "POST", "http://target.test/b", state_changing=True)
+        results.append("b")
+
+    thread_a = threading.Thread(target=_fire_a)
+    thread_b = threading.Thread(target=_fire_b)
+    thread_a.start()
+    assert checkpoint_entered.wait(timeout=5)  # thread_a is now the checkpoint owner
+    thread_b.start()
+
+    # While the operator hasn't resumed, NEITHER thread may have sent a
+    # packet yet — thread_b must be blocked at the barrier, not skipping
+    # through because "notified" was already true.
+    time.sleep(0.1)
+    assert seen == []
+    assert results == []
+
+    release.set()
+    thread_a.join(timeout=5)
+    thread_b.join(timeout=5)
+
+    assert sorted(seen) == ["POST", "POST"]
+    assert sorted(results) == ["a", "b"]
+
+
+def test_second_thread_reraises_the_first_threads_cancellation() -> None:
+    import threading
+
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.method)
+        return httpx.Response(200, text="ok")
+
+    checkpoint_entered = threading.Event()
+
+    def _cancel(method: str, target: str, identity: str) -> None:
+        checkpoint_entered.set()
+        raise RuntimeError("scan cancelled during operator checkpoint")
+
+    firer = _firer(handler, _cancel)
+    firer.fire("anon", "GET", "http://target.test/a", state_changing=False)
+    firer.fire("anon", "GET", "http://target.test/b", state_changing=False)
+    seen.clear()
+
+    errors: list[BaseException] = []
+    started = threading.Barrier(2, timeout=5)
+
+    def _fire(path: str) -> None:
+        started.wait()
+        try:
+            firer.fire("anon", "POST", f"http://target.test/{path}", state_changing=True)
+        except BaseException as exc:  # noqa: BLE001 - captured for the assertion below
+            errors.append(exc)
+
+    thread_a = threading.Thread(target=_fire, args=("a",))
+    thread_b = threading.Thread(target=_fire, args=("b",))
+    thread_a.start()
+    thread_b.start()
+    thread_a.join(timeout=5)
+    thread_b.join(timeout=5)
+
+    # Both threads must abort — the second must never fire just because it
+    # wasn't the one that hit the (cancelled) checkpoint first.
+    assert len(errors) == 2
+    assert all("cancelled" in str(e) for e in errors)
+    assert seen == []

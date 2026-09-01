@@ -41,11 +41,31 @@ def merge_new_findings(source: ReachabilityGraph, target: ReachabilityGraph) -> 
     ``CONFIRMED_VIOLATION`` gate, first) re-applies exactly as it would on a
     live scan. Returns the finding ids newly written to ``target`` (never
     ones ``target`` already had, whether from a prior merge or its own work).
+
+    Disclosed precondition (adversarial review, Build Order 2c): if two
+    SEPARATE calls each supply a finding that resolves to the same
+    deterministic finding id but with different content (metadata/severity/
+    confidence), the second call's content is silently dropped — whichever
+    call happens to run first wins, permanently. This is not reachable
+    through the current sole call site (``_run_phase3_concurrent`` scopes
+    each vuln_class to exactly one concurrent specialist via
+    ``_SPECIALIST_OF_CLASS``, so two children can never produce the same
+    finding id today), but this function itself enforces no such guarantee —
+    a future caller that violates that external invariant hits silent data
+    loss. Logged (not raised) when detected, matching the
+    ``derived_credential``-target-missing case below.
     """
-    existing = {fid for fid, _ in target.findings()}
+    existing = dict(target.findings())
     new_ids: list[str] = []
     for fid, finding in source.findings():
         if fid in existing:
+            if finding != existing[fid]:
+                _log.warning(
+                    "merge_new_findings: finding %r already present in the parent graph "
+                    "with different content — keeping the existing version; the second, "
+                    "differing confirmation was silently dropped",
+                    fid,
+                )
             continue
         # A shallow dataclass copy (with its own metadata dict) so the two
         # graphs never share a mutable Finding instance — findings are
