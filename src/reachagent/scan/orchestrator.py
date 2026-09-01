@@ -3027,6 +3027,8 @@ def scan_all_classes(
     from reachagent.scan.agentic_loop import (
         AdaptiveControlLoop,
         AdaptiveControlState,
+        IdleTimeout,
+        LoopDetected,
         ModelControlError,
         PhaseDecision,
         ScanCancelled,
@@ -3137,6 +3139,25 @@ def scan_all_classes(
             )
             if require_llm:
                 raise
+            return None
+        except (LoopDetected, IdleTimeout) as exc:
+            # Graceful termination ("My additions" / PentAGI-style watchdog):
+            # a stuck or looping ADAPTIVE decision loop stops adapting, but
+            # the deterministic scan underneath is unaffected — every
+            # remaining phase/class still runs, just in its default order
+            # rather than a further LLM-reordered one. This is deliberately
+            # never re-raised, even under require_llm: unlike ModelControlError
+            # (the advisor itself is unreachable), the advisor here answered
+            # fine — it just kept repeating itself or went idle — so there is
+            # nothing to retry, only adaptation left to stop.
+            _emit(
+                events_out,
+                phase,
+                "control-stopped",
+                f"adaptive control loop stopped ({type(exc).__name__}: {exc}) — "
+                "continuing with the deterministic default order",
+                error_category="control",
+            )
             return None
 
     events_out = events if events is not None else []
