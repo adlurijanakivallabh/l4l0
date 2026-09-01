@@ -455,6 +455,64 @@ def test_run_oracle_structural_resolves_body_from_fire_ref() -> None:
     assert verdict.is_violation is True  # type: ignore[attr-defined]
 
 
+def test_run_oracle_survives_a_control_character_in_an_inline_response_body() -> None:
+    # A real target's response can legitimately carry a raw control byte (a
+    # legacy Java/JSP error page is a common source) — this used to raise
+    # ValueError deep inside StructuralEvidence's own validation and abort
+    # the whole scan via "Error executing tool run_oracle: response_body
+    # contains a control character". It must now be sanitized transparently
+    # and the check must still run to a real verdict, not crash.
+    session = _session_on(lambda r: httpx.Response(200, text="ok"))
+    mcp = _register_on_session(session)
+    verdict = _call(
+        mcp,
+        "run_oracle",
+        mechanism="structural",
+        evidence={
+            "check_type": "info_disclosure",
+            "probe_status": 500,
+            "sentinel": "JasperException",
+            "response_body": "stack trace\x00\x1bJasperException\x07 at line 1",
+            "evidence_ref": "control-char-inline",
+        },
+    )
+    assert verdict.is_violation is True  # type: ignore[attr-defined]
+
+
+def test_run_oracle_survives_a_control_character_in_a_fire_ref_resolved_body() -> None:
+    # Same failure mode, but for a body resolved server-side from a
+    # probe_fire_ref (the _project() path) rather than an inline string —
+    # covers both places raw body text enters evidence.
+    session = _session_on(lambda r: httpx.Response(200, text="root:x:0:0\x00\x1btail"))
+    ep = session.graph.add_endpoint(Endpoint(method="GET", path="/ftp/{filename}"))
+    param = session.graph.add_parameter(ep, Parameter(name="filename", location="path"))
+    mcp = _register_on_session(session)
+
+    _call(mcp, "fingerprint_parameter", identity="anon", endpoint_node=ep, param_node=param)
+    probe = _call(
+        mcp,
+        "fire_request",
+        identity="anon",
+        endpoint_node=ep,
+        param_node=param,
+        payload="../../etc/passwd",
+        method="GET",
+    )
+    verdict = _call(
+        mcp,
+        "run_oracle",
+        mechanism="structural",
+        evidence={
+            "check_type": "path_traversal",
+            "probe_status": probe.status_code,  # type: ignore[attr-defined]
+            "sentinel": "root:",
+            "probe_fire_ref": probe.fire_ref,  # type: ignore[attr-defined]
+            "evidence_ref": "control-char-fire-ref",
+        },
+    )
+    assert verdict.is_violation is True  # type: ignore[attr-defined]
+
+
 def test_run_oracle_structural_union_resolves_body_from_fire_ref() -> None:
     session = _session_on(lambda r: httpx.Response(200, text='{"email":"admin@juice-sh.op"}'))
     ep = session.graph.add_endpoint(Endpoint(method="GET", path="/rest/products/search"))

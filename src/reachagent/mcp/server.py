@@ -386,6 +386,37 @@ class DifferentialEvidenceInput:
         )
 
 
+# A real target's response body can legitimately contain a raw control byte
+# (a stray NUL, ESC, or other C0 code — not rare in a legacy Java/JSP error
+# page, exactly the kind of thing information-disclosure/structural checks
+# are looking at). Each oracle mechanism's own evidence validator correctly
+# REJECTS a control character as malformed input (§13) — but that rejection
+# is a ValueError raised deep inside evidence construction, which was
+# propagating straight out of the run_oracle MCP tool call and aborting the
+# entire scan over what is, from the target's side, unremarkable real-world
+# response content. Stripping control characters (never tab/newline/CR,
+# already allowed by every validator) at both places raw body text enters
+# evidence keeps the validators' actual contract intact for genuinely
+# malformed/adversarial evidence while never letting an ordinary-if-odd
+# real-target byte crash the run.
+_CONTROL_CHAR_TRANSLATION = str.maketrans(
+    "", "", "".join(chr(i) for i in range(32) if chr(i) not in "\t\n\r")
+)
+
+
+def _strip_control_chars(text: str) -> str:
+    return text.translate(_CONTROL_CHAR_TRANSLATION)
+
+
+def _sanitize_evidence_strings(ev: dict[str, Any]) -> dict[str, Any]:
+    """Strip control characters from every string value in an evidence dict."""
+
+    def _clean(value: object) -> object:
+        return _strip_control_chars(value) if isinstance(value, str) else value
+
+    return {key: _clean(value) for key, value in ev.items()}
+
+
 def _project(body: bytes, json_field: str | None, select: str | None = None) -> str:
     """Reduce a raw response body to the comparable string the oracle diffs.
 
@@ -406,7 +437,7 @@ def _project(body: bytes, json_field: str | None, select: str | None = None) -> 
     absent record, or absent field falls back sensibly so a missing signal stays
     inconclusive rather than crashing the run.
     """
-    text = body.decode("utf-8", errors="replace")
+    text = _strip_control_chars(body.decode("utf-8", errors="replace"))
     if json_field is None and select is None:
         return text
     try:
@@ -1176,6 +1207,8 @@ def register_tools(mcp: FastMCP, session: _Session) -> None:
           ``violating_body`` (str), ``evidence_ref``.
         """
         ev = evidence or {}
+        if isinstance(ev, dict):
+            ev = _sanitize_evidence_strings(ev)
         ev_for_audit = ev if isinstance(ev, dict) else {}
         mech = OracleMechanism(mechanism)
         oracle_evidence: object
@@ -1234,9 +1267,13 @@ def register_tools(mcp: FastMCP, session: _Session) -> None:
 
             response_body = str(ev.get("response_body", ""))
             if not response_body and probe_fire is not None:
-                response_body = probe_fire.body.decode("utf-8", errors="replace")
+                response_body = _strip_control_chars(
+                    probe_fire.body.decode("utf-8", errors="replace")
+                )
             if not response_body and probe_browser is not None:
-                response_body = probe_browser.body.decode("utf-8", errors="replace")
+                response_body = _strip_control_chars(
+                    probe_browser.body.decode("utf-8", errors="replace")
+                )
 
             def _hdr(ev_key: str, header_name: str) -> str:
                 explicit = ev.get(ev_key)
@@ -1341,9 +1378,11 @@ def register_tools(mcp: FastMCP, session: _Session) -> None:
             exec_body = str(ev.get("response_body", ""))
             if not exec_body and ev.get("probe_fire_ref"):
                 exec_fire = session.get_fire(str(ev["probe_fire_ref"]))
-                exec_body = exec_fire.body.decode("utf-8", errors="replace")
+                exec_body = _strip_control_chars(exec_fire.body.decode("utf-8", errors="replace"))
             if not exec_body and browser_result is not None:
-                exec_body = browser_result.body.decode("utf-8", errors="replace")
+                exec_body = _strip_control_chars(
+                    browser_result.body.decode("utf-8", errors="replace")
+                )
             execution_metadata = _metadata_for(ev)
             if ev.get("probe_fire_ref") and not execution_metadata.probe_response_ref:
                 execution_metadata = replace(
