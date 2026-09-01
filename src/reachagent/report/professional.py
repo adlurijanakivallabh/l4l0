@@ -346,4 +346,80 @@ def render_professional_report_markdown(
     if not confirmed and not informational:
         lines.append("\nNo findings were confirmed during this assessment.\n")
 
+    whitebox_section = _whitebox_section_markdown(graph)
+    if whitebox_section:
+        lines.append(whitebox_section)
+
     return sanitize_report_markdown("".join(lines))
+
+
+def _whitebox_section_markdown(graph: ReachabilityGraph) -> str:
+    """Build Order 7 — static/source-level observations from an optional
+    white-box repo scan. Rendered ONLY if the graph has any such facts (a
+    scan with no ``repo_path`` supplied has none, and this section is
+    entirely absent, not an empty header). Always visibly, permanently
+    separate from both the confirmed-findings and informational-observations
+    sections above: nothing here ever came from ``run_oracle``.
+    """
+    advisories = graph.static_advisories()
+    source_files = graph.source_files()
+    secrets = graph.secrets()
+    if not advisories and not source_files and not secrets:
+        return ""
+
+    lines = [
+        "\n## Static Analysis (White-Box — Unconfirmed Reachability)\n\n",
+        "The following come from an optional source-repo scan (semgrep/"
+        "TruffleHog/dependency-manifest analysis), not the live black-box "
+        "test above. **None of these are oracle-confirmed findings** — a "
+        "known-CVE dependency match is a manifest version against a public "
+        "advisory, not a behavioral confirmation that the vulnerable code "
+        "path is reachable from the live application; a SAST hit is a "
+        "pattern match, not a proven exploit. Treat this section as "
+        "prioritization input for further live testing, not as a "
+        "conclusion.\n\n",
+    ]
+
+    if advisories:
+        lines.append("### Known-Vulnerable Dependencies\n\n")
+        lines.append(
+            "| Package | Version | CVE | CVSS | EPSS | Manifest |\n|---|---|---|---|---|---|\n"
+        )
+        for _aid, advisory in sorted(
+            advisories, key=lambda item: (-(item[1].cvss_score or 0.0), item[1].package)
+        ):
+            cvss = f"{advisory.cvss_score:.1f}" if advisory.cvss_score is not None else "n/a"
+            epss = f"{advisory.epss_score:.3f}" if advisory.epss_score is not None else "n/a"
+            lines.append(
+                f"| {advisory.package} | {advisory.version} | {advisory.cve_id} | "
+                f"{cvss} | {epss} | {advisory.manifest} |\n"
+            )
+        lines.append("\n")
+
+    if source_files:
+        lines.append("### Static Analysis Hits (SAST)\n\n")
+        lines.append("| File | Line | Rule | Severity | Message |\n|---|---|---|---|---|\n")
+        for _fid, source_file in sorted(
+            source_files, key=lambda item: (item[1].path, item[1].line)
+        ):
+            message = source_file.message.replace("|", "\\|")
+            lines.append(
+                f"| {source_file.path} | {source_file.line} | {source_file.rule_id} | "
+                f"{source_file.severity} | {message} |\n"
+            )
+        lines.append("\n")
+
+    if secrets:
+        lines.append("### Detected Secrets\n\n")
+        lines.append(
+            "Locations only — the secret value itself is never captured anywhere in this tool.\n\n"
+        )
+        lines.append("| File | Line | Detector | Verified |\n|---|---|---|---|\n")
+        for _sid, secret in sorted(secrets, key=lambda item: (item[1].path, item[1].line)):
+            lines.append(
+                f"| {secret.path} | {secret.line} | {secret.detector} | "
+                f"{'yes' if secret.verified else 'no'} |\n"
+            )
+        lines.append("\n")
+
+    return "".join(lines)

@@ -122,3 +122,94 @@ def test_no_secrets_leak_through_metadata_into_report() -> None:
     )
     out = render_professional_report_markdown(g, client=_quiet_client())
     assert "sk-supersecrettoken1234567890" not in out
+
+
+# === White-box section (Build Order 7) ======================================
+
+
+def test_no_whitebox_section_when_no_repo_scan_facts_exist() -> None:
+    g = _graph(("sqli", "high", "ref-0"))
+    out = render_professional_report_markdown(g, client=_quiet_client())
+    assert "Static Analysis (White-Box" not in out
+
+
+def test_static_advisory_appears_in_its_own_section_never_as_a_finding() -> None:
+    from reachagent.graph.nodes import StaticAdvisory
+
+    g = ReachabilityGraph()
+    g.add_static_advisory(
+        StaticAdvisory(
+            ecosystem="pypi",
+            package="requests",
+            version="2.6.0",
+            cve_id="CVE-2015-2296",
+            manifest="requirements.txt",
+            cvss_score=5.0,
+            epss_score=0.03498,
+        )
+    )
+    out = render_professional_report_markdown(g, client=_quiet_client())
+
+    assert "## Static Analysis (White-Box — Unconfirmed Reachability)" in out
+    assert "### Known-Vulnerable Dependencies" in out
+    assert "CVE-2015-2296" in out
+    assert "requests" in out
+    assert "5.0" in out
+    assert "0.035" in out
+    # Never presented as a confirmed vulnerability.
+    assert "## Confirmed Vulnerabilities" not in out
+    assert "No findings were confirmed" in out
+
+
+def test_source_file_hit_appears_in_sast_section() -> None:
+    from reachagent.graph.nodes import SourceFile
+
+    g = ReachabilityGraph()
+    g.add_source_file(
+        SourceFile(
+            path="app/db.py",
+            rule_id="python.sql-injection",
+            line=42,
+            message="tainted query | with a pipe",
+            severity="error",
+        )
+    )
+    out = render_professional_report_markdown(g, client=_quiet_client())
+
+    assert "### Static Analysis Hits (SAST)" in out
+    assert "app/db.py" in out
+    assert "python.sql-injection" in out
+    # A literal pipe in the message must not break the markdown table.
+    assert "tainted query \\| with a pipe" in out
+
+
+def test_secret_hit_appears_in_secrets_section_without_its_value() -> None:
+    from reachagent.graph.nodes import Secret
+
+    g = ReachabilityGraph()
+    g.add_secret(Secret(path="config/.env", line=3, detector="AWS", verified=True))
+    out = render_professional_report_markdown(g, client=_quiet_client())
+
+    assert "### Detected Secrets" in out
+    assert "config/.env" in out
+    assert "AWS" in out
+    assert "yes" in out
+    assert "never captured" in out
+
+
+def test_whitebox_section_appears_after_the_findings_sections() -> None:
+    from reachagent.graph.nodes import StaticAdvisory
+
+    g = _graph(("sqli", "high", "ref-0"))
+    g.add_static_advisory(
+        StaticAdvisory(
+            ecosystem="pypi",
+            package="requests",
+            version="2.6.0",
+            cve_id="CVE-2015-2296",
+            manifest="requirements.txt",
+        )
+    )
+    out = render_professional_report_markdown(g, client=_quiet_client())
+
+    assert out.index("## Confirmed Vulnerabilities") < out.index("## Static Analysis (White-Box")
