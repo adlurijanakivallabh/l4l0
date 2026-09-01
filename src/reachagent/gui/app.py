@@ -137,6 +137,53 @@ def _scan_update(scan_id: str, **values: Any) -> None:
         data["updated_at"] = _now()
 
 
+def _pause_for_operator_checkpoint(
+    scan_id: str,
+    control: _ScanControl | None,
+    events: list[Any],
+    method: str,
+    target: str,
+    identity: str,
+) -> None:
+    """First state-changing action of the scan — pause once for a human look.
+
+    Reuses the exact pause/resume machinery ``_ScanControl`` already gives
+    every scan: setting ``status="paused"`` makes the existing pause/resume
+    buttons and ``/resume`` endpoint work unchanged, and blocking on
+    ``control.is_set()`` after setting ``pause_event`` is the same wait loop
+    a manual pause already uses. A scan with no control attached (e.g. a
+    hermetic run) is a no-op — there is nothing to pause.
+    """
+    if control is None:
+        return
+    safe_target = _public_text(target, 300)
+    _scan_update(
+        scan_id,
+        status="paused",
+        lifecycle="paused",
+        pending_confirmation={
+            "method": method,
+            "target": safe_target,
+            "identity": _public_text(identity, 128),
+        },
+    )
+    events.append(
+        ScanEvent(
+            phase="payloads",
+            kind="info",
+            message=(
+                f"Paused for operator confirmation before the first "
+                f"state-changing request: {method} {safe_target}"
+            ),
+        )
+    )
+    control.pause_event.set()
+    cancelled = control.is_set()
+    _scan_update(scan_id, pending_confirmation=None)
+    if cancelled:
+        raise RuntimeError("scan cancelled during operator checkpoint")
+
+
 def _lifecycle(status: object) -> str:
     """Normalize compatibility statuses to the explicit GUI lifecycle."""
     return {
@@ -663,6 +710,7 @@ def _scan_summary(scan_id: str, data: dict[str, Any]) -> dict[str, Any]:
         "can_cancel": status in {"queued", "running", "cancelling", "paused"},
         "can_pause": status == "running",
         "can_resume": status == "paused",
+        "pending_confirmation": data.get("pending_confirmation"),
         "graph_available": isinstance(graph, ReachabilityGraph),
         "counts": _graph_snapshot(graph).get("counts", {}),
     }
@@ -910,6 +958,11 @@ async def _run_scan_body(
         _scan_update(scan_id, graph=graph, audit=audit, events=events)
         control = _scans.get(scan_id, {}).get("control")
 
+        def _operator_checkpoint(method: str, checkpoint_target: str, identity: str) -> None:
+            _pause_for_operator_checkpoint(
+                scan_id, control, events, method, checkpoint_target, identity
+            )
+
         def _run() -> dict[str, Any]:
             return scan_all_classes(
                 base_url=target,
@@ -924,6 +977,7 @@ async def _run_scan_body(
                 require_llm=use_llm,
                 live_recon=True,
                 cancel_check=control,
+                operator_checkpoint=_operator_checkpoint,
             )
 
         loop = asyncio.get_running_loop()

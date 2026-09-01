@@ -3003,6 +3003,7 @@ def scan_all_classes(
     resume_checkpoint: str | None = None,
     idle_timeout: float = 900.0,
     allow_cross_user_writes: bool = False,
+    operator_checkpoint: Callable[[str, str, str], None] | None = None,
 ) -> dict[str, Any]:
     """Run the validated multi-phase LLM-driven loop over ALL attack classes.
 
@@ -3016,6 +3017,12 @@ def scan_all_classes(
     ``allow_cross_user_writes`` gates ``run_authz_idor`` alone (default False): the one
     driver whose confirmed path fires a genuine state-changing write against ANOTHER
     identity's live object, so it never runs without explicit opt-in.
+
+    ``operator_checkpoint``, when given, is called exactly once — right before the
+    scan's very first state-changing (non-read-only, non-authentication) request —
+    as ``(method, target, identity)``. Intended to block until an operator resumes
+    or cancels (the GUI wires this to its existing pause/resume machinery); a scan
+    with no operator attached (e.g. a hermetic test) simply omits it.
     """
     from reachagent.scan.agentic_loop import (
         AdaptiveControlLoop,
@@ -3460,6 +3467,7 @@ def scan_all_classes(
         scope,
         audit,
         identity_stores=identities,
+        first_state_change_checkpoint=operator_checkpoint,
     )
     seam = _ValidatorSeam(graph)
     identity, auth_headers = _identity_for_scan(identities, events_out)
