@@ -932,9 +932,11 @@ async def _run_scan_body(
 
         md = render_findings_markdown(graph)
         if use_llm:
-            from reachagent.report.llm_report import generate_llm_report
+            from reachagent.report.professional import render_professional_report_markdown
 
-            md = generate_llm_report(graph, operator_prompt=operator_prompt)
+            md = render_professional_report_markdown(
+                graph, audit, operator_prompt=operator_prompt, target=target
+            )
         md = sanitize_report_markdown(md)
         events.append(
             ScanEvent(

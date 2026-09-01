@@ -1,5 +1,7 @@
 """Report package — deterministic renderers over ReachabilityGraph (§2, §14)."""
 
+from reachagent.report.llm_report import generate_llm_report, generate_narrative
+from reachagent.report.professional import render_professional_report_markdown
 from reachagent.report.renderer import (
     build_evidence_index,
     build_report_bundle,
@@ -31,6 +33,8 @@ __all__ = [
     "compare_persisted_snapshots",
     "compare_persisted_runs",
     "finding_to_dict",
+    "generate_llm_report",
+    "generate_narrative",
     "render_evidence_index_html",
     "render_evidence_index_json",
     "render_evidence_index_markdown",
@@ -40,6 +44,7 @@ __all__ = [
     "render_findings_sarif",
     "render_history_comparison_json",
     "render_history_comparison_markdown",
+    "render_professional_report_markdown",
     "render_report_bundle_json",
     "render_report_html",
     "render_sarif",

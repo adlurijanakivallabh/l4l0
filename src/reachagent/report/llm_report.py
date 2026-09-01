@@ -96,23 +96,23 @@ def _deterministic_report(graph: ReachabilityGraph) -> str:
     return render_findings_markdown(graph)
 
 
-def generate_llm_report(
+def generate_narrative(
     graph: ReachabilityGraph,
     *,
     client: ReportClient | None = None,
     operator_prompt: str | None = None,
 ) -> str:
-    """Generate LLM narrative + deterministic table over confirmed findings only.
+    """LLM prose over confirmed findings only, with a deterministic fallback line.
 
-    Never invents a Finding. On LLM failure/timeout/empty, falls back to
-    deterministic markdown table. The deterministic table is always appended
-    so the report is auditable even when LLM is used.
+    Never invents a Finding. On LLM failure/timeout/empty/disabled, falls back
+    to a short deterministic summary sentence instead of raising — callers
+    (e.g. the professional report template) can rely on this always returning
+    usable text.
     """
     confirmed = _confirmed_findings(graph)
     allowed_ids = {fid for fid, _ in confirmed}
     findings_ctx = [finding_to_dict(fid, f) for fid, f in sorted(confirmed, key=lambda x: x[0])]
 
-    # Try LLM when available
     narrative: str | None = None
     try:
         if client is not None:
@@ -135,8 +135,27 @@ def generate_llm_report(
         _log.warning("LLM report failed (%s); fallback to deterministic", exc)
         narrative = None
 
+    if narrative is not None:
+        return narrative
+    fallback = (
+        f"Automated testing confirmed {len(findings_ctx)} finding(s)."
+        if findings_ctx
+        else "Automated testing did not confirm any violations against the tested scope."
+    )
+    return sanitize_report_markdown(fallback)
+
+
+def generate_llm_report(
+    graph: ReachabilityGraph,
+    *,
+    client: ReportClient | None = None,
+    operator_prompt: str | None = None,
+) -> str:
+    """Generate LLM narrative + deterministic table over confirmed findings only.
+
+    The deterministic table is always appended so the report is auditable
+    even when the LLM narrative is used.
+    """
+    narrative = generate_narrative(graph, client=client, operator_prompt=operator_prompt)
     deterministic = _deterministic_report(graph)
-    if narrative is None:
-        return sanitize_report_markdown(deterministic)
-    # Narrative first, deterministic table second — table is the ground truth.
     return sanitize_report_markdown(f"{narrative.strip()}\n\n---\n\n{deterministic}")
