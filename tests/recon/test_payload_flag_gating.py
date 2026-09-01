@@ -23,16 +23,18 @@ def test_flag_off_zero_regression_confidence_order() -> None:
     assert [e["payload_ref"] for e in got] == refs  # byte-identical ordering
 
 
-def test_flag_on_mocked_uses_chosen_order_subset_plus_remaining() -> None:
+def test_flag_on_mocked_uses_chosen_subset_pruning_the_rest() -> None:
     refs = ["a", "b", "c", "d"]
     entries = _entries(refs)
     chosen = PayloadChoice(payload_refs=("c", "a"))
     with patch.dict(os.environ, {"REACHAGENT_PAYLOAD_TUNING": "1"}, clear=False):
         with patch("reachagent.recon.payload_tuning.propose_payload_choice", return_value=chosen):
             got = _maybe_reorder_payloads(entries, "sqli", "sql", None)
-    # chosen first, remaining in original order
-    assert [e["payload_ref"] for e in got] == ["c", "a", "b", "d"]
-    # no invented ref, no Finding written here — reordering only
+    # A genuine choice PRUNES to just the picks — "b" and "d" are dropped,
+    # not ground through afterward. This is the fix for the real-world
+    # complaint that live tuning only moved good picks to the front while
+    # still exhausting the entire remaining bucket when they didn't confirm.
+    assert [e["payload_ref"] for e in got] == ["c", "a"]
     assert all(e["payload_ref"] in refs for e in got)
 
 
@@ -44,8 +46,9 @@ def test_flag_on_outside_allowlist_ignored_defense_in_depth() -> None:
     with patch.dict(os.environ, {"REACHAGENT_PAYLOAD_TUNING": "1"}, clear=False):
         with patch("reachagent.recon.payload_tuning.propose_payload_choice", return_value=evil):
             got = _maybe_reorder_payloads(entries, "sqli", "sql", None)
-    # evil filtered, a first then remaining b,c
-    assert [e["payload_ref"] for e in got] == ["a", "b", "c"]
+    # evil filtered out; only the one legitimate pick survives — pruned, not
+    # backfilled with the rest of the bucket.
+    assert [e["payload_ref"] for e in got] == ["a"]
     assert "evil" not in [e["payload_ref"] for e in got]
 
 
@@ -75,11 +78,13 @@ def test_flag_on_via_alternate_env_var() -> None:
     with patch.dict(os.environ, {"REACHAGENT_RECON_LIVE_TUNING": "1"}, clear=False):
         with patch("reachagent.recon.payload_tuning.propose_payload_choice", return_value=chosen):
             got = _maybe_reorder_payloads(entries, "sqli", "sql", None)
-    assert [e["payload_ref"] for e in got] == ["b", "a", "c"]
+    assert [e["payload_ref"] for e in got] == ["b"]
 
 
 def test_max_attempts_still_honored_by_caller() -> None:
-    # reordering does not truncate; max_attempts=20 is enforced by run_payload_chain loop
+    # Pruning only drops UNCHOSEN entries — here the LLM chose all 25 (just
+    # reordered), so nothing is pruned; max_attempts=20 is still enforced by
+    # the run_payload_chain loop on top of whatever list comes back.
     refs = [f"p{i}" for i in range(25)]
     entries = _entries(refs)
     chosen = PayloadChoice(payload_refs=tuple(reversed(refs)))

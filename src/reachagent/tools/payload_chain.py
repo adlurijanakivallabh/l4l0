@@ -389,12 +389,18 @@ def _maybe_reorder_payloads(
     prior_attempts: tuple[PayloadAttemptContext, ...] = (),
     payload_context: Mapping[str, object] | None = None,
 ) -> list[Mapping[str, object]]:
-    """Proposal-only reorder — flag-gated, dynamic-allowlist-validated.
+    """Proposal-only prune — flag-gated, dynamic-allowlist-validated.
 
     When REACHAGENT_PAYLOAD_TUNING=1 or REACHAGENT_RECON_LIVE_TUNING=1, asks
-    propose_payload_choice to rank which existing bucket refs to try first.
-    Dynamic allowlist is the exact bucket set; fallback is original confidence
-    order. Never invents a ref, respects max_attempts downstream.
+    propose_payload_choice which existing bucket refs are actually worth
+    trying for this endpoint shape. A genuine, non-empty choice REPLACES the
+    bucket with just those picks (+ any generated mutations) — a few sharp
+    shots, not the LLM's picks-first-then-everything-anyway. Dynamic
+    allowlist is the exact bucket set; any failure (flag off, no provider,
+    malformed/empty response, non-bucket ref) falls back to the full,
+    untouched original list — coverage is never silently lost, only skipped
+    when a live choice was actually made. Never invents a ref; the caller's
+    max_attempts still applies on top of whatever list comes back.
     """
     from reachagent.llm.runtime import flag_enabled, llm_required
 
@@ -511,10 +517,15 @@ def _maybe_reorder_payloads(
         if not ordered:
             return entries
         by_ref = {str(e.get("payload_ref")): e for e in entries}
-        remaining = [r for r in candidate_refs if r not in set(ordered)]
-        new_order = ordered + remaining
-        reordered = [by_ref[r] for r in new_order if r in by_ref]
-        return reordered if reordered else entries
+        # Genuine prune, not a reorder: a real LLM choice replaces the bucket
+        # with just its picks (+ any generated mutations) — the whole point
+        # of live tuning is a few sharp shots instead of grinding through
+        # every unchosen entry once the picks don't confirm. The untouched
+        # full `entries` list remains the fail-open fallback below and on
+        # any proposer/validation failure — coverage is never silently lost,
+        # only skipped when a live choice was actually made.
+        pruned = [by_ref[r] for r in ordered if r in by_ref]
+        return pruned if pruned else entries
     except Exception as exc:  # noqa: BLE001 — proposer must not break chain
         if llm_required():
             raise
