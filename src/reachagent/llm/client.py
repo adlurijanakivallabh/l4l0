@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from json import JSONDecodeError
 from typing import Final
 
@@ -22,6 +23,14 @@ _DEFAULT_OPENAI_MODEL: Final = "gpt-4o-mini"
 _SUPPORTED_PROVIDERS: Final = frozenset({"deepseek", "openai", "openai-compatible"})
 _SUPPORTED_API_STYLES: Final = frozenset({"chat_completions", "responses"})
 _MIN_RESPONSES_OUTPUT_TOKENS: Final = 1024
+# Same convention as execution/firer.py's RequestFirer: a transient gateway
+# error from the LLM provider itself (a proxy hiccup, an upstream restart)
+# used to crash the entire scan on the very first LLM call of a phase, with
+# no retry at all. Only 502/503/504 are retried -- a genuine 4xx (bad key,
+# malformed request) retrying would never succeed and shouldn't be masked.
+_LLM_RETRY_LIMIT: Final = 2
+_LLM_RETRY_BACKOFF: Final[tuple[float, ...]] = (0.5, 1.0)
+_LLM_RETRY_STATUSES: Final = frozenset({502, 503, 504})
 
 
 def _first_env(*names: str) -> str:
@@ -223,6 +232,23 @@ class OpenAICompatibleClient:
             return _first_env("REACHAGENT_OPENAI_MODEL", "OPENAI_MODEL", "REACHAGENT_LLM_MODEL")
         return _first_env("REACHAGENT_LLM_MODEL")
 
+    def _post_with_retry(
+        self, url: str, headers: dict[str, str], body: dict[str, object]
+    ) -> httpx.Response:
+        """POST with a bounded retry on a transient gateway error (§ LLM resilience).
+
+        Mirrors execution/firer.py's RequestFirer retry convention exactly —
+        only 502/503/504 are retried; a genuine 4xx/other 5xx is final on the
+        first attempt, since retrying it would never succeed.
+        """
+        for attempt in range(_LLM_RETRY_LIMIT + 1):
+            response = self._client.post(url, headers=headers, json=body)
+            if response.status_code not in _LLM_RETRY_STATUSES or attempt == _LLM_RETRY_LIMIT:
+                response.raise_for_status()
+                return response
+            time.sleep(_LLM_RETRY_BACKOFF[attempt])
+        raise RuntimeError("unreachable")  # pragma: no cover — loop always returns/raises
+
     def complete(self, prompt: str, *, max_tokens: int = 512) -> str:
         """Send one user prompt and return the assistant's text content."""
 
@@ -240,29 +266,23 @@ class OpenAICompatibleClient:
             "Content-Type": "application/json",
         }
         if self.api_style == "responses":
-            response = self._client.post(
-                _responses_url(self.base_url),
-                headers=headers,
-                json={
-                    "model": self.model,
-                    "input": prompt,
-                    # Responses budgets include hidden reasoning tokens. Keep
-                    # small proposal limits from ending before output exists.
-                    "max_output_tokens": max(max_tokens, _MIN_RESPONSES_OUTPUT_TOKENS),
-                },
-            )
+            url = _responses_url(self.base_url)
+            body = {
+                "model": self.model,
+                "input": prompt,
+                # Responses budgets include hidden reasoning tokens. Keep
+                # small proposal limits from ending before output exists.
+                "max_output_tokens": max(max_tokens, _MIN_RESPONSES_OUTPUT_TOKENS),
+            }
         else:
-            response = self._client.post(
-                _chat_completions_url(self.base_url),
-                headers=headers,
-                json={
-                    "model": self.model,
-                    "messages": [{"role": "user", "content": prompt}],
-                    "max_tokens": max_tokens,
-                    "temperature": 0,
-                },
-            )
-        response.raise_for_status()
+            url = _chat_completions_url(self.base_url)
+            body = {
+                "model": self.model,
+                "messages": [{"role": "user", "content": prompt}],
+                "max_tokens": max_tokens,
+                "temperature": 0,
+            }
+        response = self._post_with_retry(url, headers, body)
         payload: object = response.json()
         if self.api_style == "responses":
             return _responses_text(payload)
