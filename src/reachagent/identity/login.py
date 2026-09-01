@@ -327,7 +327,13 @@ def detect_login_forms(
     """Discover forms from observed graph routes and bounded same-host pages."""
     forms: list[DetectedLoginForm] = []
     seen: set[tuple[str, str]] = set()
-    candidates: list[str] = [base_url]
+    # Login-specific candidates (root, nav-linked pages, known aliases) are
+    # tried before generic crawled pages. A real site can hand recon back
+    # hundreds of discovered GET endpoints — appending those ahead of the
+    # actual login page starved it out of the bounded probe budget below
+    # every time, even once it was correctly discoverable in isolation.
+    priority_candidates: list[str] = [base_url]
+    fallback_candidates: list[str] = []
 
     if graph is not None:
         for endpoint_id, endpoint in graph.endpoints():  # type: ignore[attr-defined]
@@ -343,7 +349,7 @@ def detect_login_forms(
                 "html" in str(getattr(endpoint, "content_type", "") or "").lower()
                 or not getattr(endpoint, "content_type", None)
             ):
-                candidates.append(urljoin(base_url, path))
+                fallback_candidates.append(urljoin(base_url, path))
 
     # A homepage frequently doesn't embed its login form at all — it links to
     # one ("Sign In" / "Login") on its own page. Harvest those links before
@@ -352,7 +358,7 @@ def detect_login_forms(
     try:
         home = firer.fire(identity, "GET", base_url, state_changing=False)  # type: ignore[attr-defined]
         if 200 <= home.status_code < 400:
-            candidates.extend(
+            priority_candidates.extend(
                 _extract_login_links(home.body.decode("utf-8", errors="replace"), base_url)
             )
     except Exception as exc:  # noqa: BLE001
@@ -361,7 +367,9 @@ def detect_login_forms(
     # Common aliases are only bounded fallback probes; observed routes/root/
     # linked pages above are always attempted first, so a non-standard login
     # path is still discoverable.
-    candidates.extend(urljoin(base_url, path) for path in _LOGIN_PATH_ALIASES)
+    priority_candidates.extend(urljoin(base_url, path) for path in _LOGIN_PATH_ALIASES)
+    extra_fallback = [c for c in fallback_candidates if c not in priority_candidates]
+    candidates = priority_candidates + extra_fallback
     for url in candidates[:24]:
         try:
             result = firer.fire(identity, "GET", url, state_changing=False)  # type: ignore[attr-defined]

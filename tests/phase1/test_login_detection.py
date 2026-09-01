@@ -137,6 +137,34 @@ class TestDetectLoginForms:
         assert form.password_field == "passw"
         assert form.url == _BASE + "/doLogin"
 
+    def test_login_page_survives_hundreds_of_crawled_endpoints(self) -> None:
+        """Reproduces the exact bug hit against the real target: a real site
+        hands recon back hundreds of crawled GET endpoints. Those used to be
+        appended to the probe candidate list BEFORE the nav-linked login page
+        and the alias list, so the bounded 24-probe budget was entirely
+        consumed by unrelated crawled pages and the real login page — found
+        correctly in isolation — was never reached."""
+        homepage = '<html><body><a href="/login.jsp">Sign In</a></body></html>'
+        login_page = (
+            '<form action="doLogin" method="post">'
+            '<input type="text" name="uid"/><input type="password" name="passw"/>'
+            "</form>"
+        )
+        firer = MockFirer()
+        firer.responses["/login.jsp"] = FakeFireResult(200, login_page)
+        firer.responses[_BASE] = FakeFireResult(200, homepage)
+
+        graph = ReachabilityGraph()
+        graph.add_host(Host(address=_TARGET, source="test"))
+        for i in range(200):
+            graph.add_endpoint(Endpoint(method="GET", path=f"/crawled/page-{i}"))
+
+        forms = detect_login_forms(firer, _BASE, "seed", graph=graph)
+
+        html_forms = [f for f in forms if f.kind == "html_form"]
+        assert html_forms, "the login page must survive a flood of unrelated crawled endpoints"
+        assert html_forms[0].password_field == "passw"
+
     def test_falls_back_to_a_legacy_jsp_login_path_alias(self) -> None:
         """No nav link and no graph hint at all — the bounded alias list is
         the last resort, and must include legacy .jsp-style paths, not just
