@@ -194,6 +194,7 @@ function renderConfirmationCard(proposal, originalMessage) {
     tuningChip("cc-tune-surface", "Surface priority") +
     tuningChip("cc-tune-signal", "Signal-tool") +
     tuningChip("cc-tune-transport", "Transport") +
+    tuningChip("cc-tune-guardian", "Guardian advisor") +
     '</div></div></div>';
   card.appendChild(advanced);
   populateProviderSelect(advanced.querySelector("#cc-provider"));
@@ -246,6 +247,7 @@ async function confirmAndStart(card, bubble, originalMessage) {
     surface_tuning: card.querySelector("#cc-tune-surface").checked,
     signal_tuning: card.querySelector("#cc-tune-signal").checked,
     transport_tuning: card.querySelector("#cc-tune-transport").checked,
+    guardian_advisor: card.querySelector("#cc-tune-guardian").checked,
   };
 
   try {

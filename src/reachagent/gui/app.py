@@ -563,16 +563,23 @@ async def start_scan(payload: dict[str, Any]) -> JSONResponse:
         if isinstance(identities_inline_raw, list)
         else None
     ) or None
-    # Opt-in recon tuning layers (surface priority / signal tools / transport) —
-    # built and tested, but flag-gated off by default (§9); these three checkboxes
-    # are the only place a scan can turn them on, since named_overrides above is
-    # LLM-provider-only and there is no CLI/TUI left to export the env var by hand.
+    # Opt-in recon tuning layers (surface priority / signal tools / transport /
+    # guardian advisor) — built and tested, but flag-gated off by default (§9);
+    # these checkboxes are the only place a scan can turn them on, since
+    # named_overrides above is LLM-provider-only and there is no CLI/TUI left
+    # to export the env var by hand. Guardian is opt-in rather than
+    # auto-activated (unlike REACHAGENT_VULN_TUNING/PAYLOAD_TUNING/etc. in
+    # llm.runtime.override): it runs a synchronous LLM call on every
+    # state-changing fire, a materially hotter path than the other tuning
+    # layers' one-shot-per-tool decisions — the operator should choose that
+    # latency/safety tradeoff explicitly, not have it silently forced on.
     tuning_overrides = {
         env_key: "1"
         for form_key, env_key in (
             ("surface_tuning", "REACHAGENT_SURFACE_TUNING"),
             ("signal_tuning", "REACHAGENT_SIGNAL_TUNING"),
             ("transport_tuning", "REACHAGENT_TRANSPORT_TUNING"),
+            ("guardian_advisor", "REACHAGENT_GUARDIAN_ADVISOR"),
         )
         if payload.get(form_key) is True
     }

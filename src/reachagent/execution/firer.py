@@ -54,6 +54,15 @@ class ReadOnlyFirstError(RuntimeError):
     """
 
 
+class GuardianRefusedError(RuntimeError):
+    """Raised when the isolated LLM guardian advisor flags a state-changing
+    action as clearly destructive (Build Order 3). Raised before any I/O.
+
+    An add-on second opinion beside ScopeGuard, never a replacement for it —
+    ScopeGuard already ran and passed by the time this can ever fire.
+    """
+
+
 @dataclass(frozen=True)
 class FireResult:
     """Outcome of a fired request — the raw signal ``classify_response`` reads (§13)."""
@@ -306,6 +315,24 @@ class RequestFirer:
 
         read_only = self._is_read_only(method, state_changing=state_changing)
 
+        # Gate 1.5: isolated LLM guardian advisor (Build Order 3) — an add-on
+        # second opinion, consulted only for state-changing actions (a GET
+        # cannot be "destructive" at the HTTP layer the way a mutation can).
+        # Sees only {tool, host, method} — never target response content —
+        # and can only ADD a denial on top of Gate 1's already-passed scope
+        # check; it never runs before ScopeGuard and never overrides it.
+        # Flag-gated, fails open, so a disabled/unavailable advisor never
+        # blocks legitimate testing.
+        if not read_only and not authentication:
+            from reachagent.guardian.advisor import advise_on_action
+
+            decision = advise_on_action("fire_request", parsed.host, method)
+            if not decision.allow:
+                self._audit.record(identity, method, target, "refused_by_guardian")
+                raise GuardianRefusedError(
+                    f"guardian advisor flagged this action for {target}: {decision.reason}"
+                )
+
         # Gate 2: read-only-first. A state-changing request may not fire until the
         # read-only case for this endpoint has been confirmed safe (§10).
         key = (identity, target)
@@ -420,9 +447,7 @@ class RequestFirer:
             self._audit.record(identity, method.upper(), target, "refused_out_of_scope")
             raise
         outcome = (
-            f"{transport}:error:{error[:80]}"
-            if error
-            else f"{transport}:fired:{status_code or 0}"
+            f"{transport}:error:{error[:80]}" if error else f"{transport}:fired:{status_code or 0}"
         )
         self._audit.record(identity, method.upper(), target, outcome)
 
