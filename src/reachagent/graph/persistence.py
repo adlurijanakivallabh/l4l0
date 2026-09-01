@@ -81,12 +81,16 @@ from reachagent.graph.nodes import (
     Identity,
     InternalResource,
     Object,
+    PackageDependency,
     Parameter,
     Protocol,
     Provenance,
+    Secret,
     Service,
     Session,
     SinkType,
+    SourceFile,
+    StaticAdvisory,
 )
 from reachagent.graph.store import (
     _DATA,
@@ -124,6 +128,10 @@ _NODE_CLASSES: dict[str, type] = {
     "internal_resource": InternalResource,
     "execution_context": ExecutionContext,
     "finding": Finding,
+    "source_file": SourceFile,
+    "package_dependency": PackageDependency,
+    "secret": Secret,
+    "static_advisory": StaticAdvisory,
 }
 
 # kind → {field: enum type} for StrEnum fields, re-coerced on load (JSON gives

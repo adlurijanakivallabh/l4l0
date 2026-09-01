@@ -39,11 +39,15 @@ from reachagent.graph.nodes import (
     Host,
     Identity,
     Object,
+    PackageDependency,
     Parameter,
     Protocol,
+    Secret,
     Service,
     Session,
     SinkType,
+    SourceFile,
+    StaticAdvisory,
 )
 from reachagent.oracles import evidence as _evidence
 
@@ -183,6 +187,38 @@ def service_id(host_address: str, port: int, protocol: str) -> str:
     without the host that exposes it, so its id is host-scoped by construction.
     """
     return f"service:{host_address}:{protocol.lower()}/{port}"
+
+
+def source_file_id(path: str, rule_id: str, line: int) -> str:
+    """Stable id for a :class:`SourceFile` SAST hit (§6, Build Order 7).
+
+    Keyed by ``(path, rule_id, line)`` — the same rule flagging the same line
+    on a re-scan is idempotent rather than stacking duplicates.
+    """
+    return f"source_file:{path}:{rule_id}:{line}"
+
+
+def package_dependency_id(ecosystem: str, name: str, version: str) -> str:
+    """Stable id for a :class:`PackageDependency` node (§6, Build Order 7).
+
+    Keyed by ``(ecosystem, name, version)`` — the same package/version
+    declared in two manifests (or re-scanned) is one node, not two.
+    """
+    return f"package_dependency:{ecosystem}:{name}:{version}"
+
+
+def secret_id(path: str, line: int, detector: str) -> str:
+    """Stable id for a :class:`Secret` detection (§6, Build Order 7).
+
+    Keyed by ``(path, line, detector)`` — never by the secret's own value,
+    which never enters the graph at all (§10).
+    """
+    return f"secret:{path}:{line}:{detector}"
+
+
+def static_advisory_id(ecosystem: str, package: str, version: str, cve_id: str) -> str:
+    """Stable id for a :class:`StaticAdvisory` known-CVE match (§6, Build Order 7)."""
+    return f"static_advisory:{ecosystem}:{package}:{version}:{cve_id}"
 
 
 def _merge_host(existing: Host, incoming: Host) -> Host:
@@ -392,6 +428,48 @@ class ReachabilityGraph:
         node = service_id(host.address, service.port, service.protocol)
         self._g.add_node(node, **{_KIND: "service", _DATA: service})
         self._g.add_edge(host_node, node, key=StructuralEdge.RUNS_SERVICE)
+        return node
+
+    def add_source_file(self, source_file: SourceFile) -> str:
+        """Add a static-analysis (SAST) hit; return its stable id (§6, Build Order 7).
+
+        Fact-only, same discipline as :meth:`add_host` — never a finding status,
+        never confirmed by an oracle. Idempotent, keyed by ``(path, rule_id, line)``.
+        """
+        node = source_file_id(source_file.path, source_file.rule_id, source_file.line)
+        self._g.add_node(node, **{_KIND: "source_file", _DATA: source_file})
+        return node
+
+    def add_package_dependency(self, dependency: PackageDependency) -> str:
+        """Add a manifest-declared dependency; return its stable id (§6, Build Order 7).
+
+        Idempotent, keyed by ``(ecosystem, name, version)``.
+        """
+        node = package_dependency_id(dependency.ecosystem, dependency.name, dependency.version)
+        self._g.add_node(node, **{_KIND: "package_dependency", _DATA: dependency})
+        return node
+
+    def add_secret(self, secret: Secret) -> str:
+        """Add a detected hardcoded-secret location; return its stable id (§6, §10,
+        Build Order 7). The secret's own value never enters the graph — only its
+        detector type and location. Idempotent, keyed by ``(path, line, detector)``.
+        """
+        node = secret_id(secret.path, secret.line, secret.detector)
+        self._g.add_node(node, **{_KIND: "secret", _DATA: secret})
+        return node
+
+    def add_static_advisory(self, advisory: StaticAdvisory) -> str:
+        """Add a known-CVE match against a manifest dependency version (§6, Build
+        Order 7) — the plan's one narrow, explicit exception to "no Finding without
+        a confirmed run_oracle result." Deliberately never touches ``Finding``/
+        ``add_finding`` at all: this is a structurally distinct node type, so the
+        non-negotiable holds by construction, not by a special case inside the
+        Finding path. Idempotent, keyed by ``(ecosystem, package, version, cve_id)``.
+        """
+        node = static_advisory_id(
+            advisory.ecosystem, advisory.package, advisory.version, advisory.cve_id
+        )
+        self._g.add_node(node, **{_KIND: "static_advisory", _DATA: advisory})
         return node
 
     def add_resolves_to(self, host_node: str, endpoint_node: str) -> None:
@@ -637,6 +715,26 @@ class ReachabilityGraph:
     def services(self) -> list[tuple[str, Service]]:
         """All transport-tier service nodes as ``(id, Service)`` pairs (§9). Facts only."""
         return [(n, d) for n, d in self._nodes_of_kind("service")]  # type: ignore[misc]
+
+    # -- white-box static facts (Build Order 7) ----------------------------
+
+    def source_files(self) -> list[tuple[str, SourceFile]]:
+        """All SAST-hit nodes as ``(id, SourceFile)`` pairs. Facts only."""
+        return [(n, d) for n, d in self._nodes_of_kind("source_file")]  # type: ignore[misc]
+
+    def package_dependencies(self) -> list[tuple[str, PackageDependency]]:
+        """All manifest-declared dependency nodes as ``(id, PackageDependency)`` pairs."""
+        return [(n, d) for n, d in self._nodes_of_kind("package_dependency")]  # type: ignore[misc]
+
+    def secrets(self) -> list[tuple[str, Secret]]:
+        """All detected-secret-location nodes as ``(id, Secret)`` pairs. Never
+        carries the secret value itself."""
+        return [(n, d) for n, d in self._nodes_of_kind("secret")]  # type: ignore[misc]
+
+    def static_advisories(self) -> list[tuple[str, StaticAdvisory]]:
+        """All known-CVE-dependency nodes as ``(id, StaticAdvisory)`` pairs. Never a
+        ``Finding`` — see :meth:`add_static_advisory`."""
+        return [(n, d) for n, d in self._nodes_of_kind("static_advisory")]  # type: ignore[misc]
 
     def host(self, host_node: str) -> Host:
         """The :class:`Host` dataclass stored at ``host_node``."""

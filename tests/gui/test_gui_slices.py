@@ -689,6 +689,100 @@ def test_concurrent_specialists_flag_reaches_scan_all_classes(monkeypatch) -> No
     assert captured.get("concurrent_specialists") is True
 
 
+def test_repo_path_rejected_when_not_an_existing_directory() -> None:
+    response = TestClient(app).post(
+        "/api/scan",
+        json={
+            "target": "https://demo.example",
+            "in_scope": "demo.example",
+            "use_llm": True,
+            "repo_path": "/definitely/does/not/exist/anywhere",
+        },
+    )
+    assert response.status_code == 400
+    assert response.json()["code"] == "invalid_input"
+
+
+def test_repo_path_accepted_when_it_is_a_real_directory(monkeypatch, tmp_path) -> None:  # noqa: ANN001
+    _stub_named_provider(monkeypatch)
+
+    async def noop_scan(*_args: object, **_kwargs: object) -> None:
+        return None
+
+    monkeypatch.setattr(gui_app, "_run_scan", noop_scan)
+    response = TestClient(app).post(
+        "/api/scan",
+        json={
+            "target": "https://demo.example",
+            "in_scope": "demo.example",
+            "use_llm": True,
+            "llm_provider": "named:unit-provider",
+            "repo_path": str(tmp_path),
+        },
+    )
+    assert response.status_code == 200
+    _scans.pop(response.json()["scan_id"], None)
+
+
+def test_repo_path_wiring_reaches_scan_all_classes(monkeypatch) -> None:  # noqa: ANN001
+    import asyncio
+
+    captured: dict = {}
+
+    def fake_scan_all_classes(**kwargs):  # noqa: ANN001, ANN003
+        captured.update(kwargs)
+        raise RuntimeError("stop-here-test-only")
+
+    monkeypatch.setattr(gui_app, "scan_all_classes", fake_scan_all_classes)
+
+    scan_id = "repo-path-flag-slice"
+    _scans[scan_id] = {"status": "queued", "events": [], "control": None}
+    try:
+        asyncio.run(
+            gui_app._run_scan_body(
+                scan_id,
+                "https://target.test",
+                "target.test",
+                None,
+                True,
+                20,
+                None,
+                None,
+                None,
+                repo_path="/some/repo",
+            )
+        )
+    finally:
+        _scans.pop(scan_id, None)
+
+    assert captured.get("repo_path") == "/some/repo"
+
+
+def test_repo_path_defaults_to_none(monkeypatch) -> None:  # noqa: ANN001
+    import asyncio
+
+    captured: dict = {}
+
+    def fake_scan_all_classes(**kwargs):  # noqa: ANN001, ANN003
+        captured.update(kwargs)
+        raise RuntimeError("stop-here-test-only")
+
+    monkeypatch.setattr(gui_app, "scan_all_classes", fake_scan_all_classes)
+
+    scan_id = "repo-path-default-slice"
+    _scans[scan_id] = {"status": "queued", "events": [], "control": None}
+    try:
+        asyncio.run(
+            gui_app._run_scan_body(
+                scan_id, "https://target.test", "target.test", None, True, 20, None, None, None
+            )
+        )
+    finally:
+        _scans.pop(scan_id, None)
+
+    assert captured.get("repo_path") is None
+
+
 def test_concurrent_specialists_defaults_to_false(monkeypatch) -> None:  # noqa: ANN001
     import asyncio
     import sys

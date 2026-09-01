@@ -213,6 +213,89 @@ class ExecutionContext:
 
 
 @dataclass
+class SourceFile:
+    """A static-analysis (SAST) hit in the operator-supplied repo (§6, Build Order 7).
+
+    Facts only — same spirit as ``Host``/``Service``: never a finding status,
+    never confirmed by an oracle, never written by anything but a white-box
+    static tool (``whitebox/tools/semgrep.py``). A SAST hit STEERS live-testing
+    priority (folded into the same bounded ``signals`` dict the tech-aware
+    picker already uses); it never gates or substitutes for oracle confirmation.
+    """
+
+    path: str
+    rule_id: str
+    line: int
+    message: str
+    severity: str = "info"
+    source: str | None = None
+
+
+@dataclass
+class PackageDependency:
+    """One manifest-declared software dependency (§6, Build Order 7).
+
+    Named ``PackageDependency``, not ``Dependency`` — ``add_dependency``
+    already exists in the store as an edge writer (producer/consumer
+    parameter data-flow, §8), an unrelated concept this would otherwise
+    collide with. Facts only, populated by manifest parsing
+    (``whitebox/sca.py``), never a finding status.
+    """
+
+    ecosystem: str  # "pypi" | "npm" | ... — the manifest format's package registry
+    name: str
+    version: str
+    manifest: str  # the manifest file path this was declared in
+    source: str | None = None
+
+
+@dataclass
+class Secret:
+    """A detected hardcoded-secret location in the operator-supplied repo (§6,
+    Build Order 7).
+
+    The secret VALUE never enters the graph — only its detector type and
+    location, the same "value stays out of the graph" discipline
+    :class:`Session` already applies to live tokens (§6, §10). ``verified``
+    reflects the scanning tool's own live-validity check (e.g. TruffleHog
+    confirming a credential still authenticates), never an oracle
+    confirmation — this is a fact-only node like ``Host``/``Service``, not a
+    ``Finding``.
+    """
+
+    path: str
+    line: int
+    detector: str
+    verified: bool = False
+    source: str | None = None
+
+
+@dataclass
+class StaticAdvisory:
+    """A known-CVE match against a manifest-declared dependency version (§6,
+    Build Order 7) — the plan's one narrow, explicit exception to "no Finding
+    without a confirmed run_oracle result."
+
+    Deliberately its OWN node type, never a :class:`Finding`: evidence here is
+    a manifest line + a public advisory reference, not a behavioral
+    confirmation, because the vulnerable code path may not be reachable from
+    the live surface at all — no oracle can fire against a fact this shape.
+    Never routed through ``write_finding``/``add_finding``, never merged into
+    a confirmed-findings report section — the report template keeps this in
+    a visibly separate "static / unconfirmed-reachability" section, always.
+    """
+
+    ecosystem: str
+    package: str
+    version: str
+    cve_id: str
+    manifest: str
+    cvss_score: float | None = None
+    epss_score: float | None = None
+    summary: str = ""
+
+
+@dataclass
 class Finding:
     """A confirmed vulnerability — only ever written by the Validator (§4, §13).
 

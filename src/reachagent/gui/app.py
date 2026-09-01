@@ -592,6 +592,12 @@ async def start_scan(payload: dict[str, Any]) -> JSONResponse:
     target = str(payload.get("target", "") or "").strip()
     in_scope = str(payload.get("in_scope", "") or "").strip() or target
     out_of_scope = _opt_str(payload.get("out_of_scope"))
+    repo_path = _opt_str(payload.get("repo_path"))
+    if repo_path is not None and not Path(repo_path).is_dir():
+        return JSONResponse(
+            {"error": "repo_path must be an existing local directory", "code": "invalid_input"},
+            status_code=400,
+        )
     use_llm = payload.get("use_llm") is True
     llm_provider, named_overrides, err = _resolve_llm_provider(payload)
     if err is not None:
@@ -687,6 +693,7 @@ async def start_scan(payload: dict[str, Any]) -> JSONResponse:
             env_overrides,
             identities_inline,
             concurrent_specialists=concurrent_specialists,
+            repo_path=repo_path,
         )
     )
     return JSONResponse({"scan_id": scan_id, "status": "queued", "lifecycle": "queued"})
@@ -897,6 +904,7 @@ async def _run_scan(
     identities_inline: list[dict[str, Any]] | None = None,
     *,
     concurrent_specialists: bool = False,
+    repo_path: str | None = None,
 ) -> None:
     """``env_overrides`` merges LLM-provider config and the opt-in tuning-flag
     checkboxes into one plain os.environ save/set/restore for the scan's duration.
@@ -924,6 +932,7 @@ async def _run_scan(
                 operator_prompt,
                 identities_inline,
                 concurrent_specialists=concurrent_specialists,
+                repo_path=repo_path,
             )
     finally:
         for key, old_value in saved.items():
@@ -945,6 +954,7 @@ async def _run_scan_body(
     identities_inline: list[dict[str, Any]] | None = None,
     *,
     concurrent_specialists: bool = False,
+    repo_path: str | None = None,
 ) -> None:
     try:
         identities, id_error = _load_identities(identities_path, identities_inline)
@@ -986,6 +996,7 @@ async def _run_scan_body(
                 cancel_check=control,
                 operator_checkpoint=_operator_checkpoint,
                 concurrent_specialists=concurrent_specialists,
+                repo_path=repo_path,
             )
 
         loop = asyncio.get_running_loop()

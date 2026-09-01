@@ -366,6 +366,47 @@ def test_rank_vuln_classes_omits_pattern_signal_with_no_tech_or_no_history(
     assert "past_confirmed_for_similar_stack" not in client.prompts[0]
 
 
+def test_rank_vuln_classes_surfaces_white_box_facts_as_signals(monkeypatch) -> None:  # noqa: ANN001
+    """Build Order 7: SAST hits and known-vulnerable dependencies steer
+    priority the same order-only way every other signal already does."""
+    from reachagent.graph.nodes import SourceFile, StaticAdvisory
+    from reachagent.llm import runtime as _runtime
+
+    monkeypatch.setattr(_runtime, "flag_enabled", lambda _name: True)
+    graph = ReachabilityGraph()
+    graph.add_source_file(
+        SourceFile(path="app/db.py", rule_id="python.sql-injection", line=42, message="x")
+    )
+    graph.add_static_advisory(
+        StaticAdvisory(
+            ecosystem="pypi",
+            package="requests",
+            version="2.6.0",
+            cve_id="CVE-2015-2296",
+            manifest="requirements.txt",
+        )
+    )
+    client = _PromptCapturingClient()
+
+    order, _reason = rank_vuln_classes(_CLASSES, graph, client=client)
+
+    assert order == _CLASSES  # order-only signal, never drops/adds a class
+    assert "static_analysis_hits: python.sql-injection" in client.prompts[0]
+    assert "known_vulnerable_dependencies: requests:CVE-2015-2296" in client.prompts[0]
+
+
+def test_rank_vuln_classes_omits_white_box_signals_with_no_static_facts(monkeypatch) -> None:  # noqa: ANN001
+    from reachagent.llm import runtime as _runtime
+
+    monkeypatch.setattr(_runtime, "flag_enabled", lambda _name: True)
+    client = _PromptCapturingClient()
+
+    rank_vuln_classes(_CLASSES, ReachabilityGraph(), client=client)
+
+    assert "static_analysis_hits" not in client.prompts[0]
+    assert "known_vulnerable_dependencies" not in client.prompts[0]
+
+
 # === Named specialist personas — hand-off narration (Agentic Coordinator, Phase 2) ===
 
 

@@ -188,6 +188,7 @@ function renderConfirmationCard(proposal, originalMessage) {
     '<div class="cc-grid">' +
     '<div class="cc-field"><label>LLM provider</label><select id="cc-provider"><option value="">Server default</option></select></div>' +
     '<div class="cc-field"><label>Max attempts</label><input id="cc-attempts" type="number" value="20" min="5" max="200"></div>' +
+    '<div class="cc-field"><label>Repo path (white-box, optional)</label><input id="cc-repo-path" type="text" placeholder="/path/to/local/repo"></div>' +
     '</div>' +
     '<div><label style="display:block;margin:0 0 7px;color:var(--muted);font-size:10px;font-weight:650">Recon tuning (opt-in)</label>' +
     '<div class="tuning-grid">' +
@@ -250,6 +251,7 @@ async function confirmAndStart(card, bubble, originalMessage) {
     transport_tuning: card.querySelector("#cc-tune-transport").checked,
     guardian_advisor: card.querySelector("#cc-tune-guardian").checked,
     concurrent_specialists: card.querySelector("#cc-tune-concurrent").checked,
+    repo_path: card.querySelector("#cc-repo-path").value.trim() || null,
   };
 
   try {

@@ -170,6 +170,18 @@ def _class_priority_signals(
                     past_classes.append(pattern.vuln_class)
         if past_classes:
             signals["past_confirmed_for_similar_stack"] = ",".join(past_classes[:8])
+    # White-box mode (Build Order 7): SAST hits/known-vulnerable dependencies
+    # STEER priority only — bounded, order-only, exactly like every other
+    # signal in this dict. Values are our own static tools' rule ids / a
+    # package+CVE pair, never raw target-controlled content.
+    source_files = graph.source_files()
+    if source_files:
+        rule_ids = sorted({sf.rule_id for _fid, sf in source_files})
+        signals["static_analysis_hits"] = ",".join(rule_ids[:10])[:300]
+    advisories = graph.static_advisories()
+    if advisories:
+        cve_summaries = sorted({f"{a.package}:{a.cve_id}" for _aid, a in advisories})
+        signals["known_vulnerable_dependencies"] = ",".join(cve_summaries[:10])[:300]
     if graph.sessions():
         signals["auth_surface"] = "yes"
     if operator_prompt:
@@ -3666,6 +3678,7 @@ def scan_all_classes(
     allow_cross_user_writes: bool = False,
     operator_checkpoint: Callable[[str, str, str], None] | None = None,
     concurrent_specialists: bool = False,
+    repo_path: str | None = None,
 ) -> dict[str, Any]:
     """Run the validated multi-phase LLM-driven loop over ALL attack classes.
 
@@ -3693,6 +3706,21 @@ def scan_all_classes(
     concurrently, each against its own graph snapshot, merged back as each
     finishes. Default False preserves the exact prior sequential behavior
     unchanged; see ``_run_phase3_concurrent`` for the full design rationale.
+
+    ``repo_path`` (default None, Build Order 7 — white-box mode): when given,
+    an optional local source-repo path, additive to the live black-box scan
+    above, never a replacement for it. Runs semgrep/TruffleHog/manifest+NVD
+    SCA once, right after recon, writing ``SourceFile``/``Secret``/
+    ``PackageDependency``/``StaticAdvisory`` facts into the same graph. A
+    ``StaticAdvisory`` (a known-CVE dependency match) is the plan's one
+    narrow, explicit exception to "no Finding without a confirmed run_oracle
+    result" — it is structurally never a ``Finding`` (see ``graph/nodes.py``)
+    and the report keeps it in a visibly separate, "static/unconfirmed-
+    reachability" section, never blended with oracle-confirmed findings.
+    Every white-box fact also folds into Phase 3's class-priority steering
+    signal as an additional hint — order-only, exactly like every other
+    tuning signal already there; it never gates or substitutes for oracle
+    confirmation of anything.
     """
     from reachagent.scan.agentic_loop import (
         AdaptiveControlLoop,
@@ -4058,6 +4086,36 @@ def scan_all_classes(
         selected_tools=list(result.get("recon_tools", ())),
         planned_signal_tools=list(planned_signal_tools),
     )
+
+    # White-box mode (Build Order 7) — additive, never a replacement for the
+    # live black-box scan above (§1, §9). Off unless the operator supplied a
+    # repo path. Runs once, here, so its facts are available to Phase 3's
+    # class-priority steering signal (below) before any payload work starts.
+    if repo_path:
+        from reachagent.whitebox.analysis import run_whitebox_analysis
+
+        try:
+            whitebox_summary = run_whitebox_analysis(repo_path=repo_path, graph=graph, audit=audit)
+        except Exception as exc:  # noqa: BLE001 — white-box analysis must never abort the scan
+            _emit(
+                events_out,
+                "endpoints",
+                "error",
+                f"white-box analysis failed: {type(exc).__name__}: {exc}",
+                error_category="whitebox",
+            )
+        else:
+            _emit(
+                events_out,
+                "endpoints",
+                "info",
+                "white-box analysis complete — "
+                f"{whitebox_summary['source_files']} SAST hit(s), "
+                f"{whitebox_summary['secrets']} secret(s), "
+                f"{whitebox_summary['package_dependencies']} dependencies, "
+                f"{whitebox_summary['static_advisories']} known-CVE match(es)",
+                **whitebox_summary,
+            )
 
     # LLM-driven surface prioritization (flag-gated, ordering only): after
     # recon completes, send the discovered surface to the LLM and get back a
