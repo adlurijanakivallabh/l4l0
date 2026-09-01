@@ -188,6 +188,40 @@ def test_rank_vuln_classes_disabled_by_default_returns_original_order() -> None:
     assert "disabled" in reason
 
 
+def test_phase3_dispatch_re_ranks_after_every_class_not_just_once(tmp_path, monkeypatch) -> None:  # noqa: ANN001
+    """Build Order 2: continuous replanning, not a one-shot upfront order.
+
+    Patches rank_vuln_classes itself to a spy that records the class-name
+    tuple it's asked to rank on every call. If the dispatch loop still made
+    one upfront call, this would record exactly 1 call with the full
+    _PHASE3_CLASS_ORDER. The new per-step loop must call it once per
+    remaining class, each call's tuple one shorter than the last.
+    """
+    from reachagent.payloads import PayloadLibrary
+    from reachagent.scan import orchestrator as _orchestrator
+
+    calls: list[tuple[str, ...]] = []
+
+    def _spy_rank(class_names, graph, *, operator_prompt=None, client=None):  # noqa: ANN001
+        calls.append(tuple(class_names))
+        return tuple(class_names), "spy"
+
+    monkeypatch.setattr(_orchestrator, "rank_vuln_classes", _spy_rank)
+    scan_all_classes(
+        base_url="https://safe.example",
+        in_scope="safe.example",
+        transport=httpx.MockTransport(_clean_handler),
+        surface_path=_surface(tmp_path),
+        library=PayloadLibrary.from_file(),
+    )
+    assert len(calls) == len(_PHASE3_CLASS_ORDER)
+    # Each call's remaining set is exactly one shorter than the previous.
+    for earlier, later in zip(calls, calls[1:], strict=False):
+        assert len(later) == len(earlier) - 1
+    assert calls[0] == _PHASE3_CLASS_ORDER
+    assert calls[-1] == (_PHASE3_CLASS_ORDER[-1],)
+
+
 def test_rank_vuln_classes_applies_a_valid_llm_order(monkeypatch) -> None:  # noqa: ANN001
     from reachagent.llm import runtime as _runtime
 

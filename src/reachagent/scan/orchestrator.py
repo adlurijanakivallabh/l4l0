@@ -3567,19 +3567,35 @@ def scan_all_classes(
         ),
     }
 
-    ranked_order, rank_reason = rank_vuln_classes(
-        _PHASE3_CLASS_ORDER, graph, operator_prompt=operator_prompt
-    )
-    _emit(
-        events_out,
-        "payloads",
-        "info",
-        f"phase 3 class order: {rank_reason}",
-        order=list(ranked_order),
-    )
+    # Continuous replanning (Build Order 2): re-rank the REMAINING classes
+    # after every single one runs, using the graph as it stands right then —
+    # a confirmed finding or a newly-discovered endpoint from class N can
+    # reshape what runs at N+1, instead of the whole Phase-3 order being
+    # fixed once at the start. Reuses rank_vuln_classes completely unchanged
+    # (it already reads live graph signals on every call) — no new ranking
+    # mechanism, just calling the existing one more often. Termination is
+    # guaranteed regardless of what the LLM proposes: exactly one class is
+    # consumed from `remaining` per iteration, so this cannot loop or stall
+    # the way an open-ended tool-selection loop could — no loop-guard needed.
+    remaining = list(_PHASE3_CLASS_ORDER)
     current_specialist: str | None = None
-    for class_name in ranked_order:
+    while remaining:
         check_cancel(cancel_check)
+        ranked_order, rank_reason = rank_vuln_classes(
+            tuple(remaining), graph, operator_prompt=operator_prompt
+        )
+        class_name = ranked_order[0]
+        # rank_vuln_classes never drops/invents a class — ranked_order is
+        # exactly `remaining`, reordered — so the tail is already the next
+        # remaining set with no further filtering needed.
+        remaining = list(ranked_order[1:])
+        _emit(
+            events_out,
+            "payloads",
+            "info",
+            f"next: {class_name} — {rank_reason}",
+            remaining=len(remaining),
+        )
         specialist = _SPECIALIST_OF_CLASS.get(class_name, "general")
         if specialist != current_specialist:
             current_specialist = specialist
