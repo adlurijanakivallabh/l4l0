@@ -77,6 +77,42 @@ _PHASE3_CLASS_ORDER: tuple[str, ...] = (
     "xss_dom",
 )
 
+# Named specialist personas (Agentic Coordinator, Phase 2) — a grouping of the
+# Phase 3 drivers above, purely for narration: the GUI's live event feed
+# shows which "specialist" is working, matching a multi-agent hand-off feel,
+# without changing what actually runs. Every class still routes through the
+# exact same driver function and oracle it always did.
+_SPECIALIST_OF_CLASS: dict[str, str] = {
+    "structural_headers": "client_side",
+    "open_redirect": "client_side",
+    "cache_poisoning": "client_side",
+    "xss_stored": "client_side",
+    "xss_dom": "client_side",
+    "file_upload": "injection",
+    "sqli_blind": "injection",
+    "nosqli": "injection",
+    "ldap": "injection",
+    "command_injection": "injection",
+    "xxe": "injection",
+    "request_smuggling": "protocol",
+    "subdomain_takeover": "protocol",
+    "jwt_forgery": "auth",
+    "authz_bola": "auth",
+    "authz_idor": "auth",
+    "mass_assignment": "auth",
+    "graphql": "api_logic",
+    "business_logic": "api_logic",
+    "race": "api_logic",
+}
+
+_SPECIALIST_LABELS: dict[str, str] = {
+    "client_side": "Client-Side Specialist",
+    "injection": "Injection Specialist",
+    "protocol": "Protocol Specialist",
+    "auth": "Auth & Authorization Specialist",
+    "api_logic": "API & Business-Logic Specialist",
+}
+
 _PHASE3_RANK_PROMPT = """You are prioritizing the ORDER in which vulnerability-class \
 checks run against a web/API target, given what recon has discovered so far. You are \
 NOT deciding whether anything is vulnerable, and every class listed still runs \
@@ -3320,8 +3356,19 @@ def scan_all_classes(
         f"phase 3 class order: {rank_reason}",
         order=list(ranked_order),
     )
+    current_specialist: str | None = None
     for class_name in ranked_order:
         check_cancel(cancel_check)
+        specialist = _SPECIALIST_OF_CLASS.get(class_name, "general")
+        if specialist != current_specialist:
+            current_specialist = specialist
+            _emit(
+                events_out,
+                "payloads",
+                "info",
+                f"{_SPECIALIST_LABELS.get(specialist, specialist)} — starting",
+                specialist=specialist,
+            )
         phase3_drivers[class_name]()
 
     findings = [fid for fid, _ in graph.findings()]

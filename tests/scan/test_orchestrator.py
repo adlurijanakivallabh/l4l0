@@ -6,6 +6,8 @@ import httpx
 
 from reachagent.graph.store import ReachabilityGraph
 from reachagent.scan.orchestrator import (
+    _PHASE3_CLASS_ORDER,
+    _SPECIALIST_OF_CLASS,
     ALL_CLASSES,
     ScanEvent,
     rank_vuln_classes,
@@ -231,3 +233,32 @@ def test_rank_vuln_classes_falls_back_when_client_raises(monkeypatch) -> None:  
     order, reason = rank_vuln_classes(_CLASSES, ReachabilityGraph(), client=_BoomClient())
     assert order == _CLASSES
     assert "unavailable" in reason
+
+
+# === Named specialist personas — hand-off narration (Agentic Coordinator, Phase 2) ===
+
+
+def test_every_phase3_class_has_a_named_specialist() -> None:
+    # A class silently falling back to "general" would mean it never gets a
+    # named hand-off in the live event feed -- a data-integrity gap, not
+    # just cosmetic.
+    missing = [c for c in _PHASE3_CLASS_ORDER if c not in _SPECIALIST_OF_CLASS]
+    assert missing == []
+
+
+def test_scan_emits_specialist_handoff_events(tmp_path) -> None:  # noqa: ANN001
+    from reachagent.payloads import PayloadLibrary
+
+    result = scan_all_classes(
+        base_url="https://safe.example",
+        in_scope="safe.example",
+        transport=httpx.MockTransport(_clean_handler),
+        surface_path=_surface(tmp_path),
+        library=PayloadLibrary.from_file(),
+    )
+    specialist_events = [
+        e for e in result["events"] if "specialist" in e.details and "— starting" in e.message
+    ]
+    assert specialist_events, "at least one specialist hand-off event must be emitted"
+    # Hand-offs must be visibly distinct personas, not one giant undifferentiated block.
+    assert len({e.details["specialist"] for e in specialist_events}) > 1
