@@ -118,3 +118,85 @@ def test_exhausted_decision_budget_stops_adapting_but_not_the_scan(tmp_path: Pat
     stopped = [e for e in events if e.kind == "control-stopped"]
     assert stopped, "expected a graceful control-stopped event, scan should not have crashed"
     assert "LoopDetected" in stopped[0].message
+
+
+class _RecoveryHintAdvisor:
+    """Answers 'continue' normally, but once asked to recover from a detected
+    loop (its phase_summary starts with the sentinel below), offers a revised
+    strategy hint instead — the D-CIPHER-style auto-prompter refinement."""
+
+    def advise(
+        self,
+        completed_phase: str,
+        phase_summary: str,
+        remaining_phases: tuple[str, ...],
+        operator_prompt: str,
+    ) -> dict[str, object]:
+        if phase_summary.startswith("Adaptive control loop stopped"):
+            return {
+                "action": "revise",
+                "rationale": "loop detected",
+                "hint": "skip re-ranking, use default order for the rest of the scan",
+                "target_phase": None,
+            }
+        return {"action": "continue", "rationale": "test advisor", "hint": "", "target_phase": None}
+
+
+def test_recovery_hint_is_folded_into_the_operator_prompt(tmp_path: Path) -> None:
+    checkpoint = tmp_path / "control.json"
+    _seed_exhausted_checkpoint(checkpoint)
+    events: list = []
+
+    result = scan_all_classes(
+        base_url=_BASE,
+        in_scope="control-loop.test",
+        transport=httpx.MockTransport(_clean_handler),
+        require_llm=True,
+        planner_client=_FakePlannerClient(),
+        control_client=_RecoveryHintAdvisor(),
+        resume_checkpoint=str(checkpoint),
+        events=events,
+    )
+
+    assert result["graph"].findings() == []
+    stopped = [e for e in events if e.kind == "control-stopped"]
+    assert stopped
+    assert "recovery hint applied: skip re-ranking" in stopped[0].message
+
+
+class _BoomOnRecoveryAdvisor:
+    """continue normally, but raises when asked to recover from a loop —
+    the recovery attempt must be best-effort and never crash the scan."""
+
+    def advise(
+        self,
+        completed_phase: str,
+        phase_summary: str,
+        remaining_phases: tuple[str, ...],
+        operator_prompt: str,
+    ) -> dict[str, object]:
+        if phase_summary.startswith("Adaptive control loop stopped"):
+            raise RuntimeError("advisor down")
+        return {"action": "continue", "rationale": "test advisor", "hint": "", "target_phase": None}
+
+
+def test_recovery_hint_failure_still_degrades_gracefully(tmp_path: Path) -> None:
+    checkpoint = tmp_path / "control.json"
+    _seed_exhausted_checkpoint(checkpoint)
+    events: list = []
+
+    result = scan_all_classes(
+        base_url=_BASE,
+        in_scope="control-loop.test",
+        transport=httpx.MockTransport(_clean_handler),
+        require_llm=True,
+        planner_client=_FakePlannerClient(),
+        control_client=_BoomOnRecoveryAdvisor(),
+        resume_checkpoint=str(checkpoint),
+        events=events,
+    )
+
+    assert result["graph"].findings() == []
+    stopped = [e for e in events if e.kind == "control-stopped"]
+    assert stopped
+    assert "recovery hint applied" not in stopped[0].message

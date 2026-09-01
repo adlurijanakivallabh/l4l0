@@ -3057,12 +3057,14 @@ def scan_all_classes(
     from reachagent.scan.agentic_loop import (
         AdaptiveControlLoop,
         AdaptiveControlState,
+        DefaultLoopAdvisor,
         IdleTimeout,
         LoopDetected,
         ModelControlError,
         PhaseDecision,
         ScanCancelled,
         check_cancel,
+        validate_decision,
     )
     from reachagent.scan.entrypoint import detect_target_type, scan_target
 
@@ -3180,12 +3182,40 @@ def scan_all_classes(
             # (the advisor itself is unreachable), the advisor here answered
             # fine — it just kept repeating itself or went idle — so there is
             # nothing to retry, only adaptation left to stop.
+            #
+            # Auto-prompter refinement (D-CIPHER-style, "My additions"): before
+            # falling back to the plain default order, offer the SAME advisor
+            # one bounded, best-effort call describing the failure, asking for
+            # a revised strategy hint (e.g. "stop reordering the recon phase,
+            # move straight to payloads"). Reuses the existing
+            # LoopAdvisorClient/validate_decision machinery — no new client
+            # protocol, no new flag. Still allowlist-validated by
+            # validate_decision, still fails open to no hint on any error.
+            hint = ""
+            try:
+                advisor = control.advisor or DefaultLoopAdvisor()
+                raw = advisor.advise(
+                    phase,
+                    f"Adaptive control loop stopped: {type(exc).__name__}: {exc}",
+                    remaining,
+                    control.operator_prompt,
+                )
+                recovery = validate_decision(raw)
+                if recovery is not None and recovery.hint:
+                    hint = recovery.hint
+            except Exception:  # noqa: BLE001 — recovery hint is best-effort, never required
+                hint = ""
+            if hint:
+                control.operator_prompt = (
+                    f"{control.operator_prompt[:1_000]}\nRecovery focus: {hint}"
+                ).strip()
             _emit(
                 events_out,
                 phase,
                 "control-stopped",
                 f"adaptive control loop stopped ({type(exc).__name__}: {exc}) — "
-                "continuing with the deterministic default order",
+                "continuing with the deterministic default order"
+                + (f"; recovery hint applied: {hint}" if hint else ""),
                 error_category="control",
             )
             return None
