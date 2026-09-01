@@ -466,3 +466,54 @@ def test_cancel_still_works_from_a_paused_scan() -> None:
         assert control.cancel_event.is_set()
     finally:
         _scans.pop(scan_id, None)
+
+
+# === Mid-scan steering (Agentic Coordinator, Phase 3) =======================
+
+
+def test_steer_queues_a_hint_and_emits_an_event() -> None:
+    scan_id = "steer-slice"
+    control = _running_scan(scan_id)
+    try:
+        response = TestClient(app).post(
+            f"/api/scan/{scan_id}/steer", json={"message": "focus on the admin login flow"}
+        )
+        assert response.status_code == 200
+        assert response.json() == {"queued": True}
+        assert control.pop_steering_hints() == ["focus on the admin login flow"]
+        events = _scans[scan_id]["events"]
+        assert any("Operator note queued" in e.message for e in events)
+    finally:
+        _scans.pop(scan_id, None)
+
+
+def test_steer_works_while_paused_too() -> None:
+    scan_id = "steer-paused-slice"
+    _running_scan(scan_id)
+    _scans[scan_id]["status"] = "paused"
+    try:
+        response = TestClient(app).post(f"/api/scan/{scan_id}/steer", json={"message": "hint"})
+        assert response.status_code == 200
+    finally:
+        _scans.pop(scan_id, None)
+
+
+def test_steer_rejected_on_a_finished_scan() -> None:
+    scan_id = "steer-finished-slice"
+    _running_scan(scan_id)
+    _scans[scan_id]["status"] = "done"
+    try:
+        response = TestClient(app).post(f"/api/scan/{scan_id}/steer", json={"message": "hint"})
+        assert response.status_code == 409
+    finally:
+        _scans.pop(scan_id, None)
+
+
+def test_steer_rejects_an_empty_message() -> None:
+    scan_id = "steer-empty-slice"
+    _running_scan(scan_id)
+    try:
+        response = TestClient(app).post(f"/api/scan/{scan_id}/steer", json={"message": "  "})
+        assert response.status_code == 400
+    finally:
+        _scans.pop(scan_id, None)

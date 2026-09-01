@@ -657,6 +657,20 @@ class AdaptiveControlLoop:
 
     def _safe_operator_prompt(self) -> str:
         text = self.operator_prompt
+        # Mid-scan steering (Agentic Coordinator, Phase 3): drained exactly
+        # once here, at the next real decision point — never claimed as
+        # instant mid-request redirection. Duck-typed the same way
+        # check_cancel() already treats is_set() as a checkpoint contract,
+        # so this needs zero orchestrator.py call-site changes.
+        pop_hints = getattr(self.cancel, "pop_steering_hints", None)
+        if callable(pop_hints):
+            try:
+                hints = pop_hints()
+            except Exception:  # noqa: BLE001 - a broken hint queue must not break the scan
+                hints = []
+            if hints:
+                note = " ".join(str(h) for h in hints)
+                text = f"{text}\nOperator note: {note}" if text else f"Operator note: {note}"
         names = getattr(self.identities, "names", None)
         redact = getattr(self.identities, "redact", None)
         if callable(names) and callable(redact):

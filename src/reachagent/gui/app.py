@@ -63,11 +63,30 @@ class _ScanControl:
     def __init__(self) -> None:
         self.cancel_event = threading.Event()
         self.pause_event = threading.Event()
+        self._steering_lock = threading.Lock()
+        self._steering_hints: list[str] = []
 
     def is_set(self) -> bool:
         while self.pause_event.is_set() and not self.cancel_event.is_set():
             self.cancel_event.wait(timeout=0.5)
         return self.cancel_event.is_set()
+
+    def add_steering_hint(self, text: str) -> None:
+        """Queue a mid-scan operator note (written from the GUI's request thread)."""
+        with self._steering_lock:
+            self._steering_hints.append(text)
+
+    def pop_steering_hints(self) -> list[str]:
+        """Drain queued hints (read from the scan's own worker thread).
+
+        agentic_loop.AdaptiveControlLoop duck-types this exact method name —
+        the same pattern check_cancel() already uses for is_set() — so a
+        pending hint reaches the next phase-boundary LLM call with zero
+        changes to the orchestrator/agentic-loop call sites.
+        """
+        with self._steering_lock:
+            hints, self._steering_hints = self._steering_hints, []
+        return hints
 
 
 _scans: dict[str, dict[str, Any]] = {}  # id → {status, phase, events, findings, report_md, error}
@@ -734,6 +753,41 @@ def resume_scan(scan_id: str) -> JSONResponse:
                 )
             )
     return JSONResponse(_scan_summary(scan_id, data))
+
+
+@app.post("/api/scan/{scan_id}/steer")
+async def steer_scan(scan_id: str, payload: dict[str, Any]) -> JSONResponse:
+    """Queue a mid-scan operator note for the Orchestrator's next decision point.
+
+    Applies at the next phase-boundary/class-priority LLM call
+    (AdaptiveControlLoop._safe_operator_prompt, agentic_loop.py) — never
+    instant mid-request redirection, and never silently claimed as such.
+    """
+    text = _opt_str(payload.get("message"))
+    if not text:
+        return JSONResponse({"error": "message required"}, status_code=400)
+    text = _public_text(text, 500)
+    with _scan_lock:
+        data = _scans.get(scan_id)
+        if data is None:
+            return JSONResponse({"error": "not found"}, status_code=404)
+        if str(data.get("status", "queued")) not in {"running", "paused"}:
+            return JSONResponse({"error": "scan is not active"}, status_code=409)
+        control = data.get("control")
+        if not isinstance(control, _ScanControl):
+            return JSONResponse({"error": "steering unavailable"}, status_code=409)
+        control.add_steering_hint(text)
+        data["updated_at"] = _now()
+        events = data.get("events")
+        if isinstance(events, list):
+            events.append(
+                ScanEvent(
+                    phase=str(data.get("phase", "recon")),
+                    kind="info",
+                    message=f"Operator note queued: {text}",
+                )
+            )
+    return JSONResponse({"queued": True})
 
 
 def _load_identities(

@@ -305,14 +305,29 @@ function wireComposer(textareaId, sendBtnId, onSend) {
 }
 
 wireComposer("landing-input", "landing-send", startNewAssessment);
-wireComposer("chat-input", "chat-send", (message) => {
+wireComposer("chat-input", "chat-send", async (message) => {
   message = message.trim();
   if (!message) return;
   textBubble("user", message);
-  if (state.scanId) {
-    // A follow-up on a running/finished conversation: acknowledge only — the
-    // agentic loop for an in-flight scan does not accept mid-run redirection.
-    textBubble("assistant", "This assessment is already in progress; I can't change its scope mid-run. Start a new assessment for a different target or objective.");
+  if (!state.scanId) return;
+  const active = !TERMINAL_STATES.has(state.lifecycle) && state.lifecycle !== "cancelled";
+  if (!active) {
+    textBubble("assistant", "This assessment has already finished; start a new assessment for a different target or objective.");
+    return;
+  }
+  try {
+    const r = await fetch("/api/scan/" + state.scanId + "/steer", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message }),
+    });
+    if (r.ok) {
+      textBubble("assistant", "Noted — I'll factor that in at the next decision point. This won't redirect anything already in flight.");
+    } else {
+      textBubble("assistant", "Couldn't queue that note right now; the assessment may have just finished.");
+    }
+  } catch (_e) {
+    textBubble("assistant", "Couldn't reach the server to queue that note.");
   }
 });
 
@@ -408,6 +423,7 @@ function onScanFinished(j) {
 function updateChatHeader(j) {
   $("chat-header-title").textContent = j.target || "New assessment";
   const lifecycle = j.lifecycle || "queued";
+  state.lifecycle = lifecycle;
   const pill = $("chat-header-lifecycle");
   pill.hidden = false;
   pill.textContent = LIFECYCLE_LABEL[lifecycle] || lifecycle;
