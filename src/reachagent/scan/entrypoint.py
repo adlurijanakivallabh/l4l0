@@ -518,13 +518,25 @@ def scan_target(
                 _log.debug("tool event emission failed for %s", tool_name, exc_info=True)
 
         def _authenticate_configured() -> None:
-            """Bind every configured identity before authenticated mapping/firing."""
+            """Bind every configured identity before authenticated mapping/firing.
+
+            One identity's login failure no longer aborts the whole scan: when
+            at least one other configured identity authenticates successfully,
+            the scan proceeds with whatever sessions it actually has (real
+            case: a second/admin credential can fail while the primary
+            identity's session is already good). Only a total failure --
+            every identity that needed a fresh login failed -- is still a
+            hard stop, matching the original "nothing usable" intent.
+            """
             if identities is None:
                 return
             from reachagent.identity.login import LoginError, authenticate_identity
 
+            attempted = 0
+            failures: list[tuple[str, LoginError]] = []
             for name in identities.names():
                 if not identities.auth_headers(name):
+                    attempted += 1
                     _tool_event(
                         "authentication",
                         "starting",
@@ -535,14 +547,15 @@ def scan_target(
                     try:
                         authenticate_identity(firer, identities, name, base_url, graph=g)
                     except LoginError as exc:
+                        failures.append((name, exc))
                         _tool_event(
                             "authentication",
-                            "blocked",
+                            "failed",
                             phase="auth",
                             identity=name,
                             detail=f"{exc.code}: {exc}",
                         )
-                        raise
+                        continue
                     _tool_event(
                         "authentication",
                         "authenticated",
@@ -553,6 +566,17 @@ def scan_target(
                 session_node = identities.ensure_session(name)
                 if session_node is not None:
                     g.add_session(session_node)
+
+            if attempted and len(failures) == attempted:
+                name, exc = failures[-1]
+                _tool_event(
+                    "authentication",
+                    "blocked",
+                    phase="auth",
+                    identity=name,
+                    detail=f"{exc.code}: {exc}",
+                )
+                raise exc
 
         if not resumed and surface_path is not None:
             # Optional --surface seeding (Task 27): materialize a declared surface
