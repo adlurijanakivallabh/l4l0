@@ -642,3 +642,81 @@ def test_steer_rejects_an_empty_message() -> None:
         assert response.status_code == 400
     finally:
         _scans.pop(scan_id, None)
+
+
+# === concurrent_specialists wiring (Build Order 2c) =========================
+
+
+def test_concurrent_specialists_flag_reaches_scan_all_classes(monkeypatch) -> None:  # noqa: ANN001
+    import asyncio
+    import sys
+
+    # reachagent.gui's __init__ does `from reachagent.gui.app import app`,
+    # which shadows the `app` SUBMODULE attribute on the package with the
+    # FastAPI INSTANCE -- `import reachagent.gui.app as x` would silently
+    # bind x to that FastAPI object, not the module. sys.modules sidesteps
+    # the shadowed attribute and gets the real module.
+    app_module = sys.modules["reachagent.gui.app"]
+
+    captured: dict = {}
+
+    def fake_scan_all_classes(**kwargs):  # noqa: ANN001, ANN003
+        captured.update(kwargs)
+        raise RuntimeError("stop-here-test-only")
+
+    monkeypatch.setattr(app_module, "scan_all_classes", fake_scan_all_classes)
+
+    scan_id = "concurrent-flag-slice"
+    _scans[scan_id] = {"status": "queued", "events": [], "control": None}
+    try:
+        asyncio.run(
+            app_module._run_scan_body(
+                scan_id,
+                "https://target.test",
+                "target.test",
+                None,
+                True,
+                20,
+                None,
+                None,
+                None,
+                concurrent_specialists=True,
+            )
+        )
+    finally:
+        _scans.pop(scan_id, None)
+
+    assert captured.get("concurrent_specialists") is True
+
+
+def test_concurrent_specialists_defaults_to_false(monkeypatch) -> None:  # noqa: ANN001
+    import asyncio
+    import sys
+
+    # reachagent.gui's __init__ does `from reachagent.gui.app import app`,
+    # which shadows the `app` SUBMODULE attribute on the package with the
+    # FastAPI INSTANCE -- `import reachagent.gui.app as x` would silently
+    # bind x to that FastAPI object, not the module. sys.modules sidesteps
+    # the shadowed attribute and gets the real module.
+    app_module = sys.modules["reachagent.gui.app"]
+
+    captured: dict = {}
+
+    def fake_scan_all_classes(**kwargs):  # noqa: ANN001, ANN003
+        captured.update(kwargs)
+        raise RuntimeError("stop-here-test-only")
+
+    monkeypatch.setattr(app_module, "scan_all_classes", fake_scan_all_classes)
+
+    scan_id = "concurrent-flag-default-slice"
+    _scans[scan_id] = {"status": "queued", "events": [], "control": None}
+    try:
+        asyncio.run(
+            app_module._run_scan_body(
+                scan_id, "https://target.test", "target.test", None, True, 20, None, None, None
+            )
+        )
+    finally:
+        _scans.pop(scan_id, None)
+
+    assert captured.get("concurrent_specialists") is False

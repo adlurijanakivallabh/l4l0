@@ -22,9 +22,12 @@ Classes that need conditions the discovered surface does not provide are reporte
 
 from __future__ import annotations
 
+import concurrent.futures
+import copy
 import logging
 import os
 import re
+import threading
 import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
@@ -3105,6 +3108,508 @@ def _make_signal_reconfirm(
 
 
 # ---------------------------------------------------------------------------
+# Phase 3 dispatch — driver factory + concurrent specialist spawning (2c)
+# ---------------------------------------------------------------------------
+
+# Bounded, not unbounded (plan §2c): a fixed cap on how many specialist
+# children can run at once. Four is exactly the number of non-"auth"
+# specialist groups in _SPECIALIST_OF_CLASS today (client_side/injection/
+# protocol/api_logic) — if the taxonomy ever grows past four, extra groups
+# simply queue for a free worker slot, which is the correct bounded
+# behavior, not a limitation to raise reactively.
+_MAX_CONCURRENT_SPECIALISTS = 4
+
+
+def _build_phase3_drivers(
+    *,
+    graph: ReachabilityGraph,
+    seam: _ValidatorSeam,
+    firer: RequestFirer,
+    base_url: str,
+    identity: str,
+    auth_headers: Mapping[str, str],
+    identities: IdentityStore | None,
+    transport: httpx.BaseTransport | None,
+    library: Any,
+    allow_cross_user_writes: bool,
+    events: list[ScanEvent],
+) -> dict[str, Callable[[], None]]:
+    """Build the class_name -> driver-call dict, bound to one (graph, seam) pair.
+
+    Extracted from the sequential dispatch loop (Build Order 2c) so it can be
+    called once for the parent graph (unchanged sequential path) and once
+    per specialist child with a child-scoped graph/seam — the only two
+    things that ever differ between an invocation; every other argument
+    (firer/identity/auth_headers/identities/transport/library) is shared
+    read-mostly state, safe across concurrent children (see the Build Order
+    2c prerequisite fix to TokenStore/IdentityStore locking).
+    """
+    from reachagent.scan.xss_dom import run_xss_dom
+
+    def _run_authz_bola_if_identities() -> None:
+        if identities is not None:
+            run_authz_bola(
+                graph=graph,
+                base_url=base_url,
+                identities=identities,
+                events=events,
+                transport=transport,
+            )
+
+    def _run_authz_idor_if_identities() -> None:
+        if identities is not None:
+            run_authz_idor(
+                graph=graph,
+                firer=firer,
+                base_url=base_url,
+                identities=identities,
+                seam=seam,
+                events=events,
+                allow_cross_user_writes=allow_cross_user_writes,
+            )
+
+    return {
+        "default_credentials": lambda: run_default_credentials(
+            graph=graph,
+            firer=firer,
+            base_url=base_url,
+            identity=identity,
+            seam=seam,
+            events=events,
+        ),
+        "rate_limit_absence": lambda: run_rate_limit_absence(
+            graph=graph,
+            firer=firer,
+            base_url=base_url,
+            identity=identity,
+            seam=seam,
+            events=events,
+        ),
+        "structural_headers": lambda: run_structural_headers(
+            graph=graph,
+            firer=firer,
+            base_url=base_url,
+            identity=identity,
+            auth_headers=auth_headers,
+            seam=seam,
+            events=events,
+        ),
+        "file_upload": lambda: run_file_upload(
+            graph=graph,
+            firer=firer,
+            base_url=base_url,
+            identity=identity,
+            auth_headers=auth_headers,
+            seam=seam,
+            events=events,
+        ),
+        "mass_assignment": lambda: run_mass_assignment(
+            graph=graph,
+            firer=firer,
+            base_url=base_url,
+            identity=identity,
+            auth_headers=auth_headers,
+            seam=seam,
+            events=events,
+        ),
+        "xss_stored": lambda: run_xss_stored(
+            graph=graph,
+            firer=firer,
+            base_url=base_url,
+            identity=identity,
+            auth_headers=auth_headers,
+            seam=seam,
+            events=events,
+        ),
+        "open_redirect": lambda: run_open_redirect(
+            graph=graph,
+            firer=firer,
+            base_url=base_url,
+            identity=identity,
+            auth_headers=auth_headers,
+            seam=seam,
+            events=events,
+        ),
+        "cache_poisoning": lambda: run_cache_poisoning(
+            graph=graph,
+            firer=firer,
+            base_url=base_url,
+            identity=identity,
+            auth_headers=auth_headers,
+            seam=seam,
+            events=events,
+        ),
+        "request_smuggling": lambda: run_request_smuggling(
+            base_url=base_url,
+            seam=seam,
+            events=events,
+        ),
+        "subdomain_takeover": lambda: run_subdomain_takeover(
+            graph=graph,
+            seam=seam,
+            events=events,
+            transport=transport,
+        ),
+        "cloud_bucket_exposure": lambda: run_cloud_bucket_exposure(
+            graph=graph,
+            seam=seam,
+            events=events,
+            transport=transport,
+        ),
+        "known_vulnerable_version": lambda: run_known_vulnerable_version(
+            graph=graph,
+            firer=firer,
+            base_url=base_url,
+            identity=identity,
+            seam=seam,
+            events=events,
+        ),
+        "jwt_forgery": lambda: run_jwt_forgery(
+            graph=graph,
+            firer=firer,
+            base_url=base_url,
+            identity=identity,
+            auth_headers=auth_headers,
+            seam=seam,
+            events=events,
+        ),
+        "sqli_blind": lambda: run_sqli_blind(
+            graph=graph,
+            firer=firer,
+            base_url=base_url,
+            identity=identity,
+            seam=seam,
+            events=events,
+            library=library,
+        ),
+        "nosqli": lambda: run_nosqli(
+            graph=graph,
+            firer=firer,
+            base_url=base_url,
+            identity=identity,
+            seam=seam,
+            events=events,
+            library=library,
+        ),
+        "ldap": lambda: run_ldap(
+            graph=graph,
+            firer=firer,
+            base_url=base_url,
+            identity=identity,
+            seam=seam,
+            events=events,
+            library=library,
+        ),
+        "command_injection": lambda: run_command_injection(
+            graph=graph,
+            firer=firer,
+            base_url=base_url,
+            identity=identity,
+            seam=seam,
+            events=events,
+            library=library,
+        ),
+        "authz_bola": _run_authz_bola_if_identities,
+        "authz_idor": _run_authz_idor_if_identities,
+        "graphql": lambda: run_graphql(
+            graph=graph,
+            firer=firer,
+            base_url=base_url,
+            identity=identity,
+            seam=seam,
+            events=events,
+            identities=identities,
+        ),
+        "business_logic": lambda: run_business_logic(
+            graph=graph,
+            firer=firer,
+            base_url=base_url,
+            identity=identity,
+            seam=seam,
+            events=events,
+        ),
+        "race": lambda: run_race(
+            graph=graph,
+            firer=firer,
+            base_url=base_url,
+            identity=identity,
+            seam=seam,
+            events=events,
+        ),
+        "xxe": lambda: run_xxe(
+            graph=graph,
+            firer=firer,
+            base_url=base_url,
+            identity=identity,
+            auth_headers=auth_headers,
+            seam=seam,
+            events=events,
+        ),
+        "xss_dom": lambda: run_xss_dom(
+            graph=graph,
+            firer=firer,
+            base_url=base_url,
+            identity=identity,
+            seam=seam,
+            events=events,
+        ),
+    }
+
+
+def _dispatch_classes(
+    classes: tuple[str, ...],
+    *,
+    graph: ReachabilityGraph,
+    drivers: dict[str, Callable[[], None]],
+    events: list[ScanEvent],
+    operator_prompt: str | None,
+    cancel_check: object | None,
+    check_cancel: Callable[[object | None], None],
+    touch: Callable[[], None],
+    label: str = "",
+) -> None:
+    """Continuous re-rank-then-dispatch loop (Build Order 2), scoped to
+    exactly ``classes`` and one (graph, drivers) pair. Shared by the
+    sequential Phase-3 path and each Build Order 2c specialist child so
+    both use identical dispatch semantics — a child is just this same loop
+    running against a narrower class list and its own graph snapshot.
+
+    ``touch`` is called once per dispatched class (real, visible work just
+    happened — an LLM call, HTTP probes — so the idle-timeout clock must
+    refresh here, not only at the end of the whole class list; that was a
+    real bug, fixed earlier). ``AdaptiveControlState`` itself is confirmed
+    unsynchronized (Build Order 2c prerequisite research), so a caller
+    running several of these concurrently MUST pass a lock-wrapped
+    ``touch`` — never ``control_state.touch`` directly — see
+    ``_run_phase3_concurrent``.
+
+    Termination is guaranteed regardless of what the LLM proposes: exactly
+    one class is consumed from ``remaining`` per iteration, so this cannot
+    loop or stall the way an open-ended tool-selection loop could — no
+    loop-guard needed.
+    """
+    remaining = list(classes)
+    current_specialist: str | None = None
+    prefix = f"[{label}] " if label else ""
+    while remaining:
+        check_cancel(cancel_check)
+        ranked_order, rank_reason = rank_vuln_classes(
+            tuple(remaining), graph, operator_prompt=operator_prompt
+        )
+        class_name = ranked_order[0]
+        # rank_vuln_classes never drops/invents a class — ranked_order is
+        # exactly `remaining`, reordered — so the tail is already the next
+        # remaining set with no further filtering needed.
+        remaining = list(ranked_order[1:])
+        _emit(
+            events,
+            "payloads",
+            "info",
+            f"{prefix}next: {class_name} — {rank_reason}",
+            remaining=len(remaining),
+        )
+        specialist = _SPECIALIST_OF_CLASS.get(class_name, "general")
+        if specialist != current_specialist:
+            current_specialist = specialist
+            _emit(
+                events,
+                "payloads",
+                "info",
+                f"{prefix}{_SPECIALIST_LABELS.get(specialist, specialist)} — starting",
+                specialist=specialist,
+            )
+        drivers[class_name]()
+        touch()
+
+
+def _run_phase3_concurrent(
+    *,
+    graph: ReachabilityGraph,
+    seam: _ValidatorSeam,
+    firer: RequestFirer,
+    base_url: str,
+    identity: str,
+    auth_headers: Mapping[str, str],
+    identities: IdentityStore | None,
+    transport: httpx.BaseTransport | None,
+    library: Any,
+    allow_cross_user_writes: bool,
+    events: list[ScanEvent],
+    operator_prompt: str | None,
+    cancel_check: object | None,
+    check_cancel: Callable[[object | None], None],
+    control_state: Any,
+) -> None:
+    """Build Order 2c: run Phase 3's specialist groups concurrently.
+
+    Dependency-aware scheduling (plan §2c), kept deliberately simple rather
+    than a generic per-endpoint dependency graph: "auth" (default_credentials,
+    rate_limit_absence, jwt_forgery, authz_bola, authz_idor, mass_assignment)
+    is the one specialist category whose drivers can derive a NEW usable
+    credential/session (a ``derived_credential`` chain edge) that another
+    specialist's test might depend on — so it always runs first,
+    sequentially, on the PARENT graph directly (identical to the pre-2c
+    dispatch loop, just scoped to auth's classes). The remaining specialists
+    (client_side/injection/protocol/api_logic) have no such dependency on
+    EACH OTHER, so once auth finishes they run concurrently, each against
+    its own deep-copied graph snapshot (the plan's chosen default: per-child
+    graph + merge at defined sync points, not a lock around every graph
+    mutation — ``ReachabilityGraph``/``AdaptiveControlState`` are confirmed
+    unsynchronized) — bounded to ``_MAX_CONCURRENT_SPECIALISTS`` threads,
+    no spawn depth to guard since a child never spawns its own children.
+
+    A confirmed finding only becomes visible to a sibling specialist (or the
+    parent) once that specialist's thread finishes and merges — a
+    disclosed, accepted staleness cost for the simpler, safer default,
+    exactly as the plan calls for. A cancelled or crashed specialist still
+    merges whatever it found before stopping — cancellation must never lose
+    an already-confirmed finding — and one specialist crashing never aborts
+    its siblings.
+    """
+    from reachagent.graph.merge import merge_new_findings
+    from reachagent.scan.agentic_loop import ScanCancelled
+
+    auth_classes = tuple(
+        class_name
+        for class_name in _PHASE3_CLASS_ORDER
+        if _SPECIALIST_OF_CLASS.get(class_name) == "auth"
+    )
+    other_by_specialist: dict[str, list[str]] = {}
+    for class_name in _PHASE3_CLASS_ORDER:
+        specialist = _SPECIALIST_OF_CLASS.get(class_name, "general")
+        if specialist != "auth":
+            other_by_specialist.setdefault(specialist, []).append(class_name)
+
+    parent_drivers = _build_phase3_drivers(
+        graph=graph,
+        seam=seam,
+        firer=firer,
+        base_url=base_url,
+        identity=identity,
+        auth_headers=auth_headers,
+        identities=identities,
+        transport=transport,
+        library=library,
+        allow_cross_user_writes=allow_cross_user_writes,
+        events=events,
+    )
+    if auth_classes:
+        _emit(
+            events,
+            "payloads",
+            "info",
+            f"{_SPECIALIST_LABELS.get('auth', 'auth')} — starting (sequential, runs first)",
+            specialist="auth",
+        )
+        _dispatch_classes(
+            auth_classes,
+            graph=graph,
+            drivers=parent_drivers,
+            events=events,
+            operator_prompt=operator_prompt,
+            cancel_check=cancel_check,
+            check_cancel=check_cancel,
+            touch=control_state.touch,
+        )
+
+    if not other_by_specialist:
+        return
+
+    _emit(
+        events,
+        "payloads",
+        "info",
+        f"fanning out {len(other_by_specialist)} specialist(s) concurrently: "
+        + ", ".join(sorted(other_by_specialist)),
+    )
+
+    # AdaptiveControlState.touch() is a single unguarded attribute write —
+    # confirmed unsynchronized like the rest of the class (Build Order 2c
+    # prerequisite research) — so every concurrent specialist thread calls
+    # THIS lock-wrapped wrapper instead of control_state.touch directly.
+    touch_lock = threading.Lock()
+
+    def _safe_touch() -> None:
+        with touch_lock:
+            control_state.touch()
+
+    def _run_one(
+        specialist: str, classes: tuple[str, ...]
+    ) -> tuple[str, ReachabilityGraph, list[ScanEvent], str]:
+        """Never raises — whatever a child found before stopping (cleanly,
+        cancelled, or crashed) is always returned for the parent to merge."""
+        child_events: list[ScanEvent] = []
+        child_graph = ReachabilityGraph()
+        try:
+            child_graph = copy.deepcopy(graph)
+            child_seam = _ValidatorSeam(child_graph)
+            child_drivers = _build_phase3_drivers(
+                graph=child_graph,
+                seam=child_seam,
+                firer=firer,
+                base_url=base_url,
+                identity=identity,
+                auth_headers=auth_headers,
+                identities=identities,
+                transport=transport,
+                library=library,
+                allow_cross_user_writes=allow_cross_user_writes,
+                events=child_events,
+            )
+            _dispatch_classes(
+                classes,
+                graph=child_graph,
+                drivers=child_drivers,
+                events=child_events,
+                operator_prompt=operator_prompt,
+                cancel_check=cancel_check,
+                check_cancel=check_cancel,
+                touch=_safe_touch,
+                label=specialist,
+            )
+            return specialist, child_graph, child_events, "done"
+        except ScanCancelled:
+            return specialist, child_graph, child_events, "cancelled"
+        except Exception as exc:  # noqa: BLE001 — one specialist crashing must not abort its siblings
+            _emit(
+                child_events,
+                "payloads",
+                "error",
+                f"[{specialist}] specialist crashed: {type(exc).__name__}: {exc}",
+                error_category="specialist",
+            )
+            return specialist, child_graph, child_events, f"error:{type(exc).__name__}"
+
+    max_workers = min(_MAX_CONCURRENT_SPECIALISTS, len(other_by_specialist))
+    saw_cancel = False
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = {
+            pool.submit(_run_one, specialist, tuple(classes)): specialist
+            for specialist, classes in other_by_specialist.items()
+        }
+        for future in concurrent.futures.as_completed(futures):
+            _specialist, child_graph, child_events, status = future.result()
+            # Relay via .append() (never .extend()) — the GUI's own event
+            # buffer overrides only .append() with bounds/heartbeat logic;
+            # this runs on the parent thread only, so no lock is needed.
+            for event in child_events:
+                events.append(event)
+            new_ids = merge_new_findings(child_graph, graph)
+            _emit(
+                events,
+                "payloads",
+                "info",
+                f"[{_specialist}] specialist {status} — {len(new_ids)} new finding(s) merged",
+                new_findings=len(new_ids),
+            )
+            control_state.touch()
+            if status == "cancelled":
+                saw_cancel = True
+    if saw_cancel:
+        raise ScanCancelled("scan cancelled by operator")
+
+
+# ---------------------------------------------------------------------------
 # Main orchestrator
 # ---------------------------------------------------------------------------
 
@@ -3133,6 +3638,7 @@ def scan_all_classes(
     idle_timeout: float = 900.0,
     allow_cross_user_writes: bool = False,
     operator_checkpoint: Callable[[str, str, str], None] | None = None,
+    concurrent_specialists: bool = False,
 ) -> dict[str, Any]:
     """Run the validated multi-phase LLM-driven loop over ALL attack classes.
 
@@ -3152,6 +3658,14 @@ def scan_all_classes(
     as ``(method, target, identity)``. Intended to block until an operator resumes
     or cancels (the GUI wires this to its existing pause/resume machinery); a scan
     with no operator attached (e.g. a hermetic test) simply omits it.
+
+    ``concurrent_specialists`` (default False, Build Order 2c): when set, Phase 3's
+    specialist groups fan out concurrently instead of running one linear sequence —
+    "auth" first and sequentially (it can derive credentials/sessions other
+    specialists may depend on), then client_side/injection/protocol/api_logic
+    concurrently, each against its own graph snapshot, merged back as each
+    finishes. Default False preserves the exact prior sequential behavior
+    unchanged; see ``_run_phase3_concurrent`` for the full design rationale.
     """
     from reachagent.scan.agentic_loop import (
         AdaptiveControlLoop,
@@ -3681,269 +4195,55 @@ def scan_all_classes(
     # sequencing is LLM-influenced.
     _emit(events_out, "payloads", "info", "phase 3: structural + authz + advanced classes")
 
-    from reachagent.scan.xss_dom import run_xss_dom
-
-    def _run_authz_bola_if_identities() -> None:
-        if identities is not None:
-            run_authz_bola(
-                graph=graph,
-                base_url=base_url,
-                identities=identities,
-                events=events_out,
-                transport=transport,
-            )
-
-    def _run_authz_idor_if_identities() -> None:
-        if identities is not None:
-            run_authz_idor(
-                graph=graph,
-                firer=firer,
-                base_url=base_url,
-                identities=identities,
-                seam=seam,
-                events=events_out,
-                allow_cross_user_writes=allow_cross_user_writes,
-            )
-
-    phase3_drivers: dict[str, Callable[[], None]] = {
-        "default_credentials": lambda: run_default_credentials(
+    if concurrent_specialists:
+        # Build Order 2c: specialist groups fan out concurrently (auth first
+        # and sequentially, then the rest concurrently) — see
+        # _run_phase3_concurrent for the full design rationale.
+        _run_phase3_concurrent(
             graph=graph,
-            firer=firer,
-            base_url=base_url,
-            identity=identity,
             seam=seam,
-            events=events_out,
-        ),
-        "rate_limit_absence": lambda: run_rate_limit_absence(
-            graph=graph,
-            firer=firer,
-            base_url=base_url,
-            identity=identity,
-            seam=seam,
-            events=events_out,
-        ),
-        "structural_headers": lambda: run_structural_headers(
-            graph=graph,
             firer=firer,
             base_url=base_url,
             identity=identity,
             auth_headers=auth_headers,
-            seam=seam,
-            events=events_out,
-        ),
-        "file_upload": lambda: run_file_upload(
-            graph=graph,
-            firer=firer,
-            base_url=base_url,
-            identity=identity,
-            auth_headers=auth_headers,
-            seam=seam,
-            events=events_out,
-        ),
-        "mass_assignment": lambda: run_mass_assignment(
-            graph=graph,
-            firer=firer,
-            base_url=base_url,
-            identity=identity,
-            auth_headers=auth_headers,
-            seam=seam,
-            events=events_out,
-        ),
-        "xss_stored": lambda: run_xss_stored(
-            graph=graph,
-            firer=firer,
-            base_url=base_url,
-            identity=identity,
-            auth_headers=auth_headers,
-            seam=seam,
-            events=events_out,
-        ),
-        "open_redirect": lambda: run_open_redirect(
-            graph=graph,
-            firer=firer,
-            base_url=base_url,
-            identity=identity,
-            auth_headers=auth_headers,
-            seam=seam,
-            events=events_out,
-        ),
-        "cache_poisoning": lambda: run_cache_poisoning(
-            graph=graph,
-            firer=firer,
-            base_url=base_url,
-            identity=identity,
-            auth_headers=auth_headers,
-            seam=seam,
-            events=events_out,
-        ),
-        "request_smuggling": lambda: run_request_smuggling(
-            base_url=base_url,
-            seam=seam,
-            events=events_out,
-        ),
-        "subdomain_takeover": lambda: run_subdomain_takeover(
-            graph=graph,
-            seam=seam,
-            events=events_out,
-            transport=transport,
-        ),
-        "cloud_bucket_exposure": lambda: run_cloud_bucket_exposure(
-            graph=graph,
-            seam=seam,
-            events=events_out,
-            transport=transport,
-        ),
-        "known_vulnerable_version": lambda: run_known_vulnerable_version(
-            graph=graph,
-            firer=firer,
-            base_url=base_url,
-            identity=identity,
-            seam=seam,
-            events=events_out,
-        ),
-        "jwt_forgery": lambda: run_jwt_forgery(
-            graph=graph,
-            firer=firer,
-            base_url=base_url,
-            identity=identity,
-            auth_headers=auth_headers,
-            seam=seam,
-            events=events_out,
-        ),
-        "sqli_blind": lambda: run_sqli_blind(
-            graph=graph,
-            firer=firer,
-            base_url=base_url,
-            identity=identity,
-            seam=seam,
-            events=events_out,
-            library=lib,
-        ),
-        "nosqli": lambda: run_nosqli(
-            graph=graph,
-            firer=firer,
-            base_url=base_url,
-            identity=identity,
-            seam=seam,
-            events=events_out,
-            library=lib,
-        ),
-        "ldap": lambda: run_ldap(
-            graph=graph,
-            firer=firer,
-            base_url=base_url,
-            identity=identity,
-            seam=seam,
-            events=events_out,
-            library=lib,
-        ),
-        "command_injection": lambda: run_command_injection(
-            graph=graph,
-            firer=firer,
-            base_url=base_url,
-            identity=identity,
-            seam=seam,
-            events=events_out,
-            library=lib,
-        ),
-        "authz_bola": _run_authz_bola_if_identities,
-        "authz_idor": _run_authz_idor_if_identities,
-        "graphql": lambda: run_graphql(
-            graph=graph,
-            firer=firer,
-            base_url=base_url,
-            identity=identity,
-            seam=seam,
-            events=events_out,
             identities=identities,
-        ),
-        "business_logic": lambda: run_business_logic(
-            graph=graph,
-            firer=firer,
-            base_url=base_url,
-            identity=identity,
-            seam=seam,
+            transport=transport,
+            library=lib,
+            allow_cross_user_writes=allow_cross_user_writes,
             events=events_out,
-        ),
-        "race": lambda: run_race(
+            operator_prompt=operator_prompt,
+            cancel_check=cancel_check,
+            check_cancel=check_cancel,
+            control_state=control_state,
+        )
+    else:
+        # Default sequential path, byte-for-byte the same dispatch order and
+        # semantics as before Build Order 2c — _dispatch_classes is the same
+        # continuous re-rank-then-dispatch loop (Build Order 2) extracted so
+        # a specialist child can reuse it unchanged.
+        phase3_drivers = _build_phase3_drivers(
             graph=graph,
-            firer=firer,
-            base_url=base_url,
-            identity=identity,
             seam=seam,
-            events=events_out,
-        ),
-        "xxe": lambda: run_xxe(
-            graph=graph,
             firer=firer,
             base_url=base_url,
             identity=identity,
             auth_headers=auth_headers,
-            seam=seam,
+            identities=identities,
+            transport=transport,
+            library=lib,
+            allow_cross_user_writes=allow_cross_user_writes,
             events=events_out,
-        ),
-        "xss_dom": lambda: run_xss_dom(
+        )
+        _dispatch_classes(
+            _PHASE3_CLASS_ORDER,
             graph=graph,
-            firer=firer,
-            base_url=base_url,
-            identity=identity,
-            seam=seam,
+            drivers=phase3_drivers,
             events=events_out,
-        ),
-    }
-
-    # Continuous replanning (Build Order 2): re-rank the REMAINING classes
-    # after every single one runs, using the graph as it stands right then —
-    # a confirmed finding or a newly-discovered endpoint from class N can
-    # reshape what runs at N+1, instead of the whole Phase-3 order being
-    # fixed once at the start. Reuses rank_vuln_classes completely unchanged
-    # (it already reads live graph signals on every call) — no new ranking
-    # mechanism, just calling the existing one more often. Termination is
-    # guaranteed regardless of what the LLM proposes: exactly one class is
-    # consumed from `remaining` per iteration, so this cannot loop or stall
-    # the way an open-ended tool-selection loop could — no loop-guard needed.
-    remaining = list(_PHASE3_CLASS_ORDER)
-    current_specialist: str | None = None
-    while remaining:
-        check_cancel(cancel_check)
-        ranked_order, rank_reason = rank_vuln_classes(
-            tuple(remaining), graph, operator_prompt=operator_prompt
+            operator_prompt=operator_prompt,
+            cancel_check=cancel_check,
+            check_cancel=check_cancel,
+            touch=control_state.touch,
         )
-        class_name = ranked_order[0]
-        # rank_vuln_classes never drops/invents a class — ranked_order is
-        # exactly `remaining`, reordered — so the tail is already the next
-        # remaining set with no further filtering needed.
-        remaining = list(ranked_order[1:])
-        _emit(
-            events_out,
-            "payloads",
-            "info",
-            f"next: {class_name} — {rank_reason}",
-            remaining=len(remaining),
-        )
-        specialist = _SPECIALIST_OF_CLASS.get(class_name, "general")
-        if specialist != current_specialist:
-            current_specialist = specialist
-            _emit(
-                events_out,
-                "payloads",
-                "info",
-                f"{_SPECIALIST_LABELS.get(specialist, specialist)} — starting",
-                specialist=specialist,
-            )
-        phase3_drivers[class_name]()
-        # Real per-class work just happened — refresh the idle-timeout clock
-        # here, not only at the coarse phase boundary after ALL Phase-3
-        # classes finish. Build Order 2's continuous re-ranking turned one
-        # ranking call into one per remaining class (~22), and every driver
-        # call in between does real, visible work (an LLM call, HTTP
-        # probes) — none of that resets AdaptiveControlState's activity
-        # clock on its own, so a Phase 3 whose cumulative wall-clock time
-        # exceeds idle_timeout was being flagged as "stuck" the instant it
-        # finished, even when it was making continuous real progress
-        # throughout (confirmed live: a genuine finding landed mid-phase,
-        # then the very next coarse-phase check raised IdleTimeout anyway).
-        control_state.touch()
 
     findings = [fid for fid, _ in graph.findings()]
     _emit(events_out, "payloads", "info", "phase 3 done", findings=len(findings))

@@ -603,6 +603,7 @@ async def start_scan(payload: dict[str, Any]) -> JSONResponse:
         return JSONResponse(
             {"error": "max_attempts must be an integer", "code": "invalid_input"}, status_code=400
         )
+    concurrent_specialists = payload.get("concurrent_specialists") is True
     identities_path = _opt_str(payload.get("identities_path"))
     identities_inline_raw = payload.get("identities")
     identities_inline = (
@@ -685,6 +686,7 @@ async def start_scan(payload: dict[str, Any]) -> JSONResponse:
             operator_prompt,
             env_overrides,
             identities_inline,
+            concurrent_specialists=concurrent_specialists,
         )
     )
     return JSONResponse({"scan_id": scan_id, "status": "queued", "lifecycle": "queued"})
@@ -893,6 +895,8 @@ async def _run_scan(
     operator_prompt: str | None = None,
     env_overrides: dict[str, str] | None = None,
     identities_inline: list[dict[str, Any]] | None = None,
+    *,
+    concurrent_specialists: bool = False,
 ) -> None:
     """``env_overrides`` merges LLM-provider config and the opt-in tuning-flag
     checkboxes into one plain os.environ save/set/restore for the scan's duration.
@@ -919,6 +923,7 @@ async def _run_scan(
                 identities_path,
                 operator_prompt,
                 identities_inline,
+                concurrent_specialists=concurrent_specialists,
             )
     finally:
         for key, old_value in saved.items():
@@ -938,6 +943,8 @@ async def _run_scan_body(
     identities_path: str | None,
     operator_prompt: str | None,
     identities_inline: list[dict[str, Any]] | None = None,
+    *,
+    concurrent_specialists: bool = False,
 ) -> None:
     try:
         identities, id_error = _load_identities(identities_path, identities_inline)
@@ -978,6 +985,7 @@ async def _run_scan_body(
                 live_recon=True,
                 cancel_check=control,
                 operator_checkpoint=_operator_checkpoint,
+                concurrent_specialists=concurrent_specialists,
             )
 
         loop = asyncio.get_running_loop()
