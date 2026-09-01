@@ -257,6 +257,7 @@ def test_parse_intent_degrades_gracefully_with_no_provider_configured(
     body = response.json()
     assert body["extracted"] is False
     assert body["credentials"] == []
+    assert body["out_of_scope"] == ""
     assert body["goal"] == "pentest https://demo.example"
 
 
@@ -268,6 +269,7 @@ def test_parse_intent_extracts_and_normalizes_credentials(monkeypatch: pytest.Mo
             return {
                 "target": "https://demo.example",
                 "in_scope": "demo.example, api.demo.example",
+                "out_of_scope": "admin.demo.example",
                 "credentials": [
                     {"username": "admin", "password": "admin123", "role": "ADMIN"},
                     {"username": "", "password": "dropped-no-username"},
@@ -293,8 +295,30 @@ def test_parse_intent_extracts_and_normalizes_credentials(monkeypatch: pytest.Mo
     assert body["extracted"] is True
     assert body["target"] == "https://demo.example"
     assert body["in_scope"] == "demo.example, api.demo.example"
+    assert body["out_of_scope"] == "admin.demo.example"
     assert body["goal"] == "find authorization bugs"
     assert body["credentials"] == [{"username": "admin", "password": "admin123", "role": "admin"}]
+
+
+def test_parse_intent_defaults_out_of_scope_to_empty_string_when_unmentioned(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _stub_named_provider(monkeypatch)
+
+    class _FakeClient:
+        def propose_json(self, prompt: str, *, max_tokens: int = 600) -> dict[str, object]:
+            return {"target": "https://demo.example", "in_scope": "", "credentials": [], "goal": ""}
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(gui_app, "_build_llm_client", lambda *_a, **_k: _FakeClient())
+    response = TestClient(app).post(
+        "/api/parse-intent",
+        json={"message": "pentest this site", "llm_provider": "named:unit-provider"},
+    )
+    assert response.status_code == 200
+    assert response.json()["out_of_scope"] == ""
 
 
 def test_parse_intent_degrades_on_malformed_llm_reply(monkeypatch: pytest.MonkeyPatch) -> None:

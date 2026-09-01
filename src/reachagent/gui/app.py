@@ -470,6 +470,7 @@ Message:
 Return ONLY a JSON object with exactly these keys, no prose, no markdown fences:
 - "target": the base URL or hostname to test, e.g. "https://example.com" (empty string if none mentioned)
 - "in_scope": comma-separated additional in-scope hosts beyond target (empty string if none)
+- "out_of_scope": comma-separated hosts/subdomains the operator explicitly excludes, e.g. "admin.example.com, billing.example.com" (empty string if none mentioned)
 - "credentials": a JSON list of objects {{"username": "...", "password": "...", "role": "user" or "admin"}} for every login/credential pair mentioned (empty list if none)
 - "goal": one short sentence restating what the operator wants tested, in your own words (empty string if unclear)
 """
@@ -488,7 +489,14 @@ def parse_intent(payload: dict[str, Any]) -> JSONResponse:
     message = str(payload.get("message", "") or "").strip()
     if not message:
         return JSONResponse({"error": "message required"}, status_code=400)
-    empty = {"target": "", "in_scope": "", "credentials": [], "goal": message, "extracted": False}
+    empty = {
+        "target": "",
+        "in_scope": "",
+        "out_of_scope": "",
+        "credentials": [],
+        "goal": message,
+        "extracted": False,
+    }
     llm_provider, named_overrides, err = _resolve_llm_provider(payload)
     if err is not None:
         return err
@@ -524,6 +532,7 @@ def parse_intent(payload: dict[str, Any]) -> JSONResponse:
         {
             "target": str(result.get("target", "") or "").strip(),
             "in_scope": str(result.get("in_scope", "") or "").strip(),
+            "out_of_scope": str(result.get("out_of_scope", "") or "").strip(),
             "credentials": credentials,
             "goal": str(result.get("goal", "") or "").strip() or message,
             "extracted": True,

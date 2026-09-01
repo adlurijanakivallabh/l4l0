@@ -115,7 +115,7 @@ async function startNewAssessment(message) {
   thinkingP.innerHTML = "<span></span><span></span><span></span>";
   const thinkingBubble = addBubble("assistant", thinkingP, { id: "thinking-bubble" });
 
-  let proposal = { target: "", in_scope: "", credentials: [], goal: message, extracted: false };
+  let proposal = { target: "", in_scope: "", out_of_scope: "", credentials: [], goal: message, extracted: false };
   try {
     const r = await fetch("/api/parse-intent", {
       method: "POST",
@@ -171,7 +171,7 @@ function renderConfirmationCard(proposal, originalMessage) {
   grid.innerHTML =
     '<div class="cc-field span-2"><label>Target URL</label><input id="cc-target" type="text" placeholder="https://authorized-target.example" value="' + esc(proposal.target) + '"></div>' +
     '<div class="cc-field"><label>In-scope hosts</label><input id="cc-scope" type="text" placeholder="same as target" value="' + esc(proposal.in_scope) + '"></div>' +
-    '<div class="cc-field"><label>Out-of-scope (optional)</label><input id="cc-outscope" type="text" placeholder="admin.example"></div>' +
+    '<div class="cc-field"><label>Out-of-scope (optional)</label><input id="cc-outscope" type="text" placeholder="admin.example" value="' + esc(proposal.out_of_scope || "") + '"></div>' +
     '<div class="cc-field span-2"><label>Objective</label><textarea id="cc-goal" rows="2">' + esc(proposal.goal || originalMessage) + '</textarea></div>' +
     '<div class="cc-field span-2 cc-creds"><label>Credentials</label><div id="cc-cred-rows"></div><button id="cc-cred-add" class="cred-add" type="button">+ Add credential</button></div>';
   card.appendChild(grid);
