@@ -111,3 +111,34 @@ def test_unresolvable_host_is_not_applicable_not_a_crash() -> None:
     seam = _ValidatorSeam(graph)
     found = run_request_smuggling(base_url="not-a-url", seam=seam, events=[])
     assert found == []
+
+
+def test_corroboration_catches_a_one_off_flaky_confirmation(monkeypatch) -> None:  # noqa: ANN001
+    """Build Order 5: reproduces this session's own live false positive —
+    request_smuggling confirmed once under heavy system load, then passed
+    cleanly (no signal) in isolation. A single confirmed attempt must no
+    longer be enough to write a finding.
+    """
+    import reachagent.smuggling.detector as _smuggling_detector
+
+    # First call confirms (the flaky signal), every subsequent call does
+    # not (the signal doesn't reproduce) — exactly the observed live shape.
+    calls = {"n": 0}
+
+    class _FlakyResult:
+        def __init__(self, confirmed: bool) -> None:
+            self.confirmed = confirmed
+
+    def _flaky_detect(prober, *, evidence_ref="") -> object:  # noqa: ANN001, ARG001
+        calls["n"] += 1
+        return _FlakyResult(confirmed=calls["n"] == 1)
+
+    monkeypatch.setattr(_smuggling_detector, "detect_request_smuggling", _flaky_detect)
+
+    graph = ReachabilityGraph()
+    seam = _ValidatorSeam(graph)
+    found = run_request_smuggling(base_url="http://127.0.0.1:1", seam=seam, events=[])
+    assert found == []
+    assert graph.findings() == []
+    # Corroboration actually ran (more than the single original attempt).
+    assert calls["n"] > 1

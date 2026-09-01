@@ -1651,7 +1651,18 @@ def run_request_smuggling(
     reuses ``smuggling/detector.py`` (no inline oracle wiring). The raw-socket
     transport lives entirely in ``smuggling/raw_probe.py`` — this function
     never touches a socket directly.
+
+    Corroborated (Build Order 5): TIMING_STATISTICAL is this session's own
+    confirmed weak spot (a live hermetic run produced a false positive here
+    under heavy concurrent system load, then passed cleanly in isolation —
+    exactly the network/system-jitter noise the precision review flagged).
+    A first confirmed attempt triggers up to 2 more independent full timing
+    runs (fresh trials each time, not a reuse of the first), requiring 2-of-3
+    agreement before writing the finding — a one-off skewed measurement no
+    longer writes a finding by itself. Each attempt is still independently
+    oracle-gated; corroboration only decides whether to trust the aggregate.
     """
+    from reachagent.confirmation.corroboration import corroborate
     from reachagent.smuggling.detector import (
         SmugglingProber,
         SmugglingTimingProbe,
@@ -1664,16 +1675,26 @@ def run_request_smuggling(
     if not target.host:
         _emit(events, "payloads", "not-applicable", "request_smuggling: no resolvable host")
         return found
+    evidence_ref = f"orchestrator/request_smuggling/{target.host}:{target.port}"
 
     def _fire_timing() -> SmugglingTimingProbe:
         probe_ms, baseline_ms = fire_timing_trials(target)
         return SmugglingTimingProbe(probe_latencies_ms=probe_ms, baseline_latencies_ms=baseline_ms)
 
-    prober = SmugglingProber(fire_timing=_fire_timing, oracle_runner=seam.run)
-    result = detect_request_smuggling(
-        prober, evidence_ref=f"orchestrator/request_smuggling/{target.host}:{target.port}"
-    )
-    if result.confirmed and seam.last is not None:
+    def _one_attempt() -> bool:
+        prober = SmugglingProber(fire_timing=_fire_timing, oracle_runner=seam.run)
+        return detect_request_smuggling(prober, evidence_ref=evidence_ref).confirmed
+
+    if not _one_attempt():
+        _emit(events, "payloads", "not-applicable", "request_smuggling: no CL.TE timing signal")
+        return found
+    # The first attempt already confirmed once; corroborate() runs up to 2
+    # MORE fresh attempts (max_attempts=3 total including this one already
+    # counted as the first agreement) and only proceeds on 2-of-3 agreement.
+    corroboration = corroborate(_one_attempt, required_agreements=1, max_attempts=2)
+    total_attempts = 1 + corroboration.attempts
+    total_agreements = 1 + corroboration.agreements
+    if corroboration.corroborated and seam.last is not None:
         nid = seam.write("request_smuggling", seam.last, severity="high")
         if nid:
             found.append(nid)
@@ -1681,11 +1702,17 @@ def run_request_smuggling(
                 events,
                 "payloads",
                 "finding",
-                "request smuggling — CL.TE desync confirmed via timing",
+                f"request smuggling — CL.TE desync confirmed via timing "
+                f"({total_agreements}/{total_attempts} independent runs agreed)",
                 path="/",
             )
     else:
-        _emit(events, "payloads", "not-applicable", "request_smuggling: no CL.TE timing signal")
+        _emit(
+            events,
+            "payloads",
+            "not-applicable",
+            "request_smuggling: initial timing signal did not reproduce on corroboration",
+        )
     return found
 
 
