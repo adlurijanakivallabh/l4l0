@@ -2491,8 +2491,9 @@ def run_xxe(
 # Narrow scope, deliberately: only the (vuln_class, suggested_oracle) pairs
 # with an existing deterministic confirmation shape to reuse are handled —
 # (sqli, DIFFERENTIAL), (xss_reflected, EXECUTION_CONFIRMATION),
-# (command_injection, OOB_CALLBACK), (jwt_forgery, STRUCTURAL). Every other
-# claim (ssti, ssrf, path_traversal, cve_match, information_exposure,
+# (command_injection, OOB_CALLBACK), (jwt_forgery, STRUCTURAL),
+# (information_exposure, STRUCTURAL) — Build Order 0 upgraded this last one.
+# Every other claim (ssti, ssrf, path_traversal, cve_match,
 # server_misconfiguration, and sqli/command_injection claims suggesting a
 # different oracle than above) still gets dropped with the same honest event
 # as before this change — no regression, just not yet upgraded.
