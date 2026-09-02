@@ -721,9 +721,24 @@ async def start_scan(payload: dict[str, Any]) -> JSONResponse:
             # broad payloads even without a prior class signal. Opt-in, default off. Every
             # extra claim still passes the oracle (confirmed) or lands in the Suspected tier.
             ("aggressive", "REACHAGENT_AGGRESSIVE"),
+            # Autonomous recon-depth escalation (v3 V2): the LLM itself decides, from
+            # nmap's discovered facts, whether a deeper follow-up pass is warranted —
+            # additive on top of (never below) whatever floor "Nmap recon depth" above
+            # already set.
+            ("recon_depth_tuning", "REACHAGENT_RECON_DEPTH_TUNING"),
         )
         if payload.get(form_key) is True
     }
+    # nmap recon depth (v3 V2): the operator's manual preset is a FLOOR — the
+    # autonomous depth-escalation layer (recon/depth_escalation.py) can only
+    # add to it, never drop below it. "full" widens the port range; "scripted"
+    # additionally runs the (safety-allowlisted) "vuln" NSE category. Unset/
+    # invalid silently keeps "quick" (today's exact default).
+    recon_depth = str(payload.get("recon_depth", "") or "").strip().lower()
+    if recon_depth in ("full", "scripted"):
+        tuning_overrides["REACHAGENT_NMAP_WIDEN_PORTS"] = "1"
+    if recon_depth == "scripted":
+        tuning_overrides["REACHAGENT_NMAP_SCRIPT_CATEGORY"] = "vuln"
     if not target:
         return JSONResponse({"error": "target required"}, status_code=400)
     if not use_llm:

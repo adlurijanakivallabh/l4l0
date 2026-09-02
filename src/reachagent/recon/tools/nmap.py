@@ -22,6 +22,18 @@ from defusedxml.ElementTree import fromstring
 from reachagent.graph.nodes import Host, Service
 from reachagent.recon.tools.base import ReconToolRunner
 
+# v3 V2: NSE script categories the LLM's depth-escalation proposer (and the
+# GUI's manual "scripted" preset) may select — nmap's own built-in category
+# names, restricted to non-disruptive ones. Deliberately EXCLUDES nmap's
+# "intrusive"/"exploit"/"dos"/"malware"/"brute"/"auth" categories (nmap's own
+# docs describe these as capable of crashing a service, brute-forcing/locking
+# out accounts, or actively exploiting a target) — freedom to choose a script
+# category is real, but bounded to a vetted-safe allowlist, never an
+# arbitrary NSE script name reaching subprocess argv from an LLM's own text.
+SAFE_SCRIPT_CATEGORIES: frozenset[str] = frozenset(
+    {"default", "discovery", "version", "vuln", "safe"}
+)
+
 
 class NmapRunner(ReconToolRunner):
     """Emit ``Host``/``Service`` transport-tier facts from nmap ``-oX`` XML (§9)."""
@@ -30,16 +42,40 @@ class NmapRunner(ReconToolRunner):
     binary = "nmap"
 
     def command(self, target: str) -> list[str]:
-        """``nmap -oX - -sV <target>`` [+ ``-T``/``--top-ports``]."""
+        """``nmap -oX - -sV <target>`` [+ ``-T``/``--top-ports``/depth escalation].
+
+        Two independently-settable, validated depth dimensions (v3 V2) —
+        set either by the operator's manual GUI preset or by the LLM's own
+        autonomous escalation decision (``recon/depth_escalation.py``), never
+        an arbitrary flag string:
+
+        - ``REACHAGENT_NMAP_WIDEN_PORTS=1``: scan every port (``-p-``,
+          superseding ``--top-ports`` — nmap rejects the two together)
+          instead of nmap's default top-1000, for when a quick pass looks
+          worth a deeper follow-up on a specific host.
+        - ``REACHAGENT_NMAP_SCRIPT_CATEGORY=<name>``: adds ``--script
+          <name>``, where ``<name>`` must be one of :data:`SAFE_SCRIPT_CATEGORIES`
+          — validated HERE too (defense in depth), not just by the proposer
+          that sets it, so this module is safe even if some other future
+          caller sets the env var directly.
+
+        Unset (today's exact default, never changed): neither flag is added.
+        """
         import os
 
         argv: list[str] = ["nmap", "-n", "-Pn", "--open", "-oX", "-", "-sV"]
         timing = os.environ.get("REACHAGENT_NMAP_TIMING")
         if timing in ("0", "1", "2", "3", "4", "5"):
             argv += ["-T", timing]
-        top = os.environ.get("REACHAGENT_NMAP_TOP_PORTS")
-        if top and top.isdigit():
-            argv += ["--top-ports", top]
+        if os.environ.get("REACHAGENT_NMAP_WIDEN_PORTS") == "1":
+            argv.append("-p-")
+        else:
+            top = os.environ.get("REACHAGENT_NMAP_TOP_PORTS")
+            if top and top.isdigit():
+                argv += ["--top-ports", top]
+        script_category = os.environ.get("REACHAGENT_NMAP_SCRIPT_CATEGORY", "").strip().lower()
+        if script_category in SAFE_SCRIPT_CATEGORIES:
+            argv += ["--script", script_category]
         retries = os.environ.get("REACHAGENT_NMAP_MAX_RETRIES")
         if retries and retries.isdigit():
             argv += ["--max-retries", retries]

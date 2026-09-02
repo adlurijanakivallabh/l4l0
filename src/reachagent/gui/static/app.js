@@ -215,6 +215,11 @@ function renderConfirmationCard(proposal, originalMessage) {
     '<div class="cc-grid">' +
     '<div class="cc-field"><label>LLM provider</label><select id="cc-provider"><option value="">Server default</option></select></div>' +
     '<div class="cc-field"><label>Max attempts</label><input id="cc-attempts" type="number" value="20" min="5" max="200"></div>' +
+    '<div class="cc-field"><label>Nmap recon depth</label><select id="cc-recon-depth">' +
+    '<option value="quick">Quick (default)</option>' +
+    '<option value="full">Full (all 65535 ports)</option>' +
+    '<option value="scripted">Scripted (NSE vuln scripts)</option>' +
+    '</select></div>' +
     '<div class="cc-field"><label>Repo path (white-box, optional)</label><input id="cc-repo-path" type="text" placeholder="/path/to/local/repo"></div>' +
     '</div>' +
     '<div><label style="display:block;margin:0 0 7px;color:var(--muted);font-size:10px;font-weight:650">Recon tuning (opt-in)</label>' +
@@ -225,6 +230,7 @@ function renderConfirmationCard(proposal, originalMessage) {
     tuningChip("cc-tune-guardian", "Guardian advisor") +
     tuningChip("cc-tune-concurrent", "Concurrent specialists") +
     tuningChip("cc-tune-aggressive", "Aggressive mode") +
+    tuningChip("cc-tune-depth", "Autonomous depth escalation") +
     '</div></div></div>';
   card.appendChild(advanced);
   populateProviderSelect(advanced.querySelector("#cc-provider"));
@@ -280,6 +286,8 @@ async function confirmAndStart(card, bubble, originalMessage) {
     guardian_advisor: card.querySelector("#cc-tune-guardian").checked,
     concurrent_specialists: card.querySelector("#cc-tune-concurrent").checked,
     aggressive: card.querySelector("#cc-tune-aggressive").checked,
+    recon_depth: card.querySelector("#cc-recon-depth").value,
+    recon_depth_tuning: card.querySelector("#cc-tune-depth").checked,
     repo_path: card.querySelector("#cc-repo-path").value.trim() || null,
   };
 

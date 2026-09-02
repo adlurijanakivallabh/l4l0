@@ -1345,6 +1345,122 @@ def test_scan_endpoint_omits_aggressive_flag_by_default(monkeypatch: pytest.Monk
     _scans.pop(response.json()["scan_id"], None)
 
 
+def test_scan_endpoint_passes_recon_depth_full_as_widen_ports_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """v3 V2: the recon-depth select must reach _run_scan as
+    REACHAGENT_NMAP_WIDEN_PORTS, or nmap's depth escalation floor silently
+    never activates."""
+    _stub_named_provider(monkeypatch)
+    captured: list[object] = []
+
+    async def capturing_scan(*args: object, **_kwargs: object) -> None:
+        captured.extend(args)
+
+    monkeypatch.setattr(gui_app, "_run_scan", capturing_scan)
+    response = TestClient(app).post(
+        "/api/scan",
+        json={
+            "target": "https://demo.example",
+            "in_scope": "demo.example",
+            "use_llm": True,
+            "llm_provider": "named:unit-provider",
+            "recon_depth": "full",
+        },
+    )
+    assert response.status_code == 200
+    env_overrides = captured[-2]
+    assert env_overrides["REACHAGENT_NMAP_WIDEN_PORTS"] == "1"
+    assert "REACHAGENT_NMAP_SCRIPT_CATEGORY" not in env_overrides
+    _scans.pop(response.json()["scan_id"], None)
+
+
+def test_scan_endpoint_passes_recon_depth_scripted_as_both_overrides(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _stub_named_provider(monkeypatch)
+    captured: list[object] = []
+
+    async def capturing_scan(*args: object, **_kwargs: object) -> None:
+        captured.extend(args)
+
+    monkeypatch.setattr(gui_app, "_run_scan", capturing_scan)
+    response = TestClient(app).post(
+        "/api/scan",
+        json={
+            "target": "https://demo.example",
+            "in_scope": "demo.example",
+            "use_llm": True,
+            "llm_provider": "named:unit-provider",
+            "recon_depth": "scripted",
+        },
+    )
+    assert response.status_code == 200
+    env_overrides = captured[-2]
+    assert env_overrides["REACHAGENT_NMAP_WIDEN_PORTS"] == "1"
+    assert env_overrides["REACHAGENT_NMAP_SCRIPT_CATEGORY"] == "vuln"
+    _scans.pop(response.json()["scan_id"], None)
+
+
+def test_scan_endpoint_passes_recon_depth_tuning_as_env_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """v3 V2: the autonomous-escalation checkbox must reach _run_scan as
+    REACHAGENT_RECON_DEPTH_TUNING, or the LLM's own depth decision never
+    activates even when the operator explicitly opts in."""
+    _stub_named_provider(monkeypatch)
+    captured: list[object] = []
+
+    async def capturing_scan(*args: object, **_kwargs: object) -> None:
+        captured.extend(args)
+
+    monkeypatch.setattr(gui_app, "_run_scan", capturing_scan)
+    response = TestClient(app).post(
+        "/api/scan",
+        json={
+            "target": "https://demo.example",
+            "in_scope": "demo.example",
+            "use_llm": True,
+            "llm_provider": "named:unit-provider",
+            "recon_depth_tuning": True,
+        },
+    )
+    assert response.status_code == 200
+    env_overrides = captured[-2]
+    assert env_overrides["REACHAGENT_RECON_DEPTH_TUNING"] == "1"
+    _scans.pop(response.json()["scan_id"], None)
+
+
+def test_scan_endpoint_omits_recon_depth_for_quick_or_invalid_values(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _stub_named_provider(monkeypatch)
+    for value in ("quick", "", "bogus"):
+        captured: list[object] = []
+
+        async def capturing_scan(
+            *args: object, _captured: list[object] = captured, **_kwargs: object
+        ) -> None:
+            _captured.extend(args)
+
+        monkeypatch.setattr(gui_app, "_run_scan", capturing_scan)
+        response = TestClient(app).post(
+            "/api/scan",
+            json={
+                "target": "https://demo.example",
+                "in_scope": "demo.example",
+                "use_llm": True,
+                "llm_provider": "named:unit-provider",
+                "recon_depth": value,
+            },
+        )
+        assert response.status_code == 200
+        env_overrides = captured[-2]
+        assert env_overrides is None or "REACHAGENT_NMAP_WIDEN_PORTS" not in env_overrides
+        assert env_overrides is None or "REACHAGENT_NMAP_SCRIPT_CATEGORY" not in env_overrides
+        _scans.pop(response.json()["scan_id"], None)
+
+
 def test_save_and_list_provider_round_trips_grunt_model(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,  # noqa: ANN001

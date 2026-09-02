@@ -350,6 +350,52 @@ def _harvest_baseline_value(
     return None
 
 
+def _maybe_escalate_nmap_depth(
+    runner: Any,
+    target_arg: str,
+    g: ReachabilityGraph,
+    *,
+    operator_prompt: str | None,
+    live_recon: bool,
+) -> tuple[str, ...]:
+    """After nmap's first (quick) pass, ask the LLM (v3 V2, flag-gated —
+    ``REACHAGENT_RECON_DEPTH_TUNING``, off by default) whether a deeper
+    follow-up pass is warranted on this target, on top of whatever floor the
+    operator's own manual GUI selection already set. Returns any additional
+    graph node ids the follow-up pass wrote (``()`` on no escalation, the
+    flag being off, or any failure) — an escalation decision or its follow-up
+    run must never abort recon.
+    """
+    import os
+
+    from reachagent.recon.depth_escalation import DepthChoice, propose_depth_escalation
+
+    floor = DepthChoice(
+        widen_ports=os.environ.get("REACHAGENT_NMAP_WIDEN_PORTS") == "1",
+        script_category=os.environ.get("REACHAGENT_NMAP_SCRIPT_CATEGORY", "none"),
+    )
+    escalation = propose_depth_escalation(g.hosts(), floor=floor, operator_prompt=operator_prompt)
+    if escalation is None:
+        return ()
+    env_updates = escalation.env()
+    saved = {key: os.environ.get(key) for key in env_updates}
+    os.environ.update(env_updates)
+    try:
+        follow_up = runner.run(
+            target_arg,
+            environ={"REACHAGENT_RECON_LIVE": "1"} if live_recon else None,
+        )
+        return follow_up.nodes
+    except Exception:  # noqa: BLE001 — a follow-up pass failing must not abort recon
+        return ()
+    finally:
+        for key, value in saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
 def _wind_down_hint(remaining: int) -> str:
     """Steering-hint text for the forced graceful wind-down (Agentic Coordinator, Phase 4)."""
     return (
@@ -904,6 +950,22 @@ def scan_target(
                         nodes=len(result_nodes),
                         detail=run_result.detail,
                     )
+                    if name == "nmap":
+                        escalated_nodes = _maybe_escalate_nmap_depth(
+                            runner,
+                            target_arg,
+                            g,
+                            operator_prompt=operator_prompt,
+                            live_recon=live_recon,
+                        )
+                        if escalated_nodes:
+                            result_nodes = tuple(dict.fromkeys((*result_nodes, *escalated_nodes)))
+                            _tool_event(
+                                name,
+                                "escalated",
+                                detail="depth escalation follow-up pass",
+                                nodes=len(escalated_nodes),
+                            )
                 # A content-discovery adapter always touches its target Host node
                 # (recon-facts-only — every runner does this even on zero hits), so
                 # counting ALL touched nodes would make the family look "satisfied"

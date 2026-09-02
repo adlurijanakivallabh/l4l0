@@ -312,6 +312,50 @@ def test_command_is_an_array_with_target_as_a_distinct_element(
     assert not any(";" in a or "&&" in a or "|" in a for a in argv)
 
 
+def test_nmap_depth_unset_matches_todays_exact_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("REACHAGENT_NMAP_WIDEN_PORTS", raising=False)
+    monkeypatch.delenv("REACHAGENT_NMAP_SCRIPT_CATEGORY", raising=False)
+    argv = NmapRunner(graph=ReachabilityGraph(), scope=_scope()).command(_TARGET)
+    assert "-p-" not in argv
+    assert "--script" not in argv
+
+
+def test_nmap_widen_ports_scans_every_port(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("REACHAGENT_NMAP_WIDEN_PORTS", "1")
+    monkeypatch.setenv("REACHAGENT_NMAP_TOP_PORTS", "100")  # widen must override, not combine
+    argv = NmapRunner(graph=ReachabilityGraph(), scope=_scope()).command(_TARGET)
+    assert "-p-" in argv
+    assert "--top-ports" not in argv
+
+
+def test_nmap_script_category_adds_the_named_category(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("REACHAGENT_NMAP_SCRIPT_CATEGORY", "vuln")
+    argv = NmapRunner(graph=ReachabilityGraph(), scope=_scope()).command(_TARGET)
+    assert argv[argv.index("--script") + 1] == "vuln"
+    assert "-p-" not in argv  # a script category alone does not also widen the port range
+
+
+def test_nmap_script_category_rejects_a_disruptive_category(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Defense in depth: even if something sets this env var directly (bypassing
+    the validated proposer), nmap.py itself refuses a disruptive category —
+    'freedom to choose flags' is bounded to a vetted-safe allowlist, never
+    arbitrary NSE script selection."""
+    for category in ("intrusive", "exploit", "dos", "malware", "brute", "auth"):
+        monkeypatch.setenv("REACHAGENT_NMAP_SCRIPT_CATEGORY", category)
+        argv = NmapRunner(graph=ReachabilityGraph(), scope=_scope()).command(_TARGET)
+        assert "--script" not in argv, f"{category!r} must never reach nmap's argv"
+
+
+def test_nmap_widen_ports_and_script_category_compose(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("REACHAGENT_NMAP_WIDEN_PORTS", "1")
+    monkeypatch.setenv("REACHAGENT_NMAP_SCRIPT_CATEGORY", "vuln")
+    argv = NmapRunner(graph=ReachabilityGraph(), scope=_scope()).command(_TARGET)
+    assert "-p-" in argv
+    assert argv[argv.index("--script") + 1] == "vuln"
+
+
 def test_hostile_target_stays_a_single_arg_element() -> None:
     # A target carrying shell metacharacters must remain ONE argv element — with
     # shell=False that is inert, never a shell break-out.
