@@ -27,6 +27,17 @@ def test_derive_seed_names_single_label_host() -> None:
     assert derive_seed_names("localhost") == ("localhost",)
 
 
+def test_derive_seed_names_yields_nothing_for_a_bare_ip_address() -> None:
+    # An IP-address target (the common shape for local eval stacks like
+    # VAmPI's 127.0.0.1) has no organization-name label to guess a bucket
+    # from — probing short numeric seeds like "127"/"0" risks hitting a
+    # real, unrelated, coincidentally-public bucket and confirming a
+    # finding against a target that has nothing to do with it.
+    assert derive_seed_names("127.0.0.1") == ()
+    assert derive_seed_names("::1") == ()
+    assert candidate_bucket_probes("127.0.0.1") == ()
+
+
 def test_candidate_bucket_probes_covers_every_suffix_and_provider() -> None:
     probes = candidate_bucket_probes("demo.testfire.net")
     seeds = len(derive_seed_names("demo.testfire.net"))

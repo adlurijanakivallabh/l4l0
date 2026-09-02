@@ -21,6 +21,7 @@ own ScopeGuard allowlist.
 
 from __future__ import annotations
 
+import ipaddress
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -67,7 +68,22 @@ def derive_seed_names(hostname: str) -> tuple[str, ...]:
     For ``demo.testfire.net`` this yields ``("testfire", "demo")``: the
     registrable-domain label (most common real-world bucket-naming choice)
     and the leading subdomain label, deduplicated and lowercased.
+
+    A bare IP address (``127.0.0.1``, a common local-eval-target hostname)
+    yields no seeds at all: its dotted octets aren't an organization name a
+    real bucket would ever be named after, and guessing short numeric names
+    like ``"127"``/``"0"`` risks hitting a real, unrelated, coincidentally-
+    public bucket somewhere on S3/GCS/Azure — reported as a "high severity"
+    finding against a target it has nothing to do with. Caught live: VAmPI
+    (target ``127.0.0.1``) confirmed a cloud_bucket_exposure finding despite
+    having no cloud-storage component in its own documented vulnerabilities.
     """
+    try:
+        ipaddress.ip_address(hostname)
+    except ValueError:
+        pass
+    else:
+        return ()
     labels = [label for label in hostname.lower().split(".") if label]
     seeds: list[str] = []
     if len(labels) >= 2:

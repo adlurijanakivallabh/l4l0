@@ -72,6 +72,18 @@ def _path_and_query(raw_url: str, base_url: str) -> tuple[str, str] | None:
     parts = urlsplit(absolute)
     if parts.scheme not in {"http", "https"} or not parts.netloc:
         return None
+    # An absolute link to a DIFFERENT host (a footer "powered by" link to the
+    # project's own GitHub repo, a CDN asset, a social-share URL, ...) must never
+    # be treated as a same-site path — urljoin() resolving it fine and it having a
+    # real scheme+netloc says nothing about it being ON the scanned site. Silently
+    # keeping only its path (dropping the real host) previously fabricated a
+    # phantom same-host endpoint from any such link — caught live (DVWA linking to
+    # github.com/digininja/DVWA materialized as if `/digininja/DVWA` existed on
+    # the scanned target). ScopeGuard would still refuse firing at it later, but
+    # by then it's already wasted a probe and shown up in the graph/report as if
+    # it were real target surface.
+    if parts.netloc.lower() != urlsplit(base_url).netloc.lower():
+        return None
     return parts.path or "/", parts.query
 
 

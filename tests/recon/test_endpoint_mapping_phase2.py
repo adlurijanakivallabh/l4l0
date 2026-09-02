@@ -51,6 +51,23 @@ def test_html_forms_preserve_method_csrf_and_serialization() -> None:
     assert surface.scripts == ("https://target.test/assets/app.js",)
 
 
+def test_html_links_to_a_different_host_are_not_materialized_as_same_site_paths() -> None:
+    surface = parse_html_surface(
+        """
+        <a href='/search?q=books'>search</a>
+        <a href='https://github.com/digininja/DVWA'>project home</a>
+        <form action='https://accounts.google.com/o/oauth2/auth' method='GET'>
+          <input name='client_id'>
+        </form>
+        """,
+        "https://target.test/",
+    )
+    paths = {endpoint.path for endpoint in surface.endpoints}
+    assert paths == {"/search"}
+    assert "/digininja/DVWA" not in paths
+    assert "/o/oauth2/auth" not in paths
+
+
 def test_javascript_calls_capture_methods_body_fields_and_graphql() -> None:
     surface = parse_javascript_surface(
         """
