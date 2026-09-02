@@ -513,6 +513,66 @@ def test_run_oracle_survives_a_control_character_in_a_fire_ref_resolved_body() -
     assert verdict.is_violation is True  # type: ignore[attr-defined]
 
 
+def test_run_oracle_survives_an_oversized_inline_response_body() -> None:
+    # Live-verification catch (v2 Phase 6 Stage D, against a real crAPI target): a
+    # multi-megabyte JSON listing crashed the whole scan with "Error executing tool
+    # run_oracle: response_body exceeds its evidence size limit" — StructuralEvidence's
+    # own 1,000,000-char validation cap raising ValueError deep inside a real oracle
+    # call, aborting the run instead of degrading. The body is now capped server-side
+    # before the evidence object is built; a sentinel near the START of an oversized
+    # body must still be found.
+    session = _session_on(lambda r: httpx.Response(200, text="ok"))
+    mcp = _register_on_session(session)
+    oversized = "JasperException" + ("x" * 2_000_000)
+    verdict = _call(
+        mcp,
+        "run_oracle",
+        mechanism="structural",
+        evidence={
+            "check_type": "info_disclosure",
+            "probe_status": 500,
+            "sentinel": "JasperException",
+            "response_body": oversized,
+            "evidence_ref": "oversized-inline",
+        },
+    )
+    assert verdict.is_violation is True  # type: ignore[attr-defined]
+
+
+def test_run_oracle_survives_an_oversized_fire_ref_resolved_body() -> None:
+    # Same failure mode, but for a body resolved server-side from a probe_fire_ref —
+    # covers both places raw body text enters evidence, mirroring the control-character
+    # regression tests above.
+    session = _session_on(lambda r: httpx.Response(200, text="root:x:0:0" + ("y" * 2_000_000)))
+    ep = session.graph.add_endpoint(Endpoint(method="GET", path="/ftp/{filename}"))
+    param = session.graph.add_parameter(ep, Parameter(name="filename", location="path"))
+    mcp = _register_on_session(session)
+
+    _call(mcp, "fingerprint_parameter", identity="anon", endpoint_node=ep, param_node=param)
+    probe = _call(
+        mcp,
+        "fire_request",
+        identity="anon",
+        endpoint_node=ep,
+        param_node=param,
+        payload="../../etc/passwd",
+        method="GET",
+    )
+    verdict = _call(
+        mcp,
+        "run_oracle",
+        mechanism="structural",
+        evidence={
+            "check_type": "path_traversal",
+            "probe_status": probe.status_code,  # type: ignore[attr-defined]
+            "sentinel": "root:",
+            "probe_fire_ref": probe.fire_ref,  # type: ignore[attr-defined]
+            "evidence_ref": "oversized-fire-ref",
+        },
+    )
+    assert verdict.is_violation is True  # type: ignore[attr-defined]
+
+
 def test_run_oracle_structural_union_resolves_body_from_fire_ref() -> None:
     session = _session_on(lambda r: httpx.Response(200, text='{"email":"admin@juice-sh.op"}'))
     ep = session.graph.add_endpoint(Endpoint(method="GET", path="/rest/products/search"))

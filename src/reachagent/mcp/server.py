@@ -408,6 +408,21 @@ def _strip_control_chars(text: str) -> str:
     return text.translate(_CONTROL_CHAR_TRANSLATION)
 
 
+# Matches StructuralEvidence/ExecutionConfirmationEvidence's own response_body
+# validation cap (oracles/structural.py, oracles/execution_confirmation.py) — a real
+# target can genuinely return a multi-megabyte body (a large JSON listing, e.g. crAPI's
+# workshop catalog, caught live), and every oracle sentinel/marker check this evidence
+# feeds only ever needs the START of a body, never all of it. Truncating HERE, before
+# the evidence object is built, keeps that a a graceful degrade instead of the
+# ValueError propagating up through run_oracle and aborting the whole scan, a
+# graceful degrade instead.
+_MAX_RESPONSE_BODY_CHARS = 1_000_000
+
+
+def _capped_body(text: str) -> str:
+    return text[:_MAX_RESPONSE_BODY_CHARS]
+
+
 def _sanitize_evidence_strings(ev: dict[str, Any]) -> dict[str, Any]:
     """Strip control characters from every string value in an evidence dict."""
 
@@ -1265,14 +1280,14 @@ def register_tools(mcp: FastMCP, session: _Session) -> None:
             if ev.get("probe_browser_ref"):
                 probe_browser = session.get_browser(str(ev["probe_browser_ref"]))
 
-            response_body = str(ev.get("response_body", ""))
+            response_body = _capped_body(str(ev.get("response_body", "")))
             if not response_body and probe_fire is not None:
-                response_body = _strip_control_chars(
-                    probe_fire.body.decode("utf-8", errors="replace")
+                response_body = _capped_body(
+                    _strip_control_chars(probe_fire.body.decode("utf-8", errors="replace"))
                 )
             if not response_body and probe_browser is not None:
-                response_body = _strip_control_chars(
-                    probe_browser.body.decode("utf-8", errors="replace")
+                response_body = _capped_body(
+                    _strip_control_chars(probe_browser.body.decode("utf-8", errors="replace"))
                 )
 
             def _hdr(ev_key: str, header_name: str) -> str:
@@ -1375,13 +1390,15 @@ def register_tools(mcp: FastMCP, session: _Session) -> None:
                 for f in (raw_flows or [])
             )
             # Resolve response_body from a fire_ref when supplied (fix C, §13).
-            exec_body = str(ev.get("response_body", ""))
+            exec_body = _capped_body(str(ev.get("response_body", "")))
             if not exec_body and ev.get("probe_fire_ref"):
                 exec_fire = session.get_fire(str(ev["probe_fire_ref"]))
-                exec_body = _strip_control_chars(exec_fire.body.decode("utf-8", errors="replace"))
+                exec_body = _capped_body(
+                    _strip_control_chars(exec_fire.body.decode("utf-8", errors="replace"))
+                )
             if not exec_body and browser_result is not None:
-                exec_body = _strip_control_chars(
-                    browser_result.body.decode("utf-8", errors="replace")
+                exec_body = _capped_body(
+                    _strip_control_chars(browser_result.body.decode("utf-8", errors="replace"))
                 )
             execution_metadata = _metadata_for(ev)
             if ev.get("probe_fire_ref") and not execution_metadata.probe_response_ref:
