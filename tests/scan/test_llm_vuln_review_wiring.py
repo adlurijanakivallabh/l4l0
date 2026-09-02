@@ -2,8 +2,10 @@
 
 run_llm_vulnerability_review itself is fully covered by
 tests/scan/test_llm_vuln_review.py; this file only proves the orchestrator wiring:
-called once with the scan's own graph, only when an LLM is actually configured
-(require_llm=True), and a failure never aborts the scan.
+called TWICE with the scan's own graph (an "early" pass before Phase 3, a "final"
+pass after — operator feedback: leads should surface live across the scan, not in
+one batch at the end), only when an LLM is actually configured (require_llm=True),
+and a failure never aborts the scan.
 """
 
 from __future__ import annotations
@@ -54,14 +56,14 @@ class _FakeAdvisor:
         return {"action": "continue", "rationale": "test advisor — no reassessment needed"}
 
 
-def test_llm_vuln_review_is_called_with_the_scans_own_graph_when_llm_required(
+def test_llm_vuln_review_is_called_twice_with_the_scans_own_graph_when_llm_required(
     monkeypatch,  # noqa: ANN001
 ) -> None:
     from reachagent.payloads import PayloadLibrary
 
     calls: list[dict] = []
 
-    def fake_review(*, graph, client=None):  # noqa: ANN001
+    def fake_review(*, graph, client=None, events=None):  # noqa: ANN001
         calls.append({"graph": graph})
         return 0
 
@@ -77,8 +79,9 @@ def test_llm_vuln_review_is_called_with_the_scans_own_graph_when_llm_required(
         control_client=_FakeAdvisor(),
     )
 
-    assert len(calls) == 1
-    assert calls[0]["graph"] is result["graph"]
+    # early (before Phase 3) + final (after Phase 3) — not one batch at the end.
+    assert len(calls) == 2
+    assert all(call["graph"] is result["graph"] for call in calls)
 
 
 def test_llm_vuln_review_is_not_called_when_llm_is_not_required(monkeypatch) -> None:  # noqa: ANN001
@@ -86,7 +89,7 @@ def test_llm_vuln_review_is_not_called_when_llm_is_not_required(monkeypatch) -> 
 
     calls: list[dict] = []
 
-    def fake_review(*, graph, client=None):  # noqa: ANN001
+    def fake_review(*, graph, client=None, events=None):  # noqa: ANN001
         calls.append({"graph": graph})
         return 0
 
@@ -105,7 +108,7 @@ def test_llm_vuln_review_is_not_called_when_llm_is_not_required(monkeypatch) -> 
 def test_llm_vuln_review_failure_never_aborts_the_scan(monkeypatch) -> None:  # noqa: ANN001
     from reachagent.payloads import PayloadLibrary
 
-    def _boom(*, graph, client=None):  # noqa: ANN001
+    def _boom(*, graph, client=None, events=None):  # noqa: ANN001
         raise RuntimeError("provider unavailable")
 
     monkeypatch.setattr("reachagent.scan.llm_vuln_review.run_llm_vulnerability_review", _boom)
@@ -123,7 +126,7 @@ def test_llm_vuln_review_failure_never_aborts_the_scan(monkeypatch) -> None:  # 
     )
 
     assert result["graph"] is not None
-    assert any("LLM vulnerability review failed" in e.message for e in events)
+    assert any("LLM vulnerability review" in e.message and "failed" in e.message for e in events)
 
 
 def test_llm_vuln_review_new_leads_land_in_the_scans_graph_as_suspected_only(
@@ -132,7 +135,7 @@ def test_llm_vuln_review_new_leads_land_in_the_scans_graph_as_suspected_only(
     from reachagent.graph.nodes import SuspectedFinding
     from reachagent.payloads import PayloadLibrary
 
-    def fake_review(*, graph, client=None):  # noqa: ANN001
+    def fake_review(*, graph, client=None, events=None):  # noqa: ANN001
         graph.add_suspected_finding(
             SuspectedFinding(vuln_class="idor", endpoint="/x", source="llm_judgment")
         )

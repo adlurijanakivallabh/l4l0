@@ -61,6 +61,36 @@ def test_review_writes_a_suspected_finding_never_a_finding() -> None:
     assert "invoices" in fake.seen_prompt  # the real surface was actually sent
 
 
+def test_review_emits_one_event_per_lead_not_a_silent_batch() -> None:
+    """Operator feedback: leads only ever became visible via the next full-graph
+    poll, reading as everything showing up at once. Each written lead must now
+    carry its own live event, the same as every other driver's finding events."""
+    from reachagent.scan.orchestrator import ScanEvent
+
+    g = _graph_with_surface()
+    fake = _FakeClient(
+        {
+            "leads": [
+                {"vuln_class": "bola", "endpoint": "/a", "reason": "r1", "severity": "high"},
+                {"vuln_class": "ssrf", "endpoint": "/b", "reason": "r2", "severity": "medium"},
+            ]
+        }
+    )
+    events: list[ScanEvent] = []
+    written = run_llm_vulnerability_review(graph=g, client=fake, events=events)
+    assert written == 2
+    lead_events = [e for e in events if "suspected lead" in e.message]
+    assert len(lead_events) == 2
+    assert any("bola" in e.message and "/a" in e.message for e in lead_events)
+    assert any("ssrf" in e.message and "/b" in e.message for e in lead_events)
+
+
+def test_review_without_events_param_still_works() -> None:
+    g = _graph_with_surface()
+    fake = _FakeClient({"leads": [{"vuln_class": "bola", "endpoint": "/a", "reason": "r"}]})
+    assert run_llm_vulnerability_review(graph=g, client=fake) == 1
+
+
 def test_review_fails_open_on_provider_error() -> None:
     class Boom:
         def propose_json(self, prompt: str, *, max_tokens: int = 1500) -> dict:

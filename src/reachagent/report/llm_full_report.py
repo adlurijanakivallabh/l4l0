@@ -31,6 +31,7 @@ from reachagent.llm.client import (
     build_openai_compatible_client,
     is_model_output_error,
 )
+from reachagent.report.professional import methodology_markdown
 from reachagent.report.renderer import build_evidence_index, sanitize_report_markdown
 
 _log = logging.getLogger(__name__)
@@ -74,6 +75,8 @@ clearly-labeled section, honestly described as unconfirmed
   * base every description/impact claim ONLY on the evidence fields actually given \
 below (evidence_ref, oracle_used, metadata, vuln_class) - never invent a request/ \
 response detail, parameter name, or file path that is not present in that data
+  * do NOT write your own "Methodology" section - a factual one describing scope, \
+approach, and proof standard is appended automatically after your report
 
 Confirmed findings (JSON, ground truth): {confirmed_json}
 
@@ -158,4 +161,9 @@ def generate_llm_authored_report(
             missing[:5],
         )
         return None
-    return report
+    # Methodology is appended verbatim, never left to the LLM to describe — the
+    # same "deterministic ground truth the LLM cannot override" discipline as the
+    # confirmed-findings list above, so a Methodology section can never drift from
+    # what the scan actually did or be silently omitted by the model. Re-sanitized
+    # as a whole for the same reason the template path sanitizes its full output.
+    return sanitize_report_markdown(report + "\n" + methodology_markdown(graph, target=target))

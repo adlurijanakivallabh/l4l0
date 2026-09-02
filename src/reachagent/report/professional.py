@@ -264,6 +264,65 @@ def _report_card_markdown(confirmed: list[dict[str, Any]]) -> str:
     return "".join(lines)
 
 
+def methodology_markdown(graph: ReachabilityGraph, *, target: str = "") -> str:
+    """A real Methodology section — built from actual scan facts, never LLM prose.
+
+    Professional pentest reports always carry a Methodology section (scope, approach,
+    proof standard); ReachAgent's had none, both here and in the LLM-full-authority
+    report. Built deterministically from the graph so it can never drift from what
+    the scan actually did — the same "ground truth the LLM cannot override" discipline
+    already used for confirmed findings. Appended verbatim after the LLM's own text in
+    ``report/llm_full_report.py`` for the exact same reason.
+    """
+    hosts = graph.hosts()
+    endpoints = graph.endpoints()
+    param_count = sum(len(graph.parameters_of(ep_id)) for ep_id, _ep in endpoints)
+    confirmed_count = len(graph.findings())
+    suspected = graph.suspected_findings()
+    llm_leads = sum(1 for _sid, s in suspected if s.source == "llm_judgment")
+    tool_leads = len(suspected) - llm_leads
+    whitebox = bool(graph.static_advisories() or graph.source_files() or graph.secrets())
+
+    lines = [
+        "\n## Methodology\n\n",
+        f"**Scope:** {target or '(target not recorded)'}"
+        + (f" — {len(hosts)} host(s) tested" if hosts else "")
+        + ".\n\n",
+        "**Approach:** an autonomous, role-bounded agent performed reconnaissance and "
+        "surface mapping, then tested each applicable vulnerability class against the "
+        "discovered surface, read-only-first — no state-changing request was sent until "
+        "the read-only case was confirmed safe.\n\n",
+        "**Proof standard:** a finding is reported as *Confirmed* only after an "
+        "independent, deterministic oracle (one of six mechanism families — structural, "
+        "differential, timing-statistical, execution-confirmation, out-of-band callback, "
+        "or business-rule invariant) verified it against the target's actual response. "
+        "LLM judgment is used to prioritize testing and to surface additional leads for "
+        "human review, but never to decide that a finding is confirmed — an item the "
+        "oracle did not independently verify is always listed separately, in its own "
+        "clearly-labeled review-only section below, never blended into the confirmed "
+        "count.\n\n",
+        f"**Coverage:** {len(endpoints)} endpoint(s) and {param_count} parameter(s) "
+        f"mapped; {confirmed_count} confirmed finding(s).",
+    ]
+    if llm_leads:
+        lines.append(
+            f" An LLM surface-judgment pass additionally flagged {llm_leads} lead(s) "
+            "for manual review (Suspected tier)."
+        )
+    if tool_leads:
+        lines.append(
+            f" {tool_leads} additional lead(s) came from a signal-gated scanner claim "
+            "the oracle could not independently re-confirm."
+        )
+    if whitebox:
+        lines.append(
+            " An optional white-box (source-available) pass also contributed static "
+            "observations, listed in their own section below."
+        )
+    lines.append("\n")
+    return "".join(lines)
+
+
 def _evidence_snippet_markdown(snippet: dict[str, Any]) -> str:
     """Render the real captured proof (v2 Phase 6 Stage E1) as markdown — a fenced
     block per body projection, distinct from the opaque handle refs listed above it.
@@ -376,6 +435,7 @@ def render_professional_report_markdown(
     )
     lines.append("## Executive Summary\n\n")
     lines.append(f"{narrative.strip()}\n\n")
+    lines.append(methodology_markdown(graph, target=target))
     lines.append(_report_card_markdown(confirmed))
 
     if confirmed:

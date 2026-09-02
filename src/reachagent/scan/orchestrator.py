@@ -4056,6 +4056,50 @@ def _run_phase3_concurrent(
         raise ScanCancelled("scan cancelled by operator")
 
 
+def _run_llm_vuln_review_pass(
+    *, graph: ReachabilityGraph, events_out: list[ScanEvent], label: str
+) -> None:
+    """One bounded LLM vulnerability-review pass (operator-requested): a Shannon/
+    Strix-style pass where the LLM reasons over the discovered surface (structure
+    only, not response content — the audit trail never persists bodies) and flags
+    what IT independently suspects, the same judgment call those reference tools
+    make. The one difference from those tools (the whole point of keeping this
+    addition safe): its output can only ever land in the structurally-separate
+    Suspected/Unconfirmed tier, never `write_finding`/`run_oracle` — see
+    scan/llm_vuln_review.py's module docstring.
+
+    Called twice by `scan_all_classes` (``label`` is "early"/"final", narration
+    only) rather than once at the very end: an operator reported LLM-suspected
+    leads reading as "dumped all at once" right before the report phase, with
+    zero visibility while the scan was still running. The early pass reviews the
+    surface once recon completes (before Phase 3 even starts); the final pass
+    reviews the fuller surface plus Phase 3's own now-populated confirmed list.
+    `run_llm_vulnerability_review` itself reads the OTHER pass's already-written
+    leads via "already SUSPECTED" so the two passes don't repeat each other.
+    Fail-open — an LLM failure here must never abort the scan.
+    """
+    try:
+        from reachagent.scan.llm_vuln_review import run_llm_vulnerability_review
+
+        new_leads = run_llm_vulnerability_review(graph=graph, events=events_out)
+        if new_leads:
+            _emit(
+                events_out,
+                "payloads",
+                "info",
+                f"LLM vulnerability review ({label}): {new_leads} suspected lead(s) "
+                "flagged for manual review (not oracle-verified)",
+            )
+    except Exception as exc:  # noqa: BLE001 — advisory only, must never abort the scan
+        _emit(
+            events_out,
+            "payloads",
+            "error",
+            f"LLM vulnerability review ({label}) failed: {type(exc).__name__}",
+            error_category="llm_vuln_review",
+        )
+
+
 # ---------------------------------------------------------------------------
 # Main orchestrator
 # ---------------------------------------------------------------------------
@@ -4742,6 +4786,13 @@ def scan_all_classes(
             error_category="browser_recon",
         )
 
+    # LLM-driven vulnerability review, early pass — the surface is fully mapped
+    # (recon + browser recon done) but Phase 3 hasn't started, so these leads become
+    # visible live well before any confirmed finding does, rather than only ever
+    # appearing in one silent batch right before the report phase.
+    if require_llm:
+        _run_llm_vuln_review_pass(graph=graph, events_out=events_out, label="early")
+
     # Phase 3 — the classes the sink loop does not drive. Dispatch order is
     # LLM-ranked (rank_vuln_classes, above) when REACHAGENT_VULN_TUNING is
     # enabled — already the case for every GUI scan — falling back to the
@@ -4836,35 +4887,12 @@ def scan_all_classes(
     # follow-up; it cannot alter a finding already in the graph.
     _adapt("payloads", ("report",))
 
-    # LLM-driven vulnerability review (operator-requested): a Shannon/Strix-style pass
-    # where the LLM reasons over the discovered surface (structure only, not response
-    # content — the audit trail never persists bodies) and flags what IT independently
-    # suspects, the same judgment call those reference tools make. The one difference
-    # from those tools (the whole point of keeping this addition safe): its output can
-    # only ever land in the structurally-separate Suspected/Unconfirmed tier, never
-    # `write_finding`/`run_oracle` — see scan/llm_vuln_review.py's module docstring.
-    # Fail-open, bounded to one call, only when an LLM is actually configured.
+    # LLM-driven vulnerability review, final pass — see _run_llm_vuln_review_pass's
+    # own docstring for the full design (operator-requested; two bounded passes, not
+    # one, so leads appear live across the scan instead of dumped in a single batch
+    # at the end).
     if require_llm:
-        try:
-            from reachagent.scan.llm_vuln_review import run_llm_vulnerability_review
-
-            new_leads = run_llm_vulnerability_review(graph=graph)
-            if new_leads:
-                _emit(
-                    events_out,
-                    "payloads",
-                    "info",
-                    f"LLM vulnerability review: {new_leads} suspected lead(s) flagged "
-                    "for manual review (not oracle-verified)",
-                )
-        except Exception as exc:  # noqa: BLE001 — advisory only, must never abort the scan
-            _emit(
-                events_out,
-                "payloads",
-                "error",
-                f"LLM vulnerability review failed: {type(exc).__name__}",
-                error_category="llm_vuln_review",
-            )
+        _run_llm_vuln_review_pass(graph=graph, events_out=events_out, label="final")
 
     driven_classes = {
         *_GENERIC_CLASSES,

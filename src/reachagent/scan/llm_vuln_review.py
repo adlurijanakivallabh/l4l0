@@ -13,9 +13,16 @@ NEVER calls ``run_oracle``/``write_finding``/``add_finding``, and is rendered in
 report's permanently separate "Suspected / Unconfirmed (not oracle-verified)" section,
 never counted in confirmed severity stats.
 
-One bounded LLM call per scan (a structural surface digest — paths/methods/params/sink
-types/app-domain/tech — plus what is already confirmed/suspected, so it doesn't repeat
-them), reasoning the same way a human pentester would from surface shape alone.
+Called at two bounded points in a scan (a structural surface digest — paths/methods/
+params/sink types/app-domain/tech — plus what is already confirmed/suspected, so it
+doesn't repeat them), reasoning the same way a human pentester would from surface shape
+alone: once after recon/surface-mapping (before Phase 3 vulnerability testing starts),
+so a first batch of leads is visible live well before the report phase, and once more
+after Phase 3 confirms its own findings, so the final review sees the fuller surface and
+the now-populated confirmed list. Each call passes the OTHER call's own leads through
+"already SUSPECTED" so the two passes don't repeat each other (operator feedback: leads
+were previously all written in one silent batch at the very end of the scan, reading as
+"dumped at once" rather than found live).
 **Disclosed limit**: this reviews structure, not live response content — ReachAgent's
 audit trail deliberately never persists response bodies (secrets/privacy), so this is
 not a review of actual traffic the way a human manually reading responses would do.
@@ -25,10 +32,14 @@ Fails open (empty / no leads) on any error, exactly like ``classify_app_domain``
 from __future__ import annotations
 
 import logging
+from typing import TYPE_CHECKING
 
 from reachagent.graph.nodes import SuspectedFinding
 from reachagent.graph.store import ReachabilityGraph
 from reachagent.llm.client import build_openai_compatible_client
+
+if TYPE_CHECKING:
+    from reachagent.scan.orchestrator import ScanEvent
 
 _log = logging.getLogger(__name__)
 
@@ -84,12 +95,21 @@ def _clean(value: object, *, maximum: int = _MAX_FIELD) -> str:
     return str(value or "").replace("\n", " ").replace("\r", " ").strip()[:maximum]
 
 
-def run_llm_vulnerability_review(*, graph: ReachabilityGraph, client: object | None = None) -> int:
+def run_llm_vulnerability_review(
+    *,
+    graph: ReachabilityGraph,
+    client: object | None = None,
+    events: list[ScanEvent] | None = None,
+) -> int:
     """One bounded LLM pass proposing Suspected leads from surface judgment alone.
 
     Returns the number of new ``SuspectedFinding`` nodes written (0 on any failure, an
     empty model reply, or when nothing was discovered yet). ``client`` (any object
-    exposing ``propose_json``) is injectable for tests.
+    exposing ``propose_json``) is injectable for tests. ``events``, when given, gets one
+    event PER lead as it's written (not just a final count) — operator feedback: leads
+    only ever showed up via the next GUI poll re-reading the whole graph, reading as a
+    silent batch dump rather than something found live, the same class of gap every
+    other driver in this codebase already avoids by emitting its own per-item event.
     """
     if not list(graph.endpoints()):
         return 0
@@ -132,16 +152,31 @@ def run_llm_vulnerability_review(*, graph: ReachabilityGraph, client: object | N
         severity = _clean(raw.get("severity"), maximum=20).lower()
         if severity not in _VALID_SEVERITIES:
             severity = "info"
+        reason = _clean(raw.get("reason")) or "flagged by LLM surface review"
         graph.add_suspected_finding(
             SuspectedFinding(
                 vuln_class=vuln_class,
                 endpoint=endpoint,
                 location=location,
                 source="llm_judgment",
-                reason=_clean(raw.get("reason")) or "flagged by LLM surface review",
+                reason=reason,
                 severity=severity,
                 confidence="advisory — not oracle-verified",
             )
         )
         written += 1
+        if events is not None:
+            from reachagent.scan.orchestrator import ScanEvent as _ScanEvent
+
+            events.append(
+                _ScanEvent(
+                    phase="payloads",
+                    kind="info",
+                    message=(
+                        f"LLM suspected lead: {vuln_class} at {endpoint or '(unspecified)'}"
+                        f" — {reason}"
+                    ),
+                    details={"path": endpoint, "severity": severity},
+                )
+            )
     return written

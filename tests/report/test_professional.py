@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from unittest.mock import Mock
 
-from reachagent.graph.nodes import Finding, FindingStatus
+from reachagent.graph.nodes import Finding, FindingStatus, SuspectedFinding
 from reachagent.graph.store import ReachabilityGraph
-from reachagent.report.professional import render_professional_report_markdown
+from reachagent.report.professional import methodology_markdown, render_professional_report_markdown
 
 
 def _graph(*findings: tuple[str, str, str]) -> ReachabilityGraph:
@@ -35,6 +35,43 @@ def test_empty_graph_no_findings_confirmed_message() -> None:
     out = render_professional_report_markdown(ReachabilityGraph(), client=_quiet_client())
     assert "No findings were confirmed" in out
     assert "# ReachAgent Security Assessment Report" in out
+
+
+def test_report_includes_a_real_methodology_section() -> None:
+    out = render_professional_report_markdown(
+        _graph(("sqli", "high", "ref-1")), client=_quiet_client(), target="http://x.test"
+    )
+    assert "## Methodology" in out
+    assert "Proof standard" in out
+    assert "http://x.test" in out.split("## Methodology", 1)[1].split("##", 1)[0]
+    # Methodology must appear before the findings sections, not after.
+    assert out.index("## Methodology") < out.index("## Confirmed Vulnerabilities")
+
+
+def test_methodology_mentions_llm_leads_only_when_any_exist() -> None:
+    graph = ReachabilityGraph()
+    without = methodology_markdown(graph, target="http://x.test")
+    assert "LLM surface-judgment pass" not in without
+
+    graph.add_suspected_finding(
+        SuspectedFinding(
+            vuln_class="idor",
+            endpoint="/api/orders/{id}",
+            location="id",
+            source="llm_judgment",
+            reason="flagged by LLM surface review",
+            severity="medium",
+            confidence="advisory — not oracle-verified",
+        )
+    )
+    with_lead = methodology_markdown(graph, target="http://x.test")
+    assert "LLM surface-judgment pass" in with_lead
+    assert "1 lead(s)" in with_lead
+
+
+def test_methodology_never_confuses_oracle_proof_with_llm_judgment() -> None:
+    out = methodology_markdown(ReachabilityGraph())
+    assert "never to decide that a finding is confirmed" in out
 
 
 def test_confirmed_finding_gets_full_structured_section() -> None:

@@ -48,6 +48,18 @@ def test_returns_the_llm_report_when_every_confirmed_finding_is_present() -> Non
     assert "sqli" in fake.seen_prompt  # the ground-truth data was actually sent
 
 
+def test_methodology_section_is_appended_and_never_left_to_the_llm() -> None:
+    """The LLM is instructed not to write its own Methodology section, and a real
+    one (built from actual scan facts, not model prose) is appended regardless."""
+    graph = _graph_with_confirmed()
+    fake = _FakeClient("# Report\n\nfinding:sqli:ev1 was confirmed.\n")
+    result = generate_llm_authored_report(graph, client=fake, target="https://t.test")
+    assert result is not None
+    assert "## Methodology" in result
+    assert "Proof standard" in result
+    assert "do NOT write your own" in fake.seen_prompt
+
+
 def test_falls_back_to_none_when_a_confirmed_finding_is_omitted() -> None:
     graph = _graph_with_confirmed()
     fake = _FakeClient("A report that never names the actual finding id.")
