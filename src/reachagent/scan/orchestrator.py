@@ -4544,6 +4544,36 @@ def scan_all_classes(
     )
     _adapt("verification", ("payloads", "report"))
 
+    # General Explorer browser recon (v2 W11) — additive SPA route/form discovery,
+    # runs once here (firer/identity now exist), before Phase 3 dispatch, so anything
+    # it materializes is part of the graph for the rest of the scan. A SPA's real form
+    # surface is invisible to the static HTML parser used earlier (which only sees the
+    # empty `<div id="root">` shell a JS framework renders into) — this extends the
+    # SAME browser tool already used for XSS taint discovery to general recon. Never a
+    # finding; a browser/Playwright failure degrades to a logged event, never aborts
+    # the scan (same fail-open discipline as xss_dom/prototype_pollution).
+    try:
+        from reachagent.scan.browser_recon import run_browser_recon
+
+        new_endpoints = run_browser_recon(
+            graph=graph, firer=firer, base_url=base_url, identity=identity, events=events_out
+        )
+        if new_endpoints:
+            _emit(
+                events_out,
+                "endpoints",
+                "info",
+                f"browser recon complete — {new_endpoints} SPA-rendered endpoint(s) added",
+            )
+    except Exception as exc:  # noqa: BLE001 — browser recon must never abort the scan
+        _emit(
+            events_out,
+            "endpoints",
+            "error",
+            f"browser recon failed: {type(exc).__name__}",
+            error_category="browser_recon",
+        )
+
     # Phase 3 — the classes the sink loop does not drive. Dispatch order is
     # LLM-ranked (rank_vuln_classes, above) when REACHAGENT_VULN_TUNING is
     # enabled — already the case for every GUI scan — falling back to the

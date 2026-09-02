@@ -165,6 +165,119 @@ TAINT_SHIM_JS = r"""
 })();
 """
 
+# ---------------------------------------------------------------------------
+# General Explorer recon shim (v2 W11) — client-side surface for SPA targets
+# ---------------------------------------------------------------------------
+
+# Installed via addInitScript, separate from TAINT_SHIM_JS (a distinct tool,
+# independent scope): hooks console output and JS-initiated network calls
+# (fetch/XHR) so a single-page app's real API surface — invisible to the
+# static HTML parser, which only sees the empty shell `<div id=root>` a JS
+# framework renders into — becomes discoverable. Same "hook via init script,
+# read via evaluate()" pattern the taint shim already established; no new
+# BrowserDriver Protocol method needed.
+RECON_SHIM_JS = r"""
+(function() {
+  if (window.__reachagent_recon_installed) return;
+  window.__reachagent_recon_installed = true;
+  window.__reachagent_console = [];
+  window.__reachagent_network = [];
+  var MAX = 200;
+
+  ['log', 'warn', 'error', 'info'].forEach(function(level) {
+    var orig = console[level];
+    console[level] = function() {
+      try {
+        if (window.__reachagent_console.length < MAX) {
+          var parts = Array.prototype.slice.call(arguments).map(String).join(' ');
+          window.__reachagent_console.push((level + ': ' + parts).slice(0, 300));
+        }
+      } catch (e) {}
+      return orig.apply(console, arguments);
+    };
+  });
+
+  var _origFetch = window.fetch;
+  if (_origFetch) {
+    window.fetch = function(input, init) {
+      try {
+        var url = typeof input === 'string' ? input : (input && input.url) || '';
+        var method = (init && init.method) || (input && input.method) || 'GET';
+        if (window.__reachagent_network.length < MAX) {
+          window.__reachagent_network.push(
+            String(method).toUpperCase() + ' ' + String(url).slice(0, 300)
+          );
+        }
+      } catch (e) {}
+      return _origFetch.apply(window, arguments);
+    };
+  }
+
+  var _origOpen = XMLHttpRequest.prototype.open;
+  XMLHttpRequest.prototype.open = function(method, url) {
+    try {
+      if (window.__reachagent_network.length < MAX) {
+        window.__reachagent_network.push(
+          String(method).toUpperCase() + ' ' + String(url).slice(0, 300)
+        );
+      }
+    } catch (e) {}
+    return _origOpen.apply(this, arguments);
+  };
+})();
+"""
+
+# Evaluated on demand AFTER navigation (not an init script — this reads
+# synchronous DOM/storage state at collection time, once the SPA has had a
+# chance to render). Storage KEYS only, never values — the same "secrets
+# never leave the browser process" discipline this codebase applies to
+# cookies (BrowserFireResult.cookies is repr=False and never persisted to
+# the graph); a JWT/session token sitting in localStorage must not leak into
+# an event log or the graph any more than a cookie value would.
+RECON_COLLECT_JS = r"""
+(function() {
+  function keys(storage) {
+    try {
+      var out = [];
+      for (var i = 0; i < storage.length; i++) out.push(storage.key(i));
+      return out;
+    } catch (e) { return []; }
+  }
+  function forms() {
+    try {
+      return Array.prototype.slice.call(document.forms).map(function(f) {
+        return {
+          action: f.action || '',
+          method: (f.method || 'get').toUpperCase(),
+          inputs: Array.prototype.slice.call(f.elements)
+            .map(function(el) { return el.name; })
+            .filter(Boolean)
+        };
+      });
+    } catch (e) { return []; }
+  }
+  function links() {
+    try {
+      var seen = {};
+      var out = [];
+      Array.prototype.slice.call(document.querySelectorAll('a[href]')).forEach(function(a) {
+        var href = a.getAttribute('href');
+        if (href && !seen[href]) { seen[href] = true; out.push(href); }
+      });
+      return out.slice(0, 200);
+    } catch (e) { return []; }
+  }
+  return {
+    local_storage_keys: keys(window.localStorage),
+    session_storage_keys: keys(window.sessionStorage),
+    forms: forms(),
+    links: links(),
+    console: window.__reachagent_console || [],
+    network: window.__reachagent_network || []
+  };
+})()
+"""
+
 
 # ---------------------------------------------------------------------------
 # Result types
@@ -179,6 +292,41 @@ class TaintFlow:
     sink: str  # e.g. "innerHTML", "eval"
     value_snippet: str = ""  # first 200 chars of the tainted value (audit only)
     url: str = ""
+
+
+@dataclass(frozen=True)
+class DiscoveredForm:
+    """One `<form>` the recon shim found rendered in the DOM (v2 W11).
+
+    A pure fact, same shape as a Phase-2 static-HTML-mapped form — the caller
+    folds this into ``graph.add_endpoint``/``add_parameter``, never a finding.
+    """
+
+    action: str
+    method: str
+    inputs: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class BrowserReconResult:
+    """Outcome of one ``run_browser_recon`` call (v2 W11) — general Explorer
+    recon for SPA targets, distinct in scope from the XSS taint shim.
+
+    ``local_storage_keys``/``session_storage_keys`` are KEY NAMES ONLY, never
+    values — the same "secrets never leave the browser process" discipline
+    already applied to cookies. ``console_messages``/``network_calls`` are
+    bounded (200 entries each, 300 chars each) client-side by the shim itself.
+    """
+
+    url: str
+    local_storage_keys: tuple[str, ...] = ()
+    session_storage_keys: tuple[str, ...] = ()
+    forms: tuple[DiscoveredForm, ...] = ()
+    links: tuple[str, ...] = ()
+    console_messages: tuple[str, ...] = dataclass_field(default=(), repr=False)
+    network_calls: tuple[str, ...] = dataclass_field(default=(), repr=False)
+    status_code: int | None = None
+    final_url: str = ""
 
 
 @dataclass(frozen=True)
@@ -473,4 +621,58 @@ def run_taint_shim(
         body_length=body_length,
         body=body,
         headers=navigation.headers,
+    )
+
+
+async def run_browser_recon_async(
+    driver: AsyncBrowserDriver,
+    url: str,
+    *,
+    settle_seconds: float = 0.5,
+) -> BrowserReconResult:
+    """Install the recon shim, navigate, let the SPA settle, and collect general
+    Explorer-recon facts (v2 W11) — localStorage/sessionStorage KEY NAMES,
+    rendered forms/links, console output, and JS-initiated network calls.
+
+    Independent scope from the XSS taint shim (``run_taint_shim_async``): this
+    is a different tool for a different purpose (SPA route/form discovery, not
+    execution confirmation), so it installs its own separate init script rather
+    than reusing/extending ``TAINT_SHIM_JS``.
+    """
+    await driver.add_init_script(RECON_SHIM_JS)
+    navigation_raw = await driver.navigate(url)
+    await asyncio.sleep(settle_seconds)
+    navigation = _navigation(navigation_raw, url)
+    collected = await driver.evaluate(RECON_COLLECT_JS)
+    if not isinstance(collected, dict):
+        collected = {}
+
+    def _str_list(value: object, limit: int) -> tuple[str, ...]:
+        if not isinstance(value, list):
+            return ()
+        return tuple(str(item) for item in value[:limit] if item is not None)
+
+    forms: list[DiscoveredForm] = []
+    for raw_form in collected.get("forms", []) if isinstance(collected.get("forms"), list) else []:
+        if not isinstance(raw_form, dict):
+            continue
+        inputs = raw_form.get("inputs", [])
+        forms.append(
+            DiscoveredForm(
+                action=str(raw_form.get("action", "")),
+                method=str(raw_form.get("method", "GET")).upper(),
+                inputs=tuple(str(i) for i in inputs) if isinstance(inputs, list) else (),
+            )
+        )
+
+    return BrowserReconResult(
+        url=url,
+        local_storage_keys=_str_list(collected.get("local_storage_keys"), 100),
+        session_storage_keys=_str_list(collected.get("session_storage_keys"), 100),
+        forms=tuple(forms[:50]),
+        links=_str_list(collected.get("links"), 200),
+        console_messages=_str_list(collected.get("console"), 200),
+        network_calls=_str_list(collected.get("network"), 200),
+        status_code=navigation.status_code,
+        final_url=navigation.final_url,
     )

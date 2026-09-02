@@ -347,3 +347,23 @@ browser recon, attack-path chaining (W17), app-domain inference (W18), LLM-autho
   safely needs more surgery than fit this increment; left untiered, not silently skipped.
 - Housekeeping: fixed 2 pre-existing ruff line-length violations (test files) that had
   slipped past an earlier commit's `src/`-only ruff check.
+
+## v2 Capability-Expansion — W11: extended browser recon for SPA targets (shipped 2026-09-01)
+
+- New `run_browser_recon_async` in `browser/shim.py` — independent from the XSS taint
+  shim (separate init script, separate collector), same "hook via init script, read
+  via evaluate()" pattern. localStorage/sessionStorage KEY NAMES ONLY (never values —
+  matches the cookie-value discipline already in place). New `scan/browser_recon.py`
+  reuses `recon/surface.py`'s `_form_endpoint` to materialize SPA-rendered forms as
+  real Endpoint/Parameter graph facts — a form only a JS framework renders (invisible
+  to the static HTML parser's empty `<div id="root">` shell) becomes visible surface.
+- Wired into `scan_all_classes` right after firer/identity are constructed (had to move
+  it there after first placing it too early, before those existed) and before Phase 3.
+  Fail-open on any browser/Playwright error.
+- Disclosed limit: newly materialized parameters aren't auto-fingerprinted — sink-type
+  inference is a separate on-demand Explorer pass, not something this driver safely
+  triggers inline. A real follow-up, not silently skipped.
+- Caught and fixed one real correctness bug during development: the driver initially
+  emitted new-endpoint events as `kind="finding"` — that's reserved for actual
+  run_oracle-confirmed findings in this codebase's event vocabulary. Fixed to
+  `kind="info"` before it shipped.
