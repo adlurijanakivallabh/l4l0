@@ -593,3 +593,19 @@ Also found, self-inflicted and unrelated to product code: the first DVWA scan la
 session called `/api/scan` directly with credentials only as free text in the `prompt` field,
 never populating the structured `identities` field the scan actually consumes — so it scanned
 fully unauthenticated. Fixed by relaunching with `identities` populated correctly.
+
+## Round 3: Methodology section + live-surfacing LLM leads; two architecture asks declined
+
+- Neither report path had a Methodology section. New `report/professional.py::methodology_markdown()`
+  builds one deterministically from real scan facts (never LLM prose), appended verbatim to the
+  LLM-authored report too. Self-caught: the new prose originally used the literal phrase
+  "Suspected / Unconfirmed", colliding with 3 existing tests that partition the report on that
+  exact string — fixed by rewording.
+- `run_llm_vulnerability_review` now emits one event per lead (not a silent batch write) and
+  runs twice per scan — early (after recon, before Phase 3) and final (after Phase 3, as
+  before) — so Suspected leads appear live across the scan instead of all at once near the end.
+- Two architecture-decision requests were declined with concrete reasoning, not built: dispatching
+  LLM-proposed leads to the matching oracle-backed class driver for real confirmation (the
+  operator explicitly said no to this one before it was built), and removing the oracle gate /
+  rewriting the architecture around LLM-only detection. Every real bug found this session (7 of
+  them) was only findable because a falsifiable oracle claim existed to violate.
