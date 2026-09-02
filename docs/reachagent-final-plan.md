@@ -1,6 +1,38 @@
 # ReachAgent — Web/API Exploitation Agent
 ### Final Project Plan (July 2026)
 
+**Status: Locked — v3.1 (first v3 workstream implementations: V1 slices, V4, V7).** Changes
+from v3.0: began implementing the v3 plan's V1-V8 workstreams, one at a time, each committed
+and tested independently. **V1** (rich intent capture, partial): `ScopeGuard.from_raw` now
+parses each in/out-of-scope entry into a full `ScopeRule` (host + optional path_prefix/port/
+allowed_schemes) instead of collapsing to a bare host — an operator can write
+`target.test/admin` or `target.test:8080` directly; credential role is now a genuine
+free-form label end to end (backend no longer collapses a non-user/admin role to "user";
+the confirmation card's role field is a text input with a user/admin datalist, not a
+`<select>` that could only ever hold those two values) — `identity/store.py`'s
+`Credential.role: str` always supported this, the bug was purely at the GUI/API boundary.
+`skip_phases` was investigated and found NOT honestly buildable as originally scoped: recon
+and endpoint-mapping execute unconditionally before the `AdaptiveControlState.skipped` check
+is ever consulted, so seeding it pre-scan would silently fail to skip exactly the phase most
+likely to be requested — deferred alongside W4b rather than shipping a feature that looks
+like it works but doesn't. **V4** (cross-host credential reuse) shipped in full:
+`scan/cross_host_reuse.py` extracts high-confidence JSON-shaped credential pairs from any
+confirmed finding's own captured evidence and tries each once against every other in-scope
+host's login form, writing a new `credential_reuse` Finding on success — confirmed via this
+session's own reference-project research that none of the seven projects studied
+(Shannon/Strix/CAI/PentAGI/PentestGPT/hexstrike-ai/claude-bug-bounty) does this either.
+**V7** (multi-format report) closed: PDF (WeasyPrint) and DOCX (html2docx, chosen over
+pypandoc to avoid a system-binary dependency) exports added, both rendering FROM the
+existing self-contained HTML report rather than a separate template, wired into both export
+UIs. **V5** (Burp Suite Pro MCP) and **V8** (sandboxed command execution) were assessed and
+deliberately NOT started this pass: Burp's MCP server, live earlier this session, was no
+longer reachable when checked; V8's network containment (the one hard non-negotiable —
+scoping a sandbox's egress to only in-scope hosts without a compromised process being able
+to simply ignore a soft proxy convention) needs the same dedicated iptables/network-namespace
+verification rigor this session already reserved for other structurally risky changes, not a
+bolt-on alongside command-execution plumbing. See the living plan file for the full V1-V8
+detail and the reasoning behind each deferral.
+
 **Status: Locked — v3.0 (LLM-Autonomous Recon & Chaining — the deterministic oracle-gate
 removed).** Changes from v2.13: the operator made a final, explicit architecture decision after
 extensive session-long discussion (concrete worked examples across differential/marker/

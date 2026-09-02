@@ -651,3 +651,43 @@ new model plainly (see its own "v3 architecture change" section). Implementation
 - Not yet built (still in the v3 plan, V8): a genuinely sandboxed (container, never the
   operator's host) command-execution environment for the LLM — the one hard line already agreed
   on the separate "give it a free shell" request: real flexibility, contained blast radius.
+
+## v3: first workstream implementations — V1 slices, V4, V7 shipped; V5/V8 deliberately
+## deferred (2026-09-02)
+
+Began implementing the v3 plan's V1-V8 workstreams individually, each committed and tested on
+its own (per the plan's own "commit after each phase" convention added this session).
+
+- **V1 (rich intent capture), partial**: `ScopeGuard.from_raw` parses each in/out-of-scope
+  entry into a full `ScopeRule` (path_prefix/port/allowed_schemes, not just a bare host) — an
+  operator can now write `target.test/admin` or `target.test:8080` directly in the
+  confirmation card. Credential role is now a genuine free-form label end to end: the backend
+  no longer forces a non-user/admin role down to "user", and the confirmation card's role field
+  is a text input (with a user/admin datalist) instead of a `<select>` that structurally could
+  only ever hold those two values — `identity/store.py`'s `Credential.role: str` always
+  supported this; the bug was purely at the GUI/API boundary, fixed at both ends.
+  **`skip_phases` investigated and found not honestly buildable as scoped**: recon and
+  endpoint-mapping execute unconditionally before `AdaptiveControlState.skipped` is ever
+  consulted (verified against the real control flow), so seeding it pre-scan would silently
+  fail to skip exactly the phase most likely to be requested. Deferred alongside W4b rather
+  than ship a feature that looks like it works but doesn't.
+- **V4 (cross-host credential reuse) shipped in full**: `scan/cross_host_reuse.py` extracts
+  high-confidence JSON-shaped credential pairs from any confirmed finding's own captured
+  evidence and tries each once against every other in-scope host's login form (reusing
+  `identity.login.detect_login_forms`/`submit_login`, the same mechanism
+  `run_default_credentials` already uses on the primary host), writing a `credential_reuse`
+  Finding on success. Confirmed via this session's own reference-project research that none of
+  the seven projects studied does this either — a genuine differentiator.
+- **V7 (multi-format report) closed**: PDF (WeasyPrint) and DOCX (html2docx — chosen over
+  pypandoc specifically to avoid a system-binary dependency, even though pandoc happened to be
+  available in this environment) both render FROM the existing self-contained HTML report
+  rather than a separate template, matching the plan's "single source of truth" decision.
+- **V5 (Burp Suite Pro MCP) and V8 (sandbox) deliberately NOT started**: Burp's MCP server,
+  confirmed live earlier this session at `127.0.0.1:9876`, was no longer reachable when
+  checked for this work (connection refused) — building against a dependency that can't be
+  verified live would repeat the exact mistake this plan already flagged for the Caido/Strix
+  proxy item. V8's network containment — scoping a sandboxed container's egress to only
+  in-scope hosts, in a way a compromised/injected process can't simply bypass by ignoring a
+  soft proxy env var — needs the same dedicated iptables/network-namespace verification rigor
+  this session already reserved for other structurally risky changes (2c's prerequisite
+  thread-safety research, W4b's deferral), not a bolt-on alongside command-execution plumbing.
