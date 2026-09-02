@@ -32,6 +32,7 @@ import threading
 import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 import httpx
@@ -314,12 +315,18 @@ _TIMING_TRIALS = 10
 
 @dataclass
 class ScanEvent:
-    """One streamable event from the orchestrator → GUI (phase timeline)."""
+    """One streamable event from the orchestrator → GUI (phase timeline).
+
+    ``timestamp`` auto-populates via ``default_factory`` on every construction site
+    (15+ across the codebase) with zero call-site changes — added so the GUI's live
+    "terminal" feed can show real wall-clock time per line, not just message order.
+    """
 
     phase: str  # plan | recon | endpoints | insertion-points | payloads | verification | report
     kind: str  # info | plan | step | verdict | finding | not-applicable | error
     message: str
     details: dict[str, Any] = field(default_factory=dict)
+    timestamp: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
 
 
 def _emit(events: list[ScanEvent], phase: str, kind: str, message: str, **details: Any) -> None:
@@ -4729,6 +4736,36 @@ def scan_all_classes(
     # model receives a final bounded snapshot and may only schedule/report a
     # follow-up; it cannot alter a finding already in the graph.
     _adapt("payloads", ("report",))
+
+    # LLM-driven vulnerability review (operator-requested): a Shannon/Strix-style pass
+    # where the LLM reasons over the discovered surface (structure only, not response
+    # content — the audit trail never persists bodies) and flags what IT independently
+    # suspects, the same judgment call those reference tools make. The one difference
+    # from those tools (the whole point of keeping this addition safe): its output can
+    # only ever land in the structurally-separate Suspected/Unconfirmed tier, never
+    # `write_finding`/`run_oracle` — see scan/llm_vuln_review.py's module docstring.
+    # Fail-open, bounded to one call, only when an LLM is actually configured.
+    if require_llm:
+        try:
+            from reachagent.scan.llm_vuln_review import run_llm_vulnerability_review
+
+            new_leads = run_llm_vulnerability_review(graph=graph)
+            if new_leads:
+                _emit(
+                    events_out,
+                    "payloads",
+                    "info",
+                    f"LLM vulnerability review: {new_leads} suspected lead(s) flagged "
+                    "for manual review (not oracle-verified)",
+                )
+        except Exception as exc:  # noqa: BLE001 — advisory only, must never abort the scan
+            _emit(
+                events_out,
+                "payloads",
+                "error",
+                f"LLM vulnerability review failed: {type(exc).__name__}",
+                error_category="llm_vuln_review",
+            )
 
     driven_classes = {
         *_GENERIC_CLASSES,
