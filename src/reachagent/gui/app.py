@@ -268,7 +268,10 @@ def list_providers() -> JSONResponse:
         "name": "(server default)",
     }
     providers = [
-        {k: p.get(k, "") for k in ("id", "name", "provider", "base_url", "model", "api_style")}
+        {
+            k: p.get(k, "")
+            for k in ("id", "name", "provider", "base_url", "model", "api_style", "grunt_model")
+        }
         for p in _load_providers()
     ]
     return JSONResponse({"default": env_default, "providers": providers})
@@ -283,6 +286,10 @@ async def save_provider(payload: dict[str, Any]) -> JSONResponse:
     base_url = str(payload.get("base_url", "")).strip()
     model = str(payload.get("model", "")).strip()
     api_style = str(payload.get("api_style", "chat_completions")).strip()
+    # Per-role model tiering (v2 W6): an optional cheaper model, same account, used
+    # only for high-volume/low-stakes tuning calls (recon tool selection, class/
+    # surface-priority ordering) — never required, never affects core reasoning.
+    grunt_model = str(payload.get("grunt_model", "")).strip()
     provider_id = payload.get("id")
     if not name or not provider_type:
         return JSONResponse({"error": "name and provider are required"}, status_code=400)
@@ -306,6 +313,7 @@ async def save_provider(payload: dict[str, Any]) -> JSONResponse:
         "base_url": base_url,
         "model": model,
         "api_style": api_style,
+        "grunt_model": grunt_model,
     }
     found = False
     for i, existing in enumerate(providers):
@@ -494,6 +502,11 @@ def _resolve_llm_provider(
             "REACHAGENT_LLM_MODEL": entry.get("model", ""),
             "REACHAGENT_LLM_API_STYLE": entry.get("api_style", "chat_completions"),
         }
+        # Per-role model tiering (v2 W6): optional, only set when configured — the
+        # same "only present when actually chosen" shape as the tuning checkboxes.
+        grunt = str(entry.get("grunt_model", "")).strip()
+        if grunt:
+            named_overrides["REACHAGENT_LLM_GRUNT_MODEL"] = grunt
         return entry["provider"], named_overrides, None
     return llm_provider_raw, None, None
 

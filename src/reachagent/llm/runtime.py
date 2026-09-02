@@ -16,6 +16,7 @@ class RuntimeConfig:
     flags: frozenset[str]
     provider: str | None = None
     required: bool = False
+    grunt_model: str | None = None
 
 
 _current: ContextVar[RuntimeConfig | None] = ContextVar("reachagent_llm_runtime", default=None)
@@ -59,6 +60,18 @@ def llm_required() -> bool:
     if config is not None:
         return config.required
     return os.environ.get("REACHAGENT_LLM_REQUIRED") == "1"
+
+
+def grunt_model() -> str:
+    """Per-role model tiering (v2 W6): the cheaper model for high-volume, low-stakes
+    tuning calls (recon tool selection, class/surface-priority ordering, wordlist/
+    payload tuning), if one is configured. Empty means "use the same model as
+    everything else" — tiering is additive and optional, never required.
+    """
+    config = _current.get()
+    if config is not None and config.grunt_model:
+        return config.grunt_model
+    return os.environ.get("REACHAGENT_LLM_GRUNT_MODEL", "").strip()
 
 
 @contextmanager

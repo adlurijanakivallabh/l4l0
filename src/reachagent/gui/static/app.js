@@ -1122,6 +1122,7 @@ function openProviderForm(p) {
   $("pf-base-url").value = p ? p.base_url || "" : "";
   $("pf-model").value = p ? p.model || "" : "";
   $("pf-api-style").value = p ? p.api_style || "chat_completions" : "chat_completions";
+  $("pf-grunt-model").value = p ? p.grunt_model || "" : "";
   $("pf-api-key").value = "";
   $("prov-form-error").textContent = "";
   $("provider-form").hidden = false;
@@ -1136,6 +1137,7 @@ $("prov-save").onclick = async () => {
     base_url: $("pf-base-url").value.trim(),
     model: $("pf-model").value.trim(),
     api_style: $("pf-api-style").value,
+    grunt_model: $("pf-grunt-model").value.trim(),
     api_key: $("pf-api-key").value.trim(),
   };
   try {

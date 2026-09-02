@@ -21,7 +21,9 @@ from reachagent.scan.orchestrator import _ValidatorSeam
 def test_suspected_finding_is_stored_separately_and_never_a_finding() -> None:
     graph = ReachabilityGraph()
     graph.add_suspected_finding(
-        SuspectedFinding(vuln_class="sqli", endpoint="/login", location="user", source="oracle:sqli")
+        SuspectedFinding(
+            vuln_class="sqli", endpoint="/login", location="user", source="oracle:sqli"
+        )
     )
     assert len(graph.suspected_findings()) == 1
     assert graph.findings() == []  # the guarantee: never leaks into confirmed
@@ -40,8 +42,12 @@ def test_seam_record_suspected_writes_a_suspected_node_not_a_finding() -> None:
     graph = ReachabilityGraph()
     seam = _ValidatorSeam(graph)
     seam.record_suspected(
-        "nosqli", endpoint="/api/users", location="filter", source="oracle:nosqli",
-        reason="oracle_tested_no_confirmation", severity="high",
+        "nosqli",
+        endpoint="/api/users",
+        location="filter",
+        source="oracle:nosqli",
+        reason="oracle_tested_no_confirmation",
+        severity="high",
     )
     assert graph.findings() == []
     suspected = graph.suspected_findings()
@@ -55,8 +61,11 @@ def test_report_renders_a_separate_suspected_section() -> None:
     graph = ReachabilityGraph()
     graph.add_suspected_finding(
         SuspectedFinding(
-            vuln_class="command_injection", endpoint="/ping", location="host",
-            source="signal-gated-tool", reason="scanner_claim_unverified",
+            vuln_class="command_injection",
+            endpoint="/ping",
+            location="host",
+            source="signal-gated-tool",
+            reason="scanner_claim_unverified",
         )
     )
     md = render_professional_report_markdown(graph)
@@ -78,8 +87,12 @@ def test_persistence_round_trip_preserves_suspected_findings(tmp_path: Path) -> 
     graph = ReachabilityGraph()
     graph.add_suspected_finding(
         SuspectedFinding(
-            vuln_class="ldap_injection", endpoint="/auth", location="cn",
-            source="oracle:ldap_injection", reason="oracle_tested_no_confirmation", severity="high",
+            vuln_class="ldap_injection",
+            endpoint="/auth",
+            location="cn",
+            source="oracle:ldap_injection",
+            reason="oracle_tested_no_confirmation",
+            severity="high",
         )
     )
     path = tmp_path / "state.json"

@@ -38,7 +38,7 @@ def test_recon_tuning_selects_compatible_provider(
             "filter_codes": "200,204,301,302,307,401,403",
         }
     )
-    monkeypatch.setattr(live_tuning, "build_openai_compatible_client", lambda: adapter)
+    monkeypatch.setattr(live_tuning, "build_openai_compatible_client", lambda **_kw: adapter)
     choice = live_tuning.propose_recon_tuning({"target": "https://example.test"})
     assert choice.wordlist_path.endswith("dirb/common.txt")
     assert adapter.prompts
@@ -48,7 +48,7 @@ def test_recon_profile_selects_compatible_provider(
     compatible_provider: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     adapter = _FakeJSONClient({"profile_name": "api_target"})
-    monkeypatch.setattr(live_tuning, "build_openai_compatible_client", lambda: adapter)
+    monkeypatch.setattr(live_tuning, "build_openai_compatible_client", lambda **_kw: adapter)
     choice = live_tuning.propose_recon_profile({"target": "https://example.test"})
     assert choice is live_tuning.RECON_PROFILES["api_target"]
     assert adapter.prompts
@@ -58,13 +58,15 @@ def test_vuln_and_payload_phases_select_compatible_provider(
     compatible_provider: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     vuln_adapter = _FakeJSONClient({"vuln_classes": ["sqli", "xss_reflected"]})
-    monkeypatch.setattr(vuln_tuning, "build_openai_compatible_client", lambda: vuln_adapter)
+    monkeypatch.setattr(vuln_tuning, "build_openai_compatible_client", lambda **_kw: vuln_adapter)
     vuln_choice = vuln_tuning.propose_vuln_targets({"method": "GET"})
     assert vuln_choice.vuln_classes == ("sqli", "xss_reflected")
     assert vuln_adapter.prompts
 
     payload_adapter = _FakeJSONClient({"payload_refs": ["ref-b", "ref-a"]})
-    monkeypatch.setattr(payload_tuning, "build_openai_compatible_client", lambda: payload_adapter)
+    monkeypatch.setattr(
+        payload_tuning, "build_openai_compatible_client", lambda **_kw: payload_adapter
+    )
     payload_choice = payload_tuning.propose_payload_choice(
         {"sink": "sql"}, "sqli", ["ref-a", "ref-b"]
     )
@@ -101,6 +103,6 @@ def test_provider_failure_keeps_existing_safe_fallback(
             raise RuntimeError("provider unavailable")
 
     adapter = _FailingAdapter({})
-    monkeypatch.setattr(vuln_tuning, "build_openai_compatible_client", lambda: adapter)
+    monkeypatch.setattr(vuln_tuning, "build_openai_compatible_client", lambda **_kw: adapter)
     choice = vuln_tuning.propose_vuln_targets({"method": "GET"})
     assert choice.vuln_classes == vuln_tuning._SAFE_DEFAULT_CLASSES

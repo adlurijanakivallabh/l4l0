@@ -332,3 +332,18 @@ browser recon, attack-path chaining (W17), app-domain inference (W18), LLM-autho
   pattern) and a test-design flaw (the first mock target granted the derived identity
   access unconditionally, leaving no genuine bypass shape for the auth-bypass oracle to
   confirm — fixed by giving the admin-authenticated path its own two-layer bypass shape).
+
+## v2 Capability-Expansion — W6: per-role model tiering (shipped 2026-09-01)
+
+- `build_openai_compatible_client(tier="core"|"grunt")` — additive, default "core" is
+  byte-for-byte the old behavior. "grunt" resolves optional `REACHAGENT_LLM_GRUNT_MODEL`
+  (same account, cheaper model) for high-volume/low-stakes calls: `rank_vuln_classes` +
+  all 6 recon tuning helpers. Core reasoning (chat, phase-decision advisor, report
+  narrative) deliberately untiered by design.
+- GUI named-provider config gains optional `grunt_model`, threaded through the existing
+  named_overrides env-application mechanism — no new plumbing.
+- Disclosed limit: the recon per-step tool-selection loop shares one client with the
+  upfront strategic plan call (`llm/planner.py::build_planner_client`) — splitting that
+  safely needs more surgery than fit this increment; left untiered, not silently skipped.
+- Housekeeping: fixed 2 pre-existing ruff line-length violations (test files) that had
+  slipped past an earlier commit's `src/`-only ruff check.

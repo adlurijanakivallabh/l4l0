@@ -168,7 +168,7 @@ def propose_vuln_targets(
         if client is not None:
             tuner = client
         else:
-            compatible = build_openai_compatible_client()
+            compatible = build_openai_compatible_client(tier="grunt")
             if compatible is None:
                 raise RuntimeError("no LLM provider configured for vuln-class tuning")
             tuner = OpenAIVulnClient(client=compatible)

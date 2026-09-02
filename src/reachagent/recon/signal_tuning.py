@@ -64,7 +64,7 @@ class OpenAISignalToolClient:
     ) -> dict[str, object]:
         from reachagent.llm.client import build_openai_compatible_client, extract_json_object
 
-        client = build_openai_compatible_client()
+        client = build_openai_compatible_client(tier="grunt")
         if client is None:
             raise RuntimeError("no LLM provider configured")
         goal = operator_prompt[:500] if operator_prompt else "general coverage"

@@ -153,7 +153,7 @@ class OpenAISurfaceClient:
     ) -> dict[str, object]:
         from reachagent.llm.client import build_openai_compatible_client
 
-        client = build_openai_compatible_client()
+        client = build_openai_compatible_client(tier="grunt")
         if client is None:
             raise RuntimeError("no LLM provider configured")
         lines = [

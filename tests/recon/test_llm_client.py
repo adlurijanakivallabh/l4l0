@@ -262,6 +262,55 @@ def test_factory_returns_none_for_unset_provider(monkeypatch: pytest.MonkeyPatch
     client.close()
 
 
+def test_grunt_tier_uses_the_configured_grunt_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    """v2 W6: per-role model tiering. tier='grunt' with a configured grunt model
+    overrides ONLY the model — same provider/key/base_url."""
+    monkeypatch.setenv("REACHAGENT_LLM_PROVIDER", "deepseek")
+    monkeypatch.setenv("REACHAGENT_DEEPSEEK_API_KEY", "test-key")
+    monkeypatch.setenv("REACHAGENT_DEEPSEEK_MODEL", "deepseek-chat")
+    monkeypatch.setenv("REACHAGENT_LLM_GRUNT_MODEL", "deepseek-cheap")
+    client = build_openai_compatible_client(tier="grunt")
+    assert client is not None
+    try:
+        assert client.model == "deepseek-cheap"
+        assert client.provider == "deepseek"
+    finally:
+        client.close()
+
+
+def test_core_tier_ignores_the_grunt_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("REACHAGENT_LLM_PROVIDER", "deepseek")
+    monkeypatch.setenv("REACHAGENT_DEEPSEEK_API_KEY", "test-key")
+    monkeypatch.setenv("REACHAGENT_DEEPSEEK_MODEL", "deepseek-chat")
+    monkeypatch.setenv("REACHAGENT_LLM_GRUNT_MODEL", "deepseek-cheap")
+    client = build_openai_compatible_client()  # default tier="core"
+    assert client is not None
+    try:
+        assert client.model == "deepseek-chat"
+    finally:
+        client.close()
+
+
+def test_grunt_tier_with_no_grunt_model_configured_behaves_like_core(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("REACHAGENT_LLM_PROVIDER", "deepseek")
+    monkeypatch.setenv("REACHAGENT_DEEPSEEK_API_KEY", "test-key")
+    monkeypatch.setenv("REACHAGENT_DEEPSEEK_MODEL", "deepseek-chat")
+    monkeypatch.delenv("REACHAGENT_LLM_GRUNT_MODEL", raising=False)
+    client = build_openai_compatible_client(tier="grunt")
+    assert client is not None
+    try:
+        assert client.model == "deepseek-chat"  # tiering is additive, never required
+    finally:
+        client.close()
+
+
+def test_unknown_tier_raises() -> None:
+    with pytest.raises(ValueError, match="tier must be"):
+        build_openai_compatible_client(tier="ultra")  # type: ignore[arg-type]
+
+
 def test_provider_preflight_requires_a_provider(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("REACHAGENT_LLM_PROVIDER", raising=False)
     with pytest.raises(RuntimeError, match="no LLM provider configured"):

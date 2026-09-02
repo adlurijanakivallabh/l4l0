@@ -382,13 +382,24 @@ def build_openai_compatible_client(
     *,
     provider: str | None = None,
     transport: httpx.BaseTransport | None = None,
+    tier: str = "core",
 ) -> OpenAICompatibleClient | None:
     """Build the adapter only when the env explicitly selects a compatible provider.
 
     Returning ``None`` for an unset provider lets the caller apply its own
     provider-neutral fallback behavior instead of crashing.
-    """
 
+    ``tier`` (v2 W6, per-role model tiering): ``"core"`` (default) resolves the model
+    exactly as before — untiered callers (the chat/ask persona, phase-boundary strategic
+    decisions, the report narrative) are unaffected. ``"grunt"`` is for high-volume,
+    low-stakes tuning calls (recon tool selection, class/surface-priority ordering,
+    payload/wordlist tuning): if an operator configured a cheaper
+    ``REACHAGENT_LLM_GRUNT_MODEL``, that model overrides — same provider/key/base_url,
+    just a different model string on the same account. No grunt model configured →
+    identical behavior to ``"core"`` (tiering is additive, never required).
+    """
+    if tier not in ("core", "grunt"):
+        raise ValueError(f"tier must be 'core' or 'grunt', got {tier!r}")
     if provider is None:
         from reachagent.llm.runtime import selected_provider
 
@@ -396,7 +407,12 @@ def build_openai_compatible_client(
     selected = provider.strip().lower()
     if not selected:
         return None
-    return OpenAICompatibleClient(provider=selected, transport=transport)
+    model_override = None
+    if tier == "grunt":
+        from reachagent.llm.runtime import grunt_model
+
+        model_override = grunt_model() or None
+    return OpenAICompatibleClient(provider=selected, model=model_override, transport=transport)
 
 
 def require_provider_config(provider: str | None = None) -> None:

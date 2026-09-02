@@ -79,7 +79,7 @@ class OpenAITransportClient:
     ) -> dict[str, object]:
         from reachagent.llm.client import build_openai_compatible_client, extract_json_object
 
-        client = build_openai_compatible_client()
+        client = build_openai_compatible_client(tier="grunt")
         if client is None:
             raise RuntimeError("no LLM provider configured")
         sig_text = "\n".join(f"  {k}: {v}" for k, v in sorted(signals.items()))

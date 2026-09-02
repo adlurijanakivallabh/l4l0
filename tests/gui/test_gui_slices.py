@@ -887,7 +887,9 @@ def test_ask_returns_real_llm_answer_and_steers_active_scan(
         "named_overrides": None,
     }
     try:
-        r = TestClient(app).post(f"/api/scan/{scan_id}/ask", json={"message": "what have you found?"})
+        r = TestClient(app).post(
+            f"/api/scan/{scan_id}/ask", json={"message": "what have you found?"}
+        )
         assert r.status_code == 200
         body = r.json()
         assert body["answer"] == "You have 1 confirmed finding so far."
@@ -951,7 +953,10 @@ def test_ask_answers_after_completion_without_steering(monkeypatch: pytest.Monke
     try:
         r = TestClient(app).post(f"/api/scan/{scan_id}/ask", json={"message": "explain finding 1"})
         assert r.status_code == 200
-        assert r.json() == {"answer": "That finding was an SQL injection on /login.", "steered": False}
+        assert r.json() == {
+            "answer": "That finding was an SQL injection on /login.",
+            "steered": False,
+        }
     finally:
         _scans.pop(scan_id, None)
 
@@ -1005,8 +1010,11 @@ def test_scan_snapshot_exposes_suspected_tier_separate_from_findings() -> None:
     graph = ReachabilityGraph()
     graph.add_suspected_finding(
         SuspectedFinding(
-            vuln_class="sqli", endpoint="/login", location="user",
-            source="signal-gated-tool", reason="scanner_claim_unverified",
+            vuln_class="sqli",
+            endpoint="/login",
+            location="user",
+            source="signal-gated-tool",
+            reason="scanner_claim_unverified",
         )
     )
     scan_id = "suspected-slice"
@@ -1070,3 +1078,99 @@ def test_scan_endpoint_omits_aggressive_flag_by_default(monkeypatch: pytest.Monk
     env_overrides = captured[-2]
     assert env_overrides is None or "REACHAGENT_AGGRESSIVE" not in env_overrides
     _scans.pop(response.json()["scan_id"], None)
+
+
+def test_save_and_list_provider_round_trips_grunt_model(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,  # noqa: ANN001
+) -> None:
+    """v2 W6: the optional grunt_model field persists through save -> list, and is
+    absent (empty) when not set — never required."""
+    monkeypatch.setattr(gui_app, "_providers_path", tmp_path / "providers.json")
+    client = TestClient(app)
+    r = client.post(
+        "/api/providers",
+        json={
+            "name": "tiered-lab",
+            "provider": "openai-compatible",
+            "base_url": "https://llm.test/v1",
+            "model": "big-model",
+            "api_style": "chat_completions",
+            "api_key": "secret",
+            "grunt_model": "cheap-model",
+        },
+    )
+    assert r.status_code == 200
+    provider_id = r.json()["id"]
+
+    listed = client.get("/api/providers").json()["providers"]
+    entry = next(p for p in listed if p["id"] == provider_id)
+    assert entry["grunt_model"] == "cheap-model"
+    assert entry["model"] == "big-model"
+
+
+def test_save_provider_without_grunt_model_leaves_it_empty(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,  # noqa: ANN001
+) -> None:
+    monkeypatch.setattr(gui_app, "_providers_path", tmp_path / "providers.json")
+    client = TestClient(app)
+    r = client.post(
+        "/api/providers",
+        json={
+            "name": "untiered-lab",
+            "provider": "openai-compatible",
+            "base_url": "https://llm.test/v1",
+            "model": "big-model",
+            "api_style": "chat_completions",
+            "api_key": "secret",
+        },
+    )
+    assert r.status_code == 200
+    provider_id = r.json()["id"]
+    listed = client.get("/api/providers").json()["providers"]
+    entry = next(p for p in listed if p["id"] == provider_id)
+    assert entry["grunt_model"] == ""
+
+
+def test_resolve_named_provider_only_sets_grunt_env_override_when_configured(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,  # noqa: ANN001
+) -> None:
+    monkeypatch.setattr(gui_app, "_providers_path", tmp_path / "providers.json")
+    client = TestClient(app)
+    tiered = client.post(
+        "/api/providers",
+        json={
+            "name": "tiered",
+            "provider": "openai-compatible",
+            "base_url": "https://llm.test/v1",
+            "model": "big-model",
+            "api_style": "chat_completions",
+            "api_key": "secret",
+            "grunt_model": "cheap-model",
+        },
+    ).json()["id"]
+    untiered = client.post(
+        "/api/providers",
+        json={
+            "name": "untiered",
+            "provider": "openai-compatible",
+            "base_url": "https://llm.test/v1",
+            "model": "big-model",
+            "api_style": "chat_completions",
+            "api_key": "secret",
+        },
+    ).json()["id"]
+
+    _provider, tiered_overrides, err = gui_app._resolve_llm_provider(
+        {"llm_provider": f"named:{tiered}"}
+    )
+    assert err is None
+    assert tiered_overrides["REACHAGENT_LLM_GRUNT_MODEL"] == "cheap-model"
+
+    _provider2, untiered_overrides, err2 = gui_app._resolve_llm_provider(
+        {"llm_provider": f"named:{untiered}"}
+    )
+    assert err2 is None
+    assert "REACHAGENT_LLM_GRUNT_MODEL" not in untiered_overrides

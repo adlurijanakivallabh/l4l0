@@ -194,7 +194,7 @@ def propose_payload_choice(
         if client is not None:
             tuner = client
         else:
-            compatible = build_openai_compatible_client()
+            compatible = build_openai_compatible_client(tier="grunt")
             if compatible is None:
                 raise RuntimeError("no LLM provider configured for payload tuning")
             tuner = OpenAIPayloadClient(client=compatible)

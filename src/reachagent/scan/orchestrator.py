@@ -222,7 +222,7 @@ def rank_vuln_classes(
     try:
         from reachagent.llm.client import build_openai_compatible_client
 
-        tuner = client or build_openai_compatible_client()
+        tuner = client or build_openai_compatible_client(tier="grunt")
         if tuner is None:
             raise RuntimeError("no LLM provider configured for class-priority ranking")
         signals = _class_priority_signals(graph, operator_prompt)
