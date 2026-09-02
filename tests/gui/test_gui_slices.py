@@ -1431,6 +1431,61 @@ def test_scan_endpoint_passes_recon_depth_tuning_as_env_override(
     _scans.pop(response.json()["scan_id"], None)
 
 
+def test_scan_endpoint_passes_wordlist_size_as_env_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _stub_named_provider(monkeypatch)
+    captured: list[object] = []
+
+    async def capturing_scan(*args: object, **_kwargs: object) -> None:
+        captured.extend(args)
+
+    monkeypatch.setattr(gui_app, "_run_scan", capturing_scan)
+    response = TestClient(app).post(
+        "/api/scan",
+        json={
+            "target": "https://demo.example",
+            "in_scope": "demo.example",
+            "use_llm": True,
+            "llm_provider": "named:unit-provider",
+            "wordlist_size": "large",
+        },
+    )
+    assert response.status_code == 200
+    env_overrides = captured[-2]
+    assert env_overrides["REACHAGENT_WORDLIST_SIZE"] == "large"
+    _scans.pop(response.json()["scan_id"], None)
+
+
+def test_scan_endpoint_omits_wordlist_size_for_medium_or_invalid_values(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _stub_named_provider(monkeypatch)
+    for value in ("medium", "", "bogus"):
+        captured: list[object] = []
+
+        async def capturing_scan(
+            *args: object, _captured: list[object] = captured, **_kwargs: object
+        ) -> None:
+            _captured.extend(args)
+
+        monkeypatch.setattr(gui_app, "_run_scan", capturing_scan)
+        response = TestClient(app).post(
+            "/api/scan",
+            json={
+                "target": "https://demo.example",
+                "in_scope": "demo.example",
+                "use_llm": True,
+                "llm_provider": "named:unit-provider",
+                "wordlist_size": value,
+            },
+        )
+        assert response.status_code == 200
+        env_overrides = captured[-2]
+        assert env_overrides is None or "REACHAGENT_WORDLIST_SIZE" not in env_overrides
+        _scans.pop(response.json()["scan_id"], None)
+
+
 def test_scan_endpoint_omits_recon_depth_for_quick_or_invalid_values(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

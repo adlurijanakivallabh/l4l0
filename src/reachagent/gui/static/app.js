@@ -220,6 +220,11 @@ function renderConfirmationCard(proposal, originalMessage) {
     '<option value="full">Full (all 65535 ports)</option>' +
     '<option value="scripted">Scripted (NSE vuln scripts)</option>' +
     '</select></div>' +
+    '<div class="cc-field"><label>Content-discovery wordlist</label><select id="cc-wordlist-size">' +
+    '<option value="medium">Medium (default)</option>' +
+    '<option value="small">Small (faster)</option>' +
+    '<option value="large">Large (thorough)</option>' +
+    '</select></div>' +
     '<div class="cc-field"><label>Repo path (white-box, optional)</label><input id="cc-repo-path" type="text" placeholder="/path/to/local/repo"></div>' +
     '</div>' +
     '<div><label style="display:block;margin:0 0 7px;color:var(--muted);font-size:10px;font-weight:650">Recon tuning (opt-in)</label>' +
@@ -287,6 +292,7 @@ async function confirmAndStart(card, bubble, originalMessage) {
     concurrent_specialists: card.querySelector("#cc-tune-concurrent").checked,
     aggressive: card.querySelector("#cc-tune-aggressive").checked,
     recon_depth: card.querySelector("#cc-recon-depth").value,
+    wordlist_size: card.querySelector("#cc-wordlist-size").value,
     recon_depth_tuning: card.querySelector("#cc-tune-depth").checked,
     repo_path: card.querySelector("#cc-repo-path").value.trim() || null,
   };

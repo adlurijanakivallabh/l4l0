@@ -1,10 +1,20 @@
 """Preferred wordlist resolver — best-available on-disk default (§9 audit).
 
-Per-tool REACHAGENT_*_WORDLIST env wins; otherwise prefer raft-medium-dirs /
-directory-list-2.3-medium when on-disk, else fall back to dirb/common.txt.
-SecLists / OneListForAll vendored elsewhere (~/SecLists, /usr/share/seclists)
-— no payload vendoring here, just path preference. ponytail: Path.exists
-check per-invocation; one-liner helper, not a config file.
+Per-tool REACHAGENT_*_WORDLIST env wins outright (an explicit path is never
+second-guessed). Otherwise, for "directory" purpose only (content-discovery
+tools — gobuster/ffuf/feroxbuster/dirb), a size tier (v3 V2:
+REACHAGENT_WORDLIST_SIZE, "medium" unset/invalid = today's exact prior
+default, never changed) and an optional technology hint
+(REACHAGENT_WORDLIST_TECH, e.g. "wordpress") narrow the on-disk candidate
+list — both validated against a fixed, curated table of REAL vendored
+SecLists paths, never an arbitrary path string. Falls back to dirb/common.txt
+if nothing on the candidate list exists on disk.
+
+Disclosed scope (v3 V2): this is the resolver half only — an operator-set
+floor via these two env vars. The autonomous half (an LLM deciding to
+escalate size/tech after a first pass yields little, mirroring
+recon/depth_escalation.py's nmap pattern) is a deliberately deferred
+follow-up, not built this pass.
 """
 
 from __future__ import annotations
@@ -33,6 +43,37 @@ _PURPOSE_CANDIDATES = {
     ),
 }
 
+# v3 V2: size tiers, all real vendored SecLists/DirBuster paths — "medium" is
+# exactly _DIRECTORY_CANDIDATES (today's prior, unchanged default).
+_SIZE_CANDIDATES: dict[str, tuple[str, ...]] = {
+    "small": (
+        "/usr/share/seclists/Discovery/Web-Content/raft-small-directories.txt",
+        "/usr/share/seclists/Discovery/Web-Content/DirBuster-2007_directory-list-2.3-small.txt",
+    ),
+    "medium": _DIRECTORY_CANDIDATES,
+    "large": (
+        "/usr/share/seclists/Discovery/Web-Content/raft-large-directories.txt",
+        "/usr/share/seclists/Discovery/Web-Content/DirBuster-2007_directory-list-2.3-big.txt",
+        "/usr/share/wordlists/dirbuster/directory-list-2.3-big.txt",
+    ),
+}
+
+# v3 V2: technology-specific wordlists, keyed off the same fingerprint labels
+# Host.technology/Endpoint.technology already use elsewhere in this codebase.
+# A bounded, curated table — an unrecognized hint is ignored, never turned
+# into an arbitrary path lookup.
+_TECH_CANDIDATES: dict[str, tuple[str, ...]] = {
+    "wordpress": ("/usr/share/seclists/Discovery/Web-Content/CMS/wordpress.fuzz.txt",),
+    "joomla": ("/usr/share/seclists/Discovery/Web-Content/CMS/joomla-plugins.fuzz.txt",),
+}
+
+
+def _first_existing(candidates: tuple[str, ...]) -> str | None:
+    for cand in candidates:
+        if _Path(cand).exists():
+            return cand
+    return None
+
 
 def preferred_wordlist(
     env_var: str,
@@ -43,8 +84,15 @@ def preferred_wordlist(
     explicit = os.environ.get(env_var)
     if explicit:
         return explicit
-    candidates = _X8_CANDIDATES if x8 else _PURPOSE_CANDIDATES.get(purpose, _DIRECTORY_CANDIDATES)
-    for cand in candidates:
-        if _Path(cand).exists():
-            return cand
-    return "/usr/share/wordlists/dirb/common.txt"
+    if purpose == "directory" and not x8:
+        tech = os.environ.get("REACHAGENT_WORDLIST_TECH", "").strip().lower()
+        tech_match = _first_existing(_TECH_CANDIDATES.get(tech, ()))
+        if tech_match:
+            return tech_match
+        size = os.environ.get("REACHAGENT_WORDLIST_SIZE", "medium").strip().lower()
+        candidates = _SIZE_CANDIDATES.get(size, _DIRECTORY_CANDIDATES)
+    else:
+        candidates = (
+            _X8_CANDIDATES if x8 else _PURPOSE_CANDIDATES.get(purpose, _DIRECTORY_CANDIDATES)
+        )
+    return _first_existing(candidates) or "/usr/share/wordlists/dirb/common.txt"

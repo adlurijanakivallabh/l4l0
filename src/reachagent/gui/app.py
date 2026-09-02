@@ -739,6 +739,11 @@ async def start_scan(payload: dict[str, Any]) -> JSONResponse:
         tuning_overrides["REACHAGENT_NMAP_WIDEN_PORTS"] = "1"
     if recon_depth == "scripted":
         tuning_overrides["REACHAGENT_NMAP_SCRIPT_CATEGORY"] = "vuln"
+    # Content-discovery wordlist size (v3 V2 follow-up): same closed, validated
+    # set discipline — see recon/tools/_wordlist.py::preferred_wordlist.
+    wordlist_size = str(payload.get("wordlist_size", "") or "").strip().lower()
+    if wordlist_size in ("small", "large"):
+        tuning_overrides["REACHAGENT_WORDLIST_SIZE"] = wordlist_size
     if not target:
         return JSONResponse({"error": "target required"}, status_code=400)
     if not use_llm:
