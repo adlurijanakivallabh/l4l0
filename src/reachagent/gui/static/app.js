@@ -737,6 +737,55 @@ function buildChainRows(chains) {
 // card is created; polling never recreates an existing card (see the signature guard in
 // renderFindingsList/renderSuspectedInto below), so an operator's expanded card survives
 // every subsequent poll instead of snapping shut every ~1s.
+// Real captured proof (v2 Phase 6 Stage E1) — a bounded, already secret-scrubbed
+// response snippet an oracle captured at decision time, not just the opaque
+// evidence_ref handle string. Differential-family findings get a baseline-vs-probe
+// pair (closer to what the oracle actually decided on than a single highlight);
+// everything else gets one "Response evidence" block.
+function evidenceCodeBlock(label, text) {
+  const wrap = document.createElement("div");
+  wrap.className = "fevidence-block";
+  const b = document.createElement("b");
+  b.textContent = label;
+  const pre = document.createElement("pre");
+  pre.className = "fevidence-code";
+  pre.textContent = text;
+  wrap.append(b, pre);
+  return wrap;
+}
+
+function buildEvidenceBlock(evidence) {
+  const box = document.createElement("div");
+  if (!evidence) return box;
+  box.className = "fevidence";
+  if (evidence.baseline_body_projection || evidence.probe_body_projection) {
+    if (evidence.baseline_body_projection) {
+      box.appendChild(evidenceCodeBlock("Baseline response", evidence.baseline_body_projection));
+    }
+    if (evidence.probe_body_projection) {
+      box.appendChild(evidenceCodeBlock("Probe response", evidence.probe_body_projection));
+    }
+  } else if (evidence.body_projection) {
+    box.appendChild(evidenceCodeBlock("Response evidence", evidence.body_projection));
+  }
+  if (evidence.headers && evidence.headers.length) {
+    const hdrs = document.createElement("div");
+    hdrs.className = "fevidence-headers";
+    evidence.headers.forEach(([name, value]) => {
+      const row = document.createElement("div");
+      row.className = "fevidence-header-row";
+      const n = document.createElement("code");
+      n.textContent = name;
+      const v = document.createElement("span");
+      v.textContent = value;
+      row.append(n, v);
+      hdrs.appendChild(row);
+    });
+    box.appendChild(hdrs);
+  }
+  return box;
+}
+
 function buildFindingCard(f, index) {
   const card = document.createElement("details");
   card.className = "fcard " + (f.severity || "");
@@ -775,6 +824,8 @@ function buildFindingCard(f, index) {
   addMetaRow(meta, "Status", f.status);
   if (f.chain_precondition) addMetaRow(meta, "Chain", f.chain_precondition);
   body.appendChild(meta);
+
+  body.appendChild(buildEvidenceBlock(f.evidence));
 
   if (f.remediation) {
     const rem = document.createElement("div");
