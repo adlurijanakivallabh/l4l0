@@ -691,3 +691,43 @@ its own (per the plan's own "commit after each phase" convention added this sess
   soft proxy env var — needs the same dedicated iptables/network-namespace verification rigor
   this session already reserved for other structurally risky changes (2c's prerequisite
   thread-safety research, W4b's deferral), not a bolt-on alongside command-execution plumbing.
+
+## v3: nmap depth escalation — manual floor + autonomous LLM layer (2026-09-02)
+
+Two independently-settable, validated nmap depth dimensions (`REACHAGENT_NMAP_WIDEN_PORTS`,
+`REACHAGENT_NMAP_SCRIPT_CATEGORY`) replace what was initially built as a flat quick/full/
+scripted enum. Two ways either gets set:
+
+- **Manual floor**: the GUI's "Nmap recon depth" select, using the same os.environ
+  tuning-flag mechanism every sibling opt-in layer (aggressive/surface_tuning/...) already
+  uses — a pre-existing, disclosed concurrency limitation this doesn't newly introduce.
+- **Autonomous layer** (new `recon/depth_escalation.py`, flag-gated
+  `REACHAGENT_RECON_DEPTH_TUNING`, a new GUI checkbox): after nmap's first pass, an LLM
+  reads the discovered Host facts and decides whether widening ports and/or an NSE script
+  category is warranted, mirroring `signal_tuning.py`'s exact propose/validate shape.
+  `apply_floor()` composes this with the manual floor: `widen_ports` is a monotonic OR;
+  `script_category` is NOT linearly ordered, so an operator-required category is
+  authoritative and the LLM may only add one the operator left unset, never substitute a
+  different one for one the operator specifically asked for.
+- Wired into `scan/entrypoint.py::scan_target`'s existing per-tool dispatch loop via a new
+  `_maybe_escalate_nmap_depth` helper, only after nmap's live (non-fixture, non-dry-run)
+  first pass — a second `runner.run()` call with the escalated env vars temporarily set and
+  always restored (even on failure), fail-open throughout.
+
+**Operator feedback mid-implementation, addressed directly and saved to memory**
+(`feedback-operator-input-is-a-floor-not-ceiling`): the first cut shipped only the manual
+GUI preset with no autonomous decision behind it — correctly called out as building the
+passive "1%" (a setting the operator has to remember to flip) instead of the active "99%"
+(the LLM deciding at scan time from live signals) the plan's own "LLM-controlled recon
+depth" language actually called for. Also addressed: "give the LLM freedom to choose its
+own flags" — real freedom, but bounded to a vetted-safe NSE category allowlist (`default`/
+`discovery`/`version`/`vuln`/`safe`), independently re-validated in `nmap.py` itself
+(defense in depth, not just the proposer) so a disruptive category (`intrusive`/`exploit`/
+`dos`/`malware`/`brute`/`auth` — nmap's own docs describe these as capable of crashing,
+locking out accounts, or actively exploiting a target) can never reach subprocess argv even
+if proposed. Both readings — floor-not-ceiling, and bounded-not-arbitrary flag freedom — are
+recorded as standing principles for every future v3 workstream, not just this one.
+
+24 new tests across 3 files, all git-stash-verified. Verified live in a browser: both new
+GUI controls render and wire correctly, zero console errors. Full recon+scan+gui suite: 150
+passed.

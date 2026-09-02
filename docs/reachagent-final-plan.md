@@ -1,6 +1,28 @@
 # ReachAgent — Web/API Exploitation Agent
 ### Final Project Plan (July 2026)
 
+**Status: Locked — v3.2 (V2 shipped: nmap depth escalation, manual floor + autonomous LLM
+layer).** Changes from v3.1: `recon/tools/nmap.py` gained two independently-settable depth
+dimensions (`REACHAGENT_NMAP_WIDEN_PORTS`, `REACHAGENT_NMAP_SCRIPT_CATEGORY`, the latter
+validated against a vetted-safe allowlist — `default`/`discovery`/`version`/`vuln`/`safe`,
+excluding nmap's own disruptive categories `intrusive`/`exploit`/`dos`/`malware`/`brute`/
+`auth`). Set two ways: a manual GUI floor (the "Nmap recon depth" select), and a new
+autonomous layer (`recon/depth_escalation.py`, flag-gated `REACHAGENT_RECON_DEPTH_TUNING`)
+where an LLM reads nmap's first-pass Host facts and decides whether a deeper follow-up pass
+is warranted, composed with the manual floor via `apply_floor()` (a monotonic OR for
+port-widening; the operator's own script-category choice is authoritative when set, since
+categories aren't linearly ordered). Wired into `scan/entrypoint.py`'s per-tool dispatch
+loop via `_maybe_escalate_nmap_depth`, fail-open throughout.
+
+**Standing operating principle recorded this round** (operator, mid-implementation): an
+explicit operator setting is a FLOOR the agent must honor, never a CEILING that caps
+autonomous decision-making beyond it — the first cut of V2 (manual-only) was correctly
+called out as shipping the passive 1%, not the active 99% "LLM-controlled" language in this
+plan actually calls for. Also: genuine flag/tool-command freedom for the LLM is intended
+throughout this plan, but bounded to a vetted-safe, independently-revalidated allowlist per
+tool — never a raw flag/script-name string reaching a spawned process. Both principles apply
+to every future v3 workstream, not just V2 — see the living plan file's own entry on this.
+
 **Status: Locked — v3.1 (first v3 workstream implementations: V1 slices, V4, V7).** Changes
 from v3.0: began implementing the v3 plan's V1-V8 workstreams, one at a time, each committed
 and tested independently. **V1** (rich intent capture, partial): `ScopeGuard.from_raw` now
