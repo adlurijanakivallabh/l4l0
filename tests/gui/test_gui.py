@@ -170,6 +170,20 @@ def test_export_pdf_renders_from_the_same_html_report() -> None:
     assert r.content.startswith(b"%PDF-")
 
 
+def test_export_docx_renders_from_the_same_html_report() -> None:
+    """v3 V7: DOCX is rendered FROM the existing self-contained HTML report via
+    html2docx (pure-Python, no system pandoc dependency) — same source as pdf."""
+    sid = _seeded_export_scan()
+    r = TestClient(app).get(f"/api/scan/{sid}/export?format=docx")
+    assert r.status_code == 200
+    assert (
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        in r.headers["content-type"]
+    )
+    assert "attachment" in r.headers["content-disposition"]
+    assert r.content.startswith(b"PK\x03\x04")  # a .docx is a zip archive
+
+
 def test_export_unknown_format_defaults_markdown() -> None:
     sid = _seeded_export_scan()
     r = TestClient(app).get(f"/api/scan/{sid}/export?format=xml")

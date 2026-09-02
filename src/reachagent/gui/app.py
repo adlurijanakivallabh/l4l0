@@ -1793,6 +1793,17 @@ def export_report(scan_id: str, format: str = "markdown") -> Response:
 
             html_body = _report_html(report_md, graph, audit, context=context)
             body, media, ext = _WeasyHTML(string=html_body).write_pdf(), "application/pdf", "pdf"
+        elif normalized == "docx":
+            # Same source HTML as the pdf branch — html2docx is pure-Python (no
+            # system pandoc dependency), so this stays portable across deploys.
+            from html2docx import html2docx as _html2docx
+
+            html_body = _report_html(report_md, graph, audit, context=context)
+            body, media, ext = (
+                _html2docx(html_body, title="ReachAgent report").getvalue(),
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                "docx",
+            )
         else:
             body, media, ext = sanitize_report_markdown(report_md), "text/markdown", "md"
     return Response(
