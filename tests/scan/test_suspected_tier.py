@@ -9,9 +9,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from reachagent.execution.audit import AuditLog
 from reachagent.graph.chain_solver import ChainSolver
-from reachagent.graph.nodes import SuspectedFinding
+from reachagent.graph.nodes import Finding, FindingStatus, SuspectedFinding
 from reachagent.graph.persistence import dump_graph, load_graph
 from reachagent.graph.store import ReachabilityGraph
 from reachagent.report.professional import render_professional_report_markdown
@@ -103,3 +105,58 @@ def test_persistence_round_trip_preserves_suspected_findings(tmp_path: Path) -> 
     assert s.vuln_class == "ldap_injection"
     assert s.reason == "oracle_tested_no_confirmation"
     assert loaded.findings() == []
+
+
+def test_confirmed_severity_summary_excludes_suspected_findings() -> None:
+    """v2 W16 adversarial review: a mixed graph (one confirmed + one suspected) must
+    count the suspected lead nowhere in the confirmed severity/class summary table."""
+    graph = ReachabilityGraph()
+    graph.add_finding(
+        Finding(
+            vuln_class="sqli",
+            severity="critical",
+            oracle_used="differential",
+            evidence_ref="ev1",
+            status=FindingStatus.CONFIRMED_VIOLATION,
+        )
+    )
+    graph.add_suspected_finding(
+        SuspectedFinding(
+            vuln_class="nosqli",
+            endpoint="/api/x",
+            location="filter",
+            source="oracle:nosqli",
+            reason="oracle_tested_no_confirmation",
+            severity="critical",
+        )
+    )
+    md = render_professional_report_markdown(graph)
+    # The summary table's "Critical" row must count only the one confirmed sqli finding,
+    # not the suspected nosqli lead sharing the same severity.
+    summary, _, _rest = md.partition("Suspected / Unconfirmed")
+    assert "| Critical | 1 |" in summary
+    assert "nosqli" not in summary  # the suspected lead never reaches the confirmed portion
+
+
+def test_add_enables_rejects_a_suspected_finding_id() -> None:
+    """A SuspectedFinding id must never satisfy `_require_finding` — chain edges
+    (`enables`/`derived_credential`) only ever originate from a committed Finding."""
+    graph = ReachabilityGraph()
+    real_id = graph.add_finding(
+        Finding(
+            vuln_class="sqli",
+            severity="high",
+            oracle_used="differential",
+            evidence_ref="ev1",
+            status=FindingStatus.CONFIRMED_VIOLATION,
+        )
+    )
+    suspected_id = graph.add_suspected_finding(
+        SuspectedFinding(vuln_class="nosqli", endpoint="/x", location="q", source="oracle:nosqli")
+    )
+    with pytest.raises(ValueError, match="not a committed Finding"):
+        graph.add_enables(suspected_id, real_id)
+    with pytest.raises(ValueError, match="not a committed Finding"):
+        graph.add_enables(real_id, suspected_id)
+    with pytest.raises(ValueError, match="not a committed Finding"):
+        graph.add_derived_credential(suspected_id, "some-spawned-node")

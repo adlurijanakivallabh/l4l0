@@ -146,3 +146,75 @@ def test_planner_retries_transient_empty_model_response() -> None:
     result = plan_execution(_context(), FlakyClient())
     assert calls == 2
     assert result.phases[0].name == "recon"
+
+
+def _plan_with_misplaced_tool() -> dict[str, object]:
+    """A live-verification finding (v2 W16): two different real providers both
+    put a recon-phase tool under a later phase on their first attempt. The
+    fixer prompt must tell the model where each rejected tool actually belongs
+    — repeating only the raw validation-error text was not enough for either
+    model to self-correct within the 3 allotted fixer rounds."""
+    plan = _plan()
+    plan["phases"][2]["tools"] = ["katana"]  # katana is catalog phase "recon", not
+    # "insertion-points" (phases[2])
+    return plan
+
+
+def test_planner_fixer_prompt_names_each_tools_required_phase() -> None:
+    """The fix prompt sent after a rejection must state katana's REQUIRED phase
+    (recon) explicitly — not just repeat the validation-error text — so a model
+    that doesn't recall the full catalog can still self-correct."""
+    seen_prompts: list[str] = []
+
+    class RecordingClient:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def propose_json(self, prompt: str, *, max_tokens: int = 512) -> dict[str, object]:
+            seen_prompts.append(prompt)
+            self.calls += 1
+            if self.calls == 1:
+                return _plan_with_misplaced_tool()
+            return _plan()  # gives up trying to fix it itself; test only inspects the prompt
+
+    plan_execution(_context(), RecordingClient())
+    fix_prompt = seen_prompts[1]
+    assert '"katana": "recon"' in fix_prompt
+    assert "REQUIRED phase" in fix_prompt
+
+
+def test_planner_fixer_loop_recovers_once_told_the_correct_phase() -> None:
+    """A client that only self-corrects once it has been told katana's real
+    phase — proving the reminder actually lets the fixer loop converge, not
+    just that the prompt text looks right."""
+    calls = 0
+
+    class SelfCorrectingClient:
+        def propose_json(self, prompt: str, *, max_tokens: int = 512) -> dict[str, object]:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                return _plan_with_misplaced_tool()
+            assert '"katana": "recon"' in prompt  # only fixes it because it was told
+            return _plan()
+
+    result = plan_execution(_context(), SelfCorrectingClient())
+    assert calls == 2
+    assert result.phases[0].tools == ("httpx", "katana")
+
+
+def test_planner_raises_the_last_validation_error_after_exhausting_fixer_attempts() -> None:
+    """A model that never listens still fails closed — no silent fallback plan,
+    exactly the "provider errors propagate" design this planning boundary relies
+    on (scan/orchestrator.py's one model-controlled plan boundary)."""
+    calls = 0
+
+    class StubbornClient:
+        def propose_json(self, prompt: str, *, max_tokens: int = 512) -> dict[str, object]:
+            nonlocal calls
+            calls += 1
+            return _plan_with_misplaced_tool()
+
+    with pytest.raises(PlanValidationError, match="not valid in phase"):
+        plan_execution(_context(), StubbornClient())
+    assert calls == 4  # 1 initial + 3 fixer attempts, all rejected

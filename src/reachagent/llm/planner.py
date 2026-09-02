@@ -835,6 +835,7 @@ def plan_execution(
                 raise
     if raw is None:
         raise RuntimeError("planner returned no proposal")
+    tool_phases = {entry.name: entry.phase for entry in entries}
     last_error: PlanValidationError | None = None
     for _attempt in range(3):
         try:
@@ -844,10 +845,14 @@ def plan_execution(
             fix_prompt = (
                 "Your previous plan JSON was rejected by strict validation.\n"
                 f"VALIDATION ERROR: {exc}\n\n"
-                f"YOUR PREVIOUS (REJECTED) JSON:\n{json.dumps(raw)[:4000]}\n\n\n"
-                "Fix it with MINIMAL changes preserving your original intent. "
-                "Same rules as before: only catalog tool names, only allowlisted "
-                "phase/class/profile/payload values. Return ONE corrected JSON object only."
+                f"YOUR PREVIOUS (REJECTED) JSON:\n{json.dumps(raw)[:4000]}\n\n"
+                "Each tool's REQUIRED phase, from the catalog (a tool may ONLY appear "
+                f"under its own phase, or under 'surface' if its phase is 'recon'): "
+                f"{json.dumps(tool_phases, sort_keys=True)}\n\n"
+                "Fix it with MINIMAL changes preserving your original intent: move each "
+                "rejected tool into its required phase above, or drop it. Same rules as "
+                "before: only catalog tool names, only allowlisted phase/class/profile/"
+                "payload values. Return ONE corrected JSON object only."
             )
             raw = client.propose_json(fix_prompt, max_tokens=4096)
     if last_error is not None:
