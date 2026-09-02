@@ -367,3 +367,18 @@ browser recon, attack-path chaining (W17), app-domain inference (W18), LLM-autho
   emitted new-endpoint events as `kind="finding"` — that's reserved for actual
   run_oracle-confirmed findings in this codebase's event vocabulary. Fixed to
   `kind="info"` before it shipped.
+
+## v2 Capability-Expansion — W12: per-host circuit breaker (shipped 2026-09-01)
+
+- Always-on Gate 1.1 in `RequestFirer.fire()`, right after scope enforcement, applying
+  to every fire (read-only included, unlike the Guardian advisor which is
+  state-changing-only). Opens per-host after 5 consecutive TRANSPORT-LEVEL failures
+  (a raised exception — connection refused/timeout/DNS), 30s cooldown, then half-open.
+- Deliberately counts ONLY transport exceptions, never an HTTP status code — a
+  401/403/404/500 is frequently the exact signal an oracle needs, not a "host is
+  down" indicator. This narrow definition is what makes an always-on default safe
+  (verified: no hermetic test raises a transport exception across the several
+  consecutive fire() calls needed to trip it).
+- Composes with, never replaces, ScopeGuard — an out-of-scope host is still refused
+  by scope first, always (verified with a dedicated test).
+- New `CircuitOpenError`, exported from `execution/__init__.py`. 6 new tests.

@@ -11,7 +11,12 @@ enforces the safety controls of §10 at call time:
 from __future__ import annotations
 
 from reachagent.execution.audit import AuditEntry, AuditLog
-from reachagent.execution.firer import FireResult, ReadOnlyFirstError, RequestFirer
+from reachagent.execution.firer import (
+    CircuitOpenError,
+    FireResult,
+    ReadOnlyFirstError,
+    RequestFirer,
+)
 from reachagent.execution.scope import OutOfScopeError, ScopeGuard, ScopeRule
 from reachagent.execution.transports import (
     TOOL_ANNOTATIONS,
@@ -27,6 +32,7 @@ from reachagent.execution.transports import (
 __all__ = [
     "AuditEntry",
     "AuditLog",
+    "CircuitOpenError",
     "FireResult",
     "OutOfScopeError",
     "ReadOnlyFirstError",

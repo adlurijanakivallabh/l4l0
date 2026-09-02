@@ -46,6 +46,20 @@ _RETRY_LIMIT = 2
 _RETRY_BACKOFF: tuple[float, ...] = (0.5, 1.0)
 _RETRY_STATUSES = frozenset({502, 503, 504})
 
+# Per-host circuit breaker (v2 W12) — composes with, never replaces, ScopeGuard: a
+# host can be perfectly in-scope and still be down/unreachable, and hammering it
+# with the scan's full remaining budget wastes time and is a poor network citizen.
+# Deliberately counts ONLY transport-level failures (a raised exception from the
+# underlying HTTPX send — connection refused, timeout, DNS failure), never an HTTP
+# status code: a 401/403/404/500 is frequently the exact signal an oracle needs, not
+# a "this host is unhealthy" indicator, so counting it would make the breaker an
+# accidental second detection mechanism. This narrow definition is also what makes
+# an always-on breaker safe by default — no hermetic MockTransport-based test raises
+# a transport-level exception across the several consecutive fire() calls needed to
+# trip it (verified against the existing transport-error tests, each firing once).
+_CIRCUIT_FAILURE_THRESHOLD = 5
+_CIRCUIT_COOLDOWN_SECONDS = 30.0
+
 
 class ReadOnlyFirstError(RuntimeError):
     """Raised when a state-changing request is attempted before the read-only
@@ -60,6 +74,15 @@ class GuardianRefusedError(RuntimeError):
 
     An add-on second opinion beside ScopeGuard, never a replacement for it —
     ScopeGuard already ran and passed by the time this can ever fire.
+    """
+
+
+class CircuitOpenError(RuntimeError):
+    """Raised when a host's per-host circuit breaker is open (v2 W12).
+
+    Composes with ScopeGuard rather than replacing it: this fires only after scope
+    has already been enforced (an out-of-scope host is refused by ScopeGuard first,
+    always). Raised before any I/O — the breaker being open means "don't even try."
     """
 
 
@@ -152,6 +175,40 @@ class RequestFirer:
         # other mutable-shared-state guards (checkpoint/clearance) rather than
         # relying on that CPython implementation detail.
         self._identity_registration_lock = threading.Lock()
+        # Per-host circuit breaker state (v2 W12): host -> (consecutive transport
+        # failures, monotonic timestamp the breaker opened until, or None if closed).
+        self._circuit_lock = threading.Lock()
+        self._circuit_state: dict[str, tuple[int, float | None]] = {}
+
+    def _circuit_check(self, host: str) -> None:
+        """Raise :class:`CircuitOpenError` if ``host``'s breaker is currently open."""
+        with self._circuit_lock:
+            failures, opened_until = self._circuit_state.get(host, (0, None))
+            if opened_until is None:
+                return
+            if time.monotonic() < opened_until:
+                raise CircuitOpenError(
+                    f"circuit open for {host!r} after {failures} consecutive transport "
+                    "failures; cooling down before further requests"
+                )
+            # Cooldown elapsed — half-open: allow one probe through, counter reset.
+            self._circuit_state[host] = (0, None)
+
+    def _circuit_record_failure(self, host: str) -> None:
+        with self._circuit_lock:
+            failures, _ = self._circuit_state.get(host, (0, None))
+            failures += 1
+            opened_until = (
+                time.monotonic() + _CIRCUIT_COOLDOWN_SECONDS
+                if failures >= _CIRCUIT_FAILURE_THRESHOLD
+                else None
+            )
+            self._circuit_state[host] = (failures, opened_until)
+
+    def _circuit_record_success(self, host: str) -> None:
+        with self._circuit_lock:
+            if host in self._circuit_state:
+                self._circuit_state[host] = (0, None)
 
     @property
     def scope(self) -> ScopeGuard:
@@ -364,6 +421,18 @@ class RequestFirer:
             self._audit.record(identity, method, target, "refused_out_of_scope")
             raise
 
+        # Gate 1.1: per-host circuit breaker (v2 W12) — a target can be perfectly
+        # in-scope and still be down; this stops the scan from burning its whole
+        # remaining budget hammering a host that keeps failing at the transport
+        # level. Applies to every fire (read-only included), unlike the Guardian
+        # advisor below (state-changing only) — a barrage of read GETs against a
+        # dead host is just as wasteful as state-changing ones.
+        try:
+            self._circuit_check(parsed.host)
+        except CircuitOpenError:
+            self._audit.record(identity, method, target, "refused_circuit_open")
+            raise
+
         read_only = self._is_read_only(method, state_changing=state_changing)
 
         # Gate 1.4: operator checkpoint ("My additions") — the whole scan's
@@ -445,10 +514,12 @@ class RequestFirer:
                 result = self._send_once(method, parsed, kwargs, client=proxy_client)
             except Exception as exc:  # noqa: BLE001 — every failed attempt must be audited
                 self._audit.record(identity, method, target, f"error:{type(exc).__name__}")
+                self._circuit_record_failure(parsed.host)
                 raise
             finally:
                 if proxy_client is not None:
                     proxy_client.close()
+            self._circuit_record_success(parsed.host)
             result = FireResult(
                 status_code=result.status_code,
                 elapsed_seconds=result.elapsed_seconds,
@@ -476,9 +547,13 @@ class RequestFirer:
                 client=proxy_client,
                 transport=transport,
             )
+        except Exception:
+            self._circuit_record_failure(parsed.host)
+            raise
         finally:
             if proxy_client is not None:
                 proxy_client.close()
+        self._circuit_record_success(parsed.host)
 
         # A successful read-only request clears this endpoint for later mutation.
         if self._read_only_clears(method, result.status_code):
