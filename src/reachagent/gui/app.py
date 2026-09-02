@@ -556,7 +556,7 @@ Return ONLY a JSON object with exactly these keys, no prose, no markdown fences:
 - "target": the base URL or hostname to test, e.g. "https://example.com" (empty string if none mentioned)
 - "in_scope": comma-separated additional in-scope hosts beyond target (empty string if none)
 - "out_of_scope": comma-separated hosts/subdomains the operator explicitly excludes, e.g. "admin.example.com, billing.example.com" (empty string if none mentioned)
-- "credentials": a JSON list of objects {{"username": "...", "password": "...", "role": "user" or "admin"}} for every login/credential pair mentioned (empty list if none)
+- "credentials": a JSON list of objects {{"username": "...", "password": "...", "role": "..."}} for every login/credential pair mentioned — "role" is usually "user" or "admin" but may be any short label the message clearly implies (e.g. "owner", "mechanic", "manager"); default to "user" if unclear (empty list if none)
 - "goal": one short sentence restating what the operator wants tested, in your own words (empty string if unclear)
 """
 
@@ -647,12 +647,15 @@ def parse_intent(payload: dict[str, Any]) -> JSONResponse:
             password = str(row.get("password", "") or "").strip()
             if not username or not password:
                 continue
-            role = str(row.get("role", "") or "user").strip().lower()
+            # v3 V1: role is a free-form identity label downstream (identity/store.py's
+            # Credential.role: str — "owner_a"/"mechanic" are real, already-used labels,
+            # not just "user"/"admin"); only empty ever falls back to "user" now.
+            role = str(row.get("role", "") or "user").strip().lower()[:40] or "user"
             credentials.append(
                 {
                     "username": username,
                     "password": password,
-                    "role": role if role in ("user", "admin") else "user",
+                    "role": role,
                 }
             )
     return JSONResponse(

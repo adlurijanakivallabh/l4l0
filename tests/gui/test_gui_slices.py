@@ -384,6 +384,38 @@ def test_parse_intent_extracts_and_normalizes_credentials(monkeypatch: pytest.Mo
     assert body["credentials"] == [{"username": "admin", "password": "admin123", "role": "admin"}]
 
 
+def test_parse_intent_preserves_a_non_user_admin_role_label(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """v3 V1: role is a free-form identity label downstream (identity/store.py's
+    Credential.role: str — real scans already use labels like "owner_a"/"mechanic"),
+    so a role the model extracts beyond user/admin must survive, not collapse to
+    "user"."""
+    _stub_named_provider(monkeypatch)
+
+    class _FakeClient:
+        def propose_json(self, prompt: str, *, max_tokens: int = 600) -> dict[str, object]:
+            return {
+                "target": "https://demo.example",
+                "in_scope": "",
+                "out_of_scope": "",
+                "credentials": [{"username": "bob", "password": "hunter2", "role": "Mechanic"}],
+                "goal": "",
+            }
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(gui_app, "_build_llm_client", lambda *_a, **_k: _FakeClient())
+    response = TestClient(app).post(
+        "/api/parse-intent",
+        json={"message": "test as the mechanic bob/hunter2", "llm_provider": "named:unit-provider"},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["credentials"] == [{"username": "bob", "password": "hunter2", "role": "mechanic"}]
+
+
 def test_parse_intent_defaults_out_of_scope_to_empty_string_when_unmentioned(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

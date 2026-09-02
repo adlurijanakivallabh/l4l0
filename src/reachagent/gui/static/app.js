@@ -164,9 +164,14 @@ function credRow(cred) {
   row.innerHTML =
     '<input class="cred-username" type="text" placeholder="username" value="' + esc(cred.username) + '">' +
     '<input class="cred-password" type="text" placeholder="password" value="' + esc(cred.password) + '">' +
-    '<select class="cred-role"><option value="user">user</option><option value="admin">admin</option></select>' +
+    // v3 V1: role is a free-form identity label (e.g. "owner", "mechanic"), not
+    // just user/admin — a <select> could only ever express the binary case, so a
+    // richer role (already fully supported downstream by identity/store.py's
+    // Credential.role: str) was silently collapsed to "user" the moment it
+    // reached this UI. A text input + datalist keeps user/admin one click away
+    // while allowing anything else.
+    '<input class="cred-role" type="text" list="cred-role-options" placeholder="role" value="' + esc(cred.role || "user") + '">' +
     '<button class="cred-remove" type="button" aria-label="Remove">✕</button>';
-  row.querySelector(".cred-role").value = cred.role === "admin" ? "admin" : "user";
   row.querySelector(".cred-remove").onclick = () => row.remove();
   return row;
 }
@@ -194,7 +199,8 @@ function renderConfirmationCard(proposal, originalMessage) {
     '<div class="cc-field"><label>In-scope hosts</label><input id="cc-scope" type="text" placeholder="same as target" value="' + esc(proposal.in_scope) + '"></div>' +
     '<div class="cc-field"><label>Out-of-scope (optional)</label><input id="cc-outscope" type="text" placeholder="admin.example, target.test/admin, target.test:8443" value="' + esc(proposal.out_of_scope || "") + '"></div>' +
     '<div class="cc-field span-2"><label>Objective</label><textarea id="cc-goal" rows="2">' + esc(proposal.goal || originalMessage) + '</textarea></div>' +
-    '<div class="cc-field span-2 cc-creds"><label>Credentials</label><div id="cc-cred-rows"></div><button id="cc-cred-add" class="cred-add" type="button">+ Add credential</button></div>';
+    '<div class="cc-field span-2 cc-creds"><label>Credentials</label><div id="cc-cred-rows"></div><button id="cc-cred-add" class="cred-add" type="button">+ Add credential</button>' +
+    '<datalist id="cred-role-options"><option value="user"></option><option value="admin"></option></datalist></div>';
   card.appendChild(grid);
 
   const credBox = grid.querySelector("#cc-cred-rows");
@@ -255,7 +261,7 @@ async function confirmAndStart(card, bubble, originalMessage) {
     .map((row) => ({
       username: row.querySelector(".cred-username").value.trim(),
       password: row.querySelector(".cred-password").value.trim(),
-      role: row.querySelector(".cred-role").value,
+      role: row.querySelector(".cred-role").value.trim() || "user",
     }))
     .filter((c) => c.username && c.password);
 
