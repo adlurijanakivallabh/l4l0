@@ -529,6 +529,7 @@ function renderFinishBubble(j) {
     actions.innerHTML =
       '<a class="dl" href="/api/scan/' + state.scanId + '/export?format=markdown" download>Markdown</a>' +
       '<a class="dl" href="/api/scan/' + state.scanId + '/export?format=html" download>HTML report</a>' +
+      '<a class="dl" href="/api/scan/' + state.scanId + '/export?format=pdf" download>PDF</a>' +
       '<a class="dl" href="/api/scan/' + state.scanId + '/export?format=sarif" download>SARIF</a>';
     summary.appendChild(actions);
   }
@@ -1157,7 +1158,7 @@ function renderReport(md) {
 
 function renderExportLinks(scanId) {
   $("report-toolbar").hidden = false;
-  ["md", "json", "sarif", "evidence", "bundle", "html"].forEach((fmt) => {
+  ["md", "json", "sarif", "evidence", "bundle", "html", "pdf"].forEach((fmt) => {
     const key = fmt === "md" ? "markdown" : fmt;
     $("dl-" + fmt).href = "/api/scan/" + scanId + "/export?format=" + key;
   });

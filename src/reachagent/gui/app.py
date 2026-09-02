@@ -1786,6 +1786,13 @@ def export_report(scan_id: str, format: str = "markdown") -> Response:
                 "text/html",
                 "html",
             )
+        elif normalized == "pdf":
+            # v3 V7: render FROM the existing self-contained HTML report, not a
+            # separate template — WeasyPrint turns that same HTML+CSS into a PDF.
+            from weasyprint import HTML as _WeasyHTML
+
+            html_body = _report_html(report_md, graph, audit, context=context)
+            body, media, ext = _WeasyHTML(string=html_body).write_pdf(), "application/pdf", "pdf"
         else:
             body, media, ext = sanitize_report_markdown(report_md), "text/markdown", "md"
     return Response(

@@ -229,7 +229,7 @@ def test_report_export_requires_stored_phase4_for_narrative_formats() -> None:
     scan_id = "missing-export-report"
     _scans[scan_id] = {"graph": ReachabilityGraph()}
     try:
-        for format in ("markdown", "html"):
+        for format in ("markdown", "html", "pdf"):
             response = TestClient(app).get(f"/api/scan/{scan_id}/export?format={format}")
             assert response.status_code == 409
             assert response.json()["error"] == "report not ready"

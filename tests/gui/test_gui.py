@@ -158,6 +158,18 @@ def test_export_html_is_self_contained() -> None:
     assert "ReachAgent report" in r.text
 
 
+def test_export_pdf_renders_from_the_same_html_report() -> None:
+    """v3 V7: PDF is rendered FROM the existing self-contained HTML report via
+    WeasyPrint — no separate template, so this must actually produce a real PDF,
+    not just a passthrough of the markdown/html body."""
+    sid = _seeded_export_scan()
+    r = TestClient(app).get(f"/api/scan/{sid}/export?format=pdf")
+    assert r.status_code == 200
+    assert "application/pdf" in r.headers["content-type"]
+    assert "attachment" in r.headers["content-disposition"]
+    assert r.content.startswith(b"%PDF-")
+
+
 def test_export_unknown_format_defaults_markdown() -> None:
     sid = _seeded_export_scan()
     r = TestClient(app).get(f"/api/scan/{sid}/export?format=xml")
