@@ -17,6 +17,10 @@ class RuntimeConfig:
     provider: str | None = None
     required: bool = False
     grunt_model: str | None = None
+    base_url: str | None = None
+    api_key: str | None = None
+    model: str | None = None
+    api_style: str | None = None
 
 
 _current: ContextVar[RuntimeConfig | None] = ContextVar("reachagent_llm_runtime", default=None)
@@ -74,11 +78,63 @@ def grunt_model() -> str:
     return os.environ.get("REACHAGENT_LLM_GRUNT_MODEL", "").strip()
 
 
+def provider_base_url() -> str:
+    """The active scan's LLM base URL override, if one was selected (see ``override``)."""
+    config = _current.get()
+    if config is not None and config.base_url:
+        return config.base_url
+    return os.environ.get("REACHAGENT_LLM_BASE_URL", "").strip()
+
+
+def provider_api_key() -> str:
+    """The active scan's LLM API key override, if one was selected (see ``override``)."""
+    config = _current.get()
+    if config is not None and config.api_key:
+        return config.api_key
+    return os.environ.get("REACHAGENT_LLM_API_KEY", "").strip()
+
+
+def provider_model() -> str:
+    """The active scan's LLM model override, if one was selected (see ``override``)."""
+    config = _current.get()
+    if config is not None and config.model:
+        return config.model
+    return os.environ.get("REACHAGENT_LLM_MODEL", "").strip()
+
+
+def provider_api_style() -> str:
+    """The active scan's LLM API style override, if one was selected (see ``override``)."""
+    config = _current.get()
+    if config is not None and config.api_style:
+        return config.api_style
+    return os.environ.get("REACHAGENT_LLM_API_STYLE", "").strip()
+
+
 @contextmanager
 def override(
-    *, enabled: bool, provider: str | None = None, required: bool = False
+    *,
+    enabled: bool,
+    provider: str | None = None,
+    required: bool = False,
+    grunt_model: str | None = None,
+    base_url: str | None = None,
+    api_key: str | None = None,
+    model: str | None = None,
+    api_style: str | None = None,
 ) -> Iterator[None]:
-    """Apply scan-local flags for the duration of a worker call."""
+    """Apply scan-local flags AND a scan-local named-provider connection (v2 Phase 6
+    Stage D fix) for the duration of a worker call.
+
+    The provider connection fields (``base_url``/``api_key``/``model``/``api_style``)
+    exist specifically so a GUI-selected named provider never needs
+    ``os.environ`` mutation: a live-verification run found that two concurrent GUI
+    scans sharing one process can otherwise race on the process-global environment —
+    one scan's cleanup (restoring the pre-scan env, typically unset) wipes the
+    variable a DIFFERENT, still-running scan's next LLM call depends on, surfacing as
+    an unrelated-looking "LLM base URL is required" crash mid-scan. Each concurrent
+    scan's own asyncio task gets its own isolated ``RuntimeConfig`` via this
+    contextvar instead — no shared mutable state between them.
+    """
     flags = (
         frozenset(
             {
@@ -93,7 +149,16 @@ def override(
         else frozenset()
     )
     token: Token[RuntimeConfig | None] = _current.set(
-        RuntimeConfig(flags, provider, required=required)
+        RuntimeConfig(
+            flags,
+            provider,
+            required=required,
+            grunt_model=grunt_model,
+            base_url=base_url,
+            api_key=api_key,
+            model=model,
+            api_style=api_style,
+        )
     )
     try:
         yield

@@ -188,49 +188,52 @@ class OpenAICompatibleClient:
         self.model = model or self._model_from_env() or default_model
         if not self.model:
             raise ValueError("LLM model is required for the openai-compatible provider")
-        self.api_style = _api_style(
-            api_style or os.environ.get("REACHAGENT_LLM_API_STYLE", "chat_completions")
-        )
+        if api_style is None:
+            from reachagent.llm.runtime import provider_api_style
+
+            api_style = provider_api_style() or "chat_completions"
+        self.api_style = _api_style(api_style)
         if timeout <= 0:
             raise ValueError("LLM timeout must be positive")
         self._client = httpx.Client(timeout=timeout, transport=transport, trust_env=False)
 
     def _api_key_from_env(self) -> str:
+        # The generic REACHAGENT_LLM_API_KEY slot resolves contextvar-first (a
+        # GUI-selected named provider's key, isolated per concurrent scan — see
+        # llm/runtime.py's override()) before falling back to the environment;
+        # provider-specific vendor vars (checked first) are unaffected.
+        from reachagent.llm.runtime import provider_api_key
+
         if self.provider == "deepseek":
-            return _first_env(
-                "REACHAGENT_DEEPSEEK_API_KEY",
-                "DEEPSEEK_API_KEY",
-                "REACHAGENT_LLM_API_KEY",
+            return (
+                _first_env("REACHAGENT_DEEPSEEK_API_KEY", "DEEPSEEK_API_KEY") or provider_api_key()
             )
         if self.provider == "openai":
-            return _first_env(
-                "REACHAGENT_OPENAI_API_KEY",
-                "OPENAI_API_KEY",
-                "REACHAGENT_LLM_API_KEY",
-            )
-        return _first_env("REACHAGENT_LLM_API_KEY")
+            return _first_env("REACHAGENT_OPENAI_API_KEY", "OPENAI_API_KEY") or provider_api_key()
+        return provider_api_key()
 
     def _base_url_from_env(self) -> str:
+        from reachagent.llm.runtime import provider_base_url
+
         if self.provider == "deepseek":
-            return _first_env(
-                "REACHAGENT_DEEPSEEK_BASE_URL",
-                "DEEPSEEK_BASE_URL",
-                "REACHAGENT_LLM_BASE_URL",
+            return (
+                _first_env("REACHAGENT_DEEPSEEK_BASE_URL", "DEEPSEEK_BASE_URL")
+                or provider_base_url()
             )
         if self.provider == "openai":
-            return _first_env(
-                "REACHAGENT_OPENAI_BASE_URL",
-                "OPENAI_BASE_URL",
-                "REACHAGENT_LLM_BASE_URL",
+            return (
+                _first_env("REACHAGENT_OPENAI_BASE_URL", "OPENAI_BASE_URL") or provider_base_url()
             )
-        return _first_env("REACHAGENT_LLM_BASE_URL")
+        return provider_base_url()
 
     def _model_from_env(self) -> str:
+        from reachagent.llm.runtime import provider_model
+
         if self.provider == "deepseek":
-            return _first_env("REACHAGENT_DEEPSEEK_MODEL", "DEEPSEEK_MODEL", "REACHAGENT_LLM_MODEL")
+            return _first_env("REACHAGENT_DEEPSEEK_MODEL", "DEEPSEEK_MODEL") or provider_model()
         if self.provider == "openai":
-            return _first_env("REACHAGENT_OPENAI_MODEL", "OPENAI_MODEL", "REACHAGENT_LLM_MODEL")
-        return _first_env("REACHAGENT_LLM_MODEL")
+            return _first_env("REACHAGENT_OPENAI_MODEL", "OPENAI_MODEL") or provider_model()
+        return provider_model()
 
     def _post_with_retry(
         self, url: str, headers: dict[str, str], body: dict[str, object]

@@ -1049,6 +1049,24 @@ def _load_identities(
         return None, None
 
 
+# LLM connection fields route through llm.runtime.override()'s contextvar instead of
+# os.environ (v2 Phase 6 Stage D fix — see _run_scan's docstring for the concurrency
+# bug this closes). The opt-in tuning-flag checkboxes (aggressive/surface_tuning/...)
+# deliberately keep using os.environ below: several recon-tool/executor call sites
+# read them directly rather than through a contextvar-aware accessor, for cross-thread
+# visibility a contextvar wouldn't give them — out of scope for this fix.
+_LLM_CONTEXTVAR_ENV_KEYS = frozenset(
+    {
+        "REACHAGENT_LLM_PROVIDER",
+        "REACHAGENT_LLM_API_KEY",
+        "REACHAGENT_LLM_BASE_URL",
+        "REACHAGENT_LLM_MODEL",
+        "REACHAGENT_LLM_API_STYLE",
+        "REACHAGENT_LLM_GRUNT_MODEL",
+    }
+)
+
+
 async def _run_scan(
     scan_id: str,
     target: str,
@@ -1066,20 +1084,41 @@ async def _run_scan(
     repo_path: str | None = None,
 ) -> None:
     """``env_overrides`` merges LLM-provider config and the opt-in tuning-flag
-    checkboxes into one plain os.environ save/set/restore for the scan's duration.
+    checkboxes for the scan's duration.
+
+    The LLM connection fields (provider/key/base_url/model/api_style/grunt_model) go
+    through ``llm.runtime.override()``'s contextvar, isolated per asyncio task — NOT
+    ``os.environ`` mutation. A live-verification run (v2 Phase 6 Stage D) found that
+    concurrent GUI scans sharing this one process previously raced on the process-
+    global environment: one scan finishing restored those variables to their
+    pre-scan (typically unset) value while a DIFFERENT, still-running scan's next LLM
+    call needed them, surfacing as an unrelated-looking "LLM base URL is required"
+    crash mid-scan. Only the remaining tuning-flag checkboxes still use the
+    os.environ save/set/restore below (several recon-tool/executor call sites read
+    those directly for cross-thread visibility, out of scope for this fix).
     """
     import os
 
     from reachagent.llm.runtime import override
 
     _scan_update(scan_id, status="running", lifecycle="running", phase="recon")
+    llm_conn = env_overrides or {}
+    env_only = {k: v for k, v in llm_conn.items() if k not in _LLM_CONTEXTVAR_ENV_KEYS}
     saved: dict[str, str | None] = {}
-    if env_overrides:
-        for key, value in env_overrides.items():
-            saved[key] = os.environ.get(key)
-            os.environ[key] = value
+    for key, value in env_only.items():
+        saved[key] = os.environ.get(key)
+        os.environ[key] = value
     try:
-        with override(enabled=use_llm, provider=llm_provider, required=use_llm):
+        with override(
+            enabled=use_llm,
+            provider=llm_provider,
+            required=use_llm,
+            grunt_model=llm_conn.get("REACHAGENT_LLM_GRUNT_MODEL") or None,
+            base_url=llm_conn.get("REACHAGENT_LLM_BASE_URL") or None,
+            api_key=llm_conn.get("REACHAGENT_LLM_API_KEY") or None,
+            model=llm_conn.get("REACHAGENT_LLM_MODEL") or None,
+            api_style=llm_conn.get("REACHAGENT_LLM_API_STYLE") or None,
+        ):
             await _run_scan_body(
                 scan_id,
                 target,
