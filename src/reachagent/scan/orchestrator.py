@@ -620,8 +620,53 @@ def run_file_upload(
     (``.php`` with text content). A 2xx on both is the bypass. Read-only-first: an
     OPTIONS preflight must clear the endpoint before the POST fires; if the endpoint
     refuses a read-only probe, upload is reported not-applicable (no state change).
+
+    Canary first, same catch-all class ``recon/calibration.py`` already guards
+    content-discovery against (§ D1-D4 there): many SPA backends (permissive CORS
+    middleware answering every ``OPTIONS`` with 204, a catch-all route answering
+    every unmatched ``POST`` with 200) make EVERY guessed path in ``_UPLOAD_PATHS``
+    look like a confirmed bypass, since ``FILE_UPLOAD_BYPASS`` is a pure
+    status-code check. Caught live: Juice Shop "confirmed" all 4 guessed paths at
+    once — a completely made-up path (``/reachagent-cal-<uuid>``) got the exact
+    same 204/200 preflight+baseline shape. One canary probe against such a
+    guaranteed-nonexistent path, run the same way as a real candidate, detects
+    this before any real path is even tried.
     """
     from reachagent.oracles.structural import StructuralCheckType, StructuralEvidence
+
+    canary_path = f"/reachagent-cal-{uuid.uuid4().hex}"
+    canary_url = f"{base_url.rstrip('/')}{canary_path}"
+    canary_preflight = _fire_readonly(
+        firer,
+        identity,
+        "OPTIONS",
+        canary_url,
+        events=events,
+        label=f"upload {canary_path}/preflight",
+        headers=auth_headers,
+    )
+    if canary_preflight is not None and 200 <= canary_preflight.status_code < 300:
+        try:
+            canary_baseline = firer.fire(
+                identity,
+                "POST",
+                canary_url,
+                state_changing=True,
+                headers=dict(auth_headers),
+                files={"file": ("ok.txt", b"reachagent baseline", "text/plain")},
+            )
+        except Exception:  # noqa: BLE001 — a genuinely refused canary is not a catch-all
+            canary_baseline = None
+        if canary_baseline is not None and 200 <= canary_baseline.status_code < 300:
+            _emit(
+                events,
+                "payloads",
+                "not-applicable",
+                "file_upload: target accepts OPTIONS/POST on an arbitrary "
+                "nonexistent path — generic catch-all response, real upload "
+                "endpoints cannot be distinguished this way",
+            )
+            return []
 
     found: list[str] = []
     seen: set[str] = set()
