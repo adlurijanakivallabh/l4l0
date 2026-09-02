@@ -52,6 +52,7 @@ _WSTG: dict[str, tuple[str, str]] = {
     "idor": ("WSTG-ATHZ-04", "Testing for Insecure Direct Object References"),
     "mass_assignment": ("WSTG-ATHZ", "Authorization Testing (Mass Assignment)"),
     "default_credentials": ("WSTG-ATHN-02", "Testing for Default Credentials"),
+    "credential_reuse": ("WSTG-ATHN-02", "Testing for Default Credentials"),
     "rate_limit_absence": ("WSTG-BUSL", "Business Logic Testing (Rate Limiting)"),
     "open_redirect": ("WSTG-CLNT-04", "Testing for Client-Side URL Redirect"),
     "web_cache_poisoning": ("WSTG-INPV", "Input Validation Testing (Cache Poisoning)"),
@@ -102,6 +103,9 @@ _DESCRIPTION: dict[str, str] = {
     "object, letting a client set fields it should not control.",
     "default_credentials": "A documented or well-known default credential pair "
     "authenticates successfully.",
+    "credential_reuse": "A username/password pair captured from one in-scope host "
+    "during this engagement also authenticates on a different in-scope host, "
+    "confirming the same credential is valid across independent services.",
     "rate_limit_absence": "Repeated authentication attempts are not throttled or "
     "locked out, allowing unbounded guessing.",
     "open_redirect": "A redirect target is taken from user input without validating "
@@ -174,6 +178,9 @@ _REMEDIATION: dict[str, str] = {
     "fields; never deserialize a request body directly onto an internal model.",
     "default_credentials": "Remove or force rotation of default/well-known credentials "
     "before deployment; enforce a strong-password policy.",
+    "credential_reuse": "Rotate the shared credential immediately; enforce unique "
+    "per-service credentials (or federated SSO with per-service authorization) so a "
+    "single leaked secret cannot grant access across independent systems.",
     "rate_limit_absence": "Add a lockout/backoff (or CAPTCHA) after a small number of "
     "failed authentication attempts per account and per source.",
     "open_redirect": "Validate a redirect target against an allowlist of in-scope "

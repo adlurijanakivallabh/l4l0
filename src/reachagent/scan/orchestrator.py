@@ -4879,6 +4879,22 @@ def scan_all_classes(
                 control_state=control_state,
             )
 
+    # Cross-host credential reuse (v3 V4): a credential captured from ANY
+    # confirmed finding's evidence this scan tries, once, against every OTHER
+    # in-scope host's login form — a genuine gap even the reference projects
+    # researched this session don't cover. See cross_host_reuse.py's own
+    # docstring for the exact reused-machinery/extraction-scope discipline.
+    from reachagent.scan.cross_host_reuse import run_cross_host_credential_reuse
+
+    run_cross_host_credential_reuse(
+        graph=graph,
+        firer=firer,
+        base_url=base_url,
+        identity=identity,
+        seam=seam,
+        events=events_out,
+    )
+
     findings = [fid for fid, _ in graph.findings()]
     _emit(events_out, "payloads", "info", "phase 3 done", findings=len(findings))
 
