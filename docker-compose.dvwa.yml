@@ -1,0 +1,27 @@
+# DVWA (Damn Vulnerable Web Application) local eval target — operator-requested
+# addition (v2 Phase 6, Stage C item 6: VAmPI/crAPI/Juice Shop already had a
+# docker-compose stack; DVWA had neither).
+#
+# Brings up DVWA on port 8080, mirroring the role docker-compose.yml plays for
+# VAmPI and docker-compose.juiceshop.yml for Juice Shop. Unlike those two, DVWA
+# needs a ONE-TIME manual database setup after first boot (it has no
+# auto-migrate-on-start option in the published image):
+#
+#   docker compose -f docker-compose.dvwa.yml up -d
+#   open http://127.0.0.1:8080/setup.php and click "Create / Reset Database"
+#   log in with the documented default admin/password
+#   docker compose -f docker-compose.dvwa.yml down
+#
+# No numeric eval gate is wired for DVWA (unlike VAmPI's precision/recall gate
+# or Juice Shop's challenge-tracker score) — this is infrastructure only, so a
+# GUI scan can be pointed at a real local target; a scored gate is a separate,
+# future addition if one is wanted.
+name: reachagent-dvwa
+
+services:
+  dvwa:
+    image: vulnerables/web-dvwa
+    container_name: reachagent-dvwa
+    ports:
+      - "127.0.0.1:8080:80"
+    restart: unless-stopped

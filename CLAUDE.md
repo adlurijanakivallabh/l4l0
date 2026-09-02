@@ -54,7 +54,12 @@ for it.
   the exact numeric exit criteria per phase before marking a phase done.
 - Eval environment: `docker compose up -d` brings up both VAmPI instances the
   Phase 1 gate needs — vulnerable on :5000, secure on :5002, matching the URLs
-  `reachagent.eval` defaults to (`docker compose down` to tear down).
+  `reachagent.eval` defaults to (`docker compose down` to tear down). crAPI
+  (`docker-compose.crapi.yml`) and Juice Shop (`docker-compose.juiceshop.yml`)
+  bring up their own targets the same way. DVWA (`docker compose -f
+  docker-compose.dvwa.yml up -d`, port 8080) needs a one-time manual
+  `/setup.php` database creation after first boot — infrastructure only, no
+  numeric eval gate wired for it yet.
 
 ## Working conventions
 
