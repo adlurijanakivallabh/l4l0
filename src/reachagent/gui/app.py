@@ -463,7 +463,7 @@ def _validate_named_provider(config: dict[str, str]) -> None:
 
 
 def _resolve_llm_provider(
-    payload: dict[str, Any],
+    payload: dict[str, Any], *, require_explicit: bool = True
 ) -> tuple[str | None, dict[str, str] | None, JSONResponse | None]:
     """Resolve which LLM provider config a request should use.
 
@@ -473,6 +473,21 @@ def _resolve_llm_provider(
     silent default, so try the single-saved-provider shortcut first. Returns
     ``(llm_provider, named_overrides, error_response)`` — ``error_response``
     is non-``None`` only for an explicitly-named but unknown provider id.
+
+    ``require_explicit=False`` (v2 Phase 6 Stage D fix): for a low-stakes,
+    purely-advisory caller with no provider-selection UI of its own (``/api/
+    parse-intent`` — it never executes anything, only proposes fields the
+    operator reviews before confirming), falls back to the FIRST saved
+    provider when 2+ exist rather than leaving the selection empty. A real
+    live-verification bug: with exactly one provider configured this path
+    already worked, but this repo's own 2-saved-provider setup made
+    intent-parsing silently fall through to an unconfigured "deepseek"
+    default (```OpenAICompatibleClient``'s own fallback) on every call,
+    which then failed and degraded to the empty/"couldn't extract" proposal
+    — reading as "it can't understand my prompt" when the LLM was actually
+    never successfully invoked at all. ``start_scan`` keeps the strict
+    default (an ambiguous choice there should be explicit, via its own
+    provider dropdown), so this parameter defaults to the old behavior.
     """
     llm_provider_raw = _opt_str(payload.get("llm_provider"))
     if not llm_provider_raw:
@@ -480,7 +495,7 @@ def _resolve_llm_provider(
 
         if not selected_provider():
             saved = [p for p in _load_providers() if str(p.get("id", "")).strip()]
-            if len(saved) == 1:
+            if len(saved) == 1 or (not require_explicit and saved):
                 llm_provider_raw = f"named:{saved[0]['id']}"
     if llm_provider_raw and llm_provider_raw.startswith("named:"):
         named_id = llm_provider_raw[len("named:") :]
@@ -566,7 +581,7 @@ def parse_intent(payload: dict[str, Any]) -> JSONResponse:
         "goal": message,
         "extracted": False,
     }
-    llm_provider, named_overrides, err = _resolve_llm_provider(payload)
+    llm_provider, named_overrides, err = _resolve_llm_provider(payload, require_explicit=False)
     if err is not None:
         return err
     try:

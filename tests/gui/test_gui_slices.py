@@ -261,6 +261,90 @@ def test_parse_intent_degrades_gracefully_with_no_provider_configured(
     assert body["goal"] == "pentest https://demo.example"
 
 
+def test_parse_intent_uses_a_saved_provider_when_multiple_exist_and_none_is_named(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Live-verification bug (v2 Phase 6 Stage D): with 2+ saved providers and no
+    explicit selection (parse-intent's caller — the landing-page composer — has no
+    provider-picker UI of its own), the old strict "exactly one saved provider"
+    shortcut left the selection empty, silently falling through to
+    OpenAICompatibleClient's unconfigured "deepseek" default and failing every
+    time — reading as "it can't understand my prompt" when the LLM was never
+    actually reached. parse-intent must now fall back to the FIRST saved provider
+    instead of leaving it ambiguous."""
+    monkeypatch.setattr(
+        gui_app,
+        "_load_providers",
+        lambda: [
+            {
+                "id": "first-provider",
+                "name": "first",
+                "provider": "openai-compatible",
+                "api_key": "key-1",
+                "base_url": "https://llm-a.example/v1",
+                "model": "model-a",
+                "api_style": "chat_completions",
+            },
+            {
+                "id": "second-provider",
+                "name": "second",
+                "provider": "openai-compatible",
+                "api_key": "key-2",
+                "base_url": "https://llm-b.example/v1",
+                "model": "model-b",
+                "api_style": "chat_completions",
+            },
+        ],
+    )
+    monkeypatch.setattr("reachagent.llm.runtime.selected_provider", lambda: "")
+    seen_overrides: dict = {}
+
+    class _FakeClient:
+        def propose_json(self, prompt: str, *, max_tokens: int = 600) -> dict[str, object]:
+            return {"target": "https://demo.example", "credentials": [], "goal": "test it"}
+
+        def close(self) -> None:
+            pass
+
+    def fake_build(llm_provider, named_overrides):  # noqa: ANN001
+        seen_overrides.update(named_overrides or {})
+        return _FakeClient()
+
+    monkeypatch.setattr(gui_app, "_build_llm_client", fake_build)
+    response = TestClient(app).post(
+        "/api/parse-intent", json={"message": "pentest https://demo.example"}
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["extracted"] is True
+    assert body["target"] == "https://demo.example"
+    # The FIRST saved provider was actually used — not left empty/defaulted elsewhere.
+    assert seen_overrides.get("REACHAGENT_LLM_BASE_URL") == "https://llm-a.example/v1"
+
+
+def test_start_scan_still_requires_an_explicit_provider_when_multiple_are_saved(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Unlike parse-intent, /api/scan keeps the strict default — it has its own
+    provider dropdown in the confirmation card, so an ambiguous choice here should
+    stay an explicit error, not a silent pick."""
+    monkeypatch.setattr(
+        gui_app,
+        "_load_providers",
+        lambda: [
+            {"id": "first-provider", "name": "first", "provider": "openai-compatible"},
+            {"id": "second-provider", "name": "second", "provider": "openai-compatible"},
+        ],
+    )
+    monkeypatch.setattr("reachagent.llm.runtime.selected_provider", lambda: "")
+    response = TestClient(app).post(
+        "/api/scan",
+        json={"target": "https://demo.example", "use_llm": True},
+    )
+    assert response.status_code == 400
+    assert response.json()["code"] == "llm_provider_unavailable"
+
+
 def test_parse_intent_extracts_and_normalizes_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
     _stub_named_provider(monkeypatch)
 
