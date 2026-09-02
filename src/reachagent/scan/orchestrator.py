@@ -3629,6 +3629,8 @@ def _dispatch_classes(
     loop or stall the way an open-ended tool-selection loop could — no
     loop-guard needed.
     """
+    from reachagent.scan.agentic_loop import ControlError
+
     remaining = list(classes)
     current_specialist: str | None = None
     prefix = f"[{label}] " if label else ""
@@ -3659,7 +3661,22 @@ def _dispatch_classes(
                 f"{prefix}{_SPECIALIST_LABELS.get(specialist, specialist)} — starting",
                 specialist=specialist,
             )
-        drivers[class_name]()
+        try:
+            drivers[class_name]()
+        except ControlError:
+            raise
+        except Exception as exc:  # noqa: BLE001 — one class's driver crashing (a
+            # malformed/oversized live response, an unexpected edge case) must
+            # never cost every OTHER vuln class its chance to run — caught live:
+            # crAPI's cache_poisoning driver hit an oversized response body and
+            # took the entire remaining Phase 3 pipeline down with it.
+            _log.warning("class driver %r failed: %s", class_name, exc)
+            _emit(
+                events,
+                "payloads",
+                "error",
+                f"{prefix}{class_name}: driver failed ({exc}) — continuing with remaining classes",
+            )
         touch()
 
 

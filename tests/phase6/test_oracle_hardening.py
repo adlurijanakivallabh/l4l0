@@ -363,6 +363,30 @@ def test_structural_oracle_does_not_overwrite_a_caller_supplied_projection() -> 
     assert verdict.evidence_metadata.body_projection == "caller already supplied this"
 
 
+def test_oversized_response_body_is_truncated_not_rejected() -> None:
+    """Caught live: crAPI's cache_poisoning driver constructed StructuralEvidence
+    in-process (never through the MCP boundary) with a response body over the
+    1,000,000-char validation cap, raising ValueError out of _validate_evidence
+    and aborting the entire remaining scan. StructuralEvidence now caps
+    response_body/reread_response_body at construction (__post_init__), the one
+    choke point every caller — MCP and every in-process orchestrator driver alike
+    — routes through, so an oversized live body degrades to a truncated, still-
+    decidable value instead of crashing."""
+    oversized = "z" * 1_000_050
+    evidence = StructuralEvidence(
+        check_type=StructuralCheckType.WEB_CACHE_POISONING,
+        probe_status=200,
+        response_body=oversized,
+        reread_response_body=oversized,
+        evidence_ref="phase6/oversized",
+    )
+    assert len(evidence.response_body) == 1_000_000
+    assert len(evidence.reread_response_body) == 1_000_000
+    # must not raise — this is the actual live crash being regression-tested
+    verdict = StructuralOracle().run(evidence)
+    assert verdict.status is not None
+
+
 def test_structural_oracle_projection_never_raises_on_a_body_that_looks_secret_like() -> None:
     """A real target's response could coincidentally contain something matching the
     generic secret-value pattern (e.g. a long random-looking token in an error page)

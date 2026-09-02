@@ -199,6 +199,9 @@ class StructuralCheckType(StrEnum):
     PROTOTYPE_POLLUTION = "prototype_pollution"
 
 
+_MAX_BODY_CHARS = 1_000_000
+
+
 @dataclass(frozen=True)
 class StructuralEvidence:
     """Evidence for the structural oracle.
@@ -355,6 +358,21 @@ class StructuralEvidence:
     evidence_ref: str = ""
     metadata: EvidenceMetadata = field(default_factory=EvidenceMetadata)
 
+    def __post_init__(self) -> None:
+        # A live target's response body has no upper bound a detector
+        # controls — cap it here, at construction (the one place every
+        # in-process driver AND the MCP boundary both route through),
+        # so an oversized body degrades to a truncated, still-decidable
+        # value instead of raising out of _validate_evidence and aborting
+        # whatever driver is mid-check. Caught live: crAPI's
+        # cache_poisoning driver hit an oversized response_body and took
+        # the entire remaining scan down with it (frozen dataclass, so
+        # object.__setattr__ is required here).
+        for name in ("response_body", "reread_response_body"):
+            value = getattr(self, name)
+            if isinstance(value, str) and len(value) > _MAX_BODY_CHARS:
+                object.__setattr__(self, name, value[:_MAX_BODY_CHARS])
+
 
 def _validate_evidence(evidence: StructuralEvidence) -> None:
     validate_evidence_ref(evidence.evidence_ref)
@@ -380,7 +398,7 @@ def _validate_evidence(evidence: StructuralEvidence) -> None:
         value = getattr(evidence, name)
         if not isinstance(value, str):
             raise TypeError(f"{name} must be a string")
-        limit = 1_000_000 if name in ("response_body", "reread_response_body") else 16_384
+        limit = _MAX_BODY_CHARS if name in ("response_body", "reread_response_body") else 16_384
         if len(value) > limit:
             raise ValueError(f"{name} exceeds its evidence size limit")
         if any(ord(char) < 32 and char not in "\t\n\r" for char in value):

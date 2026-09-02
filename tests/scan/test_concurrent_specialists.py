@@ -91,6 +91,65 @@ def test_dispatch_classes_propagates_cancellation() -> None:
         )
 
 
+def test_dispatch_classes_one_driver_crashing_never_aborts_the_rest() -> None:
+    """Caught live: crAPI's cache_poisoning driver raised (an oversized
+    response body — see test_oracle_hardening.py's own regression test for
+    that root cause) and took the ENTIRE remaining scan down with it, losing
+    every other vuln class. A single class's driver failing must degrade to
+    a skipped class, not a scan-ending crash."""
+    calls: list[str] = []
+
+    def _boom() -> None:
+        raise ValueError("response_body exceeds its evidence size limit")
+
+    drivers = {
+        "a": lambda: calls.append("a"),
+        "b": _boom,
+        "c": lambda: calls.append("c"),
+    }
+    events: list = []
+    touches: list[int] = []
+
+    _dispatch_classes(
+        ("a", "b", "c"),
+        graph=ReachabilityGraph(),
+        drivers=drivers,
+        events=events,
+        operator_prompt=None,
+        cancel_check=None,
+        check_cancel=lambda _c: None,
+        touch=lambda: touches.append(1),
+    )
+
+    assert calls == ["a", "c"]  # b crashed but a and c still ran
+    assert len(touches) == 3  # touch still fires for the crashed class too
+    assert any("driver failed" in e.message for e in events)
+
+
+def test_dispatch_classes_still_propagates_cancellation_past_a_crashing_driver() -> None:
+    def _boom() -> None:
+        raise ValueError("boom")
+
+    def _cancel_after_first(_c: object) -> None:
+        _cancel_after_first.calls += 1
+        if _cancel_after_first.calls > 1:
+            raise ScanCancelled("stop")
+
+    _cancel_after_first.calls = 0
+
+    with pytest.raises(ScanCancelled):
+        _dispatch_classes(
+            ("a", "b"),
+            graph=ReachabilityGraph(),
+            drivers={"a": _boom, "b": lambda: None},
+            events=[],
+            operator_prompt=None,
+            cancel_check=None,
+            check_cancel=_cancel_after_first,
+            touch=lambda: None,
+        )
+
+
 def test_dispatch_classes_label_prefixes_its_narration_events() -> None:
     events: list = []
     _dispatch_classes(
@@ -207,6 +266,16 @@ def test_findings_from_every_specialist_are_merged_into_the_parent_graph(monkeyp
 
 
 def test_one_specialist_crashing_never_aborts_its_siblings(monkeypatch) -> None:  # noqa: ANN001
+    """A crashing driver's own class is now isolated at the _dispatch_classes level
+    (see test_dispatch_classes_one_driver_crashing_never_aborts_the_rest) — a strictly
+    better guarantee than this test originally verified: the crash no longer even
+    escalates to a whole-specialist crash (the old "specialist crashed: RuntimeError"
+    outer-catch wording), it stays a per-class "driver failed" event and that
+    specialist still finishes "done" like its siblings. The outer per-specialist
+    catch in _run_one remains as defense-in-depth for a DIFFERENT failure surface
+    (e.g. specialist setup before dispatch even starts), just no longer reachable
+    from an ordinary driver exception."""
+
     def run(class_name: str, graph: ReachabilityGraph) -> None:
         if class_name == "sqli_blind":  # injection specialist
             raise RuntimeError("boom")
@@ -220,8 +289,16 @@ def test_one_specialist_crashing_never_aborts_its_siblings(monkeypatch) -> None:
 
     classes = {f.vuln_class for _fid, f in graph.findings()}
     assert "clickjacking" in classes  # the surviving specialist's work still landed
-    assert any("crashed" in e.message and "RuntimeError" in e.message for e in events)
-    assert any("done" in e.message for e in events)  # a sibling completed cleanly
+    assert any(
+        "sqli_blind" in e.message and "driver failed" in e.message and "boom" in e.message
+        for e in events
+    )
+    assert not any("specialist crashed" in e.message for e in events)
+    # EVERY specialist finishes "done" now — the crash never escalated to a
+    # whole-specialist failure.
+    specialist_events = [e for e in events if "specialist" in e.message and "—" in e.message]
+    assert specialist_events  # sanity: the merge-status events actually fired
+    assert all("specialist done" in e.message for e in specialist_events)
 
 
 def test_cancellation_mid_fanout_still_merges_partial_work_then_raises(monkeypatch) -> None:  # noqa: ANN001
