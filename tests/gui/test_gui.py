@@ -51,6 +51,21 @@ def test_finding_rows_include_real_oracle_fields() -> None:
     assert row["status"] == "confirmed_violation"
 
 
+def test_finding_rows_include_the_deterministic_narrative_context() -> None:
+    """GUI-detail workstream: finding cards get the SAME reviewed description/
+    remediation/WSTG/CVSS text the markdown report's per-finding sections already use
+    (report.professional.vuln_class_context) — not a bare oracle/evidence field dump."""
+    g, a, _b = _g_with_chain()
+    rows = {r["finding_id"]: r for r in _finding_rows(g)}
+    row = rows[a]  # bola, severity=high
+    assert "another identity's object" in row["description"]
+    assert row["remediation"]
+    assert row["wstg_id"] == "WSTG-ATHZ-04"
+    assert row["cvss"]
+    assert row["likelihood"] == "High"
+    assert row["impact"] == "High"
+
+
 def test_finding_rows_draw_the_connected_chain() -> None:
     g, a, b = _g_with_chain()
     rows = {r["finding_id"]: r for r in _finding_rows(g)}

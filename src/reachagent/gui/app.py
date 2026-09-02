@@ -28,6 +28,7 @@ from fastapi.staticfiles import StaticFiles
 from reachagent.execution.audit import AuditLog
 from reachagent.graph.store import ReachabilityGraph
 from reachagent.logging_setup import configure_file_logging
+from reachagent.report.professional import vuln_class_context
 from reachagent.report.renderer import (
     build_evidence_index,
     compare_graphs,
@@ -375,6 +376,7 @@ def _event_dict(e: ScanEvent) -> dict[str, Any]:
         "kind": _public_text(e.kind, 64),
         "message": _public_text(e.message, 800),
         "details": _public_value(e.details, key="details"),
+        "timestamp": _public_text(getattr(e, "timestamp", "") or "", 40),
     }
 
 
@@ -996,7 +998,10 @@ def ask_scan(scan_id: str, payload: dict[str, Any]) -> JSONResponse:
     answer = fallback
     if use_llm:
         messages = [
-            {"role": "system", "content": f"{_CHAT_PERSONA}\n\nCurrent scan state:\n{state_summary}"},
+            {
+                "role": "system",
+                "content": f"{_CHAT_PERSONA}\n\nCurrent scan state:\n{state_summary}",
+            },
             *history,
         ]
         client = None
@@ -1399,11 +1404,18 @@ def _finding_rows(graph: ReachabilityGraph | None) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for fid, f in graph.findings():
         metadata = dict(getattr(f, "metadata", {}) or {})
+        vuln_class = getattr(f, "vuln_class", "")
+        severity = getattr(f, "severity", "")
+        # Same deterministic, already-reviewed narrative context the markdown/PDF
+        # report's per-finding sections use (report/professional.py) — the GUI's
+        # live finding cards get real description/remediation/WSTG/CVSS text
+        # instead of a bare field dump, with zero new data or LLM cost.
+        ctx = vuln_class_context(vuln_class, severity)
         rows.append(
             {
                 "finding_id": _public_text(fid, 180),
-                "vuln_class": _public_text(getattr(f, "vuln_class", ""), 100),
-                "severity": _public_text(getattr(f, "severity", ""), 24),
+                "vuln_class": _public_text(vuln_class, 100),
+                "severity": _public_text(severity, 24),
                 "oracle_used": _public_text(getattr(f, "oracle_used", ""), 80),
                 "evidence_ref": _public_text(getattr(f, "evidence_ref", ""), 180),
                 "status": _public_text(
@@ -1415,6 +1427,13 @@ def _finding_rows(graph: ReachabilityGraph | None) -> list[dict[str, Any]]:
                 if metadata.get("chain_precondition")
                 else None,
                 "chains": _chains_for(graph, fid),
+                "description": _public_text(ctx["description"], 500),
+                "remediation": _public_text(ctx["remediation"], 500),
+                "wstg_id": _public_text(ctx["wstg_id"], 20),
+                "wstg_name": _public_text(ctx["wstg_name"], 100),
+                "cvss": _public_text(ctx["cvss"], 10),
+                "likelihood": _public_text(ctx["likelihood"], 20),
+                "impact": _public_text(ctx["impact"], 20),
             }
         )
     return rows
@@ -1426,15 +1445,17 @@ def _suspected_rows(graph: ReachabilityGraph | None) -> list[dict[str, Any]]:
         return []
     rows: list[dict[str, Any]] = []
     for sid, s in graph.suspected_findings():
+        vuln_class = getattr(s, "vuln_class", "")
         rows.append(
             {
                 "suspected_id": _public_text(sid, 200),
-                "vuln_class": _public_text(getattr(s, "vuln_class", ""), 100),
+                "vuln_class": _public_text(vuln_class, 100),
                 "endpoint": _public_text(getattr(s, "endpoint", ""), 200),
                 "location": _public_text(getattr(s, "location", ""), 120),
                 "source": _public_text(getattr(s, "source", ""), 80),
                 "reason": _public_text(getattr(s, "reason", ""), 120),
                 "severity": _public_text(getattr(s, "severity", ""), 24),
+                "description": _public_text(vuln_class_context(vuln_class)["description"], 500),
             }
         )
     return rows

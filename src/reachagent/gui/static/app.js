@@ -548,9 +548,19 @@ function appendTerminalRows(events) {
 // Everything else in `details` stays behind the click-to-expand JSON panel.
 const _INLINE_DETAIL_KEYS = new Set(["command", "output"]);
 
+function formatEventTime(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  return d.toLocaleTimeString(undefined, { hour12: false });
+}
+
 function terminalRow(e) {
   const row = document.createElement("div");
   row.className = "term-row kind-" + (e.kind || "info");
+  const time = document.createElement("span");
+  time.className = "t-time";
+  time.textContent = formatEventTime(e.timestamp);
   const phase = document.createElement("span");
   phase.className = "t-phase";
   phase.textContent = PHASE_STEP[e.phase] || e.phase || "";
@@ -582,7 +592,7 @@ function terminalRow(e) {
     outBlock.textContent = output;
     body.appendChild(outBlock);
   }
-  row.append(phase, dot, body);
+  row.append(time, phase, dot, body);
 
   const extraKeys = Object.keys(details).filter((k) => !_INLINE_DETAIL_KEYS.has(k));
   if (extraKeys.length) {
@@ -634,14 +644,44 @@ $("toggle-work-pane").onclick = () => {
 // ---------------------------------------------------------------------------
 // Findings / metrics / surface / audit / report rendering (server data, as-is)
 // ---------------------------------------------------------------------------
+// A short tween from a metric's current displayed value to its new one, instead of an
+// instant text swap — cheap (one requestAnimationFrame loop, no library) and makes a
+// live-updating dashboard read as "alive" rather than flickering numbers.
+function animateMetric(el, target) {
+  const from = Number(el.dataset.value || 0);
+  if (from === target) return;
+  el.dataset.value = target;
+  if (window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+    el.textContent = target;
+    return;
+  }
+  const duration = 400;
+  const start = performance.now();
+  function tick(now) {
+    const t = Math.min(1, (now - start) / duration);
+    const eased = 1 - (1 - t) * (1 - t);
+    el.textContent = Math.round(from + (target - from) * eased);
+    if (t < 1) requestAnimationFrame(tick);
+    else el.textContent = target;
+  }
+  requestAnimationFrame(tick);
+}
+
 function renderMetrics(g) {
   const available = Boolean(g && g.available);
   const c = (g && g.counts) || {};
-  $("m-hosts").textContent = available ? c.hosts || 0 : "—";
-  $("m-services").textContent = available ? c.services || 0 : "—";
-  $("m-endpoints").textContent = available ? c.endpoints || 0 : "—";
-  $("m-params").textContent = available ? c.parameters || 0 : "—";
-  $("m-findings").textContent = available ? c.findings || 0 : "—";
+  if (!available) {
+    ["m-hosts", "m-services", "m-endpoints", "m-params", "m-findings"].forEach((id) => {
+      $(id).textContent = "—";
+      $(id).dataset.value = 0;
+    });
+  } else {
+    animateMetric($("m-hosts"), c.hosts || 0);
+    animateMetric($("m-services"), c.services || 0);
+    animateMetric($("m-endpoints"), c.endpoints || 0);
+    animateMetric($("m-params"), c.parameters || 0);
+    animateMetric($("m-findings"), c.findings || 0);
+  }
   const count = $("tab-findings-count");
   if (available && c.findings) {
     count.hidden = false;
@@ -662,7 +702,130 @@ function addMetaRow(parent, label, value) {
   parent.appendChild(row);
 }
 
-function renderSuspectedInto(box, suspected) {
+function addBadge(parent, text) {
+  const b = document.createElement("span");
+  b.className = "fbadge";
+  b.textContent = text;
+  parent.appendChild(b);
+}
+
+function buildChainRows(chains) {
+  const frag = document.createDocumentFragment();
+  (chains || []).forEach((ch) => {
+    const row = document.createElement("div");
+    row.className = "chain";
+    ch.nodes.forEach((n, i) => {
+      const cn = document.createElement("span");
+      cn.className = "cn";
+      cn.textContent = n;
+      row.appendChild(cn);
+      if (i < ch.kinds.length) {
+        const edge = document.createElement("span");
+        edge.className = "ce " + (ch.kinds[i] === "derived_credential" ? "derived" : "");
+        edge.textContent = ch.kinds[i] === "derived_credential" ? "→ credential" : "→ enables";
+        row.appendChild(edge);
+      }
+    });
+    frag.appendChild(row);
+  });
+  return frag;
+}
+
+// Expandable <details> card — same disclosure idiom as .surface-host/.surface-endpoint
+// elsewhere in this file, so opening a finding for detail is a familiar interaction.
+// A short entrance animation plays once, staggered by `index` (--i), the first time a
+// card is created; polling never recreates an existing card (see the signature guard in
+// renderFindingsList/renderSuspectedInto below), so an operator's expanded card survives
+// every subsequent poll instead of snapping shut every ~1s.
+function buildFindingCard(f, index) {
+  const card = document.createElement("details");
+  card.className = "fcard " + (f.severity || "");
+  card.style.setProperty("--i", index);
+  const summary = document.createElement("summary");
+  summary.className = "fhead";
+  const cls = document.createElement("span");
+  cls.className = "fclass";
+  cls.textContent = f.vuln_class || "finding";
+  const sev = document.createElement("span");
+  sev.className = "fsev";
+  sev.textContent = f.severity || "unknown";
+  summary.append(cls, sev);
+  card.appendChild(summary);
+
+  const body = document.createElement("div");
+  body.className = "fbody";
+  if (f.description) {
+    const p = document.createElement("p");
+    p.className = "fdesc";
+    p.textContent = f.description;
+    body.appendChild(p);
+  }
+  const badges = document.createElement("div");
+  badges.className = "fbadges";
+  if (f.wstg_id) addBadge(badges, f.wstg_id);
+  if (f.cvss) addBadge(badges, "CVSS " + f.cvss);
+  if (f.likelihood) addBadge(badges, "Likelihood " + f.likelihood);
+  if (f.impact) addBadge(badges, "Impact " + f.impact);
+  if (badges.childNodes.length) body.appendChild(badges);
+
+  const meta = document.createElement("div");
+  meta.className = "fmeta";
+  addMetaRow(meta, "Oracle", f.oracle_used);
+  addMetaRow(meta, "Evidence", f.evidence_ref);
+  addMetaRow(meta, "Status", f.status);
+  if (f.chain_precondition) addMetaRow(meta, "Chain", f.chain_precondition);
+  body.appendChild(meta);
+
+  if (f.remediation) {
+    const rem = document.createElement("div");
+    rem.className = "fremediation";
+    const b = document.createElement("b");
+    b.textContent = "Remediation";
+    const p = document.createElement("p");
+    p.textContent = f.remediation;
+    rem.append(b, p);
+    body.appendChild(rem);
+  }
+  body.appendChild(buildChainRows(f.chains));
+  card.appendChild(body);
+  return card;
+}
+
+function buildSuspectedCard(s, index) {
+  const card = document.createElement("details");
+  card.className = "fcard suspected";
+  card.style.setProperty("--i", index);
+  const summary = document.createElement("summary");
+  summary.className = "fhead";
+  const cls = document.createElement("span");
+  cls.className = "fclass";
+  cls.textContent = s.vuln_class || "suspected";
+  const sev = document.createElement("span");
+  sev.className = "fsev";
+  sev.textContent = "unconfirmed";
+  summary.append(cls, sev);
+  card.appendChild(summary);
+
+  const body = document.createElement("div");
+  body.className = "fbody";
+  if (s.description) {
+    const p = document.createElement("p");
+    p.className = "fdesc";
+    p.textContent = s.description;
+    body.appendChild(p);
+  }
+  const meta = document.createElement("div");
+  meta.className = "fmeta";
+  addMetaRow(meta, "Endpoint", s.endpoint);
+  addMetaRow(meta, "Location", s.location);
+  addMetaRow(meta, "Source", s.source);
+  addMetaRow(meta, "Why unconfirmed", s.reason);
+  body.appendChild(meta);
+  card.appendChild(body);
+  return card;
+}
+
+function renderSuspectedInto(box, suspected, startIndex) {
   // W2: the Suspected/Unconfirmed tier, rendered visibly SEPARATE from confirmed findings —
   // leads the oracle didn't prove, for manual review, never counted as confirmed.
   if (!suspected || !suspected.length) return;
@@ -670,36 +833,30 @@ function renderSuspectedInto(box, suspected) {
   divider.className = "suspected-divider";
   divider.textContent = "Suspected / Unconfirmed — " + suspected.length + " (not oracle-verified)";
   box.appendChild(divider);
-  suspected.forEach((s) => {
-    const card = document.createElement("div");
-    card.className = "fcard suspected";
-    const head = document.createElement("div");
-    head.className = "fhead";
-    const cls = document.createElement("span");
-    cls.className = "fclass";
-    cls.textContent = s.vuln_class || "suspected";
-    const sev = document.createElement("span");
-    sev.className = "fsev";
-    sev.textContent = "unconfirmed";
-    head.append(cls, sev);
-    card.appendChild(head);
-    const meta = document.createElement("div");
-    meta.className = "fmeta";
-    addMetaRow(meta, "Endpoint", s.endpoint);
-    addMetaRow(meta, "Location", s.location);
-    addMetaRow(meta, "Source", s.source);
-    addMetaRow(meta, "Why unconfirmed", s.reason);
-    card.appendChild(meta);
-    box.appendChild(card);
-  });
+  suspected.forEach((s, i) => box.appendChild(buildSuspectedCard(s, startIndex + i)));
 }
+
+let _findingsSignature = null;
 
 function renderFindingsList(findings, suspected) {
   const box = $("findings-list");
+  if (findings === null) {
+    _findingsSignature = null;
+    box.innerHTML = "";
+    return;
+  }
   if ((!findings || !findings.length) && (!suspected || !suspected.length)) {
+    _findingsSignature = "0:0";
     box.innerHTML = '<div class="empty">No oracle-confirmed findings yet.</div>';
     return;
   }
+  // Polling re-fetches the full list every ~1s; findings/suspected leads are add-only
+  // and immutable once written, so a count signature is a sufficient, cheap diff — skip
+  // the rebuild entirely when nothing changed, so an operator-expanded <details> card
+  // (and scroll position) survive the next poll instead of resetting every second.
+  const signature = (findings || []).length + ":" + (suspected || []).length;
+  if (signature === _findingsSignature) return;
+  _findingsSignature = signature;
   box.innerHTML = "";
   if (!findings || !findings.length) {
     const note = document.createElement("div");
@@ -707,46 +864,8 @@ function renderFindingsList(findings, suspected) {
     note.textContent = "No oracle-confirmed findings yet.";
     box.appendChild(note);
   }
-  (findings || []).forEach((f) => {
-    const card = document.createElement("div");
-    card.className = "fcard " + (f.severity || "");
-    const head = document.createElement("div");
-    head.className = "fhead";
-    const cls = document.createElement("span");
-    cls.className = "fclass";
-    cls.textContent = f.vuln_class || "finding";
-    const sev = document.createElement("span");
-    sev.className = "fsev";
-    sev.textContent = f.severity || "unknown";
-    head.append(cls, sev);
-    card.appendChild(head);
-    const meta = document.createElement("div");
-    meta.className = "fmeta";
-    addMetaRow(meta, "Oracle", f.oracle_used);
-    addMetaRow(meta, "Evidence", f.evidence_ref);
-    addMetaRow(meta, "Status", f.status);
-    if (f.chain_precondition) addMetaRow(meta, "Chain", f.chain_precondition);
-    card.appendChild(meta);
-    (f.chains || []).forEach((ch) => {
-      const row = document.createElement("div");
-      row.className = "chain";
-      ch.nodes.forEach((n, i) => {
-        const cn = document.createElement("span");
-        cn.className = "cn";
-        cn.textContent = n;
-        row.appendChild(cn);
-        if (i < ch.kinds.length) {
-          const edge = document.createElement("span");
-          edge.className = "ce " + (ch.kinds[i] === "derived_credential" ? "derived" : "");
-          edge.textContent = ch.kinds[i] === "derived_credential" ? "→ credential" : "→ enables";
-          row.appendChild(edge);
-        }
-      });
-      card.appendChild(row);
-    });
-    box.appendChild(card);
-  });
-  renderSuspectedInto(box, suspected);
+  (findings || []).forEach((f, i) => box.appendChild(buildFindingCard(f, i)));
+  renderSuspectedInto(box, suspected, (findings || []).length);
 }
 
 function renderSurfaceTree(surface) {
