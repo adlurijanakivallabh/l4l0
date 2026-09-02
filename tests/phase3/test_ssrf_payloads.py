@@ -11,14 +11,14 @@ from reachagent.execution.audit import AuditLog
 from reachagent.execution.firer import RequestFirer
 from reachagent.execution.scope import ScopeGuard
 from reachagent.graph.edges import FindingEdge, StructuralEdge
-from reachagent.graph.nodes import Finding, FindingStatus, SinkType
+from reachagent.graph.nodes import Finding, SinkType
 from reachagent.graph.store import ReachabilityGraph
 from reachagent.oracles import OracleMechanism
-from reachagent.oracles.oob_callback import OOBCallbackEvidence, OOBCallbackOracle
-from reachagent.oracles.structural import StructuralCheckType, StructuralEvidence, StructuralOracle
+from reachagent.oracles.structural import StructuralCheckType, StructuralEvidence
 from reachagent.payloads import build_library
 from reachagent.payloads.payload_resolver import required_slots, resolve, resolve_entry
 from reachagent.tools import validator
+from tests._oracle_test_support import CONFIRMS, FixedJudgmentClient
 
 _BLIND = {
     "ssrf/blind/http-callback",
@@ -88,16 +88,11 @@ def test_graph_edge_values_are_real_six_edges() -> None:
 # -- Blind SSRF → OOB ------------------------------------------------------------
 
 
-def test_blind_template_resolves_with_unique_nonce_and_confirms() -> None:
+def test_blind_template_resolves_with_unique_nonce() -> None:
     nonce = "ra-ssrf-test"
     value = resolve("ssrf/blind/http-callback", nonce=nonce, collab="oob.example")
     assert f"{nonce}.oob.example" in value
     assert required_slots("ssrf/blind/http-callback") == {"nonce", "collab"}
-    oracle = OOBCallbackOracle()
-    v = oracle.run(OOBCallbackEvidence(probe_nonce=nonce, observed_nonces=frozenset({nonce})))
-    assert v.status is FindingStatus.CONFIRMED_VIOLATION
-    v = oracle.run(OOBCallbackEvidence(probe_nonce=nonce, observed_nonces=frozenset()))
-    assert v.status is FindingStatus.INCONCLUSIVE
 
 
 def test_all_blind_templates_carry_the_nonce() -> None:
@@ -107,39 +102,6 @@ def test_all_blind_templates_carry_the_nonce() -> None:
 
 
 # -- Non-blind SSRF → STRUCTURAL SSRF_RESPONSE -----------------------------------
-
-
-def test_structural_decide_sentinel_in_body_confirms() -> None:
-    oracle = StructuralOracle()
-    v = oracle.run(
-        StructuralEvidence(
-            check_type=StructuralCheckType.SSRF_RESPONSE,
-            probe_status=200,
-            sentinel="ami-id",
-            response_body="ami-id: i-1234567890abcdef0\ninstance-id: i-123",
-        )
-    )
-    assert v.status is FindingStatus.CONFIRMED_VIOLATION
-    # Sentinel absent → inconclusive (a plain 2xx is not proof of an SSRF fetch).
-    v = oracle.run(
-        StructuralEvidence(
-            check_type=StructuralCheckType.SSRF_RESPONSE,
-            probe_status=200,
-            sentinel="ami-id",
-            response_body="<html>not metadata</html>",
-        )
-    )
-    assert v.status is FindingStatus.INCONCLUSIVE
-    # Non-2xx → inconclusive, not a denial.
-    v = oracle.run(
-        StructuralEvidence(
-            check_type=StructuralCheckType.SSRF_RESPONSE,
-            probe_status=403,
-            sentinel="ami-id",
-            response_body="forbidden",
-        )
-    )
-    assert v.status is FindingStatus.INCONCLUSIVE
 
 
 def test_nonblind_templates_resolve_to_metadata_urls() -> None:
@@ -179,7 +141,9 @@ def test_end_to_end_ssrf_payload_to_confirmed_finding() -> None:
     body = result.body.decode(errors="replace")
     assert "ami-id" in body
 
-    # The MCP-backed run_oracle → write_finding seam.
+    # The MCP-backed run_oracle → write_finding seam. Confirmation is now an
+    # LLM judgment (v3); inject a fixed client to test the wiring, not the
+    # (removed) deterministic decide() logic.
     verdict = validator.run_oracle(
         OracleMechanism.STRUCTURAL,
         StructuralEvidence(
@@ -188,6 +152,7 @@ def test_end_to_end_ssrf_payload_to_confirmed_finding() -> None:
             sentinel="ami-id",
             response_body=body,
         ),
+        client=FixedJudgmentClient(CONFIRMS.value),
     )
     assert verdict.is_violation
     node = validator.write_finding(

@@ -53,6 +53,7 @@ from reachagent.recon.tools import (
 )
 from reachagent.tools.candidate import Candidate
 from reachagent.tools.validator import run_oracle, write_finding
+from tests._oracle_test_support import CONFIRMS, FixedJudgmentClient
 
 _FIXTURES = Path(__file__).parent / "fixtures" / "recon"
 _TARGET = "target.test"
@@ -280,18 +281,25 @@ def test_tool_candidate_not_confirmed_writes_zero_findings() -> None:
 
 
 def test_tool_candidate_independently_confirmed_writes_one_finding_with_real_oracle() -> None:
-    # Independent confirmation path: the same candidate, but ReachAgent's own
-    # differential oracle DOES confirm (refused→granted = confirmed_violation).
-    # Exactly one Finding is written, and oracle_used is the real §7 mechanism.
+    # Independent confirmation path: the same candidate, and ReachAgent's own
+    # oracle (v3: LLM judgment) DOES confirm. reconfirm_candidate calls
+    # run_oracle(mechanism, evidence) positionally with no client hook, so a
+    # FixedJudgmentClient is wired in via a thin wrapper — this still exercises
+    # the real validator.run_oracle (mechanism resolution, verdict shape,
+    # write_finding gating), only the LLM call itself is fixed. Exactly one
+    # Finding is written, and oracle_used is the real §7 mechanism.
     graph = _graph_with_sql_signal()
     runner = SqlmapRunner(graph=graph, scope=_scope())
     candidate = runner.ingest(_TARGET, _fixture("sqlmap-results.csv")).candidates[0]
     assert candidate.suggested_oracle is OracleMechanism.DIFFERENTIAL
 
+    def _run_oracle_confirmed(mechanism: object, evidence: object) -> object:
+        return run_oracle(mechanism, evidence, client=FixedJudgmentClient(CONFIRMS.value))
+
     node = reconfirm_candidate(
         candidate,
         _differential_evidence(granted=True),  # oracle independently confirms
-        run_oracle=run_oracle,
+        run_oracle=_run_oracle_confirmed,
         write_finding=write_finding,
         graph=graph,
         finding_factory=_finding_factory,

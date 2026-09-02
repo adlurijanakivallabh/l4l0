@@ -1,23 +1,22 @@
-"""Validator tool subset (plan §13, §4).
+"""Validator tool subset (plan §13, §4; v3 architecture decision — CLAUDE.md).
 
-Independently re-derives confirmation using deterministic oracles only — no
-access to or incentive to agree with the Explorer's classification (§4).
-Sonnet-tier, constrained to pre-defined verification procedures (§4). The only
-role that can call ``run_oracle`` and ``write_finding`` (§13, CLAUDE.md
-non-negotiable).
+The only role that can call ``run_oracle`` and ``write_finding`` (§13, CLAUDE.md).
 
-``run_oracle`` (Task 6) is the sole code path that can produce a *confirmed*
-result: it dispatches to one of the deterministic oracle families (§7), each of
-which returns an :class:`~reachagent.oracles.base.OracleVerdict` — the only type
-in the codebase that carries a confirmed verdict. ``write_finding`` /
-``mark_inconclusive`` (Task 7) commit the outcome; they are stubbed here until
-that task.
+``run_oracle`` is still the sole code path that can produce a *confirmed*
+result — that discipline is unchanged — but per the operator's explicit,
+final v3 decision it now judges real, already-fired evidence via LLM
+reasoning (``oracles/llm_judgment.py``) rather than a fixed per-mechanism
+``decide()`` function. It still returns an
+:class:`~reachagent.oracles.base.OracleVerdict` — the only type in the
+codebase that carries a confirmed verdict — so every existing driver call
+site and ``write_finding``'s own gate are unchanged. ``write_finding`` /
+``mark_inconclusive`` commit the outcome.
 
 **Module surface is load-bearing.** ``tests/phase1/test_tool_boundaries.py``
 asserts this module exposes *exactly* ``run_oracle``, ``write_finding``, and
 ``mark_inconclusive`` among non-underscore callables. Oracle classes, mechanisms,
-and the registry are therefore reached through module aliases (``_oracles`` and
-friends), never imported by name — a name-bound class is callable and would leak
+and the judgment function are therefore reached through module aliases (``_oracles``
+and friends), never imported by name — a name-bound class is callable and would leak
 into the tool surface (the same discipline as the Explorer, Task 5).
 """
 
@@ -28,7 +27,7 @@ from typing import TYPE_CHECKING
 from reachagent.graph import nodes as _nodes
 from reachagent.oracles import OracleMechanism as _OracleMechanism
 from reachagent.oracles import evidence as _evidence
-from reachagent.oracles import registry as _registry
+from reachagent.oracles import llm_judgment as _llm_judgment
 from reachagent.tools import validator_support as _support
 
 if TYPE_CHECKING:
@@ -44,21 +43,21 @@ def run_oracle(
     audit: object | None = None,
     identity: str = "validator",
     target: str = "oracle",
+    client: object | None = None,
 ) -> OracleVerdict:
-    """Execute one deterministic oracle family (§7) — the only path to a confirmed result.
+    """Judge real, already-fired evidence via LLM reasoning — the only path to a confirmed result.
 
-    Resolves ``mechanism`` to its registered :class:`~reachagent.oracles.base.Oracle`
-    and runs it against ``evidence``. The oracle's scripted logic — never any LLM
-    input — decides the :class:`~reachagent.graph.nodes.FindingStatus`. The returned
-    :class:`OracleVerdict` is the sole carrier of a ``confirmed`` verdict in the
-    system; ``write_finding`` (Task 7) is gated behind ``verdict.is_violation``.
-
-    Raises :class:`~reachagent.oracles.registry.UnknownOracleError` (from the
-    registry) if no oracle is registered for ``mechanism`` — an unimplemented or
-    mistyped family fails loudly rather than passing as a silent inconclusive.
+    Resolves ``mechanism`` and hands ``evidence`` (a real request/response capture —
+    unchanged from before) to :func:`reachagent.oracles.llm_judgment.judge`, which
+    reasons over it and returns an :class:`OracleVerdict`. Fail-closed throughout
+    that function: any LLM/parsing failure comes back ``INCONCLUSIVE``, never a
+    fabricated violation. ``write_finding`` is gated behind ``verdict.is_violation``,
+    exactly as before this decision. ``client`` (any object exposing ``propose_json``)
+    is injectable for hermetic tests — omit it in production to use the scan's
+    configured provider.
     """
     mech = _OracleMechanism(mechanism) if not isinstance(mechanism, _OracleMechanism) else mechanism
-    verdict = _registry.get_oracle(mech).run(evidence)
+    verdict = _llm_judgment.judge(mech, evidence, client=client)
     if audit is not None and verdict.status is _nodes.FindingStatus.INCONCLUSIVE:
         record = getattr(audit, "record_oracle_result", None)
         if callable(record):

@@ -5,6 +5,7 @@ from __future__ import annotations
 import httpx
 
 from reachagent.scan.entrypoint import scan_target
+from tests._oracle_test_support import CONFIRMS, FixedJudgmentClient
 
 
 def _handler(request: httpx.Request) -> httpx.Response:
@@ -27,7 +28,19 @@ def _handler(request: httpx.Request) -> httpx.Response:
     return httpx.Response(200, text="safe")
 
 
-def test_scan_e2e_generic_sqli(tmp_path):  # noqa: ANN001
+def test_scan_e2e_generic_sqli(tmp_path, monkeypatch):  # noqa: ANN001
+    # v3 (CLAUDE.md): confirmation is now an LLM judgment, not the removed
+    # decide() logic, and scan_target's full pipeline has no client= seam to
+    # inject through. Fix the LLM provider factory judge() falls back to, so
+    # this test asserts WIRING (evidence -> confirmed verdict -> finding),
+    # not judgment itself.
+    import reachagent.oracles.llm_judgment as _llm_judgment
+
+    monkeypatch.setattr(
+        _llm_judgment,
+        "build_openai_compatible_client",
+        lambda **kw: FixedJudgmentClient(CONFIRMS.value),
+    )
     surface = tmp_path / "surface.yaml"
     surface.write_text(
         "endpoints:\n"

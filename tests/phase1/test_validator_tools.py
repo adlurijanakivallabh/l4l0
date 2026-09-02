@@ -33,10 +33,17 @@ from reachagent.oracles.differential import (
 from reachagent.tools import validator
 from reachagent.tools.candidate import Candidate, ResponseSignal
 from reachagent.tools.validator_support import UnconfirmedFindingError
+from tests._oracle_test_support import CONFIRMS, FixedJudgmentClient
 
 
 def _violation_verdict(ref: str = "bola/orders/42") -> OracleVerdict:
-    """A genuine confirmed_violation verdict, produced through run_oracle."""
+    """A confirmed_violation verdict, produced through run_oracle.
+
+    v3 (CLAUDE.md): confirmation is now an LLM judgment, not something a
+    hermetic test can re-derive deterministically from evidence content — so
+    the judgment is pinned via an injected client, and what's under test is
+    that run_oracle/write_finding correctly relay that verdict.
+    """
     ev = DifferentialEvidence(
         axis=DiffAxis.CROSS_IDENTITY,
         expectation=DiffExpectation.PROBE_UNAUTHORIZED,
@@ -44,7 +51,9 @@ def _violation_verdict(ref: str = "bola/orders/42") -> OracleVerdict:
         probe=Observation("attacker", 200, '{"ssn":"1"}'),
         evidence_ref=ref,
     )
-    return validator.run_oracle(OracleMechanism.DIFFERENTIAL, ev)
+    return validator.run_oracle(
+        OracleMechanism.DIFFERENTIAL, ev, client=FixedJudgmentClient(CONFIRMS.value)
+    )
 
 
 def _finding() -> Finding:

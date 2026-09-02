@@ -14,6 +14,7 @@ from reachagent.execution import RequestFirer, ScopeGuard
 from reachagent.graph.nodes import Endpoint, Parameter
 from reachagent.graph.store import ReachabilityGraph
 from reachagent.scan.orchestrator import _ValidatorSeam, run_open_redirect
+from tests._oracle_test_support import CONFIRMS, FixedJudgmentClient
 
 _BASE = "http://or.test"
 
@@ -45,7 +46,18 @@ def _run(handler: object, graph: ReachabilityGraph | None = None) -> list:
     return graph.findings()
 
 
-def test_confirms_when_attacker_url_echoed_into_location() -> None:
+def test_confirms_when_attacker_url_echoed_into_location(monkeypatch) -> None:  # noqa: ANN001
+    """Confirmation is now an LLM judgment (v3, CLAUDE.md) rather than a fixed
+    decide(); _ValidatorSeam.run calls tools.validator.run_oracle with no
+    client= passthrough, so pin the verdict by monkeypatching the client
+    builder it constructs internally.
+    """
+    import reachagent.oracles.llm_judgment as _llm_judgment
+
+    monkeypatch.setattr(
+        _llm_judgment, "build_openai_compatible_client", lambda: FixedJudgmentClient(CONFIRMS.value)
+    )
+
     captured: list[str] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -104,7 +116,14 @@ def test_post_endpoints_are_never_probed() -> None:
     assert seen == []
 
 
-def test_recognizes_multiple_redirect_param_name_variants() -> None:
+def test_recognizes_multiple_redirect_param_name_variants(monkeypatch) -> None:  # noqa: ANN001
+    """Same LLM-judgment pinning as above — verdict is now beyond fixture control."""
+    import reachagent.oracles.llm_judgment as _llm_judgment
+
+    monkeypatch.setattr(
+        _llm_judgment, "build_openai_compatible_client", lambda: FixedJudgmentClient(CONFIRMS.value)
+    )
+
     for name in ("redirect", "returnUrl", "dest", "url"):
         graph = _graph(param_name=name)
 

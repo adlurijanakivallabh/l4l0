@@ -22,6 +22,7 @@ from reachagent.execution import RequestFirer, ScopeGuard
 from reachagent.graph.nodes import Host
 from reachagent.graph.store import ReachabilityGraph
 from reachagent.scan.orchestrator import _ValidatorSeam, run_default_credentials
+from tests._oracle_test_support import CONFIRMS, FixedJudgmentClient
 
 _LOGIN_PAGE = """
 <html><body>
@@ -54,6 +55,18 @@ def _clean_handler(request: httpx.Request) -> httpx.Response:
 
 
 def test_confirmed_finding_records_a_pattern_with_the_tech_signal(monkeypatch) -> None:  # noqa: ANN001
+    # v3 (CLAUDE.md): confirmation is an LLM judgment now, not the removed
+    # decide() logic, and the seam here has no client= seam to inject through
+    # (seam.run calls validator.run_oracle with no client kwarg) — so fix the
+    # provider factory judge() falls back to, same as
+    # tests/phase1/test_confirm_error_based_e2e.py.
+    import reachagent.oracles.llm_judgment as _llm_judgment
+
+    monkeypatch.setattr(
+        _llm_judgment,
+        "build_openai_compatible_client",
+        lambda **_kw: FixedJudgmentClient(CONFIRMS.value),
+    )
     calls: list[tuple[str, str, str, str]] = []
     monkeypatch.setattr(
         "reachagent.memory.pattern_db.record_confirmed_pattern",
@@ -109,6 +122,17 @@ def test_no_pattern_recorded_when_nothing_is_confirmed(monkeypatch) -> None:  # 
 
 
 def test_no_pattern_recorded_when_graph_has_no_technology_signal(monkeypatch) -> None:  # noqa: ANN001
+    # v3 (CLAUDE.md): same provider-factory fix as the test above — this
+    # test needs a real confirmed Finding to exist so it can assert nothing
+    # was recorded for it (no technology signal), not that confirmation
+    # itself failed.
+    import reachagent.oracles.llm_judgment as _llm_judgment
+
+    monkeypatch.setattr(
+        _llm_judgment,
+        "build_openai_compatible_client",
+        lambda **_kw: FixedJudgmentClient(CONFIRMS.value),
+    )
     calls: list[tuple[str, str, str, str]] = []
     monkeypatch.setattr(
         "reachagent.memory.pattern_db.record_confirmed_pattern",

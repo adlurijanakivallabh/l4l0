@@ -1,8 +1,8 @@
 """Known-vulnerable-version detector — hermetic tests (Prober-injection pattern).
 
-Uses the real default registry runner (no validator import, no fake oracle) —
-same pattern as test_cloud_bucket.py. The oracle's own decide() branch is
-covered separately in tests/phase3/test_known_vulnerable_version_oracle.py.
+v3: the oracle is an LLM judgment call, not a deterministic decide() branch,
+so confirmation-path tests inject a fixed oracle_runner instead of relying
+on the real registry runner to produce a specific verdict.
 """
 
 from __future__ import annotations
@@ -13,6 +13,7 @@ from reachagent.cve_intel.detector import (
     detect_known_vulnerable_version,
 )
 from reachagent.cve_intel.nvd_client import CveMatch
+from tests._oracle_test_support import CONFIRMS, fixed_oracle_runner
 
 _VERSION = "Apache Tomcat/7.0.92"
 _MATCH = (CveMatch(cve_id="CVE-2019-0232", cvss_score=9.8, severity="critical", summary="x"),)
@@ -22,7 +23,7 @@ def test_confirmed_when_version_string_present_in_live_response() -> None:
     def fire_probe() -> VersionProbe:
         return VersionProbe(status=404, haystack=f"<address>{_VERSION}</address>")
 
-    prober = VersionProber(fire_probe=fire_probe)
+    prober = VersionProber(fire_probe=fire_probe, oracle_runner=fixed_oracle_runner(CONFIRMS))
     result = detect_known_vulnerable_version(
         prober, version_string=_VERSION, cve_matches=_MATCH, evidence_ref="ref-1"
     )

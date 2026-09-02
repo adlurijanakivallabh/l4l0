@@ -38,6 +38,7 @@ from reachagent.graph.store import (
 )
 from reachagent.identity.store import IdentityStore
 from reachagent.recon.crapi_recon import run_recon
+from tests._oracle_test_support import CONFIRMS, FixedJudgmentClient
 
 BASE_URL = "https://crapi.test"
 _HOST = "crapi.test"
@@ -79,6 +80,26 @@ _VEH_TPL = "/identity/api/v2/vehicle/{vehicleId}/location"
 _RPT_TPL = "/workshop/api/mechanic/report/{reportId}"
 _VEH_CONCRETE = f"/identity/api/v2/vehicle/{_VEH_UUID}/location"
 _RPT_CONCRETE = f"/workshop/api/mechanic/report/{_RPT_UUID}"
+
+
+def _stub_judgment(monkeypatch: pytest.MonkeyPatch, status=CONFIRMS) -> None:
+    """Force run_oracle's LLM judgment to a fixed status (v3 architecture, CLAUDE.md).
+
+    ``bola.detector.detect`` drives confirmation through the MCP ``run_oracle``
+    tool (``_call(mcp, "run_oracle", ...)``), which exposes no ``client=`` kwarg
+    to a hand-caller — so this patches the same default-provider factory
+    ``judge()`` falls back to when no client is supplied, exactly like
+    ``tests/phase2/test_bola_enables_precondition.py::_stub_judgment``. These
+    tests assert the detector/chain WIRING reacts correctly given a fixed
+    verdict, not the now-removed deterministic decide() logic.
+    """
+    from reachagent.oracles import llm_judgment as _judgment
+
+    monkeypatch.setattr(
+        _judgment,
+        "build_openai_compatible_client",
+        lambda **_: FixedJudgmentClient(status.value),
+    )
 
 
 def _seed_graph_vehicle() -> ReachabilityGraph:
@@ -241,7 +262,8 @@ def _secure_transport() -> httpx.MockTransport:
 # ---------------------------------------------------------------------------
 
 
-def test_vehicle_bola_hop_confirmed() -> None:
+def test_vehicle_bola_hop_confirmed(monkeypatch: pytest.MonkeyPatch) -> None:
+    _stub_judgment(monkeypatch)
     graph = _seed_graph_vehicle()
     transport = _violation_transport(_TOK_A)
     result = detect(
@@ -280,7 +302,8 @@ def test_secure_target_no_findings() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_two_hop_chain_enables_edge_and_chain_paths() -> None:
+def test_two_hop_chain_enables_edge_and_chain_paths(monkeypatch: pytest.MonkeyPatch) -> None:
+    _stub_judgment(monkeypatch)
     graph = _seed_graph_two_hops()
     detect(
         graph,
@@ -353,7 +376,9 @@ def test_detector_fires_only_get_requests() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_enumerable_report_bola_is_standalone_no_enables_edge() -> None:
+def test_enumerable_report_bola_is_standalone_no_enables_edge(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     # crAPI mechanic-report: a short-int report_id is guessable, so a cross-user
     # read needs no upstream producer. The detector must confirm the BOLA, classify
     # it enumerable_identifier, stamp that on the finding metadata, and write NO
@@ -364,6 +389,7 @@ def test_enumerable_report_bola_is_standalone_no_enables_edge() -> None:
     # query-injection instance read (consumed='4' → 'enumerable'). Both are real
     # BOLAs; neither gets an enables edge (no upstream producer). We assert the
     # enumerable hop carries the standalone-BOLA invariant.
+    _stub_judgment(monkeypatch)
     graph = _seed_graph_enumerable_report()
     result = detect(
         graph,
@@ -390,11 +416,12 @@ def test_enumerable_report_bola_is_standalone_no_enables_edge() -> None:
     assert not any(dst == enum_fn for _, dst in graph.enables_edges())
 
 
-def test_order_details_bola_is_enumerable_standalone() -> None:
+def test_order_details_bola_is_enumerable_standalone(monkeypatch: pytest.MonkeyPatch) -> None:
     # crAPI's THIRD documented BOLA — order-details (GET /…/orders/{order_id}).
     # Same generic shape as the enumerable report, via strategy-2 (path template):
     # a short-int order_id → enumerable_identifier, standalone, no enables edge.
     # No detector change was needed — this is the "trivially expressible" add.
+    _stub_judgment(monkeypatch)
     graph = _seed_graph_order()
     result = detect(
         graph,

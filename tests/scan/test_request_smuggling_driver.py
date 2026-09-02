@@ -16,6 +16,7 @@ import threading
 
 from reachagent.graph.store import ReachabilityGraph
 from reachagent.scan.orchestrator import _ValidatorSeam, run_request_smuggling
+from tests._oracle_test_support import CONFIRMS, FixedJudgmentClient
 
 _CONFUSED_DELAY = 0.3
 
@@ -79,7 +80,20 @@ def _start_server(mode: str) -> tuple[socket.socket, int]:
     return sock, port
 
 
-def test_confirms_a_finding_against_a_confused_backend() -> None:
+def test_confirms_a_finding_against_a_confused_backend(monkeypatch) -> None:  # noqa: ANN001
+    # v3 (CLAUDE.md): confirmation is now an LLM judgment, not the removed
+    # decide() logic, and run_request_smuggling has no client= seam to inject
+    # through (only tools.validator.run_oracle's direct callers do). Fix the
+    # LLM provider factory that reachagent.oracles.llm_judgment.judge() falls
+    # back to, so this test asserts WIRING -- does a confirmed verdict flow
+    # from the real timing probe through corroboration to write_finding --
+    # not judgment itself. The confused backend still produces a real timing
+    # delay; only the oracle's verdict is made deterministic.
+    import reachagent.oracles.llm_judgment as _llm_judgment
+
+    monkeypatch.setattr(
+        _llm_judgment, "build_openai_compatible_client", lambda: FixedJudgmentClient(CONFIRMS.value)
+    )
     sock, port = _start_server("confused")
     try:
         graph = ReachabilityGraph()

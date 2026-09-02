@@ -16,6 +16,7 @@ from reachagent.execution import RequestFirer, ScopeGuard
 from reachagent.graph.nodes import Endpoint, Parameter
 from reachagent.graph.store import ReachabilityGraph
 from reachagent.scan.orchestrator import _ValidatorSeam, run_xss_stored
+from tests._oracle_test_support import CONFIRMS, FixedJudgmentClient
 
 _BASE = "http://xs.test"
 
@@ -49,7 +50,18 @@ def _run(handler: object) -> list:
     return graph.findings()
 
 
-def test_confirms_when_tag_reflects_in_independent_reread() -> None:
+def test_confirms_when_tag_reflects_in_independent_reread(monkeypatch) -> None:  # noqa: ANN001
+    # v3 (CLAUDE.md): confirmation is now an LLM judgment, not the removed
+    # decide() logic. seam.run -> validator.run_oracle has no client= seam to
+    # inject through here, so fix the LLM provider factory that
+    # llm_judgment.judge() falls back to — this test then asserts WIRING
+    # (a confirmed verdict flows through to graph.findings()), not judgment
+    # itself.
+    import reachagent.oracles.llm_judgment as _llm_judgment
+
+    monkeypatch.setattr(
+        _llm_judgment, "build_openai_compatible_client", lambda: FixedJudgmentClient(CONFIRMS.value)
+    )
     captured: list[dict] = []
 
     def handler(request: httpx.Request) -> httpx.Response:

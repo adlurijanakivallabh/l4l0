@@ -14,6 +14,7 @@ from reachagent.graph.store import ReachabilityGraph
 from reachagent.payloads import PayloadLibrary
 from reachagent.payloads.payload_resolver import template_refs
 from reachagent.scan.entrypoint import _harvest_baseline_value, scan_target
+from tests._oracle_test_support import CONFIRMS, FixedJudgmentClient
 
 BASE_URL = "https://target.test"
 
@@ -178,7 +179,19 @@ def _vampi_handler(request: httpx.Request) -> httpx.Response:
     return httpx.Response(404, text="not found")
 
 
-def test_e2e_error_based_sqli_to_finding(tmp_path: Path) -> None:
+def test_e2e_error_based_sqli_to_finding(tmp_path: Path, monkeypatch) -> None:  # noqa: ANN001
+    # v3 (CLAUDE.md): confirmation is now an LLM judgment, not the removed
+    # decide() logic, and scan_target's full pipeline has no client= seam to
+    # inject through (only tools.validator.run_oracle's direct callers do).
+    # Fix the LLM provider factory that reachagent.oracles.llm_judgment.judge()
+    # falls back to when no client is supplied, so this test asserts WIRING —
+    # does a confirmed verdict flow through fingerprint -> baseline harvest ->
+    # quote-break -> write_finding -> graph.findings() — not judgment itself.
+    import reachagent.oracles.llm_judgment as _llm_judgment
+
+    monkeypatch.setattr(
+        _llm_judgment, "build_openai_compatible_client", lambda: FixedJudgmentClient(CONFIRMS.value)
+    )
     surface = tmp_path / "surface.yaml"
     surface.write_text(_VAMPI_SURFACE)
     result = scan_target(

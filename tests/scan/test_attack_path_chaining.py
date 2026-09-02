@@ -2,18 +2,26 @@
 real session captured -> synthetic identity spawned -> re-hunt -> new finding
 linked back via an `enables` edge.
 
-Confirmation itself is deterministic (auth-bypass differential), but `detect_nosqli`
-always tries the TIMING fallback too when auth-bypass doesn't confirm — against
-/admin/secret under the "anon" identity (no token, so auth-bypass correctly fails),
-that fallback runs against a near-zero-latency MockTransport, whose tiny variance can
-spuriously cross the timing oracle's significance threshold from pure scheduler jitter
-alone. `_TIMING_TRIALS` is bumped exactly like `test_blind_injection_drivers.py`'s own
-documented remedy for this — diluting one stray outlier's weight on the mean — not a
-workaround for anything wrong in the production code.
+Confirmation itself used to be deterministic (auth-bypass differential); v3
+(CLAUDE.md) replaced that with LLM judgment (`oracles/llm_judgment.py`). This
+file's own tests need MULTIPLE distinct verdicts within a single run (e.g.
+/login's real bypass must confirm, while "anon" hitting /admin/secret — both
+baseline and probe correctly 401 with no admin token — must NOT) — a single
+flat fixed-verdict fake would spuriously confirm everything, so
+`_DifferentialJudge` below reproduces the OLD deterministic differential
+semantics (probe reached 2xx, baseline did not => confirmed_violation) by
+parsing the real evidence JSON handed to the judgment prompt, not a
+model call. `detect_nosqli` always tries the TIMING fallback too when
+auth-bypass doesn't confirm; `_DifferentialJudge` also sees that evidence
+shape and correctly returns inconclusive for it (it never carries a
+baseline/probe status pair), matching the desired "never spuriously confirm
+from timing noise" behavior `_TIMING_TRIALS` was already bumped for.
 """
 
 from __future__ import annotations
 
+import json
+import re
 import types
 
 import httpx
@@ -29,6 +37,36 @@ from reachagent.scan.orchestrator import _run_attack_path_chain, _ValidatorSeam,
 _BASE = "http://t.test"
 _ADMIN_TOKEN = "admin-tok-xyz"
 _DENOISED_TRIALS = 40
+
+_EVIDENCE_JSON_RE = re.compile(r"Evidence \(JSON.*?\):\n(\{.*\})\n\n", re.DOTALL)
+
+
+class _DifferentialJudge:
+    """Fake LLM client reproducing differential decide()'s exact semantics.
+
+    confirmed_violation only when the probe reached a 2xx status and the
+    baseline did not — the same rule the removed decide() applied. Any other
+    evidence shape (e.g. PairedTrialEvidence's timing fields, which have no
+    baseline/probe status pair) safely falls through to inconclusive.
+    """
+
+    def propose_json(self, prompt: str, *, max_tokens: int = 500) -> dict:
+        match = _EVIDENCE_JSON_RE.search(prompt)
+        if not match:
+            return {"status": "inconclusive", "reason": "no evidence parsed"}
+        evidence = json.loads(match.group(1))
+        baseline_status = (evidence.get("baseline") or {}).get("status_code", 0)
+        probe_status = (evidence.get("probe") or {}).get("status_code", 0)
+        if 200 <= probe_status < 300 and not (200 <= baseline_status < 300):
+            return {"status": "confirmed_violation", "reason": "probe 2xx, baseline was not"}
+        return {"status": "inconclusive", "reason": "no differential observed"}
+
+
+def _patch_judgment(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "reachagent.oracles.llm_judgment.build_openai_compatible_client",
+        lambda: _DifferentialJudge(),
+    )
 
 
 def _two_endpoint_graph() -> tuple[ReachabilityGraph, str, str]:
@@ -80,6 +118,7 @@ def _handler(request: httpx.Request) -> httpx.Response:
 def test_confirmed_nosqli_bypass_spawns_identity_and_confirms_a_new_finding_via_chaining(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _patch_judgment(monkeypatch)
     monkeypatch.setattr(_orchestrator, "_TIMING_TRIALS", _DENOISED_TRIALS)
     graph, _login_ep, _admin_ep = _two_endpoint_graph()
     identities = IdentityStore()
@@ -160,6 +199,7 @@ def test_confirmed_nosqli_bypass_spawns_identity_and_confirms_a_new_finding_via_
 def _lead_from_first_pass(monkeypatch: pytest.MonkeyPatch) -> tuple:
     """Shared setup: run pass 1 to get a real DerivedIdentityLead, everything else
     the caller needs to drive _run_attack_path_chain directly."""
+    _patch_judgment(monkeypatch)
     monkeypatch.setattr(_orchestrator, "_TIMING_TRIALS", _DENOISED_TRIALS)
     graph, _login_ep, _admin_ep = _two_endpoint_graph()
     identities = IdentityStore()
@@ -256,8 +296,17 @@ def test_attack_path_chain_browser_recon_failure_does_not_abort_the_rehunt(
     assert any("attack-path chain browser recon failed" in e.message for e in events)
 
 
-def test_chaining_is_a_no_op_when_no_lead_captured_real_session_material() -> None:
-    """If /login's bypass never returns real session material, nothing to chain into."""
+def test_chaining_is_a_no_op_when_no_lead_captured_real_session_material(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If /login's bypass never returns real session material, nothing to chain into.
+
+    Confirmation is injected here too so this genuinely tests "confirmed but no
+    session material" — without it, an unconfigured judgment would return
+    inconclusive and `leads == []` would hold for the wrong reason (never
+    confirmed at all), not the one this test's name and docstring claim.
+    """
+    _patch_judgment(monkeypatch)
 
     def clean_handler(request: httpx.Request) -> httpx.Response:
         value = request.url.params.get("user", "")

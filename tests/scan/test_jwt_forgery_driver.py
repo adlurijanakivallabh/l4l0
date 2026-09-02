@@ -13,13 +13,36 @@ from __future__ import annotations
 
 import httpx
 
+from reachagent.detection.oracle_gateway import OracleOutcome
 from reachagent.execution import RequestFirer, ScopeGuard
 from reachagent.graph.nodes import Endpoint
 from reachagent.graph.store import ReachabilityGraph
+from reachagent.oracles.base import OracleVerdict
 from reachagent.scan.orchestrator import _ValidatorSeam, run_jwt_forgery
+from tests._oracle_test_support import CONFIRMS, INCONCLUSIVE
 
 _BASE = "http://jwt.test"
 _VALID_TOKEN = "a-valid-session-token"
+
+
+def _real_evidence_run(self: _ValidatorSeam, mechanism: object, evidence: object) -> OracleOutcome:
+    """v3 (CLAUDE.md): confirmation is now an LLM judgment, not the removed
+    decide() logic. A blanket fixed verdict (FixedJudgmentClient) would confirm
+    on the FIRST forged variant tried (none-alg) regardless of its real probe
+    status, since run_jwt_forgery breaks its loop on the first is_violation —
+    defeating the point of this test, which is that only the kid-injection
+    variant actually gets accepted (200) by the broken verifier. So this stand-in
+    for _ValidatorSeam.run still looks at the real StructuralEvidence.probe_status
+    to decide, letting the test assert on real HTTP-response-driven wiring instead
+    of a specific LLM judgment.
+    """
+    status = CONFIRMS if evidence.probe_status == 200 else INCONCLUSIVE  # type: ignore[attr-defined]
+    ref = str(getattr(evidence, "evidence_ref", "") or "")
+    verdict = OracleVerdict(
+        mechanism=mechanism, status=status, evidence_ref=ref, reason="test-fixed-verdict"
+    )
+    self._last = verdict
+    return OracleOutcome(verdict)
 
 
 def _graph() -> ReachabilityGraph:
@@ -63,7 +86,9 @@ def test_all_four_forged_variants_are_attempted() -> None:
     assert sum(1 for t in seen_tokens if t != _VALID_TOKEN) == 4
 
 
-def test_kid_injection_token_accepted_confirms_a_finding() -> None:
+def test_kid_injection_token_accepted_confirms_a_finding(monkeypatch) -> None:  # noqa: ANN001
+    monkeypatch.setattr(_ValidatorSeam, "run", _real_evidence_run)
+
     from reachagent.payloads.payload_resolver import resolve
 
     kid_token = resolve("jwt_forgery/kid-injection")

@@ -12,11 +12,8 @@ import reachagent.execution.firer as _firer_mod
 from reachagent.execution.audit import AuditLog
 from reachagent.execution.firer import ReadOnlyFirstError, RequestFirer
 from reachagent.execution.scope import ScopeGuard
-from reachagent.graph.nodes import FindingStatus
 from reachagent.graph.store import ReachabilityGraph
 from reachagent.oracles import OracleMechanism
-from reachagent.oracles.oob_callback import OOBCallbackEvidence, OOBCallbackOracle
-from reachagent.oracles.structural import StructuralCheckType, StructuralEvidence, StructuralOracle
 from reachagent.payloads import build_library
 from reachagent.payloads.payload_resolver import required_slots, resolve, template_refs
 from reachagent.scan.entrypoint import detect_target_type, scan_target
@@ -82,27 +79,9 @@ def test_jwt_library_rows_load_and_sink_match() -> None:
     assert template_refs() <= catalog
 
 
-def test_jwt_forgery_decide_table() -> None:
-    oracle = StructuralOracle()
-    v = oracle.run(
-        StructuralEvidence(
-            check_type=StructuralCheckType.JWT_FORGERY, baseline_status=200, probe_status=200
-        )
-    )
-    assert v.status is FindingStatus.CONFIRMED_VIOLATION
-    v = oracle.run(
-        StructuralEvidence(
-            check_type=StructuralCheckType.JWT_FORGERY, baseline_status=200, probe_status=401
-        )
-    )
-    assert v.status is FindingStatus.CONFIRMED_DENIED
-    # Baseline must be a valid-token 2xx — a failed baseline is inconclusive.
-    v = oracle.run(
-        StructuralEvidence(
-            check_type=StructuralCheckType.JWT_FORGERY, baseline_status=500, probe_status=200
-        )
-    )
-    assert v.status is FindingStatus.INCONCLUSIVE
+# v3: test_jwt_forgery_decide_table was removed — it called StructuralOracle().run()
+# with no injected LLM client and asserted on the now-removed decide()'s fixed
+# JWT_FORGERY outcomes.
 
 
 # -- Item 2/3: firer transient retry + honest audit attrs ----------------------
@@ -286,14 +265,9 @@ def test_oob_templates_require_nonce_and_collab() -> None:
         resolve("sqli_blind/oob-xxe-exfil", nonce="ra-xxe1")
 
 
-def test_oob_oracle_confirms_on_probe_nonce() -> None:
-    oracle = OOBCallbackOracle()
-    v = oracle.run(
-        OOBCallbackEvidence(probe_nonce="ra-xxe1", observed_nonces=frozenset({"ra-xxe1"}))
-    )
-    assert v.status is FindingStatus.CONFIRMED_VIOLATION
-    v = oracle.run(OOBCallbackEvidence(probe_nonce="ra-xxe1", observed_nonces=frozenset({"other"})))
-    assert v.status is FindingStatus.INCONCLUSIVE
+# v3: test_oob_oracle_confirms_on_probe_nonce was removed — it called
+# OOBCallbackOracle().run() with no injected LLM client and asserted on the
+# now-removed decide()'s fixed OOB_CALLBACK outcomes.
 
 
 # -- Invariants: six families, stimulus-only payloads, no tier leak ------------

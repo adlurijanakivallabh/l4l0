@@ -21,6 +21,7 @@ from reachagent.graph.nodes import Endpoint, Parameter
 from reachagent.graph.store import ReachabilityGraph
 from reachagent.scan import orchestrator as _orchestrator
 from reachagent.scan.orchestrator import _ValidatorSeam, run_xxe
+from tests._oracle_test_support import CONFIRMS, FixedJudgmentClient
 
 _BASE = "http://xxe.test"
 _FIXED_UUID = _uuid.UUID(int=0xABCDEF)
@@ -87,10 +88,20 @@ def test_skipped_entirely_without_oob_domain_configured(monkeypatch) -> None:  #
 
 
 def test_confirms_when_probe_nonce_observed(monkeypatch) -> None:  # noqa: ANN001
+    """Confirmation is now an LLM judgment (v3, CLAUDE.md) rather than a fixed
+    decide(); _ValidatorSeam.run calls tools.validator.run_oracle with no
+    client= passthrough, so pin the verdict by monkeypatching the client
+    builder it constructs internally.
+    """
+    import reachagent.oracles.llm_judgment as _llm_judgment
+
     monkeypatch.setenv("REACHAGENT_OOB_BASE_DOMAIN", "oob.test")
     monkeypatch.setattr(_orchestrator.uuid, "uuid4", lambda: _FIXED_UUID)
     _FakeCollaborator.hit = True
     monkeypatch.setattr(_collab_mod, "InteractshCollaborator", _FakeCollaborator)
+    monkeypatch.setattr(
+        _llm_judgment, "build_openai_compatible_client", lambda: FixedJudgmentClient(CONFIRMS.value)
+    )
 
     findings = _run(_default_handler)
     classes = {f.vuln_class for _fid, f in findings}

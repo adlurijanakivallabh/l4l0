@@ -16,6 +16,7 @@ from reachagent.execution import RequestFirer, ScopeGuard
 from reachagent.graph.nodes import Endpoint
 from reachagent.graph.store import ReachabilityGraph
 from reachagent.scan.orchestrator import _UNKEYED_HEADER, _ValidatorSeam, run_cache_poisoning
+from tests._oracle_test_support import CONFIRMS, FixedJudgmentClient
 
 _BASE = "http://cp.test"
 
@@ -46,9 +47,21 @@ def _run(handler: object, graph: ReachabilityGraph | None = None) -> list:
     return graph.findings()
 
 
-def test_confirms_when_marker_replayed_from_simulated_cache() -> None:
+def test_confirms_when_marker_replayed_from_simulated_cache(monkeypatch) -> None:  # noqa: ANN001
     """A real cache stores the first response and serves it back unchanged —
-    the re-read carries no poisoning header but still sees the marker."""
+    the re-read carries no poisoning header but still sees the marker.
+
+    Confirmation is now an LLM judgment (v3, CLAUDE.md) rather than a fixed
+    decide(); _ValidatorSeam.run calls tools.validator.run_oracle with no
+    client= passthrough, so pin the verdict by monkeypatching the client
+    builder it constructs internally.
+    """
+    import reachagent.oracles.llm_judgment as _llm_judgment
+
+    monkeypatch.setattr(
+        _llm_judgment, "build_openai_compatible_client", lambda: FixedJudgmentClient(CONFIRMS.value)
+    )
+
     cache: dict[str, str] = {}
 
     def handler(request: httpx.Request) -> httpx.Response:

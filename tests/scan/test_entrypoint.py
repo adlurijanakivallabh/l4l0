@@ -15,6 +15,7 @@ from reachagent.execution.scope import ScopeRule  # noqa: F401
 from reachagent.graph.nodes import Endpoint, Host
 from reachagent.graph.store import ReachabilityGraph
 from reachagent.scan.entrypoint import scan_target
+from tests._oracle_test_support import CONFIRMS, FixedJudgmentClient
 
 # -- ScopeGuard (canonical scope semantics — wildcard/case/deny precedence) --
 
@@ -404,9 +405,20 @@ def _dup_handler(request: httpx.Request) -> httpx.Response:
     return httpx.Response(404, text="not found")
 
 
-def test_findings_list_dedups_same_evidence(tmp_path) -> None:  # noqa: ANN001
+def test_findings_list_dedups_same_evidence(tmp_path, monkeypatch) -> None:  # noqa: ANN001
+    # v3 (CLAUDE.md): confirmation is now an LLM judgment, not the removed
+    # decide() logic, and scan_target's full pipeline has no client= seam to
+    # inject through. Fix the LLM provider factory that
+    # reachagent.oracles.llm_judgment.judge() falls back to, so this test still
+    # verifies its actual target: dedup of the returned findings list against
+    # the graph's node count when both endpoints confirm the same evidence_ref.
     from pathlib import Path as _Path
 
+    import reachagent.oracles.llm_judgment as _llm_judgment
+
+    monkeypatch.setattr(
+        _llm_judgment, "build_openai_compatible_client", lambda: FixedJudgmentClient(CONFIRMS.value)
+    )
     surface = _Path(tmp_path) / "surface.yaml"
     surface.write_text(_DUP_SURFACE)
     result = scan_target(

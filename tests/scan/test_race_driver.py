@@ -14,6 +14,7 @@ from reachagent.execution import RequestFirer, ScopeGuard
 from reachagent.graph.nodes import Endpoint, Parameter
 from reachagent.graph.store import ReachabilityGraph
 from reachagent.scan.orchestrator import _ValidatorSeam, run_business_logic, run_race
+from tests._oracle_test_support import CONFIRMS, FixedJudgmentClient
 
 _BASE = "http://race.test"
 
@@ -44,7 +45,18 @@ def _run(handler: object, graph: ReachabilityGraph | None = None) -> list:
     return graph.findings()
 
 
-def test_confirms_when_second_redemption_is_accepted() -> None:
+def test_confirms_when_second_redemption_is_accepted(monkeypatch) -> None:  # noqa: ANN001
+    # v3 (CLAUDE.md): confirmation is an LLM judgment, not the removed decide()
+    # logic. _ValidatorSeam.run -> validator.run_oracle has no client= seam
+    # reachable from here, so fix the provider factory judge() falls back to —
+    # this test then verifies WIRING (does a confirmed verdict flow through
+    # probe_race -> seam.write -> graph.findings()), not judgment itself.
+    import reachagent.oracles.llm_judgment as _llm_judgment
+
+    monkeypatch.setattr(
+        _llm_judgment, "build_openai_compatible_client", lambda: FixedJudgmentClient(CONFIRMS.value)
+    )
+
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json={"status": "redeemed"})
 

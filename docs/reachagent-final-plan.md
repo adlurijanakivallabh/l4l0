@@ -1,6 +1,41 @@
 # ReachAgent — Web/API Exploitation Agent
 ### Final Project Plan (July 2026)
 
+**Status: Locked — v3.0 (LLM-Autonomous Recon & Chaining — the deterministic oracle-gate
+removed).** Changes from v2.13: the operator made a final, explicit architecture decision after
+extensive session-long discussion (concrete worked examples across differential/marker/
+OOB-callback/cross-identity proof shapes, direct review of the actual oracle code, and
+engagement with three alternative designs — LLM-as-oracle, an independent second-agent review, a
+multi-stage LLM pipeline — each addressed on its merits): **the deterministic `run_oracle` gate
+(six per-mechanism `decide()` functions) is removed.** Confirmation is now an LLM judgment over
+real, already-fired request/response evidence (`oracles/llm_judgment.py::judge`), the same class
+of mechanism every major reference agentic-pentest project (Shannon, Strix, CAI, PentAGI,
+PentestGPT, hexstrike-ai, claude-bug-bounty) uses. `run_oracle`/`registry_runner` keep their
+existing signatures and call sites — every one of the ~30 orchestrator drivers and detector
+modules needed zero changes; only the decision INSIDE those two functions changed. The six
+legacy family modules (`structural.py`, `differential.py`, `business_rule.py`,
+`timing_statistical.py`, `oob_callback.py`, `execution_confirmation.py`) keep their evidence
+dataclasses (still the data-carrier types used everywhere) but their `decide()`/`Oracle.run()`
+logic is gone — `run()` now raises `NotImplementedError`, since nothing on the live path calls
+it. Metadata auto-fill logic that lived inside those `run()` methods (structural's header/
+body-projection snippet, timing's sample-array fill, OOB's channel fill) was relocated into
+`llm_judgment.py::_enrich_metadata`, applied regardless of the judgment outcome, so evidence
+display in the GUI/report is unaffected. Real-world cost, disclosed plainly: every confirmation
+attempt is now a live LLM call — no more free, instant, dependency-free checks. Two live
+integration gates (`test_live_vampi_phase1_gate`, `test_live_crapi_bola_gate`) now correctly
+require a configured LLM provider to produce any confirmed findings against their real Docker
+targets; this is the expected, disclosed consequence of the decision, not a bug. ~150 hermetic
+tests across the whole repo were updated (not gutted) to inject a deterministic fake judgment
+client (`tests/_oracle_test_support.py`) so they keep testing detector/driver WIRING — does the
+surrounding code correctly react to a given verdict — since testing the fixed decision logic
+itself is no longer possible by design. Full suite: 1737 passed, 2 failed (both the disclosed
+live-gate cases above), 11 skipped (pre-existing infra-gated). See the living plan file
+(`v3 — LLM-Autonomous Recon & Chaining`) for the full architecture (V1-V8: rich intent capture,
+LLM-controlled recon depth, open-ended parallel chaining, cross-host secret reuse, Burp Suite
+Pro MCP, confirmation-card redesign, multi-format professional reports, a sandboxed
+command-execution environment) — this entry documents only the oracle-removal foundation that
+work is built on.
+
 **Status: Locked — v2.13 (Phase 6, Stage E3 — ground-truth validation, 7 real bugs found live).**
 Changes from v2.12: manually compared confirmed findings from real GUI scans against researched,
 documented vulnerabilities for VAmPI/DVWA/Juice Shop/crAPI. Found and fixed 6 real bugs, each

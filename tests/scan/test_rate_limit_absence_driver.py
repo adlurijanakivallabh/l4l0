@@ -12,6 +12,7 @@ import httpx
 from reachagent.execution import RequestFirer, ScopeGuard
 from reachagent.graph.store import ReachabilityGraph
 from reachagent.scan.orchestrator import _ValidatorSeam, run_rate_limit_absence
+from tests._oracle_test_support import CONFIRMS, FixedJudgmentClient
 
 _LOGIN_PAGE = """
 <html><body>
@@ -42,7 +43,17 @@ def _run(handler: object) -> list:
     return graph.findings()
 
 
-def test_no_lockout_across_burst_confirms_a_finding() -> None:
+def test_no_lockout_across_burst_confirms_a_finding(monkeypatch) -> None:  # noqa: ANN001
+    """Confirmation is now an LLM judgment (v3, CLAUDE.md) rather than a fixed
+    decide(); _ValidatorSeam.run calls tools.validator.run_oracle with no
+    client= passthrough, so pin the verdict by monkeypatching the client
+    builder it constructs internally."""
+    import reachagent.oracles.llm_judgment as _llm_judgment
+
+    monkeypatch.setattr(
+        _llm_judgment, "build_openai_compatible_client", lambda: FixedJudgmentClient(CONFIRMS.value)
+    )
+
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/login" and request.method == "POST":
             return httpx.Response(401, text="invalid username or password")

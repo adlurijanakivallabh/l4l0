@@ -18,9 +18,33 @@ import ast
 import importlib
 from pathlib import Path
 
+import pytest
+
 from reachagent.mcp import server
 from reachagent.oracles import OracleMechanism
 from reachagent.tools import coordinator, explorer, validator
+from tests._oracle_test_support import CONFIRMS, FixedJudgmentClient
+
+
+def _stub_judgment(monkeypatch: pytest.MonkeyPatch, status: object = CONFIRMS) -> None:
+    """Force the MCP ``run_oracle`` tool's LLM judgment to a fixed status (v3, CLAUDE.md).
+
+    The MCP tool exposes no ``client=`` kwarg (see ``tools/validator.py::run_oracle``'s
+    docstring), so these dispatch tests patch the same default-provider factory
+    ``llm_judgment.judge()`` falls back to when no client is supplied — mirrors
+    ``tests/phase1/test_mcp_server.py::_stub_judgment``. What these tests actually
+    check is dispatch WIRING (does each mechanism route its evidence dict into the
+    right evidence dataclass and back out as a verdict with the right mechanism
+    tag) — not a specific evidence body deterministically producing a status, which
+    was the now-removed per-mechanism ``decide()``'s job.
+    """
+    from reachagent.oracles import llm_judgment as _judgment
+
+    monkeypatch.setattr(
+        _judgment,
+        "build_openai_compatible_client",
+        lambda **_: FixedJudgmentClient(status.value),
+    )
 
 
 def _tool_names(module: object) -> set[str]:
@@ -87,7 +111,10 @@ def _call(mcp: object, name: str, **kwargs: object) -> object:
     return tool.fn(**kwargs)
 
 
-def test_mcp_run_oracle_dispatches_structural_path_traversal() -> None:
+def test_mcp_run_oracle_dispatches_structural_path_traversal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _stub_judgment(monkeypatch)
     mcp = _built()
     verdict = _call(
         mcp,
@@ -106,7 +133,10 @@ def test_mcp_run_oracle_dispatches_structural_path_traversal() -> None:
     assert verdict.is_violation is True  # type: ignore[attr-defined]
 
 
-def test_mcp_run_oracle_dispatches_structural_union_extraction() -> None:
+def test_mcp_run_oracle_dispatches_structural_union_extraction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _stub_judgment(monkeypatch)
     mcp = _built()
     verdict = _call(
         mcp,
@@ -124,7 +154,10 @@ def test_mcp_run_oracle_dispatches_structural_union_extraction() -> None:
     assert verdict.is_violation is True  # type: ignore[attr-defined]
 
 
-def test_mcp_run_oracle_dispatches_structural_file_upload() -> None:
+def test_mcp_run_oracle_dispatches_structural_file_upload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _stub_judgment(monkeypatch)
     mcp = _built()
     verdict = _call(
         mcp,
@@ -141,7 +174,10 @@ def test_mcp_run_oracle_dispatches_structural_file_upload() -> None:
     assert verdict.is_violation is True  # type: ignore[attr-defined]
 
 
-def test_mcp_run_oracle_dispatches_timing_statistical() -> None:
+def test_mcp_run_oracle_dispatches_timing_statistical(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _stub_judgment(monkeypatch)
     mcp = _built()
     # probe mean >> baseline mean → confirmed
     verdict = _call(
@@ -158,7 +194,8 @@ def test_mcp_run_oracle_dispatches_timing_statistical() -> None:
     assert verdict.is_violation is True  # type: ignore[attr-defined]
 
 
-def test_mcp_run_oracle_dispatches_oob_callback() -> None:
+def test_mcp_run_oracle_dispatches_oob_callback(monkeypatch: pytest.MonkeyPatch) -> None:
+    _stub_judgment(monkeypatch)
     mcp = _built()
     nonce = "abc123"
     verdict = _call(
@@ -175,7 +212,10 @@ def test_mcp_run_oracle_dispatches_oob_callback() -> None:
     assert verdict.is_violation is True  # type: ignore[attr-defined]
 
 
-def test_mcp_run_oracle_dispatches_execution_confirmation() -> None:
+def test_mcp_run_oracle_dispatches_execution_confirmation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _stub_judgment(monkeypatch)
     mcp = _built()
     tag = "XSSTEST42"
     verdict = _call(
@@ -192,7 +232,10 @@ def test_mcp_run_oracle_dispatches_execution_confirmation() -> None:
     assert verdict.is_violation is True  # type: ignore[attr-defined]
 
 
-def test_mcp_run_oracle_dispatches_business_rule_invariant() -> None:
+def test_mcp_run_oracle_dispatches_business_rule_invariant(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _stub_judgment(monkeypatch)
     mcp = _built()
     verdict = _call(
         mcp,
@@ -209,8 +252,9 @@ def test_mcp_run_oracle_dispatches_business_rule_invariant() -> None:
     assert verdict.is_violation is True  # type: ignore[attr-defined]
 
 
-def test_mcp_run_oracle_differential_backward_compat() -> None:
+def test_mcp_run_oracle_differential_backward_compat(monkeypatch: pytest.MonkeyPatch) -> None:
     # Existing callers pass only evidence= (no mechanism=); must still work.
+    _stub_judgment(monkeypatch)
     mcp = _built()
     verdict = _call(
         mcp,

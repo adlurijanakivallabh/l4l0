@@ -1,4 +1,4 @@
-"""Out-of-band callback oracle (plan §7, Phase 3 Task 1).
+"""Out-of-band callback oracle evidence shape (plan §7, Phase 3 Task 1).
 
 The ``oob_callback`` §7 oracle family. Confirms a blind injection when a
 payload-triggered out-of-band callback (DNS or HTTP to a self-hosted
@@ -6,29 +6,27 @@ collaborator) is actually received, carrying the exact per-request nonce the
 probe embedded. A definitive signal — a callback fired or it didn't — with no
 statistical noise, which is why it ranks above timing (§9).
 
-Decision path contains **zero LLM input**: pure membership test of the probe's
-nonce against the set of nonces the collaborator observed. Same evidence in,
-same verdict out, every time.
+v3 architecture decision: the fixed ``decide()`` if/elif verdict logic has been
+REMOVED. Live verdicts for this family are now produced by LLM judgment
+(``reachagent.oracles.llm_judgment``), wired into ``tools/validator.py::run_oracle``
+and ``detection/oracle_gateway.py::registry_runner``. ``OOBCallbackEvidence``
+below remains in use purely as evidence-shape vocabulary — the fields an OOB
+probe/collaborator pairing produces, consumed by the LLM judgment module.
+``OOBCallbackOracle`` is kept only as an inert shim (see its docstring).
 
 Nonce attribution is the safety-relevant part: each probe embeds a unique nonce
 in its callback subdomain, so two concurrent probes on different parameters
-never cross-attribute a callback. The oracle confirms only the probe whose own
-nonce was seen — a callback for a *different* nonce is not a confirmation for
-this one.
+never cross-attribute a callback. A callback for a *different* nonce is not a
+confirmation for this one.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 
-from reachagent.graph.nodes import FindingStatus
 from reachagent.oracles import OracleMechanism
-from reachagent.oracles.base import Oracle, OracleVerdict, decision_reason
-from reachagent.oracles.evidence import (
-    EvidenceMetadata,
-    validate_evidence_metadata,
-    validate_evidence_ref,
-)
+from reachagent.oracles.base import Oracle, OracleVerdict
+from reachagent.oracles.evidence import EvidenceMetadata
 
 
 @dataclass(frozen=True)
@@ -40,8 +38,7 @@ class OOBCallbackEvidence:
     ``observed_nonces``: the set of nonces the collaborator received during the
     probe window — read from the self-hosted interact.sh instance, never guessed.
     ``observed_channels``: ADDITIVE enrichment only — ``(nonce, channel)`` pairs
-    the collaborator observed (D1 multi-channel, parsing-only). The oracle's
-    :func:`decide` reads ONLY ``observed_nonces``; this field surfaces in
+    the collaborator observed (D1 multi-channel, parsing-only). Surfaces in
     audit/report so a callback is attributable to its channel (blind-XXE → http,
     Log4Shell → ldap). A hit on ANY channel confirms exactly as today.
     ``evidence_ref``: short, secret-free provenance handle (§13).
@@ -54,81 +51,49 @@ class OOBCallbackEvidence:
     metadata: EvidenceMetadata = field(default_factory=EvidenceMetadata)
 
 
-def _validate_evidence(evidence: OOBCallbackEvidence) -> None:
-    validate_evidence_ref(evidence.evidence_ref)
-    validate_evidence_metadata(evidence.metadata)
-    if not isinstance(evidence.probe_nonce, str):
-        raise TypeError("probe_nonce must be a string")
-    validate_evidence_ref(evidence.probe_nonce, field="probe_nonce")
-    if not isinstance(evidence.observed_nonces, (frozenset, set, tuple, list)):
-        raise TypeError("observed_nonces must be a set-like collection of strings")
-    if len(evidence.observed_nonces) > 2_000:
-        raise ValueError("observed_nonces exceeds 2000 entries")
-    for index, nonce in enumerate(evidence.observed_nonces):
-        validate_evidence_ref(nonce, field=f"observed_nonces[{index}]")
-    if not isinstance(evidence.observed_channels, (frozenset, set, tuple, list)):
-        raise TypeError("observed_channels must be a set-like collection of pairs")
-    for index, pair in enumerate(evidence.observed_channels):
-        if not isinstance(pair, (tuple, list)) or len(pair) != 2:
-            raise ValueError(f"observed_channels[{index}] must be a nonce/channel pair")
-        validate_evidence_ref(pair[0], field=f"observed_channels[{index}].nonce")
-        validate_evidence_ref(pair[1], field=f"observed_channels[{index}].channel")
-
-
-def decide(evidence: OOBCallbackEvidence) -> FindingStatus:
-    """Map OOB evidence to exactly one verdict — the whole decision (§7).
-
-    Pure and total: a callback carrying this probe's own nonce is a confirmed
-    violation; anything else is inconclusive. There is no ``confirmed_denied``
-    here — the absence of a callback does not *prove* the parameter is safe (the
-    payload may not have reached the sink, the channel may be firewalled), so a
-    no-callback result is inconclusive, and the caller falls back to timing.
-
-    An empty ``probe_nonce`` is refused as inconclusive rather than matching an
-    empty observed set — a probe with no nonce is a caller error, but confirming
-    on it would be worse (it would match any bare callback), so it never confirms.
-    """
-    _validate_evidence(evidence)
-    if not evidence.probe_nonce:
-        return FindingStatus.INCONCLUSIVE
-    if evidence.probe_nonce in evidence.observed_nonces:
-        return FindingStatus.CONFIRMED_VIOLATION
-    return FindingStatus.INCONCLUSIVE
-
-
-def _reason(evidence: OOBCallbackEvidence, status: FindingStatus) -> str:
-    if status is FindingStatus.CONFIRMED_VIOLATION:
-        return decision_reason(OracleMechanism.OOB_CALLBACK, status, "probe_nonce_observed")
-    detail = "probe_nonce_missing" if not evidence.probe_nonce else "probe_nonce_not_observed"
-    return decision_reason(OracleMechanism.OOB_CALLBACK, status, detail)
-
-
 class OOBCallbackOracle(Oracle):
-    """Confirms via out-of-band callback — one of the six §7 families."""
+    """Inert v3 shim — kept only so ``oracles.registry`` can still register
+    ``OracleMechanism.OOB_CALLBACK`` (and so ``get_oracle(OOB_CALLBACK)`` keeps
+    validating as a known mechanism for callers like
+    ``recon/tools/signal_gated.py``, which only checks that the lookup does
+    not raise and never calls ``.run()``).
+
+    The fixed ``decide()`` chain that used to back this class is gone; no
+    caller on the live confirmation path invokes ``run()`` any more
+    (``tools/validator.py::run_oracle`` goes straight to
+    ``oracles.llm_judgment.judge`` instead), so this raises rather than
+    pretend to decide anything.
+    """
 
     mechanism = OracleMechanism.OOB_CALLBACK
 
     def run(self, evidence: object) -> OracleVerdict:
-        """Return the deterministic verdict for ``evidence`` (must be OOBCallbackEvidence).
+        """No longer decides a verdict — see the class docstring.
 
-        Raises ``TypeError`` on wrong evidence type — a mis-wired caller is a
-        bug, not an inconclusive result (mirrors the differential oracle).
+        The type guard below predates ``decide()`` and is independent of it
+        (a mis-wired caller passing the wrong evidence type is still a bug,
+        not a removed-feature question), so it is kept. Before v3, ``run()``
+        also auto-filled ``evidence_metadata.oob_channels`` from
+        ``evidence.observed_channels`` when the metadata didn't already carry
+        it:
+
+            metadata = validate_evidence_metadata(evidence.metadata)
+            if evidence.observed_channels and not metadata.oob_channels:
+                metadata = replace(
+                    metadata,
+                    oob_channels=tuple(evidence.observed_channels),
+                ).validated()
+
+        That auto-fill logic was independent of ``decide()`` too and is not
+        dead by necessity — it is preserved verbatim in this task's report for
+        a human to relocate (e.g. into ``oracles/llm_judgment.py``'s own
+        verdict construction) rather than silently lost.
         """
         if not isinstance(evidence, OOBCallbackEvidence):
             raise TypeError(
                 f"OOBCallbackOracle needs OOBCallbackEvidence, got {type(evidence).__name__}"
             )
-        status = decide(evidence)
-        metadata = validate_evidence_metadata(evidence.metadata)
-        if evidence.observed_channels and not metadata.oob_channels:
-            metadata = replace(
-                metadata,
-                oob_channels=tuple(evidence.observed_channels),
-            ).validated()
-        return OracleVerdict(
-            mechanism=self.mechanism,
-            status=status,
-            evidence_ref=evidence.evidence_ref,
-            reason=_reason(evidence, status),
-            evidence_metadata=metadata,
+        raise NotImplementedError(
+            "OOBCallbackOracle.run() was removed in v3 — confirmation now goes "
+            "through reachagent.oracles.llm_judgment.judge"
         )

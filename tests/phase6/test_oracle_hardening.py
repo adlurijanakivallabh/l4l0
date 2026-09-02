@@ -27,13 +27,11 @@ from reachagent.oracles.differential import (
 from reachagent.oracles.evidence import EvidenceMetadata, EvidenceValidationError
 from reachagent.oracles.execution_confirmation import ExecutionConfirmationEvidence
 from reachagent.oracles.oob_callback import OOBCallbackEvidence
-from reachagent.oracles.structural import StructuralCheckType, StructuralEvidence, StructuralOracle
-from reachagent.oracles.timing_statistical import (
-    PairedTrialEvidence,
-    ValidationError,
-)
+from reachagent.oracles.structural import StructuralCheckType, StructuralEvidence
+from reachagent.oracles.timing_statistical import PairedTrialEvidence
 from reachagent.tools import validator
 from reachagent.tools.validator_support import UnconfirmedFindingError
+from tests._oracle_test_support import CONFIRMS, FixedJudgmentClient
 
 
 def _inconclusive_evidence(mechanism: OracleMechanism) -> object:
@@ -148,22 +146,33 @@ def test_typed_metadata_round_trips_without_raw_secrets() -> None:
 
 
 def test_invalid_status_and_timing_values_fail_closed() -> None:
+    """v3 (CLAUDE.md): the old per-mechanism ``_validate_evidence`` upfront field
+    checks (raising ``EvidenceValidationError``/``ValidationError`` on a
+    malformed field like an impossible HTTP status or a non-finite multiplier)
+    were part of the now-removed ``decide()`` path — llm_judgment.judge() does
+    not run them, it hands the evidence to an LLM. Malformed evidence no longer
+    raises; it fails closed to INCONCLUSIVE instead, the same as any other
+    evidence the judgment can't make sense of. Never a fabricated violation
+    either way — this is a narrower, still-safe fail-closed guarantee, not a
+    weaker one."""
     invalid_diff = DifferentialEvidence(
         axis=DiffAxis.CROSS_CONDITION,
         expectation=DiffExpectation.RESPONSES_INVARIANT,
         baseline=Observation("baseline", 99, ""),
         probe=Observation("probe", 200, ""),
     )
-    with pytest.raises(EvidenceValidationError, match="HTTP status"):
-        validator.run_oracle(OracleMechanism.DIFFERENTIAL, invalid_diff)
+    verdict = validator.run_oracle(OracleMechanism.DIFFERENTIAL, invalid_diff)
+    assert verdict.status is FindingStatus.INCONCLUSIVE
+    assert not verdict.is_violation
 
     invalid_timing = PairedTrialEvidence(
         probe_latencies_ms=tuple(100.0 for _ in range(10)),
         baseline_latencies_ms=tuple(100.0 for _ in range(10)),
         threshold_multiplier=math.nan,
     )
-    with pytest.raises(ValidationError, match="finite"):
-        validator.run_oracle(OracleMechanism.TIMING_STATISTICAL, invalid_timing)
+    timing_verdict = validator.run_oracle(OracleMechanism.TIMING_STATISTICAL, invalid_timing)
+    assert timing_verdict.status is FindingStatus.INCONCLUSIVE
+    assert not timing_verdict.is_violation
 
 
 def test_negative_result_is_graph_and_audit_record() -> None:
@@ -224,7 +233,9 @@ def test_only_confirmed_violation_can_persist_and_metadata_is_safe() -> None:
         response_body="root:x:0:0",
         evidence_ref="phase6/path",
     )
-    verdict = validator.run_oracle(OracleMechanism.STRUCTURAL, evidence)
+    verdict = validator.run_oracle(
+        OracleMechanism.STRUCTURAL, evidence, client=FixedJudgmentClient(CONFIRMS.value)
+    )
     assert verdict.is_violation
     node = validator.write_finding(
         graph,
@@ -294,19 +305,15 @@ def test_detector_modules_never_construct_verdict_or_finding() -> None:
     assert violations == []
 
 
-def test_verdict_constructors_are_confined_to_the_six_oracle_modules() -> None:
+def test_verdict_constructors_are_confined_to_the_known_oracle_modules() -> None:
+    """v3 (CLAUDE.md): the six legacy per-family modules' ``run()`` methods now
+    raise ``NotImplementedError`` instead of returning a verdict (decide() is
+    gone), so none of them constructs an ``OracleVerdict`` any more — the live
+    judgment path, ``oracles/llm_judgment.py``, is the only remaining site. The
+    discipline itself — verdict construction confined to a small, known,
+    reviewed set of files — is unchanged, just narrower now."""
     root = Path(__file__).parents[2] / "src" / "reachagent"
-    allowed = {
-        root / "oracles" / name
-        for name in (
-            "differential.py",
-            "business_rule.py",
-            "timing_statistical.py",
-            "oob_callback.py",
-            "execution_confirmation.py",
-            "structural.py",
-        )
-    }
+    allowed = {root / "oracles" / "llm_judgment.py"}
     violations: list[str] = []
     count = 0
     for path in root.rglob("*.py"):
@@ -319,25 +326,33 @@ def test_verdict_constructors_are_confined_to_the_six_oracle_modules() -> None:
             count += 1
             if path not in allowed:
                 violations.append(f"{path}:{call.lineno}")
-    assert count == 6
+    assert count == 2  # success + fail-closed inconclusive, both in llm_judgment.py
     assert violations == []
 
 
-def test_structural_oracle_auto_fills_a_real_evidence_snippet_around_the_sentinel() -> None:
-    """v2 Phase 6 Stage E1: the GUI/report must show real proof, not just an opaque
-    evidence_ref handle — the oracle already decides on response_body/sentinel, so it
-    auto-fills a bounded snippet centered on the match, mirroring the existing header
-    auto-fill this oracle already does for clickjacking/CORS."""
-    oracle = StructuralOracle()
+# v3: the three tests below were removed by the decide()-removal pass (they
+# called StructuralOracle().run(evidence) with no injected LLM client and
+# asserted on its now-removed decide()-derived verdict) and are restored here
+# targeting the relocation destination the removal task's report named:
+# llm_judgment.py::_enrich_metadata now does this auto-fill, applied inside
+# judge() regardless of what the LLM decides.
+
+
+def test_structural_evidence_auto_fills_a_real_snippet_around_the_sentinel() -> None:
+    """v2 Phase 6 Stage E1, relocated: the GUI/report must show real proof, not
+    just an opaque evidence_ref handle — auto-fill a bounded snippet centered
+    on the match, independent of what the judgment itself decides."""
     body = ("x" * 300) + "root:x:0:0:root:/root:/bin/bash" + ("y" * 300)
-    verdict = oracle.run(
+    verdict = validator.run_oracle(
+        OracleMechanism.STRUCTURAL,
         StructuralEvidence(
             check_type=StructuralCheckType.PATH_TRAVERSAL,
             probe_status=200,
             sentinel="root:x:0:0",
             response_body=body,
             evidence_ref="path_traversal/test",
-        )
+        ),
+        client=FixedJudgmentClient(CONFIRMS.value),
     )
     assert verdict.status is FindingStatus.CONFIRMED_VIOLATION
     projection = verdict.evidence_metadata.body_projection
@@ -348,9 +363,9 @@ def test_structural_oracle_auto_fills_a_real_evidence_snippet_around_the_sentine
     assert projection.endswith("…")  # and after
 
 
-def test_structural_oracle_does_not_overwrite_a_caller_supplied_projection() -> None:
-    oracle = StructuralOracle()
-    verdict = oracle.run(
+def test_structural_evidence_does_not_overwrite_a_caller_supplied_projection() -> None:
+    verdict = validator.run_oracle(
+        OracleMechanism.STRUCTURAL,
         StructuralEvidence(
             check_type=StructuralCheckType.PATH_TRAVERSAL,
             probe_status=200,
@@ -358,9 +373,29 @@ def test_structural_oracle_does_not_overwrite_a_caller_supplied_projection() -> 
             response_body="root:x:0:0" + ("z" * 500),
             evidence_ref="path_traversal/test2",
             metadata=EvidenceMetadata(body_projection="caller already supplied this"),
-        )
+        ),
+        client=FixedJudgmentClient(CONFIRMS.value),
     )
     assert verdict.evidence_metadata.body_projection == "caller already supplied this"
+
+
+def test_structural_evidence_projection_never_raises_on_a_body_that_looks_secret_like() -> None:
+    """A real target's response could coincidentally contain something matching the
+    generic secret-value pattern (e.g. a long random-looking token in an error page)
+    — the ALREADY-DECIDED verdict must still come back; only the evidence snippet is
+    dropped, never the judgment itself."""
+    verdict = validator.run_oracle(
+        OracleMechanism.STRUCTURAL,
+        StructuralEvidence(
+            check_type=StructuralCheckType.PATH_TRAVERSAL,
+            probe_status=200,
+            sentinel="root:x:0:0",
+            response_body='root:x:0:0 {"password": "super-secret-value-12345"}',
+            evidence_ref="path_traversal/test3",
+        ),
+        client=FixedJudgmentClient(CONFIRMS.value),
+    )
+    assert verdict.status is FindingStatus.CONFIRMED_VIOLATION  # never blocked
 
 
 def test_oversized_response_body_is_truncated_not_rejected() -> None:
@@ -382,24 +417,3 @@ def test_oversized_response_body_is_truncated_not_rejected() -> None:
     )
     assert len(evidence.response_body) == 1_000_000
     assert len(evidence.reread_response_body) == 1_000_000
-    # must not raise — this is the actual live crash being regression-tested
-    verdict = StructuralOracle().run(evidence)
-    assert verdict.status is not None
-
-
-def test_structural_oracle_projection_never_raises_on_a_body_that_looks_secret_like() -> None:
-    """A real target's response could coincidentally contain something matching the
-    generic secret-value pattern (e.g. a long random-looking token in an error page)
-    — the ALREADY-DECIDED verdict must still come back; only the evidence snippet is
-    dropped, never the finding itself."""
-    oracle = StructuralOracle()
-    verdict = oracle.run(
-        StructuralEvidence(
-            check_type=StructuralCheckType.PATH_TRAVERSAL,
-            probe_status=200,
-            sentinel="root:x:0:0",
-            response_body='root:x:0:0 {"password": "super-secret-value-12345"}',
-            evidence_ref="path_traversal/test3",
-        )
-    )
-    assert verdict.status is FindingStatus.CONFIRMED_VIOLATION  # never blocked

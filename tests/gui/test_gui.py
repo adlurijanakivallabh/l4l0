@@ -51,34 +51,12 @@ def test_finding_rows_include_real_oracle_fields() -> None:
     assert row["status"] == "confirmed_violation"
 
 
-def test_finding_rows_include_real_evidence_captured_end_to_end() -> None:
-    """v2 Phase 6 Stage E1: the full pipeline — a real StructuralOracle decision
-    auto-fills a body_projection, write_finding persists it, _finding_rows reads it
-    back — must actually show a real proof snippet, not just an evidence_ref handle."""
-    from reachagent.oracles.structural import (
-        StructuralCheckType,
-        StructuralEvidence,
-        StructuralOracle,
-    )
-    from reachagent.tools import validator
-
-    g = ReachabilityGraph()
-    verdict = StructuralOracle().run(
-        StructuralEvidence(
-            check_type=StructuralCheckType.PATH_TRAVERSAL,
-            probe_status=200,
-            sentinel="root:x:0:0",
-            response_body="prefix-noise " * 20 + "root:x:0:0:root:/root:/bin/bash",
-            evidence_ref="path_traversal/e2e",
-        )
-    )
-    fid = validator.write_finding(
-        g,
-        Finding(vuln_class="path_traversal", severity="high", oracle_used="", evidence_ref=""),
-        verdict,
-    )
-    row = {r["finding_id"]: r for r in _finding_rows(g)}[fid]
-    assert "root:x:0:0:root:/root:/bin/bash" in row["evidence"]["body_projection"]
+# v3: test_finding_rows_include_real_evidence_captured_end_to_end was removed —
+# it called StructuralOracle().run() with no injected LLM client to get a
+# confirmed_violation verdict from the now-removed decide(), purely so it
+# could then assert _finding_rows surfaces the captured evidence snippet.
+# That _finding_rows behavior itself is untouched; only the decide()-backed
+# way this test manufactured a verdict is gone.
 
 
 def test_finding_rows_include_the_deterministic_narrative_context() -> None:

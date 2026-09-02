@@ -1,13 +1,14 @@
-"""Oracle base contract (plan §7).
+"""Oracle base contract (plan §7; v3 architecture decision — CLAUDE.md).
 
-Every oracle mechanism maps to one of the six families in §7 (CLAUDE.md). An
-oracle takes evidence and returns a deterministic, non-LLM verdict — exactly one
-of the four :class:`~reachagent.graph.nodes.FindingStatus` values. A
-``confirmed`` verdict is the only thing that unlocks ``write_finding`` (§13), and
-:class:`OracleVerdict` is the *sole* type in the codebase that carries such a
-verdict: nothing outside an :class:`Oracle` run constructs one, which is what
-makes "only a Validator-run deterministic check produces a Finding" enforceable
-in code (§7, §13).
+The six evidence families in §7 remain the vocabulary for what real evidence a
+verdict is built from. A ``confirmed`` verdict is still the only thing that
+unlocks ``write_finding`` (§13), and :class:`OracleVerdict` is still the *sole*
+type in the codebase that carries one — but per the operator's explicit,
+final v3 decision, the verdict is now reached via LLM judgment over real,
+already-fired evidence (``oracles/llm_judgment.py``) rather than a fixed
+per-mechanism ``decide()`` function. What's unchanged: nothing outside that
+judgment path constructs an ``OracleVerdict``, which is what keeps "only the
+Validator's confirmation path produces a Finding" enforceable in code (§13).
 """
 
 from __future__ import annotations
@@ -36,11 +37,13 @@ _CONFIRMED_STATUSES = frozenset(
 
 @dataclass(frozen=True)
 class OracleVerdict:
-    """Result of a deterministic oracle run (§7).
+    """Result of a confirmation judgment over real evidence (§7).
 
-    ``status`` is one of the four ``FindingStatus`` values, decided by scripted
-    logic — never an LLM judgment. Frozen so a verdict handed back from
-    ``run_oracle`` can't be mutated into a different outcome after the fact.
+    ``status`` is one of the four ``FindingStatus`` values, decided by
+    ``oracles/llm_judgment.py`` reasoning over real, already-fired
+    request/response evidence (v3 decision — CLAUDE.md). Frozen so a verdict
+    handed back from ``run_oracle`` can't be mutated into a different outcome
+    after the fact.
     """
 
     mechanism: OracleMechanism
@@ -100,10 +103,14 @@ def decision_reason(
 
 
 class Oracle:
-    """Base for the six deterministic verification families (§7)."""
+    """Base for the six evidence families (§7).
+
+    Retained as evidence-shape vocabulary (v3 decision — CLAUDE.md); the live
+    judgment path is ``oracles/llm_judgment.py``, not a subclass's ``run()``.
+    """
 
     mechanism: OracleMechanism
 
     def run(self, evidence: object) -> OracleVerdict:
-        """Return a deterministic verdict. Implemented per family in §15 phases."""
+        """Return a verdict. Legacy per-family entry point — see class docstring."""
         raise NotImplementedError

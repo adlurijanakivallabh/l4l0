@@ -22,15 +22,10 @@ from reachagent.fileupload.detector import (
     UploadProbeResult,
     detect_file_upload_bypass,
 )
-from reachagent.graph.nodes import FindingStatus
 from reachagent.oracles import OracleMechanism
 from reachagent.oracles.registry import get_oracle
-from reachagent.oracles.structural import (
-    StructuralCheckType,
-    StructuralEvidence,
-    StructuralOracle,
-    decide,
-)
+from reachagent.oracles.structural import StructuralCheckType, StructuralOracle
+from tests._oracle_test_support import CONFIRMS, fixed_oracle_runner
 
 # === Oracle registration ======================================================
 
@@ -51,173 +46,10 @@ def test_structural_enum_adds_check_not_oracle_family() -> None:
     assert StructuralCheckType.UNION_EXTRACTION.value == "union_extraction"
 
 
-# === FILE_UPLOAD_BYPASS decision table ========================================
-
-
-def test_bypass_confirmed_when_probe_accepted() -> None:
-    ev = StructuralEvidence(
-        check_type=StructuralCheckType.FILE_UPLOAD_BYPASS,
-        baseline_status=200,
-        probe_status=200,
-    )
-    assert decide(ev) is FindingStatus.CONFIRMED_VIOLATION
-
-
-def test_bypass_denied_when_probe_rejected() -> None:
-    ev = StructuralEvidence(
-        check_type=StructuralCheckType.FILE_UPLOAD_BYPASS,
-        baseline_status=200,
-        probe_status=400,
-    )
-    assert decide(ev) is FindingStatus.CONFIRMED_DENIED
-
-
-def test_bypass_inconclusive_when_baseline_failed() -> None:
-    ev = StructuralEvidence(
-        check_type=StructuralCheckType.FILE_UPLOAD_BYPASS,
-        baseline_status=500,
-        probe_status=200,
-    )
-    assert decide(ev) is FindingStatus.INCONCLUSIVE
-
-
-# === PATH_TRAVERSAL decision table ============================================
-
-
-def test_traversal_confirmed_when_sentinel_in_body() -> None:
-    ev = StructuralEvidence(
-        check_type=StructuralCheckType.PATH_TRAVERSAL,
-        probe_status=200,
-        sentinel="root:x:0:0",
-        response_body="root:x:0:0:root:/root:/bin/bash\n",
-    )
-    assert decide(ev) is FindingStatus.CONFIRMED_VIOLATION
-
-
-def test_traversal_inconclusive_when_sentinel_absent() -> None:
-    ev = StructuralEvidence(
-        check_type=StructuralCheckType.PATH_TRAVERSAL,
-        sentinel="root:x:0:0",
-        response_body="<html>not found</html>",
-    )
-    assert decide(ev) is FindingStatus.INCONCLUSIVE
-
-
-def test_traversal_inconclusive_when_no_sentinel() -> None:
-    ev = StructuralEvidence(
-        check_type=StructuralCheckType.PATH_TRAVERSAL,
-        sentinel="",
-        response_body="root:x:0:0",
-    )
-    assert decide(ev) is FindingStatus.INCONCLUSIVE
-
-
-# === UNION_EXTRACTION decision table ===========================================
-
-
-@pytest.mark.parametrize(
-    ("sentinel", "response_body"),
-    [
-        ("admin@juice-sh.op", '{"email":"admin@juice-sh.op"}'),
-        ("CREATE TABLE `Users`", "CREATE TABLE `Users` (`id` INTEGER PRIMARY KEY)"),
-    ],
-)
-def test_union_extraction_confirmed_only_with_class_specific_sentinel(
-    sentinel: str, response_body: str
-) -> None:
-    ev = StructuralEvidence(
-        check_type=StructuralCheckType.UNION_EXTRACTION,
-        probe_status=200,
-        union_sentinel=sentinel,
-        response_body=response_body,
-    )
-    assert decide(ev) is FindingStatus.CONFIRMED_VIOLATION
-
-
-@pytest.mark.parametrize(
-    ("sentinel", "response_body"),
-    [
-        ("admin@juice-sh.op", '{"name":"Admin product","description":"A product"}'),
-        ("CREATE TABLE `Users`", '{"name":"CREATE TABLE product","description":"A product"}'),
-    ],
-)
-def test_benign_product_search_never_confirms_union_extraction(
-    sentinel: str, response_body: str
-) -> None:
-    ev = StructuralEvidence(
-        check_type=StructuralCheckType.UNION_EXTRACTION,
-        probe_status=200,
-        union_sentinel=sentinel,
-        response_body=response_body.replace(sentinel, "product"),
-    )
-    assert decide(ev) is FindingStatus.INCONCLUSIVE
-
-
-@pytest.mark.parametrize("probe_status", [0, 199, 300, 500])
-def test_union_extraction_requires_successful_probe(probe_status: int) -> None:
-    ev = StructuralEvidence(
-        check_type=StructuralCheckType.UNION_EXTRACTION,
-        probe_status=probe_status,
-        union_sentinel="admin@juice-sh.op",
-        response_body='{"email":"admin@juice-sh.op"}',
-    )
-    assert decide(ev) is FindingStatus.INCONCLUSIVE
-
-
-def test_union_extraction_requires_nonempty_matching_sentinel() -> None:
-    body = '{"email":"admin@juice-sh.op"}'
-    assert (
-        decide(
-            StructuralEvidence(
-                check_type=StructuralCheckType.UNION_EXTRACTION,
-                probe_status=200,
-                union_sentinel="",
-                response_body=body,
-            )
-        )
-        is FindingStatus.INCONCLUSIVE
-    )
-    assert (
-        decide(
-            StructuralEvidence(
-                check_type=StructuralCheckType.UNION_EXTRACTION,
-                probe_status=200,
-                union_sentinel="admin@other.example",
-                response_body=body,
-            )
-        )
-        is FindingStatus.INCONCLUSIVE
-    )
-
-
-# === JWT_FORGERY decision table ===============================================
-
-
-def test_jwt_forgery_confirmed() -> None:
-    ev = StructuralEvidence(
-        check_type=StructuralCheckType.JWT_FORGERY,
-        baseline_status=200,
-        probe_status=200,
-    )
-    assert decide(ev) is FindingStatus.CONFIRMED_VIOLATION
-
-
-def test_jwt_forgery_denied() -> None:
-    ev = StructuralEvidence(
-        check_type=StructuralCheckType.JWT_FORGERY,
-        baseline_status=200,
-        probe_status=401,
-    )
-    assert decide(ev) is FindingStatus.CONFIRMED_DENIED
-
-
-def test_jwt_forgery_inconclusive_bad_baseline() -> None:
-    ev = StructuralEvidence(
-        check_type=StructuralCheckType.JWT_FORGERY,
-        baseline_status=401,
-        probe_status=200,
-    )
-    assert decide(ev) is FindingStatus.INCONCLUSIVE
+# v3: the FILE_UPLOAD_BYPASS, PATH_TRAVERSAL, UNION_EXTRACTION and JWT_FORGERY
+# decide() decision-table tests that used to live here were removed along with
+# reachagent.oracles.structural.decide() — that fixed decision logic no longer
+# exists (live judgment now goes through reachagent.oracles.llm_judgment.judge).
 
 
 # === Oracle type guard ========================================================
@@ -240,7 +72,15 @@ def _prober(baseline: int, probe: int) -> FileUploadProber:
 
 
 def test_detector_confirms_bypass() -> None:
-    result = detect_file_upload_bypass(_prober(200, 200), evidence_ref="upload/bypass/1")
+    # v3: confirmation is an LLM judgment, not something a hermetic test can
+    # re-derive from status codes alone — inject a fixed verdict to assert on
+    # detector WIRING (does it correctly relay the verdict into `.confirmed`).
+    prober = FileUploadProber(
+        fire_baseline=lambda: UploadProbeResult(status_code=200),
+        fire_probe=lambda: UploadProbeResult(status_code=200),
+        oracle_runner=fixed_oracle_runner(CONFIRMS),
+    )
+    result = detect_file_upload_bypass(prober, evidence_ref="upload/bypass/1")
     assert result.confirmed is True
 
 
@@ -339,9 +179,12 @@ def test_real_server_bypass_disguised_php_as_jpg(upload_server: str) -> None:
     prober = FileUploadProber(
         fire_baseline=lambda: UploadProbeResult(_upload(upload_server, "photo.jpg")),
         fire_probe=lambda: UploadProbeResult(_upload(upload_server, "shell.php.jpg")),
+        oracle_runner=fixed_oracle_runner(CONFIRMS),
     )
     result = detect_file_upload_bypass(prober, evidence_ref="upload/bypass/integration")
     # Both .jpg and .php.jpg end in .jpg — the allowlist is bypassed.
+    # v3: the live server proves the status-code shape; the verdict itself is
+    # an injected fixed judgment (real LLM judgment is not deterministic).
     assert result.confirmed is True
 
 
@@ -459,8 +302,12 @@ def test_crapi_upload_no_validation_stores_arbitrary_content() -> None:
         fire_probe=lambda: UploadProbeResult(
             int(_crapi_upload("shell.php", php_payload, "application/x-php", token)["_status"])
         ),
+        oracle_runner=fixed_oracle_runner(CONFIRMS),
     )
     result = detect_file_upload_bypass(prober, evidence_ref="upload/crapi/no-validation")
+    # v3: the live crAPI call proves the status-code shape (and the body
+    # assertion below proves verbatim storage); the verdict is an injected
+    # fixed judgment (real LLM judgment is not deterministic).
     assert result.confirmed is True
 
     # Stronger: verify the PHP payload is stored verbatim, not just accepted.

@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import pytest
 
-from reachagent.graph.nodes import FindingStatus
+from reachagent.detection.oracle_gateway import OracleOutcome, OracleRunner
 from reachagent.oob.collaborator import (
     _ENV_BASE_DOMAIN,
     InteractshCollaborator,
@@ -26,7 +26,7 @@ from reachagent.oob.collaborator import (
 from reachagent.oracles import OracleMechanism
 from reachagent.oracles.base import OracleVerdict
 from reachagent.oracles.differential import Observation
-from reachagent.oracles.oob_callback import OOBCallbackEvidence, OOBCallbackOracle, decide
+from reachagent.oracles.oob_callback import OOBCallbackEvidence, OOBCallbackOracle
 from reachagent.sqli.blind_detector import (
     BlindSqliProber,
     BooleanTrialPair,
@@ -35,6 +35,12 @@ from reachagent.sqli.blind_detector import (
     detect_blind_sqli,
 )
 from reachagent.tools.validator import run_oracle
+from tests._oracle_test_support import (
+    CONFIRMS,
+    INCONCLUSIVE,
+    FixedJudgmentClient,
+    fixed_oracle_runner,
+)
 
 # A stable sub-second baseline (10 trials) and a ~5 s injected-delay probe.
 _STABLE_BASELINE = (100.0, 105.0, 98.0, 102.0, 101.0, 99.0, 103.0, 100.0, 104.0, 97.0)
@@ -45,39 +51,23 @@ _DELAYED_PROBE = tuple(5000.0 + i for i in range(10))
 
 
 def test_oob_family_registered_and_callable() -> None:
+    # v3 (CLAUDE.md): decide() is gone — confirmation is an LLM judgment, so a
+    # hermetic test can't re-derive "known-good callback confirms" itself. This
+    # now asserts WIRING: the family is registered/callable via run_oracle (no
+    # UnknownOracleError) and a fixed confirming judgment relays through cleanly.
     ev = OOBCallbackEvidence(probe_nonce="n1", observed_nonces=frozenset({"n1"}))
-    verdict = run_oracle(OracleMechanism.OOB_CALLBACK, ev)
+    verdict = run_oracle(
+        OracleMechanism.OOB_CALLBACK, ev, client=FixedJudgmentClient(CONFIRMS.value)
+    )
     assert isinstance(verdict, OracleVerdict)
-    assert verdict.is_violation  # known-good callback confirms
-
-
-def test_oob_no_callback_is_inconclusive_not_confirmed() -> None:
-    # No callback received → not a confirmation (and not a false "safe" either).
-    ev = OOBCallbackEvidence(probe_nonce="n1", observed_nonces=frozenset())
-    assert decide(ev) is FindingStatus.INCONCLUSIVE
-
-
-def test_oob_empty_nonce_never_confirms() -> None:
-    # A probe with no nonce must not match a bare/empty callback — never confirm.
-    ev = OOBCallbackEvidence(probe_nonce="", observed_nonces=frozenset({""}))
-    assert decide(ev) is FindingStatus.INCONCLUSIVE
+    assert verdict.is_violation
 
 
 def test_oob_wrong_evidence_type_raises() -> None:
+    # The type guard predates decide() and is independent of it — still real
+    # behavior of the kept v3 shim (see OOBCallbackOracle's docstring).
     with pytest.raises(TypeError, match="OOBCallbackEvidence"):
         OOBCallbackOracle().run(object())
-
-
-# === nonce attribution (DoD: two probes never cross-attribute) ================
-
-
-def test_two_probes_do_not_cross_attribute_callbacks() -> None:
-    # Probe A's nonce was observed; probe B's was not. Each resolves to its own.
-    observed = frozenset({"nonce-A"})
-    a = OOBCallbackEvidence(probe_nonce="nonce-A", observed_nonces=observed)
-    b = OOBCallbackEvidence(probe_nonce="nonce-B", observed_nonces=observed)
-    assert decide(a) is FindingStatus.CONFIRMED_VIOLATION  # A's callback is A's
-    assert decide(b) is FindingStatus.INCONCLUSIVE  # B does not claim A's callback
 
 
 # === collaborator: env-loaded, per-nonce subdomain, no hardcoded host =========
@@ -129,6 +119,30 @@ def test_oob_module_has_no_hardcoded_collaborator_host() -> None:
 # === blind-SQLi detector: OOB-first ordering (THE proof) ======================
 
 
+def _mechanism_runner(mapping: dict[OracleMechanism, object]) -> OracleRunner:
+    """An OracleRunner keyed by mechanism (default INCONCLUSIVE for the rest).
+
+    v3 (CLAUDE.md): decide() is gone, so these ordering tests can no longer let
+    real evidence drive the verdict — they inject a fixed one instead (matching
+    tests/phase3/test_path_traversal.py's pattern). Plain ``fixed_oracle_runner``
+    returns the SAME status for every mechanism, but several of these tests walk
+    more than one mechanism in a single detect_blind_sqli() call (e.g. OOB must
+    miss so the detector falls through to timing, which must then confirm) —
+    this variant fixes a verdict per mechanism instead of globally.
+    """
+
+    def _runner(mechanism: OracleMechanism, evidence: object) -> OracleOutcome:
+        status = mapping.get(mechanism, INCONCLUSIVE)
+        ref = str(getattr(evidence, "evidence_ref", "") or "")
+        return OracleOutcome(
+            OracleVerdict(
+                mechanism=mechanism, status=status, evidence_ref=ref, reason="test-fixed-verdict"
+            )
+        )
+
+    return _runner
+
+
 def _prober(
     *,
     oob: OOBProbe | None,
@@ -136,6 +150,7 @@ def _prober(
     timing: TimingProbe,
     boolean: list[BooleanTrialPair] | None = None,
     trace: list[str],
+    oracle_runner: OracleRunner | None = None,
 ) -> BlindSqliProber:
     """Build a prober whose callbacks append to a shared trace on each fire."""
 
@@ -154,23 +169,29 @@ def _prober(
         trace.append("fire_boolean")
         return boolean or []
 
+    kwargs = {} if oracle_runner is None else {"oracle_runner": oracle_runner}
     return BlindSqliProber(
         fire_oob=fire_oob,
         observed_nonces=observed_nonces,
         fire_timing=fire_timing,
         fire_boolean_pairs=fire_boolean_pairs,
+        **kwargs,
     )
 
 
 def test_oob_confirms_and_timing_is_never_fired() -> None:
     # THE ordering proof: when a callback arrives, OOB confirms and the detector
     # returns WITHOUT ever firing timing — not "timing used unconditionally".
+    # v3: the verdict is fixed (a real callback-hit would be an LLM judgment
+    # call now); what's under test is that a confirming OOB verdict short-
+    # circuits the chain before timing is ever fired.
     trace: list[str] = []
     prober = _prober(
         oob=OOBProbe(nonce="n-hit", callback_domain="n-hit.oob.internal"),
         observed=frozenset({"n-hit"}),
         timing=TimingProbe(_DELAYED_PROBE, _STABLE_BASELINE),
         trace=trace,
+        oracle_runner=fixed_oracle_runner(CONFIRMS),
     )
     result = detect_blind_sqli(prober, evidence_ref="sqli/blind/probe1")
     assert result.confirmed
@@ -183,12 +204,20 @@ def test_oob_confirms_and_timing_is_never_fired() -> None:
 def test_oob_attempted_first_then_timing_when_no_callback() -> None:
     # OOB is attempted (fired) first; only because no callback arrived does the
     # detector fall back to timing. Order in the trace proves OOB came first.
+    # v3: fixed per-mechanism verdicts (OOB inconclusive, timing confirms) stand
+    # in for what would now be two separate LLM judgment calls.
     trace: list[str] = []
     prober = _prober(
         oob=OOBProbe(nonce="n-miss", callback_domain="n-miss.oob.internal"),
         observed=frozenset(),  # no callback received
         timing=TimingProbe(_DELAYED_PROBE, _STABLE_BASELINE),
         trace=trace,
+        oracle_runner=_mechanism_runner(
+            {
+                OracleMechanism.OOB_CALLBACK: INCONCLUSIVE,
+                OracleMechanism.TIMING_STATISTICAL: CONFIRMS,
+            }
+        ),
     )
     result = detect_blind_sqli(prober)
     assert result.confirmed
@@ -202,12 +231,15 @@ def test_oob_attempted_first_then_timing_when_no_callback() -> None:
 
 def test_timing_fallback_when_target_has_no_oob_payload() -> None:
     # fire_oob returns None (no OOB-capable payload) → straight to timing.
+    # v3: OOB is never reached (no evidence built for a None probe), so a single
+    # fixed confirming verdict only ever answers the timing call.
     trace: list[str] = []
     prober = _prober(
         oob=None,
         observed=frozenset(),
         timing=TimingProbe(_DELAYED_PROBE, _STABLE_BASELINE),
         trace=trace,
+        oracle_runner=fixed_oracle_runner(CONFIRMS),
     )
     result = detect_blind_sqli(prober)
     assert result.confirmed
@@ -251,6 +283,9 @@ def _identical_pair() -> BooleanTrialPair:
 
 
 def test_boolean_blind_confirms_with_three_consistent_diverging_pairs() -> None:
+    # v3: OOB is skipped (no payload), and timing must stay inconclusive so the
+    # chain actually reaches the boolean/differential stage under test — only
+    # DIFFERENTIAL is fixed to confirm.
     trace: list[str] = []
     prober = _prober(
         oob=None,
@@ -258,6 +293,12 @@ def test_boolean_blind_confirms_with_three_consistent_diverging_pairs() -> None:
         timing=TimingProbe(_STABLE_BASELINE, _STABLE_BASELINE),  # no timing signal
         boolean=[_diverging_pair(), _diverging_pair(), _diverging_pair()],
         trace=trace,
+        oracle_runner=_mechanism_runner(
+            {
+                OracleMechanism.TIMING_STATISTICAL: INCONCLUSIVE,
+                OracleMechanism.DIFFERENTIAL: CONFIRMS,
+            }
+        ),
     )
     result = detect_blind_sqli(prober)
     assert result.confirmed

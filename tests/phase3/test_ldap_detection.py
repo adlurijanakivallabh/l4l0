@@ -24,9 +24,27 @@ from reachagent.ldap.detector import (
 )
 from reachagent.oracles import OracleMechanism
 from reachagent.oracles.differential import Observation
+from tests._oracle_test_support import CONFIRMS, DENIES, fixed_oracle_runner
 
 _STABLE_BASELINE = (100.0, 105.0, 98.0, 102.0, 101.0, 99.0, 103.0, 100.0, 104.0, 97.0)
 _DELAYED_PROBE = tuple(5000.0 + i for i in range(10))
+
+
+def _ordered_oracle_runner(*statuses):
+    """v3: confirmation is now an LLM judgment (CLAUDE.md), not a hermetic decide().
+
+    These ordering tests care about the DETECTOR's stage-handoff wiring (does it
+    move to the next mechanism when one doesn't confirm, stop when one does),
+    not about what a real LLM would decide from evidence content. This feeds a
+    fixed verdict per call, in call order, so the two-stage handoff can be
+    asserted deterministically.
+    """
+    runners = iter(fixed_oracle_runner(status) for status in statuses)
+
+    def _runner(mechanism, evidence):
+        return next(runners)(mechanism, evidence)
+
+    return _runner
 
 
 def _prober(
@@ -34,6 +52,7 @@ def _prober(
     bypass: AuthBypassProbe,
     timing: TimingProbe,
     trace: list[str],
+    oracle_runner=None,
 ) -> LdapiProber:
     def fire_auth_bypass() -> AuthBypassProbe:
         trace.append("fire_bypass")
@@ -43,7 +62,8 @@ def _prober(
         trace.append("fire_timing")
         return timing
 
-    return LdapiProber(fire_auth_bypass=fire_auth_bypass, fire_timing=fire_timing)
+    kwargs = {} if oracle_runner is None else {"oracle_runner": oracle_runner}
+    return LdapiProber(fire_auth_bypass=fire_auth_bypass, fire_timing=fire_timing, **kwargs)
 
 
 def _bypass_probe(*, granted: bool) -> AuthBypassProbe:
@@ -63,6 +83,7 @@ def test_wildcard_bypass_confirms_and_timing_never_fired() -> None:
         bypass=_bypass_probe(granted=True),
         timing=TimingProbe(_DELAYED_PROBE, _STABLE_BASELINE),
         trace=trace,
+        oracle_runner=fixed_oracle_runner(CONFIRMS),
     )
     result = detect_ldapi(prober, evidence_ref="ldap/bind")
     assert result.confirmed
@@ -78,6 +99,7 @@ def test_bypass_attempted_first_then_timing_when_no_bypass() -> None:
         bypass=_bypass_probe(granted=False),
         timing=TimingProbe(_DELAYED_PROBE, _STABLE_BASELINE),
         trace=trace,
+        oracle_runner=_ordered_oracle_runner(DENIES, CONFIRMS),
     )
     result = detect_ldapi(prober)
     assert result.confirmed
@@ -91,6 +113,7 @@ def test_bypass_confirmed_sets_identity_hint() -> None:
         bypass=_bypass_probe(granted=True),
         timing=TimingProbe(_STABLE_BASELINE, _STABLE_BASELINE),
         trace=[],
+        oracle_runner=fixed_oracle_runner(CONFIRMS),
     )
     result = detect_ldapi(prober, bypass_identity_hint="ldapi-admin")
     assert result.confirmed

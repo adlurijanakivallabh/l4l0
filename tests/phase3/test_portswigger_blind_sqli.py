@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import functools
+
 import httpx
 import pytest
 
@@ -17,6 +19,7 @@ from reachagent.graph.nodes import FindingStatus
 from reachagent.graph.store import ReachabilityGraph
 from reachagent.identity.store import IdentityConfigError
 from reachagent.tools import validator
+from tests._oracle_test_support import CONFIRMS, FixedJudgmentClient
 
 
 class _MockLabFirer:
@@ -54,8 +57,21 @@ class _MockLabFirer:
 
 
 def _runner(
-    *, delayed: bool, graph: ReachabilityGraph, firer: _MockLabFirer
+    *,
+    delayed: bool,
+    graph: ReachabilityGraph,
+    firer: _MockLabFirer,
+    client: object | None = None,
 ) -> PortswiggerBlindSqliRunner:
+    # v3 (CLAUDE.md): confirmation is an LLM judgment now, not a deterministic
+    # decide(). Tests that need a specific verdict inject a FixedJudgmentClient
+    # through validator.run_oracle's client= seam; tests that don't care leave
+    # client=None and get the real (fail-closed, no-provider) INCONCLUSIVE path.
+    oracle_runner = (
+        validator.run_oracle
+        if client is None
+        else functools.partial(validator.run_oracle, client=client)
+    )
     return PortswiggerBlindSqliRunner(
         config=PortswiggerLabConfig(
             base_url="https://lab.test",
@@ -63,7 +79,7 @@ def _runner(
             enabled=True,
         ),
         graph=graph,
-        oracle_runner=validator.run_oracle,
+        oracle_runner=oracle_runner,
         write_finding=lambda finding, verdict: validator.write_finding(graph, finding, verdict),
         firer=firer,
     )
@@ -76,7 +92,12 @@ def test_time_delay_runner_confirms_vulnerable_and_clean_variants() -> None:
     clean_firer = _MockLabFirer(delayed=False)
 
     result = run_vulnerable_and_clean(
-        _runner(delayed=True, graph=vulnerable_graph, firer=vulnerable_firer),
+        _runner(
+            delayed=True,
+            graph=vulnerable_graph,
+            firer=vulnerable_firer,
+            client=FixedJudgmentClient(CONFIRMS.value),
+        ),
         _runner(delayed=False, graph=clean_graph, firer=clean_firer),
     )
 

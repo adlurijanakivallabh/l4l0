@@ -17,6 +17,7 @@ from reachagent.execution import RequestFirer, ScopeGuard
 from reachagent.graph.nodes import Host
 from reachagent.graph.store import ReachabilityGraph
 from reachagent.scan.orchestrator import _ValidatorSeam, run_known_vulnerable_version
+from tests._oracle_test_support import CONFIRMS, FixedJudgmentClient
 
 _HOST = "kvv.test"
 _MATCHES = (
@@ -63,6 +64,17 @@ def _run(handler: object, graph: ReachabilityGraph, monkeypatch, matches=_MATCHE
 
 
 def test_version_string_present_in_live_response_confirms_a_finding(monkeypatch) -> None:  # noqa: ANN001
+    """Confirmation is now an LLM judgment (v3, CLAUDE.md) rather than a fixed
+    decide(); _ValidatorSeam.run calls tools.validator.run_oracle with no
+    client= passthrough, so pin the verdict by monkeypatching the client
+    builder it constructs internally.
+    """
+    import reachagent.oracles.llm_judgment as _llm_judgment
+
+    monkeypatch.setattr(
+        _llm_judgment, "build_openai_compatible_client", lambda: FixedJudgmentClient(CONFIRMS.value)
+    )
+
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(404, text="<h1>404</h1><address>Apache Tomcat/7.0.92</address>")
 
@@ -118,6 +130,12 @@ def test_no_fingerprint_in_graph_yields_no_finding_and_no_lookup(monkeypatch) ->
 
 
 def test_lower_cvss_score_maps_to_lower_severity(monkeypatch) -> None:  # noqa: ANN001
+    import reachagent.oracles.llm_judgment as _llm_judgment
+
+    monkeypatch.setattr(
+        _llm_judgment, "build_openai_compatible_client", lambda: FixedJudgmentClient(CONFIRMS.value)
+    )
+
     medium_matches = (
         CveMatch(cve_id="CVE-2020-0001", cvss_score=5.0, severity="medium", summary="x"),
     )

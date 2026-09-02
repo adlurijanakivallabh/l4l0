@@ -22,6 +22,7 @@ from reachagent.graphql import (
     resolver_bola_check,
 )
 from reachagent.oracles.timing_statistical import ValidationError
+from tests._oracle_test_support import ALLOWS, CONFIRMS, DENIES, fixed_oracle_runner
 
 _INTROSPECTION_BODY = {
     "data": {
@@ -97,11 +98,22 @@ def test_schema_facts_materialize_as_graphql_endpoint_and_parameters() -> None:
     assert {param.name for _, param in graph.parameters_of(endpoint)} == set(parameters)
 
 
+# v3 (CLAUDE.md): decide() is gone — confirmation is now an LLM judgment, not
+# something a hermetic test can re-derive deterministically. These tests now
+# assert on WIRING (does resolver_bola_check/check_batch_bypass correctly
+# relay a given oracle verdict into `.confirmed`/`.is_violation`) via an
+# injected `oracle_runner`, not on judgment itself.
+
+
 def test_resolver_bola_reuses_differential_and_public_field_is_not_flagged() -> None:
     owner = GraphQLResponse(200, '{"data":{"userSecret":"owner-value"}}')
     same_private = GraphQLResponse(200, '{"data":{"userSecret":"owner-value"}}')
-    public = resolver_bola_check(owner, same_private, public=True)
-    private = resolver_bola_check(owner, same_private, public=False)
+    public = resolver_bola_check(
+        owner, same_private, public=True, oracle_runner=fixed_oracle_runner(ALLOWS)
+    )
+    private = resolver_bola_check(
+        owner, same_private, public=False, oracle_runner=fixed_oracle_runner(CONFIRMS)
+    )
     assert public.confirmed is True
     assert public.is_violation is False
     assert private.confirmed is True
@@ -112,6 +124,7 @@ def test_resolver_bola_denied_probe_is_confirmed_safe() -> None:
     verdict = resolver_bola_check(
         GraphQLResponse(200, '{"data":{"userSecret":"owner-value"}}'),
         GraphQLResponse(403, '{"errors":[{"message":"forbidden"}]}'),
+        oracle_runner=fixed_oracle_runner(DENIES),
     )
     assert verdict.confirmed is True
     assert verdict.is_violation is False
@@ -121,6 +134,7 @@ def test_batch_alias_bypass_reuses_differential_auth_bypass() -> None:
     verdict = check_batch_bypass(
         GraphQLResponse(403, '{"errors":[{"message":"rate limited"}]}'),
         GraphQLResponse(200, '{"data":{"a":1,"b":1}}'),
+        oracle_runner=fixed_oracle_runner(CONFIRMS),
     )
     assert verdict.confirmed is True
     assert verdict.is_violation is True
@@ -130,6 +144,7 @@ def test_batch_alias_rate_limit_enforced_is_not_a_finding() -> None:
     verdict = check_batch_bypass(
         GraphQLResponse(403, "blocked"),
         GraphQLResponse(403, "blocked"),
+        oracle_runner=fixed_oracle_runner(DENIES),
     )
     assert verdict.confirmed is True
     assert verdict.is_violation is False
@@ -151,7 +166,9 @@ def test_complexity_regression_confirms_escalating_curve() -> None:
     baseline_values = [100, 101, 102, 103, 104, 105, 106, 107, 108, 109]
     baseline = _depth_curve({1: baseline_values, 2: [value + 100 for value in baseline_values]})
     escalated = _depth_curve({1: baseline_values, 2: [value + 400 for value in baseline_values]})
-    verdict = measure_complexity_regression(baseline, escalated)
+    verdict = measure_complexity_regression(
+        baseline, escalated, oracle_runner=fixed_oracle_runner(CONFIRMS)
+    )
     assert verdict.confirmed is True
     assert verdict.is_violation is True
 

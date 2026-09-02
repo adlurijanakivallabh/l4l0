@@ -1,8 +1,9 @@
 """Subdomain takeover detector — hermetic tests (§7, Prober-injection pattern).
 
-Uses the real default registry runner (no validator import, no fake oracle) —
-same pattern as test_request_smuggling.py. The oracle's own decide() branch is
-covered separately in test_subdomain_takeover_oracle.py.
+v3 (CLAUDE.md): decide() is gone — confirmation is now an LLM judgment, not
+something a hermetic test can re-derive deterministically. These tests assert
+on DETECTOR WIRING (does it correctly relay a fixed verdict into `.confirmed`)
+via an injected `oracle_runner`, matching test_path_traversal.py.
 """
 
 from __future__ import annotations
@@ -14,13 +15,15 @@ from reachagent.subdomain_takeover.detector import (
     detect_subdomain_takeover,
     match_fingerprint,
 )
+from tests._oracle_test_support import CONFIRMS, INCONCLUSIVE, fixed_oracle_runner
 
 _S3_MARKER = "The specified bucket does not exist"
 
 
-def _prober(status: int, body: str) -> SubdomainTakeoverProber:
+def _prober(status: int, body: str, *, oracle_status=INCONCLUSIVE) -> SubdomainTakeoverProber:
     return SubdomainTakeoverProber(
-        fire_probe=lambda: SubdomainTakeoverProbe(status=status, body=body)
+        fire_probe=lambda: SubdomainTakeoverProbe(status=status, body=body),
+        oracle_runner=fixed_oracle_runner(oracle_status),
     )
 
 
@@ -44,19 +47,19 @@ def test_every_fingerprint_entry_has_a_non_empty_sentinel() -> None:
 
 
 def test_confirmed_dangling_cname_yields_a_confirmed_result() -> None:
-    prober = _prober(200, f"<Error>{_S3_MARKER}</Error>")
+    prober = _prober(200, f"<Error>{_S3_MARKER}</Error>", oracle_status=CONFIRMS)
     result = detect_subdomain_takeover(prober, sentinel=_S3_MARKER, evidence_ref="ref-1")
     assert result.confirmed is True
     assert result.evidence_ref == "ref-1"
 
 
 def test_live_service_yields_no_confirmation() -> None:
-    prober = _prober(200, "<html>a real site</html>")
+    prober = _prober(200, "<html>a real site</html>", oracle_status=INCONCLUSIVE)
     result = detect_subdomain_takeover(prober, sentinel=_S3_MARKER)
     assert result.confirmed is False
 
 
 def test_non_2xx_response_yields_no_confirmation_even_with_marker_text() -> None:
-    prober = _prober(404, _S3_MARKER)
+    prober = _prober(404, _S3_MARKER, oracle_status=INCONCLUSIVE)
     result = detect_subdomain_takeover(prober, sentinel=_S3_MARKER)
     assert result.confirmed is False

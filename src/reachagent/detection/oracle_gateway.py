@@ -1,11 +1,11 @@
-"""Oracle gateway — injectable seam between detectors and the oracle registry (§7).
+"""Oracle gateway — injectable seam between detectors and the confirmation judgment (§7).
 
 Detectors must never import ``reachagent.tools.validator`` directly (CLAUDE.md
 non-negotiable: only the Validator role calls ``run_oracle``). In a live gate run
-the detector reaches the oracle through the MCP tool boundary. In unit tests and
+the detector reaches the judgment through the MCP tool boundary. In unit tests and
 in-process callers the detector uses :func:`registry_runner`, which dispatches
-straight through the oracle registry — same deterministic families, no validator
-import, no verdict forgery possible.
+straight to :func:`reachagent.oracles.llm_judgment.judge` (v3 decision — CLAUDE.md)
+— no validator import, no verdict forgery possible.
 
 The seam is a single callable type alias: ``OracleRunner``. Each prober dataclass
 holds one as an optional field (default :func:`registry_runner`). The live gate
@@ -18,7 +18,7 @@ from typing import Protocol
 
 from reachagent.oracles import OracleMechanism
 from reachagent.oracles.base import OracleVerdict
-from reachagent.oracles.registry import get_oracle
+from reachagent.oracles.llm_judgment import judge
 
 
 class OracleOutcome:
@@ -57,11 +57,11 @@ class OracleRunner(Protocol):
 
 
 def registry_runner(mechanism: OracleMechanism, evidence: object) -> OracleOutcome:
-    """Default runner: dispatches through the oracle registry (no validator import).
+    """Default runner: dispatches to the LLM confirmation judgment (no validator import).
 
     Used by unit tests and any in-process caller that does not need the MCP
-    boundary. Deterministic — same evidence in, same outcome out, every time.
+    boundary. Fail-closed: any judgment failure (no provider, parse error) comes
+    back inconclusive, never a fabricated violation.
     """
-    oracle = get_oracle(mechanism)
-    verdict = oracle.run(evidence)
+    verdict = judge(mechanism, evidence)
     return OracleOutcome(verdict)

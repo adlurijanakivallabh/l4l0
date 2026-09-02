@@ -609,3 +609,45 @@ fully unauthenticated. Fixed by relaunching with `identities` populated correctl
   operator explicitly said no to this one before it was built), and removing the oracle gate /
   rewriting the architecture around LLM-only detection. Every real bug found this session (7 of
   them) was only findable because a falsifiable oracle claim existed to violate.
+
+## v3: the oracle gate is removed — operator's final, explicit decision (2026-09-02)
+
+After extensive further discussion (concrete worked examples across all four proof mechanisms —
+response diff, response marker, OOB callback, cross-identity access; a direct code walkthrough of
+the real oracle logic; independent engagement with three alternative designs — LLM-as-oracle, a
+second independent verifying agent, a multi-stage LLM pipeline), the operator made a final,
+explicit decision: remove the deterministic `run_oracle` gate. CLAUDE.md rewritten to describe the
+new model plainly (see its own "v3 architecture change" section). Implementation:
+
+- New `oracles/llm_judgment.py::judge()` — takes the same evidence objects every driver already
+  built, asks an LLM to decide one of the four real `FindingStatus` values, fail-closed to
+  `INCONCLUSIVE` on any provider/parse failure. Wired into both live dispatch points:
+  `tools/validator.py::run_oracle` (gained an optional `client=` for injection) and
+  `detection/oracle_gateway.py::registry_runner` (the path most individual detectors actually use).
+  Zero changes needed to any of the ~30 orchestrator drivers or detector modules — the swap
+  happened entirely inside the one shared choke point each already called through.
+- The six legacy family files' `decide()` functions (and helpers that existed only to serve them)
+  are deleted; their evidence dataclasses are untouched (still load-bearing data carriers). Each
+  `Oracle` subclass's `run()` now raises `NotImplementedError` rather than pretending to decide
+  anything, since nothing on the live path calls it. Metadata auto-fill logic that used to live
+  inside those `run()` methods (structural's header/body-projection snippet, timing's
+  sample-array fill, OOB's channel fill) — genuinely separate from the decide() logic itself —
+  was relocated into `llm_judgment.py::_enrich_metadata`, verified working end to end.
+- ~150 hermetic tests across the whole repo (not just the six oracle files) called `run_oracle`/
+  `registry_runner` with no injected client and broke when judgment correctly failed closed with
+  no provider configured. Fixed via a new shared `tests/_oracle_test_support.py`
+  (`fixed_oracle_runner`, `FixedJudgmentClient`) injected per-test — rewriting each test to verify
+  detector/driver WIRING (given a fixed verdict, does the surrounding code react correctly)
+  instead of the now-impossible-to-test fixed decision logic itself. One file needed a smarter
+  fake (`test_attack_path_chaining.py`'s `_DifferentialJudge`, reproducing the exact old
+  differential semantics) since it needed different verdicts for different oracle calls within one
+  test run. Full suite: 1737 passed, 11 skipped (pre-existing infra-gated), 2 failed — both live
+  integration gates (VAmPI/crAPI) that now correctly require a real configured LLM provider
+  against live Docker infra to produce any confirmed findings; a disclosed, expected consequence
+  of the decision, not a bug.
+- Real, disclosed production cost: every confirmation is now a live LLM call — latency, money,
+  and non-determinism where a fixed check used to be free and instant. The operator was told this
+  plainly before building it.
+- Not yet built (still in the v3 plan, V8): a genuinely sandboxed (container, never the
+  operator's host) command-execution environment for the LLM — the one hard line already agreed
+  on the separate "give it a free shell" request: real flexibility, contained blast radius.

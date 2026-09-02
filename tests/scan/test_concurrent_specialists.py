@@ -31,6 +31,7 @@ from reachagent.scan.orchestrator import (
     _ValidatorSeam,
     scan_all_classes,
 )
+from tests._oracle_test_support import CONFIRMS, FixedJudgmentClient
 
 _SQL_ERROR = 'You have an error in your SQL syntax; near "\'"'
 
@@ -412,7 +413,23 @@ def _surface(tmp_path) -> str:  # noqa: ANN001
     return str(surface)
 
 
-def test_concurrent_scan_finds_the_same_classes_as_the_sequential_scan(tmp_path) -> None:  # noqa: ANN001
+def test_concurrent_scan_finds_the_same_classes_as_the_sequential_scan(  # noqa: ANN001
+    tmp_path, monkeypatch
+) -> None:
+    # v3 (CLAUDE.md): sqli confirmation is now an LLM judgment (the removed
+    # decide() logic used to confirm this deterministically from the SQL
+    # error body). scan_all_classes has no client= seam of its own, so fix
+    # the provider factory judge() falls back to — this test then verifies
+    # WIRING (a confirmed verdict flows through every concurrent specialist
+    # into the merged parent graph, matching the sequential path), not
+    # judgment itself. clickjacking/cors/csrf stay on the structural oracle.
+    import reachagent.oracles.llm_judgment as _llm_judgment
+
+    monkeypatch.setattr(
+        _llm_judgment,
+        "build_openai_compatible_client",
+        lambda **_kw: FixedJudgmentClient(CONFIRMS.value),
+    )
     from reachagent.payloads import PayloadLibrary
 
     result = scan_all_classes(

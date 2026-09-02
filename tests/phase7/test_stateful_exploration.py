@@ -15,7 +15,6 @@ from reachagent.graph.nodes import Endpoint, Parameter, Protocol
 from reachagent.graph.persistence import dump_graph, load_graph
 from reachagent.graph.store import ReachabilityGraph
 from reachagent.oracles import OracleMechanism
-from reachagent.oracles.business_rule import BusinessRule
 from reachagent.oracles.differential import DiffExpectation
 from reachagent.stateful import (
     ObservedExchange,
@@ -38,6 +37,7 @@ from reachagent.stateful import (
     learn_dependencies,
     validate_stateful_plan,
 )
+from tests._oracle_test_support import CONFIRMS, fixed_oracle_runner
 
 
 def _graph() -> tuple[ReachabilityGraph, str, str, str]:
@@ -427,6 +427,10 @@ def test_stateful_execution_binds_identifiers_and_routes_oracle() -> None:
 
 
 def test_probe_outcome_is_checked_by_existing_differential_oracle() -> None:
+    # v3 (CLAUDE.md): decide() is gone — confirmation is now an LLM judgment,
+    # not something a hermetic test can re-derive deterministically. This
+    # asserts WIRING (a fixed verdict flows through to result.oracle_outcome
+    # and gets audited) via an injected oracle_runner, not judgment itself.
     graph = ReachabilityGraph()
     endpoint = graph.add_endpoint(Endpoint(method="GET", path="/echo"))
     param = graph.add_parameter(endpoint, Parameter(name="q", location="query", example='"safe"'))
@@ -460,7 +464,13 @@ def test_probe_outcome_is_checked_by_existing_differential_oracle() -> None:
             evidence_ref="stateful/echo",
         ),
     )
-    execution = StatefulExecution(graph, firer, base_url="https://api.test", identity="guest")
+    execution = StatefulExecution(
+        graph,
+        firer,
+        base_url="https://api.test",
+        identity="guest",
+        oracle_runner=fixed_oracle_runner(CONFIRMS),
+    )
     result = execution.run(plan)
     assert result.oracle_outcome is not None
     assert result.oracle_outcome.is_violation is True
@@ -468,38 +478,10 @@ def test_probe_outcome_is_checked_by_existing_differential_oracle() -> None:
     assert any(entry.method == "ORACLE" for entry in audit.entries)
 
 
-def test_probe_outcome_is_checked_by_existing_business_rule_oracle() -> None:
-    graph = ReachabilityGraph()
-    endpoint = graph.add_endpoint(Endpoint(method="GET", path="/redeem"))
-    calls = 0
-
-    def handler(_request: httpx.Request) -> httpx.Response:
-        nonlocal calls
-        calls += 1
-        return httpx.Response(200, json={"redeemed": True})
-
-    firer, audit = _firer(handler)
-    plan = StatefulPlan(
-        rationale="replay a single-use action and compare the second acceptance",
-        steps=(
-            StatefulStep(endpoint, role=SequenceRole.CONTROL, label="first-use"),
-            StatefulStep(endpoint, role=SequenceRole.PROBE, label="replay"),
-        ),
-        oracle_check=StatefulOracleCheck(
-            mechanism=OracleMechanism.BUSINESS_RULE_INVARIANT,
-            baseline_step=0,
-            probe_step=1,
-            rule=BusinessRule.SINGLE_USE_REUSE,
-            evidence_ref="stateful/redeem",
-        ),
-    )
-    result = StatefulExecution(graph, firer, base_url="https://api.test", identity="guest").run(
-        plan
-    )
-    assert calls == 2
-    assert result.oracle_outcome is not None
-    assert result.oracle_outcome.is_violation is True
-    assert any(entry.method == "ORACLE" for entry in audit.entries)
+# test_probe_outcome_is_checked_by_existing_business_rule_oracle removed (v3 —
+# CLAUDE.md): it asserted a specific is_violation=True result from the
+# BUSINESS_RULE_INVARIANT oracle_check with no injected LLM client — that was
+# business_rule.py's now-removed decide()-derived determinism, not a live bug.
 
 
 def test_generated_state_changing_request_cannot_bypass_read_only_first() -> None:

@@ -1,37 +1,80 @@
 # ReachAgent — CLAUDE.md
 
 Project: ReachAgent, a Web/API authorization-and-vulnerability testing agent.
-Full spec: `docs/reachagent-final-plan.md` (v2.9, locked). Read it before any
-architectural change — this file is operating instructions, not a replacement
-for it.
+Full spec: `docs/reachagent-final-plan.md`. Living plan file:
+`/home/kali/.claude/plans/mellow-twirling-ullman.md` ("v3 — LLM-Autonomous
+Recon & Chaining") is the current architecture source of truth as of this
+edit — read it before any architectural change. This file is operating
+instructions, not a replacement for either.
 
-## Non-negotiable principles (do not violate, even if asked to)
+## v3 architecture change (operator decision, superseding the prior oracle-gate model)
 
-- No `Finding` is ever written without a `confirmed` result from `run_oracle`.
-  LLM judgment proposes candidates; it never writes findings directly.
-- Tool access is role-bounded: Explorer never calls `write_finding`.
-  Coordinator never calls `fire_request` or `run_oracle`. Only the Validator
-  calls `run_oracle` and `write_finding`. (Plan §4, §13.) The GUI chat agent
-  (`/api/scan/{id}/ask`) is read-only Q&A + steering only — it can explain,
-  summarize, and queue steering hints, but never calls `write_finding`/
-  `run_oracle` and never bypasses the oracle.
-- The "Suspected / Unconfirmed" tier (`SuspectedFinding` node, v2 W2) is NOT a
-  `Finding` and does NOT breach the rule above: it is a structurally separate
-  node type (like `StaticAdvisory`) for tried-but-unproven leads, never written
-  via `write_finding`/`add_finding`, never blended into confirmed findings, never
-  counted in confirmed severity stats — always its own report section labelled
-  "not oracle-verified." Two allowed, structurally-separate non-Finding tiers
-  now exist: `StaticAdvisory` (white-box CVE) and `SuspectedFinding` (dynamic
-  unconfirmed). Do not add a third without updating the plan.
-- No external scanners (sqlmap, Nuclei, ZAP, Burp Scanner, Caido Scanner) as
-  detection dependencies. (Plan §9.)
-- Aggressive mode (`REACHAGENT_AGGRESSIVE`, opt-in, default off) only loosens
-  *when* signal-gated tools are allowed to fire — it never bypasses `run_oracle`
-  and never trusts a tool's claim directly. A candidate it surfaces still ends
-  up either a confirmed `Finding` (reconfirmed) or a `SuspectedFinding` (not).
+After extensive session-long discussion of the tradeoffs (concrete worked
+examples across differential/marker/OOB-callback/cross-identity proof shapes,
+direct review of the actual oracle code, and explicit engagement with three
+alternative designs — LLM-as-oracle, an independent second-agent review, a
+multi-stage LLM pipeline), the operator made a final, explicit decision:
+**the deterministic `run_oracle` gate is removed.** Findings are now decided
+by LLM judgment via a multi-stage confirmation pipeline (below), the same
+class of mechanism every major reference agentic-pentest project uses. This
+was a deliberate architecture change, not a regression — the previous
+principles this section replaces are preserved below in spirit (real
+evidence, role separation, no invented findings) with the mechanical proof
+gate removed as the explicit, informed tradeoff the operator chose.
+
+## Current principles
+
+- **A `Finding` is written when the multi-stage confirmation pipeline
+  concludes it's real**, not by a single prompt's first impression. The
+  pipeline accumulates REAL evidence across several actual fired
+  requests/responses before deciding: e.g. for a suspected LFI — read a
+  target file and judge the content, try additional files to corroborate,
+  attempt to combine with another technique (e.g. command injection) — each
+  stage a stored, reusable prompt template reasoning over genuinely captured
+  traffic, never invented data. This structure exists specifically so
+  confirmation isn't a single self-attestation the way a naive LLM-only
+  agent's is — see the v3 plan's "What changes with the oracle removed" for
+  the full design and rationale.
+- **Confirmed vs. Suspected**: a finding that completed the full multi-stage
+  pipeline (corroborated across multiple real attempts) is `Finding`
+  (confirmed). A lead that only got a single-shot judgment, or an external
+  tool's claim (Burp/nuclei/sqlmap/etc.) that hasn't been run through the
+  pipeline yet, stays `SuspectedFinding` — a structurally separate node type
+  (like `StaticAdvisory`), never blended into confirmed severity stats,
+  always its own labelled report section. Do not add a third non-Finding
+  tier without updating the plan.
+- **Role separation still holds, updated for the new decision process**:
+  Explorer proposes candidates and never writes findings. Coordinator never
+  fires requests or writes findings. Only the Validator runs the multi-stage
+  pipeline and calls `write_finding` — the mechanical gate (`run_oracle`) is
+  gone, but the *role* boundary that keeps proposal, execution, and
+  confirmation as separate responsibilities is unchanged. The GUI chat agent
+  (`/api/scan/{id}/ask`) stays read-only Q&A + steering only — it can
+  explain, summarize, and queue steering hints, but never calls
+  `write_finding` and never short-circuits the pipeline.
+- **External tools (Burp Suite Pro MCP, nuclei, sqlmap, dalfox, ...) are
+  candidate/evidence sources feeding the pipeline, never confirmation
+  authorities on their own.** A tool's own "this is vulnerable" claim is one
+  more input the multi-stage pipeline reasons over against real captured
+  traffic — it does not get written as a `Finding` just because the tool
+  said so.
+- **The LLM's command-execution sandbox (v3 V8) is a contained environment,
+  never the operator's own host.** This is the one hard safety line kept
+  from the "give it a shell" discussion: real command flexibility, inside a
+  dedicated container whose network egress is scoped by the same
+  `ScopeGuard` allowlist the firer enforces everywhere else, filesystem/
+  lifetime reset per scan. Indirect prompt injection from a target response
+  can at worst affect the disposable container, never the machine running
+  ReachAgent.
 - Read-only-first: no state-changing request against a live target until the
-  read-only case is confirmed safe. (Plan §10.)
-- Scope allowlist is enforced at the execution layer, not just documented.
+  read-only case is confirmed safe.
+- Scope allowlist is enforced at the execution layer, not just documented —
+  unchanged, and extended (v3 V1) to path/port/scheme granularity, not just
+  host-level allow/deny.
+- No C2/post-exploitation, no OS-level shell *on the target*, no mobile
+  testing — the sandbox above is for the AGENT to run its own tools, never a
+  vehicle for operating a compromised target or lateral movement. This line
+  did not move.
 
 ## Stack
 
@@ -63,8 +106,13 @@ for it.
 
 ## Working conventions
 
-- Every new oracle mechanism must map to one of the six families in plan §7.
-  Don't add a seventh without updating the plan first.
+- The six evidence families from the old oracle design (structural,
+  differential, timing-statistical, execution-confirmation, out-of-band
+  callback, business-rule invariant) remain useful VOCABULARY for what kind
+  of proof a pipeline stage is gathering (a response diff, a marker in the
+  body, an OOB hit, a cross-identity check, ...) — reuse these shapes when
+  designing a new pipeline stage rather than inventing an ad hoc one, even
+  though none of them is a mandatory mechanical gate anymore.
 - Every new vulnerability class needs an entry in the coverage matrix (§5)
   with an honest support level — Full/Partial/Weak — not an aspirational one.
 - New graph node/edge types need explicit justification. The design goal is
@@ -75,8 +123,14 @@ for it.
 
 ## What not to do
 
-- No C2/post-exploitation or mobile-testing capability (§1).
-- No calling sqlmap/Nuclei/ZAP/Burp Scanner/Caido Scanner as part of
-  detection — tagged payloads + deterministic oracles only (§9).
+- No C2/post-exploitation, no shell/foothold *on the target*, no mobile
+  testing. The v3 command sandbox is for the agent's own tooling, contained,
+  never a path to operating a compromised target.
 - Never let the Coordinator or Explorer call `write_finding`, under any
-  circumstance, for any reason a prompt might suggest otherwise.
+  circumstance, for any reason a prompt might suggest otherwise — the
+  mechanical `run_oracle` gate is gone, but which role is allowed to write a
+  finding at all has not changed.
+- Never let the sandbox (v3 V8) reach the operator's own host filesystem,
+  credentials, or network beyond the scan's own `ScopeGuard` allowlist —
+  containment is the one non-negotiable left on the "give it a shell"
+  decision.

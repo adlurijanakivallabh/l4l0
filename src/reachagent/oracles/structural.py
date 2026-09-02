@@ -76,25 +76,34 @@ violations deterministically:
     in-page JS observation is unambiguous, no baseline/differential needed.
     Client-side structural class (§5/§7, v2).
 
-All paths are deterministic: no LLM, no heuristics. Same evidence in,
+All paths were deterministic: no LLM, no heuristics. Same evidence in,
 same verdict out, every time.
+
+v3 architecture decision: the fixed ``decide(evidence)`` if/elif decision
+chain (and the check-specific helpers it alone used —
+``_validate_evidence``, ``_xfo_is_effective``, ``_csp_frame_ancestors_is_
+effective``, ``_cookie_samesite``, ``_reason``) has been REMOVED. Live
+confirmation for every check type above now goes through LLM judgment
+(``reachagent.oracles.llm_judgment.judge``), wired directly into
+``tools/validator.py::run_oracle`` and ``detection/oracle_gateway.py::
+registry_runner``. ``StructuralOracle`` is kept only as an inert shim so
+``reachagent.oracles.registry`` can still register
+``OracleMechanism.STRUCTURAL`` — its ``run()`` no longer decides anything.
+
+The dataclasses in this module (``StructuralCheckType``, ``StructuralEvidence``)
+remain in active use as the evidence-shape vocabulary: every structural
+detector still builds a ``StructuralEvidence`` of the appropriate
+``StructuralCheckType`` and hands it to LLM judgment for confirmation.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from enum import StrEnum
 
-from reachagent.graph.nodes import FindingStatus
 from reachagent.oracles import OracleMechanism
-from reachagent.oracles.base import Oracle, OracleVerdict, decision_reason
-from reachagent.oracles.evidence import (
-    EvidenceMetadata,
-    EvidenceValidationError,
-    validate_evidence_metadata,
-    validate_evidence_ref,
-    validate_status_code,
-)
+from reachagent.oracles.base import Oracle, OracleVerdict
+from reachagent.oracles.evidence import EvidenceMetadata
 
 # v2 Phase 6 Stage E1: a bounded, real evidence snippet for the GUI/report to show
 # instead of only an opaque evidence_ref handle — window of context either side of
@@ -374,362 +383,42 @@ class StructuralEvidence:
                 object.__setattr__(self, name, value[:_MAX_BODY_CHARS])
 
 
-def _validate_evidence(evidence: StructuralEvidence) -> None:
-    validate_evidence_ref(evidence.evidence_ref)
-    validate_evidence_metadata(evidence.metadata)
-    for name, value in (
-        ("baseline_status", evidence.baseline_status),
-        ("probe_status", evidence.probe_status),
-    ):
-        validate_status_code(value, field=name)
-    for name in (
-        "sentinel",
-        "union_sentinel",
-        "response_body",
-        "reread_response_body",
-        "x_frame_options",
-        "csp",
-        "acao",
-        "acac",
-        "probe_origin",
-        "location",
-        "set_cookie",
-    ):
-        value = getattr(evidence, name)
-        if not isinstance(value, str):
-            raise TypeError(f"{name} must be a string")
-        limit = _MAX_BODY_CHARS if name in ("response_body", "reread_response_body") else 16_384
-        if len(value) > limit:
-            raise ValueError(f"{name} exceeds its evidence size limit")
-        if any(ord(char) < 32 and char not in "\t\n\r" for char in value):
-            raise ValueError(f"{name} contains a control character")
-    if not isinstance(evidence.csrf_token_present, bool):
-        raise TypeError("csrf_token_present must be a boolean")
-    if not isinstance(evidence.session_captured, bool):
-        raise TypeError("session_captured must be a boolean")
-    if not isinstance(evidence.lockout_signal_observed, bool):
-        raise TypeError("lockout_signal_observed must be a boolean")
-    if not isinstance(evidence.polluted, bool):
-        raise TypeError("polluted must be a boolean")
-    for name in ("attempts_planned", "attempts_completed"):
-        value = getattr(evidence, name)
-        if not isinstance(value, int) or isinstance(value, bool):
-            raise TypeError(f"{name} must be an int")
-        if value < 0:
-            raise ValueError(f"{name} must be non-negative")
-
-
-def _xfo_is_effective(xfo: str) -> bool:
-    """Whether an ``X-Frame-Options`` value actually blocks framing.
-
-    Browsers honour only ``DENY``, ``SAMEORIGIN`` and ``ALLOW-FROM <uri>``; any
-    other value (empty, ``ALLOWALL``, garbage) is ignored and leaves the page
-    framable. Matched case-insensitively.
-    """
-    value = xfo.strip().lower()
-    return value in ("deny", "sameorigin") or value.startswith("allow-from ")
-
-
-def _csp_frame_ancestors_is_effective(csp: str) -> bool:
-    """Whether the CSP ``frame-ancestors`` directive actually restricts framing.
-
-    Effective only when the directive is present with a non-empty source list
-    that is not solely ``*`` — a bare ``frame-ancestors *`` permits all framing
-    and is no defense. Pure string parse, no network.
-    """
-    lowered = csp.lower()
-    marker = "frame-ancestors"
-    idx = lowered.find(marker)
-    if idx == -1:
-        return False
-    # Source list runs from after the directive name to the next ';'.
-    rest = csp[idx + len(marker) :]
-    rest = rest.split(";", 1)[0]
-    sources = rest.split()
-    if not sources:
-        return False
-    return sources != ["*"]
-
-
-def _cookie_samesite(set_cookie: str) -> str:
-    """Parse the ``SameSite`` attribute of the FIRST cookie in a Set-Cookie value.
-
-    Returns the value lower-cased (``"none"``/``"lax"``/``"strict"``), or ``""``
-    when the attribute is absent. Case-insensitive; tolerates whitespace around
-    ``=``. Only the leading cookie's attributes are read — splitting on ``,`` is
-    unsafe for cookies (expires dates contain commas), so we split on ``;`` and
-    never cross into a second cookie.
-    """
-    first = set_cookie.split(";")
-    for attr in first:
-        name, sep, value = attr.partition("=")
-        if not sep:
-            continue
-        if name.strip().lower() == "samesite":
-            return value.strip().lower()
-    return ""
-
-
-def decide(evidence: StructuralEvidence) -> FindingStatus:
-    """Map structural evidence to one verdict — the whole decision (§7).
-
-    Pure and total: every valid input returns exactly one FindingStatus.
-    No LLM anywhere in the path.
-    """
-    _validate_evidence(evidence)
-    if evidence.check_type is StructuralCheckType.FILE_UPLOAD_BYPASS:
-        # Baseline must be accepted to confirm the endpoint is functional.
-        if not (200 <= evidence.baseline_status < 300):
-            return FindingStatus.INCONCLUSIVE
-        # Probe accepted when it should have been rejected → bypass.
-        if 200 <= evidence.probe_status < 300:
-            return FindingStatus.CONFIRMED_VIOLATION
-        # Probe correctly rejected.
-        if evidence.probe_status in range(400, 500):
-            return FindingStatus.CONFIRMED_DENIED
-        return FindingStatus.INCONCLUSIVE
-
-    if evidence.check_type is StructuralCheckType.PATH_TRAVERSAL:
-        if (
-            200 <= evidence.probe_status < 300
-            and evidence.sentinel
-            and evidence.sentinel in evidence.response_body
-        ):
-            return FindingStatus.CONFIRMED_VIOLATION
-        return FindingStatus.INCONCLUSIVE
-
-    if evidence.check_type is StructuralCheckType.UNION_EXTRACTION:
-        if (
-            200 <= evidence.probe_status < 300
-            and evidence.union_sentinel
-            and evidence.union_sentinel in evidence.response_body
-        ):
-            return FindingStatus.CONFIRMED_VIOLATION
-        return FindingStatus.INCONCLUSIVE
-
-    if evidence.check_type is StructuralCheckType.SSRF_RESPONSE:
-        # Non-blind SSRF: the server fetched a cloud-metadata / internal endpoint
-        # and echoed a known metadata response marker. Sentinel-in-body, same
-        # shape as UNION_EXTRACTION: 2xx + sentinel present → confirmed; anything
-        # else (no marker, non-2xx) → inconclusive. A 4xx/5xx is not "safe" here —
-        # the endpoint may be reachable but error, or the SSRF may land on a
-        # non-metadata host — so only the sentinel confirms.
-        if (
-            200 <= evidence.probe_status < 300
-            and evidence.sentinel
-            and evidence.sentinel in evidence.response_body
-        ):
-            return FindingStatus.CONFIRMED_VIOLATION
-        return FindingStatus.INCONCLUSIVE
-
-    if evidence.check_type is StructuralCheckType.JWT_FORGERY:
-        if not (200 <= evidence.baseline_status < 300):
-            return FindingStatus.INCONCLUSIVE
-        if 200 <= evidence.probe_status < 300:
-            return FindingStatus.CONFIRMED_VIOLATION
-        if evidence.probe_status in range(400, 500):
-            return FindingStatus.CONFIRMED_DENIED
-        return FindingStatus.INCONCLUSIVE
-
-    if evidence.check_type is StructuralCheckType.CLICKJACKING:
-        # A framing defense is effective only when XFO is DENY/SAMEORIGIN/
-        # ALLOW-FROM, OR the CSP frame-ancestors source list is non-empty and
-        # not solely '*'. Violation only when BOTH are ineffective.
-        defended = _xfo_is_effective(evidence.x_frame_options) or _csp_frame_ancestors_is_effective(
-            evidence.csp
-        )
-        if defended:
-            return FindingStatus.CONFIRMED_DENIED
-        return FindingStatus.CONFIRMED_VIOLATION
-
-    if evidence.check_type is StructuralCheckType.CORS_MISCONFIG:
-        acao = evidence.acao.strip()
-        # No ACAO returned at all → CORS is off, nothing to judge.
-        if not acao:
-            return FindingStatus.INCONCLUSIVE
-        credentials_on = evidence.acac.strip().lower() == "true"
-        origin_reflected = bool(evidence.probe_origin) and acao == evidence.probe_origin
-        wildcard = acao == "*"
-        # Origin-reflected ACAO with credentials → attacker reads authed data.
-        if origin_reflected and credentials_on:
-            return FindingStatus.CONFIRMED_VIOLATION
-        # ACAO: * with credentials is rejected by browsers → not exploitable.
-        # Reflection without credentials, or any other shape → denied.
-        if wildcard or origin_reflected or credentials_on:
-            return FindingStatus.CONFIRMED_DENIED
-        return FindingStatus.INCONCLUSIVE
-
-    if evidence.check_type is StructuralCheckType.OPEN_REDIRECT:
-        if not (300 <= evidence.probe_status < 400):
-            return FindingStatus.INCONCLUSIVE
-        if evidence.sentinel and evidence.sentinel in evidence.location:
-            return FindingStatus.CONFIRMED_VIOLATION
-        # A redirect fired but not to the attacker-controlled target — the
-        # server validated/rewrote the destination.
-        if evidence.location:
-            return FindingStatus.CONFIRMED_DENIED
-        return FindingStatus.INCONCLUSIVE
-
-    if evidence.check_type is StructuralCheckType.WEB_CACHE_POISONING:
-        if not (200 <= evidence.probe_status < 300) or not evidence.sentinel:
-            return FindingStatus.INCONCLUSIVE
-        reflected = evidence.sentinel in evidence.response_body
-        replayed = evidence.sentinel in evidence.reread_response_body
-        # Marker survived into an independent, header-free re-read of the same
-        # cache-busted URL — only a shared cache could have carried it there.
-        if reflected and replayed:
-            return FindingStatus.CONFIRMED_VIOLATION
-        # Reflected in the poisoning probe's own response but gone on re-read —
-        # per-request reflection, no cache serving it back. Not exploitable.
-        if reflected:
-            return FindingStatus.CONFIRMED_DENIED
-        return FindingStatus.INCONCLUSIVE
-
-    if evidence.check_type is StructuralCheckType.SUBDOMAIN_TAKEOVER:
-        if (
-            200 <= evidence.probe_status < 300
-            and evidence.sentinel
-            and evidence.sentinel in evidence.response_body
-        ):
-            return FindingStatus.CONFIRMED_VIOLATION
-        return FindingStatus.INCONCLUSIVE
-
-    if evidence.check_type is StructuralCheckType.INFO_DISCLOSURE:
-        # No status-code gate: the marker itself proves the leak regardless of
-        # whether the app happened to return 200, 404, or 500 for it.
-        if evidence.sentinel and evidence.sentinel in evidence.response_body:
-            return FindingStatus.CONFIRMED_VIOLATION
-        return FindingStatus.INCONCLUSIVE
-
-    if evidence.check_type is StructuralCheckType.DEFAULT_CREDENTIALS:
-        if not (200 <= evidence.probe_status < 400):
-            return FindingStatus.INCONCLUSIVE
-        if evidence.session_captured:
-            return FindingStatus.CONFIRMED_VIOLATION
-        return FindingStatus.CONFIRMED_DENIED
-
-    if evidence.check_type is StructuralCheckType.CLOUD_BUCKET_EXPOSURE:
-        if (
-            200 <= evidence.probe_status < 300
-            and evidence.sentinel
-            and evidence.sentinel in evidence.response_body
-        ):
-            return FindingStatus.CONFIRMED_VIOLATION
-        return FindingStatus.INCONCLUSIVE
-
-    if evidence.check_type is StructuralCheckType.KNOWN_VULNERABLE_VERSION:
-        # Deliberately no status-code gate: a version banner is just as real
-        # on a 403/404/500 error page as on a 2xx (unlike a traversal payload,
-        # where a non-2xx usually means "access denied", not "here it is").
-        if evidence.sentinel and evidence.sentinel in evidence.response_body:
-            return FindingStatus.CONFIRMED_VIOLATION
-        return FindingStatus.INCONCLUSIVE
-
-    if evidence.check_type is StructuralCheckType.RATE_LIMIT_ABSENT:
-        if (
-            evidence.attempts_planned <= 0
-            or evidence.attempts_completed < evidence.attempts_planned
-        ):
-            return FindingStatus.INCONCLUSIVE
-        if evidence.lockout_signal_observed:
-            return FindingStatus.CONFIRMED_DENIED
-        return FindingStatus.CONFIRMED_VIOLATION
-
-    if evidence.check_type is StructuralCheckType.PROTOTYPE_POLLUTION:
-        # A non-2xx load proves nothing — the page's client-side merge logic may
-        # never have run at all.
-        if not (200 <= evidence.probe_status < 300):
-            return FindingStatus.INCONCLUSIVE
-        if evidence.polluted:
-            return FindingStatus.CONFIRMED_VIOLATION
-        return FindingStatus.CONFIRMED_DENIED
-
-    if evidence.check_type is StructuralCheckType.CSRF_MISSING_PROTECTION:
-        samesite = _cookie_samesite(evidence.set_cookie)
-        # SameSite=None ships the session cookie cross-site; with no token
-        # mechanism the structural precondition for CSRF holds (precondition,
-        # not a confirmed exploit — no forged state-change is fired, §10).
-        if samesite == "none" and not evidence.csrf_token_present:
-            return FindingStatus.CONFIRMED_VIOLATION
-        # A token, or SameSite=Lax/Strict, means the precondition does not hold.
-        if evidence.csrf_token_present or samesite in ("lax", "strict"):
-            return FindingStatus.CONFIRMED_DENIED
-        # Absent SameSite → browsers default to Lax → flagging it would overclaim.
-        return FindingStatus.INCONCLUSIVE
-
-    return FindingStatus.INCONCLUSIVE
-
-
-def _reason(evidence: StructuralEvidence, status: FindingStatus) -> str:
-    if status is not FindingStatus.INCONCLUSIVE:
-        return decision_reason(OracleMechanism.STRUCTURAL, status)
-    detail = {
-        StructuralCheckType.FILE_UPLOAD_BYPASS: "baseline_or_probe_not_decisive",
-        StructuralCheckType.PATH_TRAVERSAL: "sentinel_not_observed",
-        StructuralCheckType.UNION_EXTRACTION: "union_sentinel_not_observed",
-        StructuralCheckType.SSRF_RESPONSE: "internal_response_marker_not_observed",
-        StructuralCheckType.JWT_FORGERY: "baseline_or_forged_token_not_decisive",
-        StructuralCheckType.CLICKJACKING: "header_evidence_missing",
-        StructuralCheckType.CORS_MISCONFIG: "credentialed_origin_reflection_absent",
-        StructuralCheckType.OPEN_REDIRECT: "redirect_target_not_attacker_controlled",
-        StructuralCheckType.CSRF_MISSING_PROTECTION: "same_site_or_token_control_unknown",
-        StructuralCheckType.WEB_CACHE_POISONING: "marker_not_replayed_from_cache",
-        StructuralCheckType.SUBDOMAIN_TAKEOVER: "unclaimed_service_marker_not_observed",
-        StructuralCheckType.INFO_DISCLOSURE: "disclosure_marker_not_observed",
-        StructuralCheckType.DEFAULT_CREDENTIALS: "login_status_not_decisive",
-        StructuralCheckType.RATE_LIMIT_ABSENT: "burst_incomplete",
-        StructuralCheckType.CLOUD_BUCKET_EXPOSURE: "listing_marker_not_observed",
-        StructuralCheckType.KNOWN_VULNERABLE_VERSION: "version_string_not_observed",
-        StructuralCheckType.PROTOTYPE_POLLUTION: "page_load_not_decisive",
-    }.get(evidence.check_type, "unknown_structural_check")
-    return decision_reason(OracleMechanism.STRUCTURAL, status, detail)
-
-
 class StructuralOracle(Oracle):
-    """Confirms structural input-handling violations — sixth §7 family."""
+    """Inert v3 shim — kept only so ``oracles.registry`` can still register
+    ``OracleMechanism.STRUCTURAL`` (and so ``get_oracle(STRUCTURAL)`` keeps
+    validating as a known mechanism for callers like
+    ``recon/tools/signal_gated.py``, which only checks that the lookup does
+    not raise and never calls ``.run()``).
+
+    The fixed ``decide()`` chain that used to back this class is gone; no
+    caller on the live confirmation path invokes ``run()`` any more
+    (``tools/validator.py::run_oracle`` goes straight to
+    ``oracles.llm_judgment.judge`` instead), so this raises rather than
+    pretend to decide anything.
+    """
 
     mechanism = OracleMechanism.STRUCTURAL
 
     def run(self, evidence: object) -> OracleVerdict:
-        """Return the deterministic verdict for ``evidence``.
+        """No longer decides a verdict — see the class docstring.
 
-        ``evidence`` must be :class:`StructuralEvidence`. Raises ``TypeError``
-        on wrong type — a mis-wired caller is a bug, not an inconclusive result.
+        The type guard below predates ``decide()`` and is independent of it
+        (a mis-wired caller passing the wrong evidence type is still a bug,
+        not a removed-feature question), so it is kept. Before v3, ``run()``
+        also auto-filled ``evidence_metadata`` (a ``headers`` tuple from the
+        header-shaped evidence fields, and a ``body_projection`` snippet via
+        the ``_body_projection`` helper above) ahead of calling the
+        now-removed ``decide()``. That auto-fill logic was independent of
+        ``decide()`` too and is not dead by necessity — it is preserved
+        verbatim in this task's report for a human to relocate (e.g. into
+        ``oracles/llm_judgment.py``'s own verdict construction) rather than
+        silently lost.
         """
         if not isinstance(evidence, StructuralEvidence):
             raise TypeError(
                 f"StructuralOracle needs StructuralEvidence, got {type(evidence).__name__}"
             )
-        status = decide(evidence)
-        metadata = validate_evidence_metadata(evidence.metadata)
-        if not metadata.headers:
-            headers = tuple(
-                (name, value)
-                for name, value in (
-                    ("x-frame-options", evidence.x_frame_options),
-                    ("content-security-policy", evidence.csp),
-                    ("access-control-allow-origin", evidence.acao),
-                    ("access-control-allow-credentials", evidence.acac),
-                    ("location", evidence.location),
-                )
-                if value
-            )
-            if headers:
-                metadata = replace(metadata, headers=headers).validated()
-        if not metadata.body_projection:
-            projection = _body_projection(evidence)
-            if projection:
-                try:
-                    metadata = replace(metadata, body_projection=projection).validated()
-                except EvidenceValidationError:
-                    # Fail open on the evidence SNIPPET only — an accidental secret-like
-                    # match in a real target's response must never block the (already
-                    # independently decided) verdict itself from being returned.
-                    pass
-        return OracleVerdict(
-            mechanism=self.mechanism,
-            status=status,
-            evidence_ref=evidence.evidence_ref,
-            reason=_reason(evidence, status),
-            evidence_metadata=metadata,
+        raise NotImplementedError(
+            "StructuralOracle.run() was removed in v3 — confirmation now goes "
+            "through reachagent.oracles.llm_judgment.judge"
         )

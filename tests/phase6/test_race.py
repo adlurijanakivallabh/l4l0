@@ -24,6 +24,7 @@ from reachagent.race import (
     identify_resources,
     probe_race,
 )
+from tests._oracle_test_support import ALLOWS, CONFIRMS, DENIES, INCONCLUSIVE, fixed_oracle_runner
 
 
 @dataclass
@@ -52,6 +53,20 @@ class RecordingDelivery:
         )
 
 
+def _sequenced_oracle_runner(*statuses: object):
+    """Fixed verdicts in call order — for escalation tests where probe_race's
+    sequential and concurrent oracle calls must disagree (sequential inconclusive,
+    then concurrent confirms), unlike fixed_oracle_runner's single constant verdict.
+    """
+    runners = [fixed_oracle_runner(status) for status in statuses]
+    calls = iter(runners)
+
+    def _runner(mechanism: object, evidence: object) -> object:
+        return next(calls)(mechanism, evidence)
+
+    return _runner
+
+
 def _check_graph() -> tuple[ReachabilityGraph, TemplateCheck]:
     graph = ReachabilityGraph()
     endpoint = graph.add_endpoint(Endpoint("POST", "/coupon/redeem"))
@@ -60,10 +75,16 @@ def _check_graph() -> tuple[ReachabilityGraph, TemplateCheck]:
     return graph, check
 
 
+# v3 (CLAUDE.md): confirmation is an LLM judgment, not a scripted decide(). These
+# tests no longer re-derive a verdict from evidence content; they inject a fixed
+# verdict via oracle_runner and assert probe_race's escalation/relay wiring reacts
+# to it correctly (matching tests/phase3/test_path_traversal.py's pattern).
 def test_sequential_replay_confirms_double_spend_without_concurrency() -> None:
     graph, check = _check_graph()
     runner = RecordingDelivery((200, 200), (200, 200))
-    evidence, outcome = probe_race(graph, "owner", check, runner)
+    evidence, outcome = probe_race(
+        graph, "owner", check, runner, oracle_runner=fixed_oracle_runner(CONFIRMS)
+    )
     assert evidence.delivery_mode is DeliveryMode.SEQUENTIAL
     assert outcome.is_violation is True
     assert runner.calls == [DeliveryMode.SEQUENTIAL]
@@ -72,7 +93,9 @@ def test_sequential_replay_confirms_double_spend_without_concurrency() -> None:
 def test_serialized_target_is_not_a_false_positive() -> None:
     graph, check = _check_graph()
     runner = RecordingDelivery((200, 403), (200, 200))
-    evidence, outcome = probe_race(graph, "owner", check, runner)
+    evidence, outcome = probe_race(
+        graph, "owner", check, runner, oracle_runner=fixed_oracle_runner(ALLOWS)
+    )
     assert evidence.delivery_mode is DeliveryMode.SEQUENTIAL
     assert outcome.confirmed is True
     assert outcome.is_violation is False
@@ -93,7 +116,14 @@ def test_concurrency_escalates_only_after_sequential_finds_nothing() -> None:
             ),
         ),
     )
-    evidence, outcome = probe_race(graph, "owner", check, runner, concurrent_delivery=concurrent)
+    evidence, outcome = probe_race(
+        graph,
+        "owner",
+        check,
+        runner,
+        concurrent_delivery=concurrent,
+        oracle_runner=_sequenced_oracle_runner(INCONCLUSIVE, CONFIRMS),
+    )
     assert evidence.delivery_mode is DeliveryMode.CONCURRENT
     assert outcome.is_violation is True
     assert runner.calls == [DeliveryMode.SEQUENTIAL, DeliveryMode.CONCURRENT]
@@ -113,7 +143,14 @@ def test_concurrent_delivery_requires_two_accepted_duplicate_requests() -> None:
             ),
         ),
     )
-    evidence, outcome = probe_race(graph, "owner", check, runner, concurrent_delivery=concurrent)
+    evidence, outcome = probe_race(
+        graph,
+        "owner",
+        check,
+        runner,
+        concurrent_delivery=concurrent,
+        oracle_runner=_sequenced_oracle_runner(INCONCLUSIVE, ALLOWS),
+    )
     assert evidence.delivery_mode is DeliveryMode.CONCURRENT
     assert outcome.confirmed is True
     assert outcome.is_violation is False
@@ -164,6 +201,7 @@ def test_fresh_provider_allows_escalation_after_serial_denial() -> None:
         check,
         runner,
         fresh_delivery_provider=lambda identity, resource, template, sequential: fresh,
+        oracle_runner=_sequenced_oracle_runner(DENIES, CONFIRMS),
     )
     assert evidence.delivery_mode is DeliveryMode.CONCURRENT
     assert outcome.is_violation is True

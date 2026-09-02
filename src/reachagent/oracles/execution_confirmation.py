@@ -1,18 +1,21 @@
-"""Execution-confirmation oracle — XSS (reflected/stored/DOM) (§7, Phase 3 Task 6).
+"""Execution-confirmation evidence shapes — XSS (reflected/stored/DOM) (§7, Phase 3 Task 6).
 
-Confirms code-execution-class findings deterministically via two paths:
+v3 architecture decision (CLAUDE.md): the fixed ``decide()`` function that used
+to map DOM taint-flow / execution-marker signals and reflected/stored payload-
+tag reflection to exactly one deterministic verdict has been REMOVED. Live
+confirmation judgment now happens in ``oracles/llm_judgment.py``, which
+reasons over the same evidence objects instead of running a scripted decision
+table. ``ExecutionConfirmationOracle`` is kept only as a registered-mechanism
+marker (``oracles/registry.py`` and ``recon/tools/signal_gated.py`` still look
+it up); it no longer computes a verdict itself — see
+:class:`~reachagent.oracles.base.Oracle` for the inherited (raising) default
+``run()``.
 
-  * **DOM XSS**: the taint shim recorded ≥1 source→sink flow (``flows`` non-empty).
-    A flow means the shim's sink hook fired with a tainted value — execution
-    confirmation without HTTP response parsing.
-
-  * **Reflected/stored XSS**: a unique ``payload_tag`` appears verbatim in
-    ``response_body``. The tag is embedded in the injected payload; its presence
-    unencoded in the response proves the server reflected the payload without
-    output encoding — the defining XSS confirmation.
-
-Both paths are deterministic: no LLM, no fuzzy matching, no heuristics.
-Same evidence in, same verdict out, every time.
+``ExecutionConfirmationEvidence`` remains in use as the evidence-shape
+vocabulary for this family: DOM XSS evidence (``flows`` / ``executed``) and
+reflected/stored XSS evidence (``payload_tag`` / ``response_body`` /
+``expected_output`` / ``template_expression``) — ``llm_judgment.judge`` takes
+the same object the old ``decide()`` did.
 """
 
 from __future__ import annotations
@@ -20,23 +23,17 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from reachagent.browser.shim import TaintFlow
-from reachagent.graph.nodes import FindingStatus
 from reachagent.oracles import OracleMechanism
-from reachagent.oracles.base import Oracle, OracleVerdict, decision_reason
-from reachagent.oracles.evidence import (
-    EvidenceMetadata,
-    validate_evidence_metadata,
-    validate_evidence_ref,
-)
+from reachagent.oracles.base import Oracle
+from reachagent.oracles.evidence import EvidenceMetadata
 
 
 @dataclass(frozen=True)
 class ExecutionConfirmationEvidence:
-    """Evidence for the execution-confirmation oracle.
+    """Evidence for the execution-confirmation oracle family.
 
     Supply ``flows`` (DOM XSS path) or ``payload_tag`` + ``response_body``
-    (reflected/stored XSS path). Both may be supplied; the oracle confirms on
-    either signal. Neither yields INCONCLUSIVE.
+    (reflected/stored XSS path). Both may be supplied.
 
     ``executed`` (additive, default False) is True when the browser actually
     *executed* injected JS — the taint shim's ``onerror`` marker fired
@@ -58,93 +55,18 @@ class ExecutionConfirmationEvidence:
     metadata: EvidenceMetadata = field(default_factory=EvidenceMetadata)
 
 
-def _validate_evidence(evidence: ExecutionConfirmationEvidence) -> None:
-    validate_evidence_ref(evidence.evidence_ref)
-    validate_evidence_metadata(evidence.metadata)
-    if not isinstance(evidence.response_body, str):
-        raise TypeError("response_body must be a string")
-    if len(evidence.response_body) > 1_000_000:
-        raise ValueError("response_body exceeds 1000000 characters")
-    for name in ("payload_tag", "expected_output", "template_expression"):
-        value = getattr(evidence, name)
-        if not isinstance(value, str):
-            raise TypeError(f"{name} must be a string")
-        if len(value) > 16_384:
-            raise ValueError(f"{name} exceeds 16384 characters")
-    for index, flow in enumerate(evidence.flows):
-        for name in ("source", "sink", "value_snippet", "url"):
-            value = getattr(flow, name, None)
-            if not isinstance(value, str):
-                raise TypeError(f"flows[{index}].{name} must be a string")
-            if len(value) > 4_096:
-                raise ValueError(f"flows[{index}].{name} exceeds 4096 characters")
-            if any(ord(char) < 32 or ord(char) == 127 for char in value):
-                raise ValueError(f"flows[{index}].{name} contains a control character")
-
-
-def decide(evidence: ExecutionConfirmationEvidence) -> FindingStatus:
-    """Map execution-confirmation evidence to one verdict — the whole decision (§7).
-
-    Three DOM states, honestly distinguished:
-
-    * **candidate** — ``flows`` non-empty, ``executed`` False: a tainted value
-      reached a hooked sink (innerHTML/…), but nothing proves a script ran. Still
-      a CONFIRMED_VIOLATION (the existing flows-are-execution contract holds — the
-      marker is a strengthening, never a replacement).
-    * **executed** — ``flows`` non-empty AND ``executed`` True: the injected
-      payload's ``onerror`` marker fired, proving real execution. CONFIRMED_VIOLATION.
-    * **no signal** — empty ``flows`` and ``executed`` False: INCONCLUSIVE.
-
-    ``executed`` alone (no flows) also confirms — the marker firing is itself
-    observable execution, even if no sink hook happened to record the flow.
-
-    HTTP path: payload_tag non-empty and present verbatim in response_body → CONFIRMED_VIOLATION.
-    Neither signal present → INCONCLUSIVE.
-    """
-    _validate_evidence(evidence)
-    if evidence.flows or evidence.executed:
-        return FindingStatus.CONFIRMED_VIOLATION
-    if evidence.expected_output and evidence.expected_output in evidence.response_body:
-        return FindingStatus.CONFIRMED_VIOLATION
-    if evidence.payload_tag and evidence.payload_tag in evidence.response_body:
-        return FindingStatus.CONFIRMED_VIOLATION
-    return FindingStatus.INCONCLUSIVE
-
-
-def _reason(evidence: ExecutionConfirmationEvidence, status: FindingStatus) -> str:
-    if status is FindingStatus.CONFIRMED_VIOLATION:
-        detail = (
-            "execution_marker_or_sink_flow"
-            if (evidence.flows or evidence.executed)
-            else "reflection_tag_observed"
-        )
-    else:
-        detail = "execution_or_reflection_not_observed"
-    return decision_reason(OracleMechanism.EXECUTION_CONFIRMATION, status, detail)
-
-
 class ExecutionConfirmationOracle(Oracle):
-    """Confirms XSS (reflected/stored/DOM) — one of the six §7 families."""
+    """Registered-mechanism marker for the execution-confirmation family (§7).
+
+    No longer computes a verdict itself (v3 decision — CLAUDE.md): the fixed
+    ``decide()`` this class used to wrap is deleted, and live judgment happens
+    in ``oracles/llm_judgment.py``. Kept as a class (rather than deleted
+    outright) because ``oracles/registry.py`` still instantiates it and
+    ``recon/tools/signal_gated.py`` still looks it up via
+    ``OracleMechanism.EXECUTION_CONFIRMATION`` to validate a candidate's
+    suggested mechanism — neither is part of this file's family and so is out
+    of scope here. ``run()`` is inherited unchanged from :class:`Oracle`
+    (raises ``NotImplementedError``); nothing in the live scan path calls it.
+    """
 
     mechanism = OracleMechanism.EXECUTION_CONFIRMATION
-
-    def run(self, evidence: object) -> OracleVerdict:
-        """Return the deterministic verdict for ``evidence``.
-
-        ``evidence`` must be :class:`ExecutionConfirmationEvidence`. Raises
-        ``TypeError`` on wrong type — a mis-wired caller is a bug, not an
-        inconclusive result (mirrors the differential oracle).
-        """
-        if not isinstance(evidence, ExecutionConfirmationEvidence):
-            raise TypeError(
-                f"ExecutionConfirmationOracle needs ExecutionConfirmationEvidence, "
-                f"got {type(evidence).__name__}"
-            )
-        status = decide(evidence)
-        return OracleVerdict(
-            mechanism=self.mechanism,
-            status=status,
-            evidence_ref=evidence.evidence_ref,
-            reason=_reason(evidence, status),
-            evidence_metadata=validate_evidence_metadata(evidence.metadata),
-        )

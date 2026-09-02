@@ -6,55 +6,39 @@ import ast
 from pathlib import Path
 
 import httpx
+import pytest
 
 from reachagent.browser.shim import (
     TAINT_SHIM_JS,
     BrowserFireResult,
-    TaintFlow,
     run_taint_shim,
 )
 from reachagent.execution import RequestFirer, ScopeGuard
-from reachagent.graph.nodes import FindingStatus
 from reachagent.graph.store import ReachabilityGraph
 from reachagent.mcp import server
-from reachagent.oracles.execution_confirmation import (
-    ExecutionConfirmationEvidence,
-    ExecutionConfirmationOracle,
-    decide,
-)
 from reachagent.payloads import PayloadLibrary
 from reachagent.tools.explorer_context import ExplorerContext
+from tests._oracle_test_support import CONFIRMS, FixedJudgmentClient
 
 
-def _flow() -> TaintFlow:
-    return TaintFlow(source="location.hash", sink="innerHTML", value_snippet="<img src=x>")
+def _stub_judgment(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Force run_oracle's LLM judgment to CONFIRMS (v3 architecture, CLAUDE.md).
 
+    The MCP ``run_oracle`` tool exposes no ``client=`` kwarg to a hand-caller, so
+    this patches the same default-provider factory ``judge()`` falls back to when
+    no client is supplied (mirrors tests/phase1/test_mcp_server.py::_stub_judgment).
+    What used to be a fixed ``decide()`` producing a status from evidence content
+    (flows + executed=True -> violation) is now an LLM call that can't be pinned
+    deterministically; these tests instead assert the wiring (evidence reaches
+    run_oracle and a positive judgment comes back as is_violation) still works.
+    """
+    from reachagent.oracles import llm_judgment as _judgment
 
-# -- Oracle decide(): three DOM states -------------------------------------------
-
-
-def test_flows_and_executed_confirms() -> None:
-    ev = ExecutionConfirmationEvidence(flows=(_flow(),), executed=True)
-    assert decide(ev) is FindingStatus.CONFIRMED_VIOLATION
-    assert ExecutionConfirmationOracle().run(ev).status is FindingStatus.CONFIRMED_VIOLATION
-
-
-def test_flows_only_confirms_unchanged() -> None:
-    # Regression guard: the existing flows-are-execution contract holds; the marker
-    # never replaces flows.
-    ev = ExecutionConfirmationEvidence(flows=(_flow(),), executed=False)
-    assert decide(ev) is FindingStatus.CONFIRMED_VIOLATION
-
-
-def test_executed_only_confirms() -> None:
-    # The marker firing is itself observable execution, even without a recorded flow.
-    ev = ExecutionConfirmationEvidence(flows=(), executed=True)
-    assert decide(ev) is FindingStatus.CONFIRMED_VIOLATION
-
-
-def test_no_flows_no_executed_inconclusive() -> None:
-    ev = ExecutionConfirmationEvidence(flows=(), executed=False)
-    assert decide(ev) is FindingStatus.INCONCLUSIVE
+    monkeypatch.setattr(
+        _judgment,
+        "build_openai_compatible_client",
+        lambda **_: FixedJudgmentClient(CONFIRMS.value),
+    )
 
 
 # -- Shim: executed round-trips through run_taint_shim; reset installed -----------
@@ -122,9 +106,10 @@ def _call(mcp: object, name: str, **kwargs: object) -> object:
     return tool.fn(**kwargs)  # type: ignore[union-attr]
 
 
-def test_mcp_execution_confirmation_accepts_executed() -> None:
+def test_mcp_execution_confirmation_accepts_executed(monkeypatch: pytest.MonkeyPatch) -> None:
     from mcp.server.fastmcp import FastMCP
 
+    _stub_judgment(monkeypatch)
     session = _session()
     mcp = FastMCP("reachagent-test")
     server.register_tools(mcp, session)
@@ -141,10 +126,14 @@ def test_mcp_execution_confirmation_accepts_executed() -> None:
     assert verdict.is_violation is True  # type: ignore[attr-defined]
 
 
-def test_mcp_execution_confirmation_executed_absent_defaults_false() -> None:
-    # Absent `executed` key → defaults False; flows still drive the verdict (no break).
+def test_mcp_execution_confirmation_executed_absent_defaults_false(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Absent `executed` key still reaches the judge with `flows` populated; wiring
+    # (not the now-removed deterministic `executed` default) is what's under test.
     from mcp.server.fastmcp import FastMCP
 
+    _stub_judgment(monkeypatch)
     session = _session()
     mcp = FastMCP("reachagent-test")
     server.register_tools(mcp, session)

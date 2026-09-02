@@ -15,6 +15,7 @@ from reachagent.execution import RequestFirer, ScopeGuard
 from reachagent.graph.nodes import Endpoint, Parameter
 from reachagent.graph.store import ReachabilityGraph
 from reachagent.scan.orchestrator import _ValidatorSeam, run_mass_assignment
+from tests._oracle_test_support import CONFIRMS, FixedJudgmentClient
 
 _BASE = "http://ma.test"
 
@@ -48,7 +49,18 @@ def _run(handler: object) -> list:
     return graph.findings()
 
 
-def test_confirms_when_privileged_field_persists() -> None:
+def test_confirms_when_privileged_field_persists(monkeypatch) -> None:  # noqa: ANN001
+    """Confirmation is now an LLM judgment (v3, CLAUDE.md) rather than a fixed
+    decide(); _ValidatorSeam.run calls tools.validator.run_oracle with no
+    client= passthrough, so pin the verdict by monkeypatching the client
+    builder it constructs internally.
+    """
+    import reachagent.oracles.llm_judgment as _llm_judgment
+
+    monkeypatch.setattr(
+        _llm_judgment, "build_openai_compatible_client", lambda: FixedJudgmentClient(CONFIRMS.value)
+    )
+
     def handler(request: httpx.Request) -> httpx.Response:
         if request.method in ("OPTIONS", "GET") and request.url.path == "/users/v1/register":
             return httpx.Response(200, text="ok")

@@ -14,75 +14,23 @@ Covers the Task 6 DoD:
 
 from __future__ import annotations
 
-import pytest
-
 from reachagent.browser.shim import BrowserFireResult, TaintFlow
 from reachagent.graph.nodes import Finding, FindingStatus
 from reachagent.graph.store import ReachabilityGraph
 from reachagent.oracles import OracleMechanism
-from reachagent.oracles.execution_confirmation import (
-    ExecutionConfirmationEvidence,
-    ExecutionConfirmationOracle,
-    decide,
-)
-from reachagent.oracles.registry import get_oracle
 from reachagent.xss.detector import DomProbe, StoredProbe, XssProber, detect_xss
-
-# === Oracle unit tests ========================================================
-
-
-def test_oracle_registered() -> None:
-    # Task 5 proved deferral; Task 6 proves it is now built.
-    oracle = get_oracle(OracleMechanism.EXECUTION_CONFIRMATION)
-    assert isinstance(oracle, ExecutionConfirmationOracle)
-
-
-def test_decide_dom_flow_confirms() -> None:
-    flow = TaintFlow(source="location.hash", sink="innerHTML", url="http://t/p")
-    ev = ExecutionConfirmationEvidence(flows=(flow,))
-    assert decide(ev) is FindingStatus.CONFIRMED_VIOLATION
-
-
-def test_decide_no_flows_no_tag_inconclusive() -> None:
-    ev = ExecutionConfirmationEvidence()
-    assert decide(ev) is FindingStatus.INCONCLUSIVE
-
-
-def test_decide_tag_in_body_confirms() -> None:
-    ev = ExecutionConfirmationEvidence(
-        payload_tag="xss-probe-abc123",
-        response_body="<p>xss-probe-abc123</p>",
-    )
-    assert decide(ev) is FindingStatus.CONFIRMED_VIOLATION
-
-
-def test_decide_tag_absent_inconclusive() -> None:
-    ev = ExecutionConfirmationEvidence(
-        payload_tag="xss-probe-abc123",
-        response_body="<p>safe content</p>",
-    )
-    assert decide(ev) is FindingStatus.INCONCLUSIVE
-
-
-def test_oracle_wrong_evidence_type_raises() -> None:
-    oracle = ExecutionConfirmationOracle()
-    with pytest.raises(TypeError):
-        oracle.run({"flows": []})
-
-
-def test_oracle_verdict_is_violation_on_flow() -> None:
-    flow = TaintFlow(source="postMessage", sink="eval", url="http://t/p")
-    ev = ExecutionConfirmationEvidence(flows=(flow,), evidence_ref="xss/dom/test")
-    verdict = ExecutionConfirmationOracle().run(ev)
-    assert verdict.is_violation is True
-    assert verdict.mechanism is OracleMechanism.EXECUTION_CONFIRMATION
-    assert verdict.evidence_ref == "xss/dom/test"
-
+from tests._oracle_test_support import CONFIRMS, INCONCLUSIVE, fixed_oracle_runner
 
 # === DOM XSS detector =========================================================
+#
+# v3 (CLAUDE.md): decide() is gone — confirmation is now an LLM judgment, not
+# something a hermetic test can re-derive deterministically. These tests now
+# assert on DETECTOR WIRING (does it correctly relay a fixed verdict into
+# `.confirmed`/`.xss_type`) via an injected `oracle_runner`, not on judgment
+# itself.
 
 
-def _dom_prober(flows: list[dict] | None = None) -> XssProber:
+def _dom_prober(flows: list[dict] | None = None, *, status=CONFIRMS) -> XssProber:
     """Prober whose DOM probe returns the given flows (no stored callback)."""
     flow_objs = tuple(
         TaintFlow(
@@ -102,11 +50,11 @@ def _dom_prober(flows: list[dict] | None = None) -> XssProber:
     def fire_dom() -> DomProbe:
         return DomProbe(result=result)
 
-    return XssProber(fire_dom=fire_dom)
+    return XssProber(fire_dom=fire_dom, oracle_runner=fixed_oracle_runner(status))
 
 
 def test_dom_xss_confirms_on_taint_flow() -> None:
-    prober = _dom_prober(flows=[{"source": "location.hash", "sink": "innerHTML"}])
+    prober = _dom_prober(flows=[{"source": "location.hash", "sink": "innerHTML"}], status=CONFIRMS)
     result = detect_xss(prober, evidence_ref="xss/dom/1")
     assert result.confirmed is True
     assert result.xss_type == "dom"
@@ -116,7 +64,7 @@ def test_dom_xss_confirms_on_taint_flow() -> None:
 
 def test_dom_xss_clean_target_finds_nothing() -> None:
     # Full discovery path: shim installed, navigation happened, no flows.
-    prober = _dom_prober(flows=[])
+    prober = _dom_prober(flows=[], status=INCONCLUSIVE)
     result = detect_xss(prober, evidence_ref="xss/dom/clean")
     assert result.confirmed is False
     assert result.xss_type is None
@@ -128,7 +76,8 @@ def test_dom_xss_multiple_flows_all_returned() -> None:
         flows=[
             {"source": "location.hash", "sink": "innerHTML"},
             {"source": "postMessage", "sink": "eval"},
-        ]
+        ],
+        status=CONFIRMS,
     )
     result = detect_xss(prober)
     assert result.confirmed is True
@@ -138,13 +87,40 @@ def test_dom_xss_multiple_flows_all_returned() -> None:
 # === Stored XSS detector ======================================================
 
 
+def _dom_then_stored_runner(stored_status):
+    """Oracle runner that never confirms DOM evidence but returns ``stored_status``
+    for stored (payload_tag) evidence.
+
+    ``fixed_oracle_runner`` alone can't express this: the DOM probe and the
+    stored probe share one ``oracle_runner`` field, so a single fixed status
+    would confirm (or deny) both calls identically. Dispatching on
+    ``evidence.payload_tag`` (only stored evidence sets it) lets the DOM leg
+    behave as it would with no taint flows (never confirmed) while the stored
+    leg's verdict is the one under test.
+    """
+    dom_runner = fixed_oracle_runner(INCONCLUSIVE)
+    stored_runner = fixed_oracle_runner(stored_status)
+
+    def _runner(mechanism, evidence):
+        if evidence.payload_tag:
+            return stored_runner(mechanism, evidence)
+        return dom_runner(mechanism, evidence)
+
+    return _runner
+
+
 def _stored_prober(
     *,
     dom_flows: list[dict] | None = None,
     tag_in_body: bool = False,
     tag: str = "xss-tag-deadbeef",
+    status=CONFIRMS,
 ) -> XssProber:
-    """Prober with both DOM (no flows by default) and stored callbacks."""
+    """Prober with both DOM (no flows by default) and stored callbacks.
+
+    ``status`` is the fixed oracle verdict for the stored probe; the DOM probe
+    (no flows by default) always comes back inconclusive.
+    """
     dom_result = BrowserFireResult(
         url="http://target/page",
         identity="user",
@@ -162,18 +138,20 @@ def _stored_prober(
         body = f"<p>{tag}</p>" if tag_in_body else "<p>safe</p>"
         return StoredProbe(payload_tag=tag, readback_body=body, write_logged=True)
 
-    return XssProber(fire_dom=fire_dom, fire_stored=fire_stored)
+    return XssProber(
+        fire_dom=fire_dom, fire_stored=fire_stored, oracle_runner=_dom_then_stored_runner(status)
+    )
 
 
 def test_stored_xss_confirms_when_tag_in_readback() -> None:
-    prober = _stored_prober(tag_in_body=True)
+    prober = _stored_prober(tag_in_body=True, status=CONFIRMS)
     result = detect_xss(prober, evidence_ref="xss/stored/1")
     assert result.confirmed is True
     assert result.xss_type == "stored"
 
 
 def test_stored_xss_clean_readback_finds_nothing() -> None:
-    prober = _stored_prober(tag_in_body=False)
+    prober = _stored_prober(tag_in_body=False, status=INCONCLUSIVE)
     result = detect_xss(prober, evidence_ref="xss/stored/clean")
     assert result.confirmed is False
     assert result.xss_type is None
@@ -197,7 +175,9 @@ def test_dom_confirmed_skips_stored_path() -> None:
         stored_fired.append(True)
         return StoredProbe(payload_tag="t", readback_body="<p>t</p>", write_logged=True)
 
-    prober = XssProber(fire_dom=fire_dom, fire_stored=fire_stored)
+    prober = XssProber(
+        fire_dom=fire_dom, fire_stored=fire_stored, oracle_runner=fixed_oracle_runner(CONFIRMS)
+    )
     result = detect_xss(prober)
     assert result.confirmed is True
     assert result.xss_type == "dom"
@@ -206,7 +186,7 @@ def test_dom_confirmed_skips_stored_path() -> None:
 
 def test_no_stored_callback_dom_only_mode() -> None:
     """When no write callback supplied, stored path is skipped entirely."""
-    prober = _dom_prober(flows=[])  # no stored callback
+    prober = _dom_prober(flows=[], status=INCONCLUSIVE)  # no stored callback
     result = detect_xss(prober)
     assert result.confirmed is False
 

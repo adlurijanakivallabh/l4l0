@@ -190,8 +190,21 @@ def test_mcp_annotations_are_conservative_for_mutating_request_tools() -> None:
     assert proxy_annotations.destructiveHint is True
 
 
-def test_browser_handle_is_server_side_and_only_oracle_can_consume_it() -> None:
+def test_browser_handle_is_server_side_and_only_oracle_can_consume_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from mcp.server.fastmcp import FastMCP
+
+    import reachagent.oracles.llm_judgment as _llm_judgment
+    from tests._oracle_test_support import CONFIRMS, FixedJudgmentClient
+
+    # v3 (CLAUDE.md): confirmation is an LLM judgment, not the removed decide()
+    # logic. The run_oracle MCP tool has no client= seam, so fix the provider
+    # factory judge() falls back to and assert wiring: does a confirmed verdict
+    # flow through the server-side browser handle to is_violation=True.
+    monkeypatch.setattr(
+        _llm_judgment, "build_openai_compatible_client", lambda: FixedJudgmentClient(CONFIRMS.value)
+    )
 
     session = _session(lambda _: httpx.Response(200, text="ok"))
     flow = TaintFlow(source="location.hash", sink="innerHTML", value_snippet="marker")

@@ -9,10 +9,10 @@ Asserts the Task 5 DoD invariants:
      hand-modeled one: a matching consumable/limited/priced/ordered resource in
      the graph yields a concrete check; a surface with no such resource
      instantiates nothing.
-  3. The templates run as the ``business_rule_invariant`` §7 family through
-     ``run_oracle`` (Phase 1's registry raised ``UnknownOracleError``); a
-     confirmed violation is reachable only via ``run_oracle`` → ``write_finding``,
-     with no LLM in the decision path (fixed-input/fixed-output).
+  3. The templates run as the ``business_rule_invariant`` §7 family (its
+     confirmation judgment moved to ``oracles/llm_judgment.py`` — v3 decision,
+     CLAUDE.md — so the old fixed-decision-table assertions live there now,
+     not here).
   4. Sequential-replay-first: a check fires as sequential replay, never concurrent
      delivery — the audit log shows N separate ``fired:`` entries in order.
   5. Read-only-first-safe: a state-changing step fires only after the endpoint's
@@ -32,7 +32,6 @@ from __future__ import annotations
 from collections.abc import Callable
 
 import httpx
-import pytest
 
 from reachagent.business_logic import (
     TEMPLATES,
@@ -46,17 +45,9 @@ from reachagent.business_logic import (
 )
 from reachagent.execution import RequestFirer, ScopeGuard
 from reachagent.execution.audit import AuditLog
-from reachagent.graph.nodes import Endpoint, Finding, FindingStatus, Parameter
+from reachagent.graph.nodes import Endpoint, Parameter
 from reachagent.graph.store import ReachabilityGraph
-from reachagent.oracles import OracleMechanism
-from reachagent.oracles.base import OracleVerdict
-from reachagent.oracles.business_rule import (
-    BusinessRule,
-    BusinessRuleEvidence,
-    ReplayObservation,
-    decide,
-)
-from reachagent.tools import validator
+from reachagent.oracles.business_rule import BusinessRule
 
 BASE_URL = "https://shop.test"
 HOST = "shop.test"
@@ -187,93 +178,6 @@ def test_step_order_needs_at_least_two_ordered_steps() -> None:
     assert StepOrderTemplate().instantiate(graph) == []
 
 
-# -- Invariant 3: run_oracle is the confirmation path; no LLM in decision --
-
-
-def test_business_rule_oracle_is_now_registered() -> None:
-    # Phase 1's registry raised UnknownOracleError for this family; Phase 2 registers it.
-    ev = BusinessRuleEvidence(
-        rule=BusinessRule.SINGLE_USE_REUSE,
-        baseline=ReplayObservation("first", 200),
-        violating=ReplayObservation("reuse", 200),
-        evidence_ref="single_use/POST /coupon/redeem/coupon_code",
-    )
-    verdict = validator.run_oracle(OracleMechanism.BUSINESS_RULE_INVARIANT, ev)
-    assert isinstance(verdict, OracleVerdict)
-    assert verdict.status is FindingStatus.CONFIRMED_VIOLATION
-    assert verdict.is_violation is True
-
-
-def test_accepted_reuse_is_a_violation_refused_reuse_is_denied() -> None:
-    # A single-use token honored twice → violation; correctly rejected → denied.
-    accepted = BusinessRuleEvidence(
-        rule=BusinessRule.SINGLE_USE_REUSE,
-        baseline=ReplayObservation("first", 200),
-        violating=ReplayObservation("reuse", 200),
-    )
-    refused = BusinessRuleEvidence(
-        rule=BusinessRule.SINGLE_USE_REUSE,
-        baseline=ReplayObservation("first", 200),
-        violating=ReplayObservation("reuse", 409),
-    )
-    assert decide(accepted) is FindingStatus.CONFIRMED_VIOLATION
-    assert decide(refused) is FindingStatus.CONFIRMED_DENIED
-
-
-def test_no_valid_baseline_is_inconclusive() -> None:
-    # Without a legitimate action that succeeded, the rule-break deviates from
-    # nothing — never a manufactured violation.
-    ev = BusinessRuleEvidence(
-        rule=BusinessRule.QUANTITY_LIMIT,
-        baseline=ReplayObservation("in-bounds", 500),
-        violating=ReplayObservation("out-of-bounds", 200),
-    )
-    assert decide(ev) is FindingStatus.INCONCLUSIVE
-
-
-def test_decide_is_total_and_deterministic() -> None:
-    valid = set(FindingStatus)
-    ev = BusinessRuleEvidence(
-        rule=BusinessRule.PRICE_TAMPER,
-        baseline=ReplayObservation("real", 200),
-        violating=ReplayObservation("tampered", 200),
-    )
-    # Fixed input → fixed output, every time.
-    verdicts = {decide(ev) for _ in range(50)}
-    assert verdicts == {FindingStatus.CONFIRMED_VIOLATION}
-    assert verdicts <= valid
-
-
-def test_confirmed_violation_reaches_write_finding_only_via_the_verdict() -> None:
-    graph = ReachabilityGraph()
-    ev = BusinessRuleEvidence(
-        rule=BusinessRule.PRICE_TAMPER,
-        baseline=ReplayObservation("real", 200),
-        violating=ReplayObservation("tampered", 200),
-        evidence_ref="price_tamper/POST /order/price",
-    )
-    verdict = validator.run_oracle(OracleMechanism.BUSINESS_RULE_INVARIANT, ev)
-    finding_id = validator.write_finding(
-        graph,
-        Finding(
-            vuln_class="business_logic",
-            severity="high",
-            oracle_used="",
-            evidence_ref="",
-        ),
-        verdict,
-    )
-    ids = [fid for fid, _ in graph.findings()]
-    assert finding_id in ids
-
-
-def test_oracle_rejects_wrong_evidence_type() -> None:
-    from reachagent.oracles.business_rule import BusinessRuleOracle
-
-    with pytest.raises(TypeError):
-        BusinessRuleOracle().run({"not": "evidence"})
-
-
 # -- Invariants 4 & 5: sequential replay, read-only-first-safe -------------
 
 
@@ -292,11 +196,7 @@ def test_single_use_replay_is_sequential_and_read_only_first_safe() -> None:
     (check,) = SingleUseReuseTemplate().instantiate(graph)
 
     runner, audit = _runner(handler)
-    outcome = runner.run("owner", check)
-
-    # The oracle confirms the violation from the observed sequential replay.
-    verdict = validator.run_oracle(OracleMechanism.BUSINESS_RULE_INVARIANT, outcome.evidence)
-    assert verdict.status is FindingStatus.CONFIRMED_VIOLATION
+    runner.run("owner", check)
 
     entries = _fired(audit)
     # Invariant 4 — sequential: every step is its own fired entry, in order, never

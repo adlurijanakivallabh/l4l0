@@ -17,14 +17,39 @@ is the precondition.
 from __future__ import annotations
 
 import httpx
+import pytest
 
 from reachagent.bola.detector import detect
 from reachagent.graph.nodes import AuthState, Endpoint, Identity, Object, Provenance
 from reachagent.graph.store import ReachabilityGraph, finding_id, identity_id
+from tests._oracle_test_support import CONFIRMS, FixedJudgmentClient
 
 
-def test_two_independent_bola_instances_do_not_get_enables_edge() -> None:
+def _stub_judgment(monkeypatch: pytest.MonkeyPatch, status=CONFIRMS) -> None:
+    """Force run_oracle's LLM judgment to a fixed status (v3 architecture, CLAUDE.md).
+
+    ``bola.detector.detect`` drives confirmation through the MCP ``run_oracle``
+    tool (``_call(mcp, "run_oracle", ...)``), which exposes no ``client=`` kwarg
+    to a hand-caller — so this patches the same default-provider factory
+    ``judge()`` falls back to when no client is supplied, exactly like
+    ``tests/phase1/test_mcp_server.py::_stub_judgment``. These tests assert the
+    chain-linking WIRING (which findings get an enables edge) reacts correctly
+    given a fixed verdict, not the now-removed deterministic decide() logic.
+    """
+    from reachagent.oracles import llm_judgment as _judgment
+
+    monkeypatch.setattr(
+        _judgment,
+        "build_openai_compatible_client",
+        lambda **_: FixedJudgmentClient(status.value),
+    )
+
+
+def test_two_independent_bola_instances_do_not_get_enables_edge(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Two BOLA findings on different object instances with no causal link → no enables."""
+    _stub_judgment(monkeypatch)
     graph = ReachabilityGraph()
     for name, role in [("owner_a", "user"), ("owner_b", "user")]:
         graph.add_identity(
@@ -62,13 +87,16 @@ def test_two_independent_bola_instances_do_not_get_enables_edge() -> None:
     assert graph.enables_edges() == []
 
 
-def test_identifier_yielding_bola_chain_gets_enables_edge() -> None:
+def test_identifier_yielding_bola_chain_gets_enables_edge(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Hop A's response leaks the identifier hop B's path consumes → enables edge.
 
     This is the documented multi-step BOLA shape: reading resource A (owner) leaks
     a downstream identifier that resource B's path template consumes. B is only
     reachable *because* A produced its id — a genuine precondition, not adjacency.
     """
+    _stub_judgment(monkeypatch)
     graph = ReachabilityGraph()
     graph.add_identity(
         "owner_a", Identity(role="user", auth_state=AuthState.USER, provenance=Provenance.SEEDED)

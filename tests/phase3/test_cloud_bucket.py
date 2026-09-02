@@ -1,8 +1,10 @@
 """Cloud bucket exposure detector — hermetic tests (§7, Prober-injection pattern).
 
-Uses the real default registry runner (no validator import, no fake oracle) —
-same pattern as test_subdomain_takeover.py. The oracle's own decide() branch
-is covered separately in test_cloud_bucket_oracle.py.
+v3 (CLAUDE.md): decide() is gone — confirmation is now an LLM judgment, not
+something a hermetic test can re-derive deterministically. Tests that need a
+confirmed verdict inject a fixed `oracle_runner` (see
+tests/_oracle_test_support.py) in place of the real default registry runner,
+matching the pattern in test_path_traversal.py.
 """
 
 from __future__ import annotations
@@ -15,6 +17,7 @@ from reachagent.cloud_bucket.detector import (
     derive_seed_names,
     detect_cloud_bucket_exposure,
 )
+from tests._oracle_test_support import CONFIRMS, fixed_oracle_runner
 
 _S3_MARKER = "<ListBucketResult"
 
@@ -73,7 +76,7 @@ def test_confirmed_exposure_yields_a_confirmed_result() -> None:
             return BucketProbe(status=200, body=f"<?xml?>{_S3_MARKER}<Name>testfire</Name>")
         return BucketProbe(status=404, body="<Error><Code>NoSuchBucket</Code></Error>")
 
-    prober = BucketProber(fire_probe=fire_probe)
+    prober = BucketProber(fire_probe=fire_probe, oracle_runner=fixed_oracle_runner(CONFIRMS))
     probes = ((target_url, _S3_MARKER), ("https://other.s3.amazonaws.com/", _S3_MARKER))
     result = detect_cloud_bucket_exposure(prober, probes=probes, evidence_ref="ref-1")
     assert result.confirmed is True
@@ -101,7 +104,7 @@ def test_transport_failure_on_one_candidate_does_not_abort_the_rest() -> None:
             return BucketProbe(status=200, body=_S3_MARKER)
         return BucketProbe(status=404, body="")
 
-    prober = BucketProber(fire_probe=fire_probe)
+    prober = BucketProber(fire_probe=fire_probe, oracle_runner=fixed_oracle_runner(CONFIRMS))
     probes = (
         ("https://a.s3.amazonaws.com/", _S3_MARKER),
         (target_url, _S3_MARKER),

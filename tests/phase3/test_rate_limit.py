@@ -1,8 +1,13 @@
 """Rate-limit-absence detector — hermetic tests (§7, Prober-injection pattern).
 
-Uses the real default registry runner (no validator import, no fake oracle) —
-same pattern as test_subdomain_takeover.py. The oracle's own decide() branch
-is covered separately in test_rate_limit_oracle.py.
+v3 (CLAUDE.md): decide() is gone — confirmation is now an LLM judgment, not
+something a hermetic test can re-derive deterministically. The "no lockout
+signal across a full burst" case now asserts on DETECTOR WIRING (does it
+correctly relay a fixed verdict into `.confirmed`) via an injected
+`oracle_runner`, matching tests/phase3/test_path_traversal.py. The other
+cases here never reach a violation verdict either way (no lockout signal to
+judge, or an incomplete burst), so they still pass against the real default
+registry runner unchanged.
 """
 
 from __future__ import annotations
@@ -14,6 +19,7 @@ from reachagent.rate_limit.detector import (
     detect_rate_limit_absence,
     has_lockout_signal,
 )
+from tests._oracle_test_support import CONFIRMS, fixed_oracle_runner
 
 
 def test_has_lockout_signal_on_429_status() -> None:
@@ -38,7 +44,7 @@ def test_no_lockout_across_full_burst_confirms_absence() -> None:
     def fire_attempt(_i: int) -> RateLimitProbe:
         return RateLimitProbe(status=401, body="invalid credentials")
 
-    prober = RateLimitProber(fire_attempt=fire_attempt)
+    prober = RateLimitProber(fire_attempt=fire_attempt, oracle_runner=fixed_oracle_runner(CONFIRMS))
     result = detect_rate_limit_absence(prober, evidence_ref="ref-1")
     assert result.confirmed is True
     assert result.attempts_completed == 6

@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import pytest
 
-from reachagent.graph.nodes import FindingStatus
+from reachagent.detection.oracle_gateway import OracleOutcome, OracleRunner, registry_runner
 from reachagent.nosql.detector import (
     AuthBypassProbe,
     NoSqliProber,
@@ -25,95 +25,39 @@ from reachagent.nosql.detector import (
     detect_nosqli,
 )
 from reachagent.oracles import OracleMechanism
-from reachagent.oracles.differential import (
-    DiffAxis,
-    DifferentialEvidence,
-    DiffExpectation,
-    Observation,
-    decide,
-)
+from reachagent.oracles.base import OracleVerdict
+from reachagent.oracles.differential import Observation
+from tests._oracle_test_support import CONFIRMS, INCONCLUSIVE
 
 # Stable baseline for timing tests (10 trials, sub-second, low jitter).
 _STABLE_BASELINE = (100.0, 105.0, 98.0, 102.0, 101.0, 99.0, 103.0, 100.0, 104.0, 97.0)
 _DELAYED_PROBE = tuple(5000.0 + i for i in range(10))
 
 
-# === AUTH_BYPASS expectation (DiffExpectation) ================================
+# === oracle_runner fakes (v3 — see tests/_oracle_test_support.py) =============
+#
+# decide() is gone; confirmation is now an LLM judgment, not something a
+# hermetic test can re-derive deterministically. These tests assert on
+# DETECTOR WIRING (does detect_nosqli correctly relay a fixed verdict per
+# stage into .confirmed/.mechanism/.attempted), not on judgment itself.
+# detect_nosqli's two stages (auth-bypass, timing) share one oracle_runner
+# slot on NoSqliProber, so — unlike fixed_oracle_runner's single fixed status
+# — this fake routes by mechanism, letting a test fix bypass and timing to
+# different verdicts in the same run (e.g. "bypass denies, timing confirms").
 
 
-def test_auth_bypass_refused_then_granted_is_violation() -> None:
-    # Baseline: benign credential, correctly refused (401).
-    # Probe: operator-injected variant, granted (200).
-    # Refused→granted is the bypass signal.
-    ev = DifferentialEvidence(
-        axis=DiffAxis.CROSS_CONDITION,
-        expectation=DiffExpectation.AUTH_BYPASS,
-        baseline=Observation("benign", 401, "unauthorized"),
-        probe=Observation("injected", 200, '{"token":"abc"}'),
-        evidence_ref="nosql/auth-bypass/login",
-    )
-    assert decide(ev) is FindingStatus.CONFIRMED_VIOLATION
+def _oracle_runner_by_mechanism(
+    *, differential: object = INCONCLUSIVE, timing: object = INCONCLUSIVE
+) -> OracleRunner:
+    def _runner(mechanism: OracleMechanism, evidence: object) -> OracleOutcome:
+        status = differential if mechanism is OracleMechanism.DIFFERENTIAL else timing
+        ref = str(getattr(evidence, "evidence_ref", "") or "")
+        verdict = OracleVerdict(
+            mechanism=mechanism, status=status, evidence_ref=ref, reason="test-fixed-verdict"
+        )
+        return OracleOutcome(verdict)
 
-
-def test_auth_bypass_refused_then_refused_is_confirmed_denied() -> None:
-    # Injection was also refused — authentication held. Confirmed fact.
-    ev = DifferentialEvidence(
-        axis=DiffAxis.CROSS_CONDITION,
-        expectation=DiffExpectation.AUTH_BYPASS,
-        baseline=Observation("benign", 401, "unauthorized"),
-        probe=Observation("injected", 403, "forbidden"),
-        evidence_ref="nosql/auth-bypass/login",
-    )
-    assert decide(ev) is FindingStatus.CONFIRMED_DENIED
-
-
-def test_auth_bypass_baseline_not_refused_is_inconclusive() -> None:
-    # Baseline was granted — can't prove a bypass without a refused reference.
-    ev = DifferentialEvidence(
-        axis=DiffAxis.CROSS_CONDITION,
-        expectation=DiffExpectation.AUTH_BYPASS,
-        baseline=Observation("benign", 200, "ok"),
-        probe=Observation("injected", 200, "ok"),
-        evidence_ref="nosql/auth-bypass/login",
-    )
-    assert decide(ev) is FindingStatus.INCONCLUSIVE
-
-
-def test_auth_bypass_baseline_refused_probe_error_is_inconclusive() -> None:
-    # Baseline refused, probe returned 500 — ambiguous, no clean verdict.
-    ev = DifferentialEvidence(
-        axis=DiffAxis.CROSS_CONDITION,
-        expectation=DiffExpectation.AUTH_BYPASS,
-        baseline=Observation("benign", 401, "unauthorized"),
-        probe=Observation("injected", 500, "internal error"),
-        evidence_ref="nosql/auth-bypass/login",
-    )
-    assert decide(ev) is FindingStatus.INCONCLUSIVE
-
-
-def test_auth_bypass_body_equivalence_not_required() -> None:
-    # A fresh session returns a different token than the refused attempt.
-    # Body-equivalence must NOT be the signal — refused→granted is enough.
-    ev = DifferentialEvidence(
-        axis=DiffAxis.CROSS_CONDITION,
-        expectation=DiffExpectation.AUTH_BYPASS,
-        baseline=Observation("benign", 401, "unauthorized"),
-        probe=Observation("injected", 200, '{"token":"completely-different-value"}'),
-        evidence_ref="nosql/auth-bypass/login",
-    )
-    assert decide(ev) is FindingStatus.CONFIRMED_VIOLATION
-
-
-def test_auth_bypass_decision_is_deterministic() -> None:
-    ev = DifferentialEvidence(
-        axis=DiffAxis.CROSS_CONDITION,
-        expectation=DiffExpectation.AUTH_BYPASS,
-        baseline=Observation("benign", 401, "unauthorized"),
-        probe=Observation("injected", 200, '{"token":"abc"}'),
-        evidence_ref="nosql/auth-bypass/login",
-    )
-    verdicts = {decide(ev) for _ in range(50)}
-    assert verdicts == {FindingStatus.CONFIRMED_VIOLATION}
+    return _runner
 
 
 # === _prober factory ==========================================================
@@ -124,6 +68,7 @@ def _prober(
     bypass: AuthBypassProbe,
     timing: TimingProbe,
     trace: list[str],
+    oracle_runner: OracleRunner = registry_runner,
 ) -> NoSqliProber:
     def fire_auth_bypass() -> AuthBypassProbe:
         trace.append("fire_bypass")
@@ -133,7 +78,9 @@ def _prober(
         trace.append("fire_timing")
         return timing
 
-    return NoSqliProber(fire_auth_bypass=fire_auth_bypass, fire_timing=fire_timing)
+    return NoSqliProber(
+        fire_auth_bypass=fire_auth_bypass, fire_timing=fire_timing, oracle_runner=oracle_runner
+    )
 
 
 def _bypass_probe(*, granted: bool) -> AuthBypassProbe:
@@ -154,6 +101,7 @@ def test_bypass_confirms_and_timing_never_fired() -> None:
         bypass=_bypass_probe(granted=True),
         timing=TimingProbe(_DELAYED_PROBE, _STABLE_BASELINE),
         trace=trace,
+        oracle_runner=_oracle_runner_by_mechanism(differential=CONFIRMS),
     )
     result = detect_nosqli(prober, evidence_ref="nosql/login")
     assert result.confirmed
@@ -170,6 +118,7 @@ def test_bypass_attempted_first_then_timing_when_no_bypass() -> None:
         bypass=_bypass_probe(granted=False),
         timing=TimingProbe(_DELAYED_PROBE, _STABLE_BASELINE),
         trace=trace,
+        oracle_runner=_oracle_runner_by_mechanism(differential=INCONCLUSIVE, timing=CONFIRMS),
     )
     result = detect_nosqli(prober)
     assert result.confirmed
@@ -186,6 +135,7 @@ def test_bypass_confirmed_sets_identity_hint() -> None:
         bypass=_bypass_probe(granted=True),
         timing=TimingProbe(_STABLE_BASELINE, _STABLE_BASELINE),
         trace=trace,
+        oracle_runner=_oracle_runner_by_mechanism(differential=CONFIRMS),
     )
     result = detect_nosqli(prober, bypass_identity_hint="nosqli-admin")
     assert result.confirmed
@@ -211,6 +161,7 @@ def test_timing_confirms_when_bypass_not_confirmed() -> None:
         bypass=_bypass_probe(granted=False),
         timing=TimingProbe(_DELAYED_PROBE, _STABLE_BASELINE),
         trace=trace,
+        oracle_runner=_oracle_runner_by_mechanism(differential=INCONCLUSIVE, timing=CONFIRMS),
     )
     result = detect_nosqli(prober)
     assert result.confirmed

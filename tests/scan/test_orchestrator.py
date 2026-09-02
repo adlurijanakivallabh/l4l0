@@ -13,6 +13,7 @@ from reachagent.scan.orchestrator import (
     rank_vuln_classes,
     scan_all_classes,
 )
+from tests._oracle_test_support import CONFIRMS, FixedJudgmentClient
 
 _SQL_ERROR = 'You have an error in your SQL syntax; near "\'"'
 
@@ -62,7 +63,19 @@ def _surface(tmp_path) -> str:  # noqa: ANN001
     return str(surface)
 
 
-def test_scan_all_classes_detects_sqli_and_structural(tmp_path) -> None:  # noqa: ANN001
+def test_scan_all_classes_detects_sqli_and_structural(tmp_path, monkeypatch) -> None:  # noqa: ANN001
+    # v3 (CLAUDE.md): confirmation is now an LLM judgment, not the removed
+    # decide() logic, and scan_all_classes' full pipeline has no client= seam
+    # to inject through. Fix the LLM provider factory that
+    # reachagent.oracles.llm_judgment.judge() falls back to when no client is
+    # supplied, so this test asserts WIRING — do sqli + the three structural
+    # classes flow from fired probes through write_finding into
+    # graph.findings() — not judgment itself.
+    import reachagent.oracles.llm_judgment as _llm_judgment
+
+    monkeypatch.setattr(
+        _llm_judgment, "build_openai_compatible_client", lambda: FixedJudgmentClient(CONFIRMS.value)
+    )
     from reachagent.payloads import PayloadLibrary
 
     events: list[ScanEvent] = []

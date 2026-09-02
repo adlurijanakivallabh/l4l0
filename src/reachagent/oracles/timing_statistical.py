@@ -5,39 +5,38 @@ only when a statistically significant latency effect is present in the probe
 trials and absent in the negative-control (baseline) trials — ruling out
 network jitter as the cause.
 
-Decision path contains **zero LLM input**: pure arithmetic over measured
-latencies. Same evidence in, same verdict out, every time.
-
 OOB-first discipline (§7): this oracle is the *fallback* for blind SQLi (the
 ``OOB_CALLBACK`` family is tried first); it is the *primary* oracle for NoSQLi
 and LDAP extraction, which have no OOB channel. The caller (detector) decides
 which oracle to invoke — this oracle has no knowledge of OOB availability.
 
 Negative control is mandatory: a single timing measurement cannot confirm a
-violation. The oracle requires a paired baseline trial fired under identical
-conditions (same endpoint, same identity, same non-delay payload). Supplying
-only probe trials raises :class:`ValidationError` rather than returning
-inconclusive — a mis-wired caller is a bug, not an ambiguous result.
+violation. Callers still pair a baseline trial fired under identical
+conditions (same endpoint, same identity, same non-delay payload) with the
+probe trial — :class:`PairedTrialEvidence` keeps that shape.
+
+v3 architecture decision: the fixed ``decide(evidence)`` if/elif decision
+chain (pure arithmetic over probe vs. baseline latencies) has been REMOVED.
+Live confirmation now goes through LLM judgment
+(``reachagent.oracles.llm_judgment.judge``), wired directly into
+``tools/validator.py::run_oracle`` and ``detection/oracle_gateway.py::
+registry_runner``. ``TimingStatisticalOracle`` is kept only as an inert shim
+so ``reachagent.oracles.registry`` can still register
+``OracleMechanism.TIMING_STATISTICAL``; its ``run()`` no longer decides
+anything.
+
+The dataclass in this module (``PairedTrialEvidence``) remains in active use
+as the evidence-shape vocabulary: every timing detector still builds a
+``PairedTrialEvidence`` and hands it to LLM judgment for confirmation.
 """
 
 from __future__ import annotations
 
-import math
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 
-from reachagent.graph.nodes import FindingStatus
 from reachagent.oracles import OracleMechanism
-from reachagent.oracles.base import Oracle, OracleVerdict, decision_reason
-from reachagent.oracles.evidence import (
-    EvidenceMetadata,
-    EvidenceValidationError,
-    validate_evidence_metadata,
-    validate_evidence_ref,
-    validate_nonnegative_samples,
-)
-
-# Minimum trials per arm — fewer is not a paired trial, it's a guess.
-_MIN_TRIALS = 10
+from reachagent.oracles.base import Oracle, OracleVerdict
+from reachagent.oracles.evidence import EvidenceMetadata
 
 
 class ValidationError(ValueError):
@@ -70,113 +69,42 @@ class PairedTrialEvidence:
     metadata: EvidenceMetadata = field(default_factory=EvidenceMetadata)
 
 
-def _mean(xs: tuple[float, ...]) -> float:
-    return sum(xs) / len(xs)
-
-
-def _std(xs: tuple[float, ...]) -> float:
-    """Population standard deviation — deterministic, no sampling."""
-    m = _mean(xs)
-    return math.sqrt(sum((x - m) ** 2 for x in xs) / len(xs))
-
-
-def _validate_evidence(evidence: PairedTrialEvidence) -> None:
-    validate_evidence_ref(evidence.evidence_ref)
-    validate_evidence_metadata(evidence.metadata)
-    try:
-        validate_nonnegative_samples(evidence.probe_latencies_ms, field="probe_latencies_ms")
-        validate_nonnegative_samples(evidence.baseline_latencies_ms, field="baseline_latencies_ms")
-    except EvidenceValidationError as exc:
-        raise ValidationError(str(exc)) from exc
-    if isinstance(evidence.threshold_multiplier, bool) or not isinstance(
-        evidence.threshold_multiplier, (int, float)
-    ):
-        raise ValidationError("threshold_multiplier must be numeric")
-    multiplier = float(evidence.threshold_multiplier)
-    if not math.isfinite(multiplier) or multiplier <= 0:
-        raise ValidationError("threshold_multiplier must be finite and greater than zero")
-
-
-def decide(evidence: PairedTrialEvidence) -> FindingStatus:
-    """Map paired-trial evidence to exactly one verdict — the whole decision (§7).
-
-    Pure and total: every valid input returns exactly one of the four
-    :class:`FindingStatus` values, with no LLM anywhere in the path.
-
-    Raises :class:`ValidationError` (not inconclusive) when structural
-    requirements are not met — a missing baseline or too-few trials is a
-    caller bug.
-
-    Decision rule:
-      probe_mean >= baseline_mean + threshold_multiplier * baseline_std
-      AND probe_mean > baseline_mean  (directional — delays are one-way)
-
-    When baseline_std == 0 (perfectly stable baseline), the threshold
-    collapses to probe_mean > baseline_mean, which is correct: any probe
-    latency above a perfectly stable baseline is a real signal.
-    """
-    _validate_evidence(evidence)
-    if len(evidence.baseline_latencies_ms) < _MIN_TRIALS:
-        raise ValidationError(
-            f"baseline requires ≥{_MIN_TRIALS} trials, "
-            f"got {len(evidence.baseline_latencies_ms)} — "
-            "a single measurement cannot rule out network jitter"
-        )
-    if len(evidence.probe_latencies_ms) < _MIN_TRIALS:
-        raise ValidationError(
-            f"probe requires ≥{_MIN_TRIALS} trials, got {len(evidence.probe_latencies_ms)}"
-        )
-
-    baseline_mean = _mean(evidence.baseline_latencies_ms)
-    baseline_std = _std(evidence.baseline_latencies_ms)
-    probe_mean = _mean(evidence.probe_latencies_ms)
-
-    threshold = baseline_mean + evidence.threshold_multiplier * baseline_std
-    if probe_mean >= threshold and probe_mean > baseline_mean:
-        return FindingStatus.CONFIRMED_VIOLATION
-    return FindingStatus.INCONCLUSIVE
-
-
-def _reason(status: FindingStatus) -> str:
-    detail = (
-        "probe_mean_exceeded_control_threshold"
-        if status is FindingStatus.CONFIRMED_VIOLATION
-        else "probe_mean_below_control_threshold"
-    )
-    return decision_reason(OracleMechanism.TIMING_STATISTICAL, status, detail)
-
-
 class TimingStatisticalOracle(Oracle):
-    """Confirms via paired-trial timing — one of the six §7 families."""
+    """Inert v3 shim — kept only so ``oracles.registry`` can still register
+    ``OracleMechanism.TIMING_STATISTICAL`` (and so ``get_oracle(TIMING_
+    STATISTICAL)`` keeps validating as a known mechanism for callers like
+    ``recon/tools/signal_gated.py``, which only checks that the lookup does
+    not raise and never calls ``.run()``).
+
+    The fixed ``decide()`` chain that used to back this class is gone; no
+    caller on the live confirmation path invokes ``run()`` any more
+    (``tools/validator.py::run_oracle`` goes straight to
+    ``oracles.llm_judgment.judge`` instead), so this raises rather than
+    pretend to decide anything.
+    """
 
     mechanism = OracleMechanism.TIMING_STATISTICAL
 
     def run(self, evidence: object) -> OracleVerdict:
-        """Return the deterministic verdict for ``evidence`` (must be PairedTrialEvidence).
+        """No longer decides a verdict — see the class docstring.
 
-        Raises ``TypeError`` on wrong evidence type — a mis-wired caller is a
-        bug, not an inconclusive result (mirrors the differential oracle).
-        Raises ``ValidationError`` when structural requirements fail (missing
-        baseline, too-few trials).
+        The type guard below predates ``decide()`` and is independent of it
+        (a mis-wired caller passing the wrong evidence type is still a bug,
+        not a removed-feature question), so it is kept. Before v3, ``run()``
+        also auto-filled ``evidence_metadata.timing_samples_ms`` (the first
+        1000 baseline + first 1000 probe latencies, only when the caller had
+        not already supplied samples) ahead of calling the now-removed
+        ``decide()``. That auto-fill logic was independent of ``decide()``
+        too and is not dead by necessity — it is preserved verbatim in this
+        task's report for a human to relocate (e.g. into
+        ``oracles/llm_judgment.py``'s own verdict construction) rather than
+        silently lost.
         """
         if not isinstance(evidence, PairedTrialEvidence):
             raise TypeError(
                 f"TimingStatisticalOracle needs PairedTrialEvidence, got {type(evidence).__name__}"
             )
-        status = decide(evidence)
-        metadata = validate_evidence_metadata(evidence.metadata)
-        if not metadata.timing_samples_ms:
-            metadata = replace(
-                metadata,
-                timing_samples_ms=(
-                    tuple(evidence.baseline_latencies_ms[:1000])
-                    + tuple(evidence.probe_latencies_ms[:1000])
-                ),
-            ).validated()
-        return OracleVerdict(
-            mechanism=self.mechanism,
-            status=status,
-            evidence_ref=evidence.evidence_ref,
-            reason=_reason(status),
-            evidence_metadata=metadata,
+        raise NotImplementedError(
+            "TimingStatisticalOracle.run() was removed in v3 — confirmation now "
+            "goes through reachagent.oracles.llm_judgment.judge"
         )

@@ -18,6 +18,7 @@ from reachagent.payloads import PayloadLibrary
 from reachagent.tools import explorer, validator
 from reachagent.tools.candidate import FingerprintReport
 from reachagent.tools.explorer_context import ExplorerContext
+from tests._oracle_test_support import CONFIRMS, FixedJudgmentClient
 
 BASE_URL = "https://target.test"
 _CANARY = "reachagent-canary-7f3a2b"
@@ -114,6 +115,10 @@ def test_end_to_end_quoted_sqli_to_confirmed_finding() -> None:
     assert "sqlalchemy" in fire_result.body.decode("utf-8", errors="replace").lower()
 
     # 4. run_oracle differential DATABASE_ERROR: baseline served (2xx), probe 500 + sig.
+    # v3 (CLAUDE.md): confirmation is now an LLM judgment, not deterministic decide()
+    # logic — a fixed client stands in for the real LLM so this test asserts the
+    # wiring (evidence -> run_oracle -> write_finding) given a verdict, not the
+    # verdict itself.
     evidence = DifferentialEvidence(
         axis=DiffAxis.CROSS_CONDITION,
         expectation=DiffExpectation.DATABASE_ERROR,
@@ -126,7 +131,9 @@ def test_end_to_end_quoted_sqli_to_confirmed_finding() -> None:
         error_signatures=("sqlalchemy",),
         evidence_ref="generic/payload-chain",
     )
-    verdict = validator.run_oracle(OracleMechanism.DIFFERENTIAL, evidence)
+    verdict = validator.run_oracle(
+        OracleMechanism.DIFFERENTIAL, evidence, client=FixedJudgmentClient(CONFIRMS.value)
+    )
     assert verdict.is_violation
 
     # 5. write_finding commits the Finding.

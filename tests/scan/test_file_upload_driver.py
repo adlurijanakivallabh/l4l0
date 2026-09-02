@@ -17,6 +17,7 @@ import httpx
 from reachagent.execution import RequestFirer, ScopeGuard
 from reachagent.graph.store import ReachabilityGraph
 from reachagent.scan.orchestrator import _ValidatorSeam, run_file_upload
+from tests._oracle_test_support import CONFIRMS, FixedJudgmentClient
 
 _BASE = "http://upload.test"
 
@@ -54,10 +55,21 @@ def test_catch_all_backend_yields_no_findings_via_the_canary() -> None:
     assert _run(handler) == []
 
 
-def test_real_upload_endpoint_still_confirms_when_no_catch_all_exists() -> None:
+def test_real_upload_endpoint_still_confirms_when_no_catch_all_exists(monkeypatch) -> None:  # noqa: ANN001
     """A real server: the canary's made-up path gets a genuine 404, but the
     real /upload endpoint (first in _UPLOAD_PATHS) accepts both files —
-    the canary must never suppress a real, distinguishing finding."""
+    the canary must never suppress a real, distinguishing finding.
+
+    Confirmation is now an LLM judgment (v3, CLAUDE.md) rather than a fixed
+    decide(); _ValidatorSeam.run calls tools.validator.run_oracle with no
+    client= passthrough, so pin the verdict by monkeypatching the client
+    builder it constructs internally.
+    """
+    import reachagent.oracles.llm_judgment as _llm_judgment
+
+    monkeypatch.setattr(
+        _llm_judgment, "build_openai_compatible_client", lambda: FixedJudgmentClient(CONFIRMS.value)
+    )
 
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/upload":

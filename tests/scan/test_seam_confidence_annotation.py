@@ -16,9 +16,18 @@ from reachagent.graph.store import ReachabilityGraph
 from reachagent.oracles import OracleMechanism
 from reachagent.oracles.structural import StructuralCheckType, StructuralEvidence
 from reachagent.scan.orchestrator import _ValidatorSeam
+from tests._oracle_test_support import CONFIRMS, FixedJudgmentClient
 
 
-def _confirmed_seam(graph: ReachabilityGraph) -> _ValidatorSeam:
+def _confirmed_seam(graph: ReachabilityGraph, monkeypatch) -> _ValidatorSeam:  # noqa: ANN001
+    # v3: run_oracle judges via LLM reasoning (oracles/llm_judgment.py) instead of
+    # a fixed decide(). _ValidatorSeam.run() calls validator.run_oracle() with no
+    # client= passthrough, so the injection seam is build_openai_compatible_client
+    # itself — same pattern as tests/phase1/test_confirm_error_based_e2e.py.
+    monkeypatch.setattr(
+        "reachagent.oracles.llm_judgment.build_openai_compatible_client",
+        lambda **_kw: FixedJudgmentClient(CONFIRMS.value),
+    )
     seam = _ValidatorSeam(graph)
     seam.run(
         OracleMechanism.STRUCTURAL,
@@ -35,7 +44,7 @@ def _confirmed_seam(graph: ReachabilityGraph) -> _ValidatorSeam:
 def test_flag_off_writes_a_finding_with_no_confidence_fields(monkeypatch) -> None:  # noqa: ANN001
     monkeypatch.delenv("REACHAGENT_CONFIDENCE_ANNOTATION", raising=False)
     graph = ReachabilityGraph()
-    seam = _confirmed_seam(graph)
+    seam = _confirmed_seam(graph, monkeypatch)
     node_id = seam.write("path_traversal", seam.last)
     assert node_id is not None
     finding = dict(graph.findings())[node_id]
@@ -52,7 +61,7 @@ def test_flag_on_valid_annotation_lands_on_dedicated_fields_not_metadata(
     monkeypatch.setattr(_confidence_module, "OpenAIConfidenceClient", lambda **_kw: client)
 
     graph = ReachabilityGraph()
-    seam = _confirmed_seam(graph)
+    seam = _confirmed_seam(graph, monkeypatch)
     node_id = seam.write("path_traversal", seam.last, metadata={"some_ref": "abc"})
     assert node_id is not None
     finding = dict(graph.findings())[node_id]
@@ -71,7 +80,7 @@ def test_annotator_failure_never_blocks_the_write(monkeypatch) -> None:  # noqa:
     monkeypatch.setattr(_confidence_module, "OpenAIConfidenceClient", lambda **_kw: boom)
 
     graph = ReachabilityGraph()
-    seam = _confirmed_seam(graph)
+    seam = _confirmed_seam(graph, monkeypatch)
     node_id = seam.write("path_traversal", seam.last)
     assert node_id is not None
     finding = dict(graph.findings())[node_id]

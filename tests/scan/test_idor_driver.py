@@ -16,6 +16,7 @@ from reachagent.graph.nodes import Endpoint, Object, Parameter
 from reachagent.graph.store import ReachabilityGraph, identity_id
 from reachagent.identity.store import Credential, IdentityStore
 from reachagent.scan.orchestrator import _ValidatorSeam, run_authz_idor
+from tests._oracle_test_support import CONFIRMS, FixedJudgmentClient
 
 _BASE = "http://idor.test"
 
@@ -74,7 +75,18 @@ def test_disabled_by_default_never_fires_a_single_request() -> None:
     assert seen == []
 
 
-def test_confirms_when_non_owner_write_succeeds() -> None:
+def test_confirms_when_non_owner_write_succeeds(monkeypatch) -> None:  # noqa: ANN001
+    """Confirmation is now an LLM judgment (v3, CLAUDE.md) rather than a fixed
+    decide(); _ValidatorSeam.run calls tools.validator.run_oracle with no
+    client= passthrough, so pin the verdict by monkeypatching the client
+    builder it constructs internally.
+    """
+    import reachagent.oracles.llm_judgment as _llm_judgment
+
+    monkeypatch.setattr(
+        _llm_judgment, "build_openai_compatible_client", lambda: FixedJudgmentClient(CONFIRMS.value)
+    )
+
     def handler(request: httpx.Request) -> httpx.Response:
         if request.method in ("OPTIONS", "GET"):
             return httpx.Response(200, text="ok")

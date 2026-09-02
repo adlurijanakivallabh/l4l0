@@ -17,6 +17,7 @@ from reachagent.tools.payload_chain import (
     run_coordinator_payload_step,
     run_payload_chain,
 )
+from tests._oracle_test_support import CONFIRMS, FixedJudgmentClient
 
 
 def _session(handler, *, library: PayloadLibrary | None = None) -> tuple[server._Session, object]:
@@ -42,7 +43,19 @@ def _surface(mcp: object) -> object:
     return mcp
 
 
-def test_generic_chain_uses_real_library_payload_over_mcp() -> None:
+def test_generic_chain_uses_real_library_payload_over_mcp(monkeypatch) -> None:  # noqa: ANN001
+    # v3 (CLAUDE.md): confirmation is now an LLM judgment, not the removed
+    # decide() logic, and the MCP run_oracle tool has no client= seam to inject
+    # through (only tools.validator.run_oracle's direct callers do). Fix the
+    # LLM provider factory that reachagent.oracles.llm_judgment.judge() falls
+    # back to when no client is supplied, so this test asserts WIRING — does a
+    # confirmed verdict flow fire -> classify -> run_oracle -> write_finding
+    # over the real MCP boundary — not judgment itself.
+    import reachagent.oracles.llm_judgment as _llm_judgment
+
+    monkeypatch.setattr(
+        _llm_judgment, "build_openai_compatible_client", lambda: FixedJudgmentClient(CONFIRMS.value)
+    )
     seen: list[httpx.Request] = []
 
     corpus_entry = next(
@@ -279,7 +292,16 @@ def test_unsupported_oracle_is_loud_and_audited() -> None:
     assert session.graph.findings() == []
 
 
-def test_success_mcp_sequence_includes_validator_calls() -> None:
+def test_success_mcp_sequence_includes_validator_calls(monkeypatch) -> None:  # noqa: ANN001
+    # v3 (CLAUDE.md): same fix as above — no client= seam over the MCP
+    # boundary, so the LLM provider factory is monkeypatched to a fixed
+    # confirming judgment. This test asserts the MCP call sequence, not
+    # judgment itself.
+    import reachagent.oracles.llm_judgment as _llm_judgment
+
+    monkeypatch.setattr(
+        _llm_judgment, "build_openai_compatible_client", lambda: FixedJudgmentClient(CONFIRMS.value)
+    )
     seen: list[str] = []
     corpus_entry = next(
         entry
@@ -345,7 +367,17 @@ def test_real_mcp_call_tool_boundary_is_used() -> None:
     assert session.ctx.firer.audit.entries
 
 
-def test_coordinator_selection_drives_generic_chain() -> None:
+def test_coordinator_selection_drives_generic_chain(monkeypatch) -> None:  # noqa: ANN001
+    # v3 (CLAUDE.md): same fix as above — no client= seam over the MCP
+    # boundary, so the LLM provider factory is monkeypatched to a fixed
+    # confirming judgment. This test asserts Coordinator-driven WIRING, not
+    # judgment itself.
+    import reachagent.oracles.llm_judgment as _llm_judgment
+
+    monkeypatch.setattr(
+        _llm_judgment, "build_openai_compatible_client", lambda: FixedJudgmentClient(CONFIRMS.value)
+    )
+
     def handler(request: httpx.Request) -> httpx.Response:
         value = request.url.params.get("q", "")
         if value.startswith("reachagent-canary-") or value == "'":
@@ -387,8 +419,20 @@ def test_coordinator_selection_drives_generic_chain() -> None:
     assert "payload" not in audit.entries[0].target
 
 
-def test_ssti_payload_fires_end_to_end_through_execution_confirmation_chain() -> None:
+def test_ssti_payload_fires_end_to_end_through_execution_confirmation_chain(
+    monkeypatch,  # noqa: ANN001
+) -> None:
     """Prove a NEW honest-mapped class (SSTI) resolves and fires, not just sitting."""
+    # v3 (CLAUDE.md): same fix as above — no client= seam over the MCP
+    # boundary, so the LLM provider factory is monkeypatched to a fixed
+    # confirming judgment. This test asserts execution-confirmation WIRING
+    # (real payload crosses the wire, verdict flows to write_finding), not
+    # judgment itself.
+    import reachagent.oracles.llm_judgment as _llm_judgment
+
+    monkeypatch.setattr(
+        _llm_judgment, "build_openai_compatible_client", lambda: FixedJudgmentClient(CONFIRMS.value)
+    )
     corpus_entry = next(
         entry
         for entry in build_library().get_payloads("ssti", SinkType.TEMPLATE)

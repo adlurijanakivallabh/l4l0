@@ -24,20 +24,27 @@ from reachagent.pathtraversal.detector import (
     TraversalProbeResult,
     detect_path_traversal,
 )
+from tests._oracle_test_support import CONFIRMS, INCONCLUSIVE, fixed_oracle_runner
 
 # === Detector unit tests ======================================================
+#
+# v3 (CLAUDE.md): decide() is gone — confirmation is now an LLM judgment, not
+# something a hermetic test can re-derive deterministically. These tests now
+# assert on DETECTOR WIRING (does it correctly relay a fixed verdict into
+# `.confirmed`) via an injected `oracle_runner`, not on judgment itself.
 
 
-def _prober(body: str, sentinel: str) -> PathTraversalProber:
+def _prober(body: str, sentinel: str, *, status=CONFIRMS) -> PathTraversalProber:
     return PathTraversalProber(
         fire_probe=lambda: TraversalProbeResult(body=body),
         sentinel=sentinel,
+        oracle_runner=fixed_oracle_runner(status),
     )
 
 
 def test_detector_confirms_when_sentinel_in_body() -> None:
     result = detect_path_traversal(
-        _prober("root:x:0:0:root:/root:/bin/bash\n", "root:x:0:0"),
+        _prober("root:x:0:0:root:/root:/bin/bash\n", "root:x:0:0", status=CONFIRMS),
         evidence_ref="traversal/1",
     )
     assert result.confirmed is True
@@ -45,7 +52,7 @@ def test_detector_confirms_when_sentinel_in_body() -> None:
 
 def test_detector_clean_sentinel_absent() -> None:
     result = detect_path_traversal(
-        _prober("<html>not found</html>", "root:x:0:0"),
+        _prober("<html>not found</html>", "root:x:0:0", status=INCONCLUSIVE),
         evidence_ref="traversal/clean",
     )
     assert result.confirmed is False
@@ -53,7 +60,7 @@ def test_detector_clean_sentinel_absent() -> None:
 
 def test_detector_empty_sentinel_never_confirms() -> None:
     result = detect_path_traversal(
-        _prober("root:x:0:0", ""),
+        _prober("root:x:0:0", "", status=INCONCLUSIVE),
         evidence_ref="traversal/empty-sentinel",
     )
     assert result.confirmed is False
@@ -146,6 +153,7 @@ def test_real_server_traversal_retrieves_out_of_scope_file(
     prober = PathTraversalProber(
         fire_probe=lambda: TraversalProbeResult(_fetch(base_url, "../secret.txt")),
         sentinel=sentinel,
+        oracle_runner=fixed_oracle_runner(CONFIRMS),
     )
     result = detect_path_traversal(prober, evidence_ref="traversal/integration/positive")
     assert result.confirmed is True
@@ -160,6 +168,7 @@ def test_real_server_safe_path_finds_no_sentinel(
     prober = PathTraversalProber(
         fire_probe=lambda: TraversalProbeResult(_fetch(base_url, "public.txt")),
         sentinel=sentinel,
+        oracle_runner=fixed_oracle_runner(INCONCLUSIVE),
     )
     result = detect_path_traversal(prober, evidence_ref="traversal/integration/negative")
     assert result.confirmed is False

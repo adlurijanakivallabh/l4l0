@@ -28,9 +28,36 @@ from reachagent.graph.store import ReachabilityGraph
 from reachagent.mcp import server
 from reachagent.payloads import MissingSlotError, PayloadLibrary
 from reachagent.tools.explorer_context import ExplorerContext
+from tests._oracle_test_support import ALLOWS, CONFIRMS, FixedJudgmentClient
 
 if TYPE_CHECKING:
     from mcp.server.fastmcp import FastMCP
+
+    from reachagent.graph.nodes import FindingStatus
+
+
+def _stub_judgment(monkeypatch: pytest.MonkeyPatch, status: FindingStatus) -> None:
+    """Force run_oracle's LLM judgment to a fixed status (v3 architecture, CLAUDE.md).
+
+    The MCP ``run_oracle`` tool (unlike ``tools.validator.run_oracle`` directly)
+    exposes no ``client=`` kwarg to a hand-caller, so these end-to-end tests can't
+    inject :class:`FixedJudgmentClient` the way tests/phase3 and tests/phase6 do.
+    Instead this patches the same default-provider factory ``judge()`` falls back
+    to when no client is supplied — the equivalent seam at this boundary. What used
+    to be a fixed per-mechanism ``decide()`` producing a status from evidence content
+    is now an LLM call that can't be pinned deterministically; these tests instead
+    assert the surrounding wiring (fire_ref/header resolution, control-char and
+    oversized-body sanitization not crashing, and the verdict_ref chaining into
+    write_finding) reacts correctly to a given verdict.
+    """
+    from reachagent.oracles import llm_judgment as _judgment
+
+    monkeypatch.setattr(
+        _judgment,
+        "build_openai_compatible_client",
+        lambda **_: FixedJudgmentClient(status.value),
+    )
+
 
 EXPLORER_TOOLS = {
     "fingerprint_parameter",
@@ -342,9 +369,14 @@ def test_classify_response_unknown_fire_ref_is_refused() -> None:
         )
 
 
-def test_run_oracle_ref_chains_into_write_finding_for_a_violation() -> None:
+def test_run_oracle_ref_chains_into_write_finding_for_a_violation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     # A confirmed_violation verdict (BOLA: attacker gets the owner's body) minted by
-    # run_oracle can be committed by write_finding via its verdict_ref.
+    # run_oracle can be committed by write_finding via its verdict_ref. Which status
+    # a given evidence produces is now an LLM's call (v3), not something this test can
+    # pin down deterministically — it fixes CONFIRMS and asserts the ref-chain wiring.
+    _stub_judgment(monkeypatch, CONFIRMS)
     session = _session_on(lambda r: httpx.Response(200, text="ok"))
     mcp = _register_on_session(session)
 
@@ -371,11 +403,15 @@ def test_run_oracle_ref_chains_into_write_finding_for_a_violation() -> None:
     assert session.graph.findings()  # persisted
 
 
-def test_write_finding_refuses_a_non_violation_verdict_ref() -> None:
+def test_write_finding_refuses_a_non_violation_verdict_ref(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     # confirmed_allowed is a fact, not a finding — write_finding must refuse it,
-    # even though it came from a real run_oracle handle.
+    # even though it came from a real run_oracle handle. Fix ALLOWS via the judgment
+    # seam (v3 — see _stub_judgment) since it's no longer derivable from evidence.
     from reachagent.tools.validator_support import UnconfirmedFindingError
 
+    _stub_judgment(monkeypatch, ALLOWS)
     session = _session_on(lambda r: httpx.Response(200, text="ok"))
     mcp = _register_on_session(session)
 
@@ -408,11 +444,14 @@ def test_write_finding_cannot_be_reached_without_a_run_oracle_ref() -> None:
     assert session.graph.findings() == []
 
 
-def test_run_oracle_structural_resolves_body_from_fire_ref() -> None:
+def test_run_oracle_structural_resolves_body_from_fire_ref(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     # Fix C: the structural oracle resolves response_body server-side from a
     # probe_fire_ref, so the response body never crosses the MCP wire. The client
-    # supplies only the opaque fire handle; the sentinel match happens on the
-    # body the firer captured, mirroring the differential branch.
+    # supplies only the opaque fire handle; the resolved body reaches the (fixed,
+    # v3) judgment step, mirroring the differential branch's resolution.
+    _stub_judgment(monkeypatch, CONFIRMS)
     session = _session_on(lambda r: httpx.Response(200, text="root:x:0:0:root:/root"))
     ep = session.graph.add_endpoint(Endpoint(method="GET", path="/ftp/{filename}"))
     param = session.graph.add_parameter(ep, Parameter(name="filename", location="path"))
@@ -450,18 +489,24 @@ def test_run_oracle_structural_resolves_body_from_fire_ref() -> None:
             "evidence_ref": "path_traversal/ftp",
         },
     )
-    # No response_body key supplied — the violation can only fire if the oracle
-    # resolved the body from probe_fire_ref server-side.
+    # No response_body key supplied and no exception raised resolving it from the
+    # fire_ref — the fixed judgment status confirms the wiring end to end.
     assert verdict.is_violation is True  # type: ignore[attr-defined]
 
 
-def test_run_oracle_survives_a_control_character_in_an_inline_response_body() -> None:
+def test_run_oracle_survives_a_control_character_in_an_inline_response_body(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     # A real target's response can legitimately carry a raw control byte (a
     # legacy Java/JSP error page is a common source) — this used to raise
     # ValueError deep inside StructuralEvidence's own validation and abort
     # the whole scan via "Error executing tool run_oracle: response_body
     # contains a control character". It must now be sanitized transparently
-    # and the check must still run to a real verdict, not crash.
+    # and the check must still run to a real verdict, not crash. Which status a
+    # given evidence produces is now the LLM's call (v3) — CONFIRMS is fixed via
+    # _stub_judgment so the test can assert the sanitize-then-judge path itself
+    # doesn't crash and the wiring still reacts to a violation.
+    _stub_judgment(monkeypatch, CONFIRMS)
     session = _session_on(lambda r: httpx.Response(200, text="ok"))
     mcp = _register_on_session(session)
     verdict = _call(
@@ -479,10 +524,14 @@ def test_run_oracle_survives_a_control_character_in_an_inline_response_body() ->
     assert verdict.is_violation is True  # type: ignore[attr-defined]
 
 
-def test_run_oracle_survives_a_control_character_in_a_fire_ref_resolved_body() -> None:
+def test_run_oracle_survives_a_control_character_in_a_fire_ref_resolved_body(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     # Same failure mode, but for a body resolved server-side from a
     # probe_fire_ref (the _project() path) rather than an inline string —
-    # covers both places raw body text enters evidence.
+    # covers both places raw body text enters evidence. CONFIRMS fixed via
+    # _stub_judgment (v3): the point is the resolve-then-sanitize path doesn't crash.
+    _stub_judgment(monkeypatch, CONFIRMS)
     session = _session_on(lambda r: httpx.Response(200, text="root:x:0:0\x00\x1btail"))
     ep = session.graph.add_endpoint(Endpoint(method="GET", path="/ftp/{filename}"))
     param = session.graph.add_parameter(ep, Parameter(name="filename", location="path"))
@@ -513,14 +562,17 @@ def test_run_oracle_survives_a_control_character_in_a_fire_ref_resolved_body() -
     assert verdict.is_violation is True  # type: ignore[attr-defined]
 
 
-def test_run_oracle_survives_an_oversized_inline_response_body() -> None:
+def test_run_oracle_survives_an_oversized_inline_response_body(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     # Live-verification catch (v2 Phase 6 Stage D, against a real crAPI target): a
     # multi-megabyte JSON listing crashed the whole scan with "Error executing tool
     # run_oracle: response_body exceeds its evidence size limit" — StructuralEvidence's
     # own 1,000,000-char validation cap raising ValueError deep inside a real oracle
     # call, aborting the run instead of degrading. The body is now capped server-side
-    # before the evidence object is built; a sentinel near the START of an oversized
-    # body must still be found.
+    # before the evidence object is built, so the cap itself must not raise. CONFIRMS
+    # fixed via _stub_judgment (v3) — matching evidence to a status is the LLM's job.
+    _stub_judgment(monkeypatch, CONFIRMS)
     session = _session_on(lambda r: httpx.Response(200, text="ok"))
     mcp = _register_on_session(session)
     oversized = "JasperException" + ("x" * 2_000_000)
@@ -539,10 +591,13 @@ def test_run_oracle_survives_an_oversized_inline_response_body() -> None:
     assert verdict.is_violation is True  # type: ignore[attr-defined]
 
 
-def test_run_oracle_survives_an_oversized_fire_ref_resolved_body() -> None:
+def test_run_oracle_survives_an_oversized_fire_ref_resolved_body(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     # Same failure mode, but for a body resolved server-side from a probe_fire_ref —
     # covers both places raw body text enters evidence, mirroring the control-character
-    # regression tests above.
+    # regression tests above. CONFIRMS fixed via _stub_judgment (v3).
+    _stub_judgment(monkeypatch, CONFIRMS)
     session = _session_on(lambda r: httpx.Response(200, text="root:x:0:0" + ("y" * 2_000_000)))
     ep = session.graph.add_endpoint(Endpoint(method="GET", path="/ftp/{filename}"))
     param = session.graph.add_parameter(ep, Parameter(name="filename", location="path"))
@@ -573,7 +628,12 @@ def test_run_oracle_survives_an_oversized_fire_ref_resolved_body() -> None:
     assert verdict.is_violation is True  # type: ignore[attr-defined]
 
 
-def test_run_oracle_structural_union_resolves_body_from_fire_ref() -> None:
+def test_run_oracle_structural_union_resolves_body_from_fire_ref(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # CONFIRMS fixed via _stub_judgment (v3) — asserts the fire_ref body resolution
+    # doesn't crash and the verdict wiring reacts correctly to a violation.
+    _stub_judgment(monkeypatch, CONFIRMS)
     session = _session_on(lambda r: httpx.Response(200, text='{"email":"admin@juice-sh.op"}'))
     ep = session.graph.add_endpoint(Endpoint(method="GET", path="/rest/products/search"))
     param = session.graph.add_parameter(ep, Parameter(name="q", location="query"))
@@ -604,10 +664,14 @@ def test_run_oracle_structural_union_resolves_body_from_fire_ref() -> None:
     assert verdict.is_violation is True  # type: ignore[attr-defined]
 
 
-def test_run_oracle_execution_confirmation_resolves_body_from_fire_ref() -> None:
+def test_run_oracle_execution_confirmation_resolves_body_from_fire_ref(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     # Fix C: the execution_confirmation oracle resolves response_body from a
     # probe_fire_ref for the stored-XSS read-back — the client passes only the
-    # payload_tag and the fire handle, never the body.
+    # payload_tag and the fire handle, never the body. CONFIRMS fixed via
+    # _stub_judgment (v3): asserts the resolution doesn't crash and the wiring reacts.
+    _stub_judgment(monkeypatch, CONFIRMS)
     tag = "XSSTESTREACH99"
     session = _session_on(lambda r: httpx.Response(200, text=f"<b>{tag}</b> stored"))
     ep = session.graph.add_endpoint(Endpoint(method="GET", path="/api/Feedbacks"))
@@ -637,9 +701,12 @@ def test_run_oracle_execution_confirmation_resolves_body_from_fire_ref() -> None
     assert verdict.is_violation is True  # type: ignore[attr-defined]
 
 
-def test_run_oracle_structural_clickjacking_violation() -> None:
-    # MCP structural branch must forward x_frame_options + csp fields.
-    # Both framing defenses absent → framable → violation.
+def test_run_oracle_structural_clickjacking_violation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # MCP structural branch must forward x_frame_options + csp fields. Which status
+    # that produces is now the LLM's call (v3) — CONFIRMS fixed via _stub_judgment.
+    _stub_judgment(monkeypatch, CONFIRMS)
     session = _session_on(lambda r: httpx.Response(200, text="ok"))
     mcp = _register_on_session(session)
     verdict = _call(
@@ -656,9 +723,13 @@ def test_run_oracle_structural_clickjacking_violation() -> None:
     assert verdict.is_violation is True  # type: ignore[attr-defined]
 
 
-def test_run_oracle_structural_cors_misconfig_violation() -> None:
-    # MCP structural branch must forward acao, acac, probe_origin fields.
-    # Origin-reflected ACAO + credentials on → violation.
+def test_run_oracle_structural_cors_misconfig_violation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # MCP structural branch must forward acao, acac, probe_origin fields. Which
+    # status that produces is now the LLM's call (v3) — CONFIRMS fixed via
+    # _stub_judgment.
+    _stub_judgment(monkeypatch, CONFIRMS)
     session = _session_on(lambda r: httpx.Response(200, text="ok"))
     mcp = _register_on_session(session)
     verdict = _call(
@@ -708,11 +779,14 @@ def test_run_oracle_structural_resolves_framing_headers_from_fire_ref() -> None:
     assert verdict.is_violation is False  # type: ignore[attr-defined]
 
 
-def test_run_oracle_structural_resolves_cors_headers_from_fire_ref() -> None:
+def test_run_oracle_structural_resolves_cors_headers_from_fire_ref(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     # Task D: ACAO/ACAC resolve server-side from probe_fire_ref. The captured
     # response reflects the attacker origin with credentials on; only probe_origin
-    # crosses the wire. Without resolution acao would default to "" → inconclusive,
-    # so the violation proves the headers were read off the fire.
+    # crosses the wire. CONFIRMS fixed via _stub_judgment (v3) — asserts the header
+    # resolution doesn't crash and the wiring reacts correctly to a violation.
+    _stub_judgment(monkeypatch, CONFIRMS)
     origin = "https://evil.example"
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -776,11 +850,15 @@ def test_run_oracle_structural_inline_header_wins_over_fire_ref() -> None:
     assert verdict.is_violation is False  # type: ignore[attr-defined]
 
 
-def test_run_oracle_structural_resolves_set_cookie_from_fire_ref() -> None:
+def test_run_oracle_structural_resolves_set_cookie_from_fire_ref(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     # CSRF: Set-Cookie resolves server-side from probe_fire_ref, same as the
     # framing/CORS headers. The captured response ships a SameSite=None session
-    # cookie; no set_cookie key is passed, so the violation can only come from
-    # the oracle reading the header off the fire the firer captured.
+    # cookie; no set_cookie key is passed. CONFIRMS fixed via _stub_judgment (v3) —
+    # asserts the header resolution doesn't crash and the wiring reacts correctly.
+    _stub_judgment(monkeypatch, CONFIRMS)
+
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
             200, text="ok", headers={"Set-Cookie": "session=abc; SameSite=None; Secure"}
@@ -841,10 +919,14 @@ def test_run_oracle_structural_csrf_token_present_denies() -> None:
     assert verdict.is_violation is False  # type: ignore[attr-defined]
 
 
-def test_run_oracle_structural_csrf_inline_set_cookie_wins() -> None:
-    # Precedence: an inline set_cookie beats what the fire_ref carries. The
-    # captured response ships SameSite=Lax (no precondition), but an inline
-    # SameSite=None cookie must still flip the verdict to a violation.
+def test_run_oracle_structural_csrf_inline_set_cookie_wins(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Precedence: an inline set_cookie beats what the fire_ref carries. CONFIRMS
+    # fixed via _stub_judgment (v3) — asserts the inline-wins resolution doesn't
+    # crash and the wiring reacts correctly to a violation.
+    _stub_judgment(monkeypatch, CONFIRMS)
+
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, text="ok", headers={"Set-Cookie": "session=abc; SameSite=Lax"})
 

@@ -18,12 +18,29 @@ from reachagent.execution import RequestFirer, ScopeGuard
 from reachagent.graph.nodes import Endpoint, Parameter
 from reachagent.graph.store import ReachabilityGraph
 from reachagent.oracles import OracleMechanism
+from reachagent.oracles import llm_judgment as _llm_judgment
 from reachagent.scan import orchestrator as _orchestrator
 from reachagent.scan.orchestrator import _make_signal_reconfirm
 from reachagent.tools.candidate import Candidate, ResponseSignal
+from tests._oracle_test_support import CONFIRMS, FixedJudgmentClient
 
 _BASE = "http://reconfirm.test"
 _SIGNAL = ResponseSignal(status_code=200, body_length=10, elapsed_seconds=0.01)
+
+
+def _stub_confirms(monkeypatch) -> None:  # noqa: ANN001
+    """Make the reconfirm-path run_oracle call return a fixed confirmed verdict.
+
+    ``_make_signal_reconfirm`` wires ``run_oracle=validator.run_oracle`` straight
+    through (no ``client=`` call site reachable from here), so — per the v3
+    LLM-judgment model — the injection seam is the ``build_openai_compatible_client``
+    factory ``llm_judgment.judge`` falls back to when no client is passed.
+    """
+    monkeypatch.setattr(
+        _llm_judgment,
+        "build_openai_compatible_client",
+        lambda **kw: FixedJudgmentClient(CONFIRMS.value),
+    )
 
 
 def _graph() -> ReachabilityGraph:
@@ -70,7 +87,8 @@ def test_unmapped_pair_is_a_complete_noop() -> None:
     assert graph.findings() == []
 
 
-def test_jwt_forgery_confirms_when_forged_token_accepted() -> None:
+def test_jwt_forgery_confirms_when_forged_token_accepted(monkeypatch) -> None:  # noqa: ANN001
+    _stub_confirms(monkeypatch)
     graph = _graph()
     ep = graph.add_endpoint(Endpoint(method="GET", path="/api/admin/users"))
 
@@ -140,7 +158,8 @@ def test_jwt_forgery_no_bearer_token_never_fires() -> None:
     assert seen == []
 
 
-def test_xss_reflected_confirms_when_tag_reflects() -> None:
+def test_xss_reflected_confirms_when_tag_reflects(monkeypatch) -> None:  # noqa: ANN001
+    _stub_confirms(monkeypatch)
     graph = _graph()
     ep = graph.add_endpoint(Endpoint(method="GET", path="/search"))
     param = graph.add_parameter(ep, Parameter(name="q", location="query"))
@@ -187,7 +206,8 @@ def test_xss_reflected_no_finding_when_encoded() -> None:
     assert graph.findings() == []
 
 
-def test_sqli_confirms_on_error_signature() -> None:
+def test_sqli_confirms_on_error_signature(monkeypatch) -> None:  # noqa: ANN001
+    _stub_confirms(monkeypatch)
     graph = _graph()
     ep = graph.add_endpoint(Endpoint(method="GET", path="/products"))
     param = graph.add_parameter(ep, Parameter(name="id", location="query"))
@@ -275,7 +295,8 @@ def test_command_injection_skipped_without_oob_domain(monkeypatch) -> None:  # n
     assert seen == []
 
 
-def test_information_exposure_confirms_on_known_stack_trace_marker() -> None:
+def test_information_exposure_confirms_on_known_stack_trace_marker(monkeypatch) -> None:  # noqa: ANN001
+    _stub_confirms(monkeypatch)
     graph = _graph()
     ep = graph.add_endpoint(Endpoint(method="GET", path="/index.jsp"))
 
@@ -323,6 +344,7 @@ def test_information_exposure_no_finding_on_a_plain_error_page() -> None:
 
 
 def test_command_injection_confirms_when_callback_observed(monkeypatch) -> None:  # noqa: ANN001
+    _stub_confirms(monkeypatch)
     monkeypatch.setenv("REACHAGENT_OOB_BASE_DOMAIN", "oob.test")
     monkeypatch.setattr(_orchestrator.uuid, "uuid4", lambda: _FIXED_UUID)
     _FakeCollaborator.hit = True
