@@ -1159,10 +1159,24 @@ async def _run_scan_body(
 
         md = render_findings_markdown(graph)
         if use_llm:
+            from reachagent.report.llm_full_report import generate_llm_authored_report
             from reachagent.report.professional import render_professional_report_markdown
 
-            md = render_professional_report_markdown(
+            # v2 W13: the LLM gets FULL authority over the report — try letting it
+            # author the whole thing first. It cannot invent a confirmed finding
+            # (generate_llm_authored_report returns None, never a partial report, if
+            # even one confirmed finding_id is missing from its output) — on any
+            # failure this falls straight back to the deterministic template, so a
+            # report is always produced either way.
+            llm_report = generate_llm_authored_report(
                 graph, audit, operator_prompt=operator_prompt, target=target
+            )
+            md = (
+                llm_report
+                if llm_report is not None
+                else render_professional_report_markdown(
+                    graph, audit, operator_prompt=operator_prompt, target=target
+                )
             )
         md = sanitize_report_markdown(md)
         events.append(

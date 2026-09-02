@@ -382,3 +382,20 @@ browser recon, attack-path chaining (W17), app-domain inference (W18), LLM-autho
 - Composes with, never replaces, ScopeGuard — an out-of-scope host is still refused
   by scope first, always (verified with a dedicated test).
 - New `CircuitOpenError`, exported from `execution/__init__.py`. 6 new tests.
+
+## v2 Capability-Expansion — W13: LLM full authority over the report (shipped 2026-09-02)
+
+- New `report/llm_full_report.py::generate_llm_authored_report` — the LLM writes the
+  ENTIRE report (structure, exec summary, per-finding narrative/risk/remediation,
+  prioritization, the whole Suspected-tier presentation), not just the exec-summary
+  prose `generate_narrative` already produced.
+- Hard boundary unchanged: confirmed findings + evidence come from `run_oracle`
+  (`build_evidence_index`) BEFORE the LLM sees anything; a defense-in-depth check
+  after generation confirms every confirmed finding_id appears verbatim in the
+  output. Missing even one -> the whole LLM report is discarded, falls back to the
+  existing, unmodified deterministic template. Never partially trusted.
+- Wired additively in gui/app.py's report-generation step: try full-authority first,
+  fall back on None. The existing, heavily-tested `render_professional_report_markdown`
+  path is completely untouched — zero risk to existing report tests.
+- 9 new tests (7 unit on generate_llm_authored_report incl. multi-finding coverage
+  and graph-immutability; 2 GUI wiring tests for both the success and fallback paths).

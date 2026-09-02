@@ -1174,3 +1174,83 @@ def test_resolve_named_provider_only_sets_grunt_env_override_when_configured(
     )
     assert err2 is None
     assert "REACHAGENT_LLM_GRUNT_MODEL" not in untiered_overrides
+
+
+# === LLM full-authority report wiring (v2 W13) ===============================
+
+
+def test_llm_full_authority_report_is_used_when_it_succeeds(monkeypatch) -> None:  # noqa: ANN001
+    import asyncio
+
+    from reachagent.graph.nodes import Finding, FindingStatus
+
+    def fake_scan_all_classes(**kwargs):  # noqa: ANN001, ANN003
+        kwargs["graph"].add_finding(
+            Finding(
+                vuln_class="sqli",
+                severity="high",
+                oracle_used="differential",
+                evidence_ref="ev1",
+                status=FindingStatus.CONFIRMED_VIOLATION,
+            )
+        )
+        return {}
+
+    monkeypatch.setattr(gui_app, "scan_all_classes", fake_scan_all_classes)
+    monkeypatch.setattr(
+        "reachagent.report.llm_full_report.generate_llm_authored_report",
+        lambda *a, **k: "# LLM-authored report\n\nfinding:sqli:ev1 confirmed.",
+    )
+
+    scan_id = "llm-full-report-success"
+    _scans[scan_id] = {"status": "queued", "events": [], "control": None}
+    try:
+        asyncio.run(
+            gui_app._run_scan_body(
+                scan_id, "https://target.test", "target.test", None, True, 20, None, None, None
+            )
+        )
+        assert _scans[scan_id]["report_md"].startswith("# LLM-authored report")
+    finally:
+        _scans.pop(scan_id, None)
+
+
+def test_falls_back_to_deterministic_report_when_llm_full_authority_returns_none(
+    monkeypatch,  # noqa: ANN001
+) -> None:
+    import asyncio
+
+    from reachagent.graph.nodes import Finding, FindingStatus
+
+    def fake_scan_all_classes(**kwargs):  # noqa: ANN001, ANN003
+        kwargs["graph"].add_finding(
+            Finding(
+                vuln_class="sqli",
+                severity="high",
+                oracle_used="differential",
+                evidence_ref="ev1",
+                status=FindingStatus.CONFIRMED_VIOLATION,
+            )
+        )
+        return {}
+
+    monkeypatch.setattr(gui_app, "scan_all_classes", fake_scan_all_classes)
+    monkeypatch.setattr(
+        "reachagent.report.llm_full_report.generate_llm_authored_report",
+        lambda *a, **k: None,
+    )
+
+    scan_id = "llm-full-report-fallback"
+    _scans[scan_id] = {"status": "queued", "events": [], "control": None}
+    try:
+        asyncio.run(
+            gui_app._run_scan_body(
+                scan_id, "https://target.test", "target.test", None, True, 20, None, None, None
+            )
+        )
+        report = _scans[scan_id]["report_md"]
+        # The deterministic template's own heading — proves the fallback path ran.
+        assert "ReachAgent Security Assessment Report" in report
+        assert "finding:sqli:ev1" in report
+    finally:
+        _scans.pop(scan_id, None)
