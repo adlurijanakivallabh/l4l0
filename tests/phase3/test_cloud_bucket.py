@@ -38,6 +38,17 @@ def test_derive_seed_names_yields_nothing_for_a_bare_ip_address() -> None:
     assert candidate_bucket_probes("127.0.0.1") == ()
 
 
+def test_derive_seed_names_strips_a_port_before_the_ip_check() -> None:
+    # Caught live: crAPI's own Host fact carries "127.0.0.1:8888" (with
+    # port) — ipaddress.ip_address() raises on that string, which silently
+    # defeated the IP guard above and reproduced the exact same false
+    # positive on the very next run. A host:port or bracketed [::1]:port
+    # must resolve to the same "no seeds" answer as the bare host.
+    assert derive_seed_names("127.0.0.1:8888") == ()
+    assert derive_seed_names("[::1]:8888") == ()
+    assert derive_seed_names("demo.testfire.net:8080") == ("testfire", "demo")
+
+
 def test_candidate_bucket_probes_covers_every_suffix_and_provider() -> None:
     probes = candidate_bucket_probes("demo.testfire.net")
     seeds = len(derive_seed_names("demo.testfire.net"))

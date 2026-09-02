@@ -77,14 +77,26 @@ def derive_seed_names(hostname: str) -> tuple[str, ...]:
     finding against a target it has nothing to do with. Caught live: VAmPI
     (target ``127.0.0.1``) confirmed a cloud_bucket_exposure finding despite
     having no cloud-storage component in its own documented vulnerabilities.
+
+    A ``host:port`` hostname (crAPI's own ``127.0.0.1:8888``, e.g.) is
+    stripped to its host part first — ``ipaddress.ip_address`` raises on a
+    string carrying a port, which silently defeated the IP guard above for
+    any target whose Host fact happens to include one (caught live: the very
+    next run still produced the same false positive with the port attached).
+    Only a single, unambiguous ``:port`` suffix is stripped (a bare IPv6
+    address has multiple colons and is left untouched) — a bracketed
+    ``[::1]:port`` literal has its brackets stripped too.
     """
+    unbracketed = hostname[1:].split("]", 1)[0] if hostname.startswith("[") else hostname
+    if unbracketed.count(":") == 1:
+        unbracketed = unbracketed.rsplit(":", 1)[0]
     try:
-        ipaddress.ip_address(hostname)
+        ipaddress.ip_address(unbracketed)
     except ValueError:
         pass
     else:
         return ()
-    labels = [label for label in hostname.lower().split(".") if label]
+    labels = [label for label in unbracketed.lower().split(".") if label]
     seeds: list[str] = []
     if len(labels) >= 2:
         seeds.append(labels[-2])
