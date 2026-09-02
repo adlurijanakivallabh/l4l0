@@ -289,3 +289,22 @@ oracle proof gate none of them have. Phase 1 (of 5):
 Remaining phases: aggressive mode, interleaved hunting, per-role model tiering, detection
 depth (JWT forgery / two-identity IDOR / prototype pollution / cache poisoning), extended
 browser recon, attack-path chaining (W17), app-domain inference (W18), LLM-authored report.
+
+## v2 Capability-Expansion — Phase 3 (partial, shipped 2026-09-01)
+
+- **Prototype pollution (W9)**: new client-side STRUCTURAL check. Headless browser loads
+  each HTML endpoint with an injected `__proto__`-shaped query param (3 encodings), then
+  checks a fresh `{}` literal for the marker — unambiguous, no baseline needed. New
+  `scan/prototype_pollution.py`, mirrors `scan/xss_dom.py`'s driver-accepting-core /
+  untested-launch-plumbing split for testability.
+- **W7 (JWT forgery) and W8 (two-identity IDOR)**: verified already fully built this
+  session — no code needed, just confirmed and documented.
+- **W17 (attack-path chaining) research**: mapped the real mechanics before building.
+  Key findings: `bypass_identity_hint` (nosqli/ldap) is computed but never read by any
+  caller — pure dead intent. `ChainSolver.advance()`'s spawn branches are fully implemented
+  but have zero live callers (only the self-escalation `spawn=None` path is ever used, in
+  `scan/entrypoint.py`). The real blocker: `RequestFirer._identity_stores` is a one-time
+  snapshot taken at construction with no post-construction registration hook — a
+  mid-scan-spawned identity cannot authenticate through the existing firer without either
+  rebuilding it or adding a new registration method. `merge_new_findings` is findings-only
+  and would silently drop a spawned Session/Identity node if reused unchanged for chaining.

@@ -68,6 +68,14 @@ violations deterministically:
     client-side structural class (§5/§7, v1.5) — read-only-first preserved
     because no forged state-change is fired.
 
+  * **PROTOTYPE_POLLUTION** (v2 W9) — a page loaded with an injected
+    ``__proto__``-shaped query parameter, then evaluated in-page: a brand-new
+    ``{}`` object literal carries a property it was never given. A fresh POJO
+    can never have an arbitrary own or inherited property unless the page's
+    own client-side merge logic actually polluted ``Object.prototype`` — one
+    in-page JS observation is unambiguous, no baseline/differential needed.
+    Client-side structural class (§5/§7, v2).
+
 All paths are deterministic: no LLM, no heuristics. Same evidence in,
 same verdict out, every time.
 """
@@ -159,6 +167,13 @@ class StructuralCheckType(StrEnum):
     # itself is an already-established external-database fact, decided before
     # the oracle ever runs (same role as DEFAULT_CREDENTIALS's login attempt).
     KNOWN_VULNERABLE_VERSION = "known_vulnerable_version"
+    # PROTOTYPE_POLLUTION (v2 W9) — a fresh, in-page object literal (`{}`) carries a
+    # property it was never given. A brand-new POJO can NEVER have an arbitrary own or
+    # inherited property unless Object.prototype itself was polluted by the page's own
+    # client-side merge logic processing our injected `__proto__`-shaped query parameter —
+    # so this single in-page JS observation is unambiguous, no baseline/differential
+    # needed (unlike most other checks here). Client-side structural class (§5/§7).
+    PROTOTYPE_POLLUTION = "prototype_pollution"
 
 
 @dataclass(frozen=True)
@@ -282,6 +297,15 @@ class StructuralEvidence:
       current, not stale → violation (the CVE match itself was already
       established, before this oracle ever ran, by a live NVD lookup).
 
+    PROTOTYPE_POLLUTION:
+      ``probe_status``: the page load's HTTP status (must be 2xx — a non-2xx
+      error page proves nothing about whether the app's client-side merge
+      logic ever ran). ``polluted``: whether a fresh ``{}`` literal evaluated
+      in that same page load carries the injected marker property. A decisive
+      2xx load with the marker present → violation; a decisive 2xx load with
+      no marker → confirmed not polluted via this vector; a non-2xx load →
+      inconclusive (the page never meaningfully executed).
+
     ``evidence_ref``: short, secret-free provenance handle (§13).
     """
 
@@ -304,6 +328,7 @@ class StructuralEvidence:
     attempts_planned: int = 0
     attempts_completed: int = 0
     lockout_signal_observed: bool = False
+    polluted: bool = False
     evidence_ref: str = ""
     metadata: EvidenceMetadata = field(default_factory=EvidenceMetadata)
 
@@ -343,6 +368,8 @@ def _validate_evidence(evidence: StructuralEvidence) -> None:
         raise TypeError("session_captured must be a boolean")
     if not isinstance(evidence.lockout_signal_observed, bool):
         raise TypeError("lockout_signal_observed must be a boolean")
+    if not isinstance(evidence.polluted, bool):
+        raise TypeError("polluted must be a boolean")
     for name in ("attempts_planned", "attempts_completed"):
         value = getattr(evidence, name)
         if not isinstance(value, int) or isinstance(value, bool):
@@ -567,6 +594,15 @@ def decide(evidence: StructuralEvidence) -> FindingStatus:
             return FindingStatus.CONFIRMED_DENIED
         return FindingStatus.CONFIRMED_VIOLATION
 
+    if evidence.check_type is StructuralCheckType.PROTOTYPE_POLLUTION:
+        # A non-2xx load proves nothing — the page's client-side merge logic may
+        # never have run at all.
+        if not (200 <= evidence.probe_status < 300):
+            return FindingStatus.INCONCLUSIVE
+        if evidence.polluted:
+            return FindingStatus.CONFIRMED_VIOLATION
+        return FindingStatus.CONFIRMED_DENIED
+
     if evidence.check_type is StructuralCheckType.CSRF_MISSING_PROTECTION:
         samesite = _cookie_samesite(evidence.set_cookie)
         # SameSite=None ships the session cookie cross-site; with no token
@@ -603,6 +639,7 @@ def _reason(evidence: StructuralEvidence, status: FindingStatus) -> str:
         StructuralCheckType.RATE_LIMIT_ABSENT: "burst_incomplete",
         StructuralCheckType.CLOUD_BUCKET_EXPOSURE: "listing_marker_not_observed",
         StructuralCheckType.KNOWN_VULNERABLE_VERSION: "version_string_not_observed",
+        StructuralCheckType.PROTOTYPE_POLLUTION: "page_load_not_decisive",
     }.get(evidence.check_type, "unknown_structural_check")
     return decision_reason(OracleMechanism.STRUCTURAL, status, detail)
 

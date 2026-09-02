@@ -63,6 +63,7 @@ _WSTG: dict[str, tuple[str, str]] = {
     "race": ("WSTG-BUSL", "Business Logic Testing (Race Conditions)"),
     "file_upload": ("WSTG-BUSL-09", "Test Upload of Unexpected File Types"),
     "information_exposure": ("WSTG-INFO", "Information Gathering"),
+    "prototype_pollution": ("WSTG-CLNT", "Client-Side Testing (Prototype Pollution)"),
 }
 _WSTG_DEFAULT: tuple[str, str] = ("WSTG-INFO", "Information Gathering")
 
@@ -125,6 +126,9 @@ _DESCRIPTION: dict[str, str] = {
     "information_exposure": "The response body discloses implementation detail "
     "(a stack trace, framework banner, or internal path) to an unauthenticated "
     "client.",
+    "prototype_pollution": "Client-side script merges attacker-controlled query "
+    "parameters into an object without guarding __proto__/constructor.prototype, "
+    "polluting Object.prototype for the whole page.",
 }
 _DESCRIPTION_DEFAULT = "Automated testing confirmed this condition; see the evidence below."
 
@@ -195,6 +199,9 @@ _REMEDIATION: dict[str, str] = {
     "store uploads outside the web root, and never execute an uploaded file.",
     "information_exposure": "Disable verbose/debug error output in production and "
     "return a generic error response instead of a stack trace or framework banner.",
+    "prototype_pollution": "Use Object.create(null) or a Map for any object built "
+    "from user input, or freeze/guard Object.prototype; reject __proto__/constructor "
+    "keys before any recursive merge.",
 }
 _REMEDIATION_DEFAULT = (
     "Review the finding evidence and apply the relevant OWASP guidance for this class."

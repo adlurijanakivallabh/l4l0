@@ -83,6 +83,7 @@ _PHASE3_CLASS_ORDER: tuple[str, ...] = (
     "race",
     "xxe",
     "xss_dom",
+    "prototype_pollution",
 )
 
 # Named specialist personas (Agentic Coordinator, Phase 2) — a grouping of the
@@ -98,6 +99,7 @@ _SPECIALIST_OF_CLASS: dict[str, str] = {
     "cache_poisoning": "client_side",
     "xss_stored": "client_side",
     "xss_dom": "client_side",
+    "prototype_pollution": "client_side",
     "file_upload": "injection",
     "sqli_blind": "injection",
     "nosqli": "injection",
@@ -280,6 +282,7 @@ ALL_CLASSES: tuple[str, ...] = (
     "subdomain_takeover",
     "graphql",
     "race",
+    "prototype_pollution",
 )
 
 _GENERIC_CLASSES = frozenset(
@@ -3238,6 +3241,7 @@ def _build_phase3_drivers(
     read-mostly state, safe across concurrent children (see the Build Order
     2c prerequisite fix to TokenStore/IdentityStore locking).
     """
+    from reachagent.scan.prototype_pollution import run_prototype_pollution
     from reachagent.scan.xss_dom import run_xss_dom
 
     def _run_authz_bola_if_identities() -> None:
@@ -3440,6 +3444,14 @@ def _build_phase3_drivers(
             events=events,
         ),
         "xss_dom": lambda: run_xss_dom(
+            graph=graph,
+            firer=firer,
+            base_url=base_url,
+            identity=identity,
+            seam=seam,
+            events=events,
+        ),
+        "prototype_pollution": lambda: run_prototype_pollution(
             graph=graph,
             firer=firer,
             base_url=base_url,
@@ -4475,6 +4487,7 @@ def scan_all_classes(
         # contradictory "no discovered precondition" event on every all-class
         # scan even when xss_dom just ran (and may have confirmed a finding).
         "xss_dom",
+        "prototype_pollution",
     }
     for vuln_class in ALL_CLASSES:
         if vuln_class not in driven_classes:
