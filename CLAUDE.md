@@ -11,7 +11,18 @@ for it.
   LLM judgment proposes candidates; it never writes findings directly.
 - Tool access is role-bounded: Explorer never calls `write_finding`.
   Coordinator never calls `fire_request` or `run_oracle`. Only the Validator
-  calls `run_oracle` and `write_finding`. (Plan §4, §13.)
+  calls `run_oracle` and `write_finding`. (Plan §4, §13.) The GUI chat agent
+  (`/api/scan/{id}/ask`) is read-only Q&A + steering only — it can explain,
+  summarize, and queue steering hints, but never calls `write_finding`/
+  `run_oracle` and never bypasses the oracle.
+- The "Suspected / Unconfirmed" tier (`SuspectedFinding` node, v2 W2) is NOT a
+  `Finding` and does NOT breach the rule above: it is a structurally separate
+  node type (like `StaticAdvisory`) for tried-but-unproven leads, never written
+  via `write_finding`/`add_finding`, never blended into confirmed findings, never
+  counted in confirmed severity stats — always its own report section labelled
+  "not oracle-verified." Two allowed, structurally-separate non-Finding tiers
+  now exist: `StaticAdvisory` (white-box CVE) and `SuspectedFinding` (dynamic
+  unconfirmed). Do not add a third without updating the plan.
 - No external scanners (sqlmap, Nuclei, ZAP, Burp Scanner, Caido Scanner) as
   detection dependencies. (Plan §9.)
 - Read-only-first: no state-changing request against a live target until the

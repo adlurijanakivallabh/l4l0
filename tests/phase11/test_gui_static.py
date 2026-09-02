@@ -11,31 +11,35 @@ def test_workspace_contains_real_state_views_and_controls() -> None:
     response = TestClient(app).get("/")
     assert response.status_code == 200
     html = response.text
-    assert "<title>ReachAgent — mission control</title>" in html
+    assert "<title>ReachAgent</title>" in html
+    # The current chat-first GUI (plan v2): sidebar + landing composer + a conversation view
+    # whose work-pane tabs render the same live scan state the backend exposes.
     for marker in (
-        'class="shell"',
-        'id="launch"',
-        'class="mission section"',
-        'aria-label="Active assessments"',
+        'id="sidebar"',
+        'id="landing"',
+        'id="convo-view"',
+        'id="chat-log"',
+        'id="chat-input"',
+        'id="convo-list"',
         "Execution guardrails",
-        'id="scan-status"',
         'id="cancel-scan"',
-        'id="active-scans"',
-        'id="active-count"',
-        'id="reasoning-stream"',
-        'id="surface"',
-        'id="findings"',
-        'id="report"',
-        'id="audit"',
-        'id="scan-history"',
+        'id="pause-scan"',
+        'id="term-feed"',
+        'id="findings-list"',
+        'id="surface-tree"',
+        'id="report-body"',
+        'id="tab-terminal"',
+        'id="tab-findings"',
+        'id="tab-report"',
+        'id="tab-audit"',
         'id="provider-form"',
         'id="dl-sarif"',
         'id="dl-evidence"',
         'id="dl-bundle"',
     ):
         assert marker in html
-    assert "No oracle-confirmed findings yet." in html
-    assert "Only deterministic oracles can confirm findings" in html
+    # The oracle guarantee is stated to the operator in the static shell.
+    assert "deterministic oracle" in html
 
 
 def test_workspace_does_not_embed_reference_names_or_credentials() -> None:

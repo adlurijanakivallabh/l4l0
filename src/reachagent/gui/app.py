@@ -195,7 +195,7 @@ def _lifecycle(status: object) -> str:
         "completed": "completed",
         "error": "failed",
         "failed": "failed",
-        "cancelling": "running",
+        "cancelling": "cancelling",
         "cancelled": "cancelled",
     }.get(str(status), "queued")
 
@@ -641,6 +641,10 @@ async def start_scan(payload: dict[str, Any]) -> JSONResponse:
             ("signal_tuning", "REACHAGENT_SIGNAL_TUNING"),
             ("transport_tuning", "REACHAGENT_TRANSPORT_TUNING"),
             ("guardian_advisor", "REACHAGENT_GUARDIAN_ADVISOR"),
+            # Aggressive mode (v2 W4): fire signal-gated tools (nuclei/sqlmap/dalfox) and
+            # broad payloads even without a prior class signal. Opt-in, default off. Every
+            # extra claim still passes the oracle (confirmed) or lands in the Suspected tier.
+            ("aggressive", "REACHAGENT_AGGRESSIVE"),
         )
         if payload.get(form_key) is True
     }
@@ -685,6 +689,15 @@ async def start_scan(payload: dict[str, Any]) -> JSONResponse:
             "finished_at": None,
             "control": _ScanControl(),
             "cancel_requested": False,
+            # Chat (Build Order v2 W1): a real conversational transcript, parallel to
+            # `events`, guarded by `_scan_lock`. Provider resolution is stashed so
+            # `/ask` can rebuild the SAME client the scan itself uses, without the
+            # frontend re-sending it. `named_overrides` is LLM-provider-only (no tuning
+            # flags), exactly the shape `_build_llm_client` expects.
+            "chat": [],
+            "llm_provider": llm_provider,
+            "named_overrides": named_overrides,
+            "use_llm": use_llm,
         }
     asyncio.create_task(
         _run_scan(
@@ -754,6 +767,10 @@ def cancel_scan(scan_id: str) -> JSONResponse:
             return JSONResponse(
                 {"error": "scan is already terminal", "status": status}, status_code=409
             )
+        # Already winding down — a repeat click (e.g. the misclick-during-cancelling case)
+        # must be a clean no-op, not a second "Cancellation requested" event.
+        if status == "cancelling" or data.get("cancel_requested"):
+            return JSONResponse({**_scan_summary(scan_id, data), "already_cancelling": True})
         control = data.get("control")
         if not isinstance(control, _ScanControl):
             return JSONResponse({"error": "scan cancellation unavailable"}, status_code=409)
@@ -763,7 +780,7 @@ def cancel_scan(scan_id: str) -> JSONResponse:
         control.pause_event.clear()
         control.cancel_event.set()
         data["status"] = "cancelling"
-        data["lifecycle"] = "running"
+        data["lifecycle"] = "cancelling"
         data["cancel_requested"] = True
         data["updated_at"] = _now()
         events = data.get("events")
@@ -868,6 +885,123 @@ async def steer_scan(scan_id: str, payload: dict[str, Any]) -> JSONResponse:
                 )
             )
     return JSONResponse({"queued": True})
+
+
+_CHAT_PERSONA = (
+    "You are ReachAgent's assistant, talking to the operator during an authorized web/API "
+    "security assessment. Answer their questions about the scan clearly and concisely, using "
+    "ONLY the scan state provided below plus the conversation. You are read-only: you can "
+    "explain what the scan is doing, summarize progress and findings, suggest what to focus "
+    "on next, and acknowledge steering, but you CANNOT create or confirm a vulnerability "
+    "finding — in ReachAgent a finding is 'confirmed' only when a deterministic oracle proves "
+    "it, never on your say-so. If asked to confirm a bug, explain that the oracle decides. "
+    "Do not invent endpoints, findings, or results not present in the state. Be direct; no "
+    "preamble. If the state doesn't contain the answer, say so plainly."
+)
+
+
+def _chat_state_summary(data: dict[str, Any]) -> str:
+    """A bounded, sanitized snapshot of live scan state for the chat prompt (W1)."""
+    graph = data.get("graph")
+    counts = _graph_snapshot(graph).get("counts", {})
+    events = data.get("events", [])
+    recent = events[-8:] if isinstance(events, list) else []
+    recent_lines = [
+        f"- [{_public_text(getattr(e, 'phase', ''), 32)}] {_public_text(getattr(e, 'message', ''), 200)}"
+        for e in recent
+    ]
+    findings = data.get("findings", [])
+    finding_lines: list[str] = []
+    if isinstance(findings, list):
+        for f in findings[:10]:
+            if isinstance(f, dict):
+                title = _public_text(f.get("title") or f.get("vuln_class") or "finding", 120)
+                sev = _public_text(f.get("severity", ""), 20)
+                finding_lines.append(f"- {title} ({sev})")
+    lines = [
+        f"Target: {_public_text(data.get('target', ''), 200)}",
+        f"Objective: {_public_text(data.get('operator_prompt') or '(none given)', 300)}",
+        f"Status: {_public_text(data.get('status', 'queued'), 32)} / phase: "
+        f"{_public_text(data.get('phase', 'recon'), 32)}",
+        f"Graph so far: {counts}",
+        f"Confirmed findings ({len(finding_lines)} shown):",
+        *(finding_lines or ["- none confirmed yet"]),
+        "Recent activity:",
+        *(recent_lines or ["- (no events yet)"]),
+    ]
+    return "\n".join(lines)
+
+
+@app.post("/api/scan/{scan_id}/ask")
+def ask_scan(scan_id: str, payload: dict[str, Any]) -> JSONResponse:
+    """Real conversational Q&A with the agent about a scan (Build Order v2 W1).
+
+    Generates an actual LLM answer from the live scan state (not a canned string), and — when
+    the scan is still active — also queues the message as a steering hint so talking to the
+    agent genuinely influences its next decision. Read-only: the persona cannot write or
+    confirm a finding. Fails open to a deterministic line if the LLM is unavailable/erroring,
+    so the chat never hard-errors.
+    """
+    text = _opt_str(payload.get("message"))
+    if not text:
+        return JSONResponse({"error": "message required"}, status_code=400)
+    text = _public_text(text, 1000)
+    with _scan_lock:
+        data = _scans.get(scan_id)
+        if data is None:
+            return JSONResponse({"error": "not found"}, status_code=404)
+        status = str(data.get("status", "queued"))
+        chat = data.get("chat")
+        if not isinstance(chat, list):
+            chat = []
+            data["chat"] = chat
+        chat.append({"role": "user", "text": text, "ts": _now()})
+        # Also steer the live scan with this message, so one chat box both answers and guides.
+        steered = False
+        control = data.get("control")
+        if status in {"running", "paused"} and isinstance(control, _ScanControl):
+            control.add_steering_hint(text)
+            steered = True
+        state_summary = _chat_state_summary(data)
+        llm_provider = data.get("llm_provider")
+        named_overrides = data.get("named_overrides")
+        use_llm = bool(data.get("use_llm", False))
+        # Bound the transcript sent back to the model to the last 12 turns.
+        history = [
+            {"role": str(m["role"]), "content": str(m["text"])}
+            for m in chat[-12:]
+            if isinstance(m, dict) and m.get("role") in {"user", "assistant"} and m.get("text")
+        ]
+        data["updated_at"] = _now()
+
+    fallback = (
+        "I've noted that and it will steer the next decision point."
+        if steered
+        else "I can't reach the language model right now, so I can't answer conversationally — "
+        "but the scan state is available in the tabs on the right."
+    )
+    answer = fallback
+    if use_llm:
+        messages = [
+            {"role": "system", "content": f"{_CHAT_PERSONA}\n\nCurrent scan state:\n{state_summary}"},
+            *history,
+        ]
+        client = None
+        try:
+            client = _build_llm_client(llm_provider, named_overrides)
+            answer = _public_text(client.chat(messages, max_tokens=700), 4000)
+        except Exception:  # noqa: BLE001 — a flaky/absent LLM must never break the chat
+            answer = fallback
+        finally:
+            if client is not None:
+                client.close()
+
+    with _scan_lock:
+        data = _scans.get(scan_id)
+        if data is not None and isinstance(data.get("chat"), list):
+            data["chat"].append({"role": "assistant", "text": answer, "ts": _now()})
+            data["updated_at"] = _now()
+    return JSONResponse({"answer": answer, "steered": steered})
 
 
 def _load_identities(
@@ -1259,6 +1393,26 @@ def _finding_rows(graph: ReachabilityGraph | None) -> list[dict[str, Any]]:
     return rows
 
 
+def _suspected_rows(graph: ReachabilityGraph | None) -> list[dict[str, Any]]:
+    """The Suspected/Unconfirmed tier (W2), kept structurally apart from confirmed findings."""
+    if graph is None:
+        return []
+    rows: list[dict[str, Any]] = []
+    for sid, s in graph.suspected_findings():
+        rows.append(
+            {
+                "suspected_id": _public_text(sid, 200),
+                "vuln_class": _public_text(getattr(s, "vuln_class", ""), 100),
+                "endpoint": _public_text(getattr(s, "endpoint", ""), 200),
+                "location": _public_text(getattr(s, "location", ""), 120),
+                "source": _public_text(getattr(s, "source", ""), 80),
+                "reason": _public_text(getattr(s, "reason", ""), 120),
+                "severity": _public_text(getattr(s, "severity", ""), 24),
+            }
+        )
+    return rows
+
+
 @app.get("/api/scan/{scan_id}")
 def get_scan(scan_id: str) -> JSONResponse:
     with _scan_lock:
@@ -1290,6 +1444,7 @@ def get_scan(scan_id: str) -> JSONResponse:
             "audit": _audit_rows(snapshot.get("audit")),
             "graph": _graph_snapshot(graph),
             "findings": _finding_rows(graph),
+            "suspected": _suspected_rows(graph),
             "report_md": snapshot.get("report_md", ""),
             "error": _public_text(snapshot.get("error", ""), 500)
             if snapshot.get("error")

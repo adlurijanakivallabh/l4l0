@@ -92,6 +92,90 @@ def test_responses_api_request_and_response_parsing() -> None:
     }
 
 
+def test_chat_multi_turn_sends_full_message_list() -> None:
+    seen: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request.url)
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": "the login form is at /login"}}]},
+        )
+
+    client = OpenAICompatibleClient(
+        provider="deepseek",
+        api_key="test-key",
+        base_url="https://llm.test/v1",
+        model="deepseek-v4-flash",
+        transport=httpx.MockTransport(handler),
+    )
+    messages = [
+        {"role": "system", "content": "You are a read-only assistant."},
+        {"role": "user", "content": "what have you found?"},
+        {"role": "assistant", "content": "so far, one endpoint."},
+        {"role": "user", "content": "where is the login?"},
+    ]
+    try:
+        assert client.chat(messages, max_tokens=128) == "the login form is at /login"
+    finally:
+        client.close()
+
+    assert seen["url"] == "https://llm.test/v1/chat/completions"
+    assert seen["body"] == {
+        "model": "deepseek-v4-flash",
+        "messages": messages,
+        "max_tokens": 128,
+        "temperature": 0,
+    }
+
+
+def test_chat_rejects_empty_and_malformed_messages() -> None:
+    client = OpenAICompatibleClient(
+        provider="deepseek",
+        api_key="test-key",
+        base_url="https://llm.test/v1",
+        model="m",
+        transport=httpx.MockTransport(lambda _r: httpx.Response(500)),
+    )
+    try:
+        with pytest.raises(ValueError, match="must not be empty"):
+            client.chat([])
+        with pytest.raises(ValueError, match="role must be"):
+            client.chat([{"role": "tool", "content": "x"}])
+        with pytest.raises(ValueError, match="content must be"):
+            client.chat([{"role": "user", "content": "   "}])
+    finally:
+        client.close()
+
+
+def test_complete_still_sends_single_user_message_unchanged() -> None:
+    """Regression: complete()'s wire format must not change now that chat() exists."""
+    seen: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]})
+
+    client = OpenAICompatibleClient(
+        provider="deepseek",
+        api_key="test-key",
+        base_url="https://llm.test/v1",
+        model="deepseek-v4-flash",
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        assert client.complete("ping", max_tokens=8) == "ok"
+    finally:
+        client.close()
+    assert seen["body"] == {
+        "model": "deepseek-v4-flash",
+        "messages": [{"role": "user", "content": "ping"}],
+        "max_tokens": 8,
+        "temperature": 0,
+    }
+
+
 def test_missing_key_fails_before_network() -> None:
     called = False
 

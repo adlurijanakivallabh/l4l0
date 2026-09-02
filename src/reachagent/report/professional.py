@@ -346,11 +346,49 @@ def render_professional_report_markdown(
     if not confirmed and not informational:
         lines.append("\nNo findings were confirmed during this assessment.\n")
 
+    suspected_section = _suspected_section_markdown(graph)
+    if suspected_section:
+        lines.append(suspected_section)
+
     whitebox_section = _whitebox_section_markdown(graph)
     if whitebox_section:
         lines.append(whitebox_section)
 
     return sanitize_report_markdown("".join(lines))
+
+
+def _suspected_section_markdown(graph: ReachabilityGraph) -> str:
+    """Build Order v2 W2 — the "Suspected / Unconfirmed" tier: leads the agent probed but
+    that no deterministic oracle confirmed (oracle ran and returned negative, or a
+    signal-gated scanner claimed something the oracle couldn't re-prove). Rendered ONLY if
+    any exist. Always visibly, permanently separate from the confirmed-findings section:
+    nothing here came from a confirmed ``run_oracle`` verdict, so it is never blended in and
+    never counted in the confirmed severity stats.
+    """
+    suspected = graph.suspected_findings()
+    if not suspected:
+        return ""
+    lines = [
+        "\n## Suspected / Unconfirmed (not oracle-verified)\n\n",
+        "The agent probed the following but a deterministic oracle did **not** confirm them — "
+        "either the oracle ran and returned negative, or an external scanner (nuclei/sqlmap/"
+        "dalfox) flagged it and the oracle couldn't independently re-prove it. **These are NOT "
+        "findings.** They are leads for manual review: a real bug the oracle missed, or a "
+        "false positive the oracle correctly rejected. Verify by hand before reporting.\n\n",
+        "| Vuln class | Endpoint | Location | Source | Why unconfirmed |\n|---|---|---|---|---|\n",
+    ]
+
+    def esc(value: object) -> str:
+        return str(value).replace("|", "\\|").replace("\n", " ")[:200]
+
+    for _sid, s in sorted(
+        suspected, key=lambda item: (item[1].vuln_class, item[1].endpoint, item[1].location)
+    ):
+        lines.append(
+            f"| {esc(s.vuln_class)} | {esc(s.endpoint)} | {esc(s.location)} | "
+            f"{esc(s.source)} | {esc(s.reason)} |\n"
+        )
+    return "".join(lines)
 
 
 def _whitebox_section_markdown(graph: ReachabilityGraph) -> str:

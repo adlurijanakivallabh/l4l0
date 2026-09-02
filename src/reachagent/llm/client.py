@@ -283,7 +283,62 @@ class OpenAICompatibleClient:
                 "temperature": 0,
             }
         response = self._post_with_retry(url, headers, body)
+        return self._extract_reply_text(response.json())
+
+    def chat(self, messages: list[dict[str, str]], *, max_tokens: int = 512) -> str:
+        """Send a multi-turn ``[{role, content}, ...]`` conversation, return the reply text.
+
+        A superset of :meth:`complete` (which is now a single-user-turn call into this): supports
+        a ``system`` role and prior turns for real conversational Q&A (Build Order v2 W1). Same
+        provider/temperature/retry behavior as ``complete`` — no tool access, still just text in,
+        text out.
+        """
+
+        if not self.api_key:
+            raise RuntimeError(
+                "LLM API key not set; configure the selected provider API-key environment variable"
+            )
+        if not messages:
+            raise ValueError("LLM messages must not be empty")
+        for msg in messages:
+            role = msg.get("role")
+            content = msg.get("content")
+            if role not in {"system", "user", "assistant"}:
+                raise ValueError(f"LLM message role must be system/user/assistant, got {role!r}")
+            if not isinstance(content, str) or not content.strip():
+                raise ValueError("LLM message content must be a non-empty string")
+        if max_tokens <= 0:
+            raise ValueError("max_tokens must be positive")
+        headers = {
+            "Accept": "application/json",
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+        if self.api_style == "responses":
+            url = _responses_url(self.base_url)
+            body = {
+                "model": self.model,
+                # The Responses API accepts a list of role/content input items for multi-turn.
+                "input": list(messages),
+                # Responses budgets include hidden reasoning tokens. Keep
+                # small proposal limits from ending before output exists.
+                "max_output_tokens": max(max_tokens, _MIN_RESPONSES_OUTPUT_TOKENS),
+            }
+        else:
+            url = _chat_completions_url(self.base_url)
+            body = {
+                "model": self.model,
+                "messages": list(messages),
+                "max_tokens": max_tokens,
+                "temperature": 0,
+            }
+        response = self._post_with_retry(url, headers, body)
         payload: object = response.json()
+        return self._extract_reply_text(payload)
+
+    def _extract_reply_text(self, payload: object) -> str:
+        """Pull the assistant text out of a chat/responses payload (shared by complete/chat)."""
+
         if self.api_style == "responses":
             return _responses_text(payload)
         if not isinstance(payload, dict):

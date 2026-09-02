@@ -187,6 +187,25 @@ def test_nuclei_not_invoked_without_tech_signal() -> None:
     assert result.candidates == ()
 
 
+def test_aggressive_mode_bypasses_the_signal_gate(monkeypatch: pytest.MonkeyPatch) -> None:
+    """W4: with REACHAGENT_AGGRESSIVE=1, a signal-gated tool ingests even with NO prior
+    class signal in the graph — the "try harder" bypass. Every candidate it emits still
+    flows through the oracle reconfirm downstream; only the signal precondition is lifted."""
+    # Baseline: empty graph → refused (the default, unchanged).
+    refused = SqlmapRunner(graph=ReachabilityGraph(), scope=_scope()).ingest(
+        _TARGET, _fixture("sqlmap-results.csv")
+    )
+    assert refused.outcome is SignalGatedOutcome.REFUSED_NO_SIGNAL
+
+    # Aggressive on → the same empty-graph target now parses candidates instead of refusing.
+    monkeypatch.setenv("REACHAGENT_AGGRESSIVE", "1")
+    aggressive = SqlmapRunner(graph=ReachabilityGraph(), scope=_scope()).ingest(
+        _TARGET, _fixture("sqlmap-results.csv")
+    )
+    assert aggressive.outcome is not SignalGatedOutcome.REFUSED_NO_SIGNAL
+    assert aggressive.candidates  # claims are emitted (still oracle-reconfirmed downstream)
+
+
 def test_nikto_not_invoked_without_server_signal() -> None:
     runner = NiktoRunner(graph=ReachabilityGraph(), scope=_scope())
     result = runner.ingest(_TARGET, _fixture("nikto-results.json"))

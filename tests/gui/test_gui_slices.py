@@ -848,3 +848,225 @@ def test_concurrent_specialists_defaults_to_false(monkeypatch) -> None:  # noqa:
         _scans.pop(scan_id, None)
 
     assert captured.get("concurrent_specialists") is False
+
+
+class _FakeChatClient:
+    """A stand-in LLM client capturing the messages it was handed."""
+
+    def __init__(self, reply: str = "You have 1 confirmed finding so far.") -> None:
+        self.reply = reply
+        self.seen: list[dict[str, str]] = []
+        self.closed = False
+
+    def chat(self, messages: list[dict[str, str]], *, max_tokens: int = 512) -> str:
+        self.seen = messages
+        return self.reply
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def test_ask_returns_real_llm_answer_and_steers_active_scan(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake = _FakeChatClient()
+    monkeypatch.setattr(gui_app, "_build_llm_client", lambda *_a, **_k: fake)
+    control = _ScanControl()
+    scan_id = "ask-real"
+    _scans[scan_id] = {
+        "target": "http://demo.example",
+        "operator_prompt": "full assessment",
+        "status": "running",
+        "phase": "tools",
+        "events": [],
+        "findings": [],
+        "chat": [],
+        "control": control,
+        "use_llm": True,
+        "llm_provider": "deepseek",
+        "named_overrides": None,
+    }
+    try:
+        r = TestClient(app).post(f"/api/scan/{scan_id}/ask", json={"message": "what have you found?"})
+        assert r.status_code == 200
+        body = r.json()
+        assert body["answer"] == "You have 1 confirmed finding so far."
+        assert body["steered"] is True
+        # The message became a real steering hint on the live scan.
+        assert control.pop_steering_hints() == ["what have you found?"]
+        # Persona + state summary went in as a system message; the transcript is retained.
+        assert fake.seen[0]["role"] == "system"
+        assert "read-only" in fake.seen[0]["content"]
+        assert fake.closed is True
+        assert _scans[scan_id]["chat"][-1] == {
+            **_scans[scan_id]["chat"][-1],
+            "role": "assistant",
+            "text": "You have 1 confirmed finding so far.",
+        }
+    finally:
+        _scans.pop(scan_id, None)
+
+
+def test_ask_fails_open_when_llm_errors(monkeypatch: pytest.MonkeyPatch) -> None:
+    def boom(*_a: object, **_k: object) -> object:
+        raise RuntimeError("no provider")
+
+    monkeypatch.setattr(gui_app, "_build_llm_client", boom)
+    scan_id = "ask-failopen"
+    _scans[scan_id] = {
+        "status": "running",
+        "phase": "recon",
+        "events": [],
+        "findings": [],
+        "chat": [],
+        "control": _ScanControl(),
+        "use_llm": True,
+        "llm_provider": "deepseek",
+        "named_overrides": None,
+    }
+    try:
+        r = TestClient(app).post(f"/api/scan/{scan_id}/ask", json={"message": "hi"})
+        assert r.status_code == 200
+        # Never a hard error; falls back to a deterministic line.
+        assert "steer the next decision point" in r.json()["answer"]
+    finally:
+        _scans.pop(scan_id, None)
+
+
+def test_ask_answers_after_completion_without_steering(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake = _FakeChatClient(reply="That finding was an SQL injection on /login.")
+    monkeypatch.setattr(gui_app, "_build_llm_client", lambda *_a, **_k: fake)
+    scan_id = "ask-done"
+    _scans[scan_id] = {
+        "status": "done",
+        "phase": "report",
+        "events": [],
+        "findings": [{"title": "SQLi on /login", "severity": "high"}],
+        "chat": [],
+        "control": _ScanControl(),
+        "use_llm": True,
+        "llm_provider": "deepseek",
+        "named_overrides": None,
+    }
+    try:
+        r = TestClient(app).post(f"/api/scan/{scan_id}/ask", json={"message": "explain finding 1"})
+        assert r.status_code == 200
+        assert r.json() == {"answer": "That finding was an SQL injection on /login.", "steered": False}
+    finally:
+        _scans.pop(scan_id, None)
+
+
+def test_ask_requires_a_message() -> None:
+    scan_id = "ask-empty"
+    _scans[scan_id] = {"status": "running", "chat": [], "control": _ScanControl()}
+    try:
+        r = TestClient(app).post(f"/api/scan/{scan_id}/ask", json={"message": "   "})
+        assert r.status_code == 400
+    finally:
+        _scans.pop(scan_id, None)
+
+
+def test_ask_unknown_scan_is_404() -> None:
+    r = TestClient(app).post("/api/scan/nope/ask", json={"message": "hi"})
+    assert r.status_code == 404
+
+
+def test_cancel_is_idempotent_and_reports_a_distinct_cancelling_lifecycle() -> None:
+    scan_id = "cancel-once"
+    _scans[scan_id] = {
+        "target": "http://demo.example",
+        "status": "running",
+        "phase": "recon",
+        "events": [],
+        "control": _ScanControl(),
+        "cancel_requested": False,
+    }
+    try:
+        client = TestClient(app)
+        first = client.post(f"/api/scan/{scan_id}/cancel")
+        assert first.status_code == 200
+        assert first.json()["lifecycle"] == "cancelling"  # distinct, not "running"
+        assert "already_cancelling" not in first.json()
+        # A second (misclick) cancel is a clean no-op: flagged, and NO duplicate event.
+        second = client.post(f"/api/scan/{scan_id}/cancel")
+        assert second.status_code == 200
+        assert second.json().get("already_cancelling") is True
+        cancel_events = [
+            e for e in _scans[scan_id]["events"] if "Cancellation requested" in e.message
+        ]
+        assert len(cancel_events) == 1
+    finally:
+        _scans.pop(scan_id, None)
+
+
+def test_scan_snapshot_exposes_suspected_tier_separate_from_findings() -> None:
+    from reachagent.graph.nodes import SuspectedFinding
+
+    graph = ReachabilityGraph()
+    graph.add_suspected_finding(
+        SuspectedFinding(
+            vuln_class="sqli", endpoint="/login", location="user",
+            source="signal-gated-tool", reason="scanner_claim_unverified",
+        )
+    )
+    scan_id = "suspected-slice"
+    _scans[scan_id] = {"graph": graph, "status": "done", "events": [], "findings": []}
+    try:
+        j = TestClient(app).get(f"/api/scan/{scan_id}").json()
+        assert j["findings"] == []
+        assert len(j["suspected"]) == 1
+        assert j["suspected"][0]["vuln_class"] == "sqli"
+        assert j["suspected"][0]["reason"] == "scanner_claim_unverified"
+    finally:
+        _scans.pop(scan_id, None)
+
+
+def test_scan_endpoint_passes_aggressive_flag_as_env_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """W4: the Aggressive checkbox must reach _run_scan as REACHAGENT_AGGRESSIVE=1, or the
+    signal-gate bypass silently never activates."""
+    _stub_named_provider(monkeypatch)
+    captured: list[object] = []
+
+    async def capturing_scan(*args: object, **_kwargs: object) -> None:
+        captured.extend(args)
+
+    monkeypatch.setattr(gui_app, "_run_scan", capturing_scan)
+    response = TestClient(app).post(
+        "/api/scan",
+        json={
+            "target": "https://demo.example",
+            "in_scope": "demo.example",
+            "use_llm": True,
+            "llm_provider": "named:unit-provider",
+            "aggressive": True,
+        },
+    )
+    assert response.status_code == 200
+    env_overrides = captured[-2]
+    assert env_overrides["REACHAGENT_AGGRESSIVE"] == "1"
+    _scans.pop(response.json()["scan_id"], None)
+
+
+def test_scan_endpoint_omits_aggressive_flag_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    _stub_named_provider(monkeypatch)
+    captured: list[object] = []
+
+    async def capturing_scan(*args: object, **_kwargs: object) -> None:
+        captured.extend(args)
+
+    monkeypatch.setattr(gui_app, "_run_scan", capturing_scan)
+    response = TestClient(app).post(
+        "/api/scan",
+        json={
+            "target": "https://demo.example",
+            "in_scope": "demo.example",
+            "use_llm": True,
+            "llm_provider": "named:unit-provider",
+        },
+    )
+    assert response.status_code == 200
+    env_overrides = captured[-2]
+    assert env_overrides is None or "REACHAGENT_AGGRESSIVE" not in env_overrides
+    _scans.pop(response.json()["scan_id"], None)

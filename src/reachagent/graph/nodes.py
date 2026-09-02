@@ -183,6 +183,10 @@ class Host:
     technology: str | None = None
     detected_version: str | None = None
     cname: str | None = None  # a DNS CNAME target — a takeover surface when it's dangling
+    # Application-domain inference (v2 W18): an LLM's best guess at WHAT the app is
+    # ("hospital records", "ecommerce", "banking", ...) from the observed surface. An
+    # advisory fact, order-only steering for testing priority — never a finding, never a gate.
+    app_domain: str | None = None
 
 
 @dataclass
@@ -293,6 +297,37 @@ class StaticAdvisory:
     cvss_score: float | None = None
     epss_score: float | None = None
     summary: str = ""
+
+
+@dataclass
+class SuspectedFinding:
+    """A tried-but-unconfirmed lead — the "Suspected / Unconfirmed" tier (Build Order v2 W2).
+
+    Deliberately its OWN node type, never a :class:`Finding`, exactly like
+    :class:`StaticAdvisory`: it records something the agent probed and thinks may be real but
+    that a deterministic oracle did NOT confirm — an oracle that ran and returned
+    non-violation, a signal-gated scanner claim (nuclei/sqlmap/dalfox) the oracle couldn't
+    re-prove, or a candidate dropped before it could be tested. Never routed through
+    ``write_finding``/``add_finding``, never merged into the confirmed-findings section, never
+    counted in confirmed severity stats — the report keeps it in a visibly separate
+    "Suspected / Unconfirmed (not oracle-verified)" section, always. It exists so the agent
+    surfaces leads for manual review (matching what the reference tools report) instead of
+    silently dropping them, WITHOUT weakening the "no Finding without run_oracle" guarantee.
+
+    ``source`` names what proposed it (an oracle mechanism, a tool name, or "llm").
+    ``reason`` says why it stayed unconfirmed (e.g. "oracle_inconclusive", "no_oob_channel",
+    "scanner_claim_unverified"). ``confidence`` is an optional advisory LLM/heuristic label,
+    never a gate.
+    """
+
+    vuln_class: str
+    endpoint: str = ""
+    location: str = ""
+    source: str = ""
+    reason: str = ""
+    evidence: str = ""
+    severity: str = "info"
+    confidence: str = ""
 
 
 @dataclass

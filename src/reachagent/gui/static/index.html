@@ -124,10 +124,14 @@ a{color:inherit;text-decoration:none}
 .chat-header-lifecycle.failed,.chat-header-lifecycle.blocked{border-color:rgba(255,107,129,.35);background:rgba(255,107,129,.09);color:var(--red)}
 .chat-header-lifecycle.completed{border-color:rgba(78,230,207,.35);background:rgba(78,230,207,.09);color:var(--cyan)}
 .chat-header-lifecycle.paused{border-color:rgba(246,195,88,.35);background:rgba(246,195,88,.09);color:var(--amber)}
+.chat-header-lifecycle.cancelling{border-color:rgba(246,195,88,.35);background:rgba(246,195,88,.09);color:var(--amber)}
+.chat-header-lifecycle.cancelled{border-color:rgba(255,107,129,.35);background:rgba(255,107,129,.09);color:var(--red)}
 .chat-header-actions{display:flex;align-items:center;gap:8px;flex:none}
-.header-btn{padding:6px 11px;border:1px solid var(--line-hi);border-radius:var(--radius-sm);background:transparent;color:var(--muted);font-size:11px;transition:border-color .15s,color .15s}
+.header-btn{min-width:74px;text-align:center;padding:6px 11px;border:1px solid var(--line-hi);border-radius:var(--radius-sm);background:transparent;color:var(--muted);font-size:11px;transition:border-color .15s,color .15s}
 .header-btn:hover{border-color:var(--signal);color:var(--text)}
 .header-btn.danger:hover{border-color:var(--red);color:var(--red)}
+.header-btn:disabled{opacity:.6;cursor:default}
+.header-btn.danger:disabled:hover{border-color:var(--line-hi);color:var(--muted)}
 
 /* ---- Split body ---- */
 .split{flex:1;display:grid;grid-template-columns:minmax(320px,1fr) 5px minmax(360px,1fr);min-height:0}
@@ -272,6 +276,9 @@ a{color:inherit;text-decoration:none}
 .fcard.critical,.fcard.high{border-left-color:var(--red)}
 .fcard.medium{border-left-color:var(--amber)}
 .fcard.low{border-left-color:var(--green)}
+.fcard.suspected{border-left-color:var(--dim);border-style:dashed;opacity:.9}
+.fcard.suspected .fsev{color:var(--muted)}
+.suspected-divider{margin:16px 0 8px;padding:6px 10px;border-radius:6px;background:var(--panel);color:var(--muted);font-size:9.5px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;border:1px dashed var(--line)}
 .fhead{display:flex;align-items:center;justify-content:space-between;gap:8px}
 .fclass{color:var(--text);font:700 11px ui-monospace,monospace}
 .fsev{padding:2px 7px;border-radius:5px;background:var(--panel);color:var(--muted);font-size:8px;font-weight:800;letter-spacing:.08em;text-transform:uppercase}

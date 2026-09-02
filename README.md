@@ -20,6 +20,14 @@ The orchestrator attempts all 23 supported attack classes; every finding is
 written only by the **Validator on a confirmed `run_oracle` verdict** — the LLM
 never adjudicates.
 
+You can **talk to the agent** in the chat box during a scan — ask what it has
+found, why it made a decision, or steer it; it answers from live scan state and
+factors your guidance into its next decision (it can never write a finding). The
+report has two clearly-separated tiers: **Confirmed** (oracle-proven, zero false
+positives) and **Suspected / Unconfirmed** — tried-but-unproven leads (an oracle
+that ran and didn't confirm, or a scanner claim the oracle couldn't re-prove),
+surfaced for manual review and never blended with confirmed findings.
+
 No CLI, no TUI: the GUI is the only entry point (plan v2). No Docker is needed to
 run the loop itself; Docker Compose provisions the eval *target* labs only.
 

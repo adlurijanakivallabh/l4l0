@@ -8,7 +8,7 @@ const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s == null ? "" : s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
 const TERMINAL_STATES = new Set(["completed", "failed", "blocked", "cancelled"]);
-const LIFECYCLE_LABEL = { queued: "Queued", running: "Running", paused: "Paused", blocked: "Blocked", completed: "Completed", failed: "Failed", cancelled: "Cancelled" };
+const LIFECYCLE_LABEL = { queued: "Queued", running: "Running", paused: "Paused", cancelling: "Cancelling", blocked: "Blocked", completed: "Completed", failed: "Failed", cancelled: "Cancelled" };
 const PHASE_STEP = { plan: "PLAN", recon: "RECON", surface: "SURFACE", endpoints: "ENDPOINTS", "insertion-points": "INSERTION", payloads: "PAYLOADS", verification: "VERIFY", chains: "CHAINS", tools: "TOOLS", report: "REPORT" };
 const OUT_CLASS = { fired: "out-fired", refused: "out-refused", error: "out-error", ingested: "out-ingested" };
 
@@ -197,6 +197,7 @@ function renderConfirmationCard(proposal, originalMessage) {
     tuningChip("cc-tune-transport", "Transport") +
     tuningChip("cc-tune-guardian", "Guardian advisor") +
     tuningChip("cc-tune-concurrent", "Concurrent specialists") +
+    tuningChip("cc-tune-aggressive", "Aggressive mode") +
     '</div></div></div>';
   card.appendChild(advanced);
   populateProviderSelect(advanced.querySelector("#cc-provider"));
@@ -251,6 +252,7 @@ async function confirmAndStart(card, bubble, originalMessage) {
     transport_tuning: card.querySelector("#cc-tune-transport").checked,
     guardian_advisor: card.querySelector("#cc-tune-guardian").checked,
     concurrent_specialists: card.querySelector("#cc-tune-concurrent").checked,
+    aggressive: card.querySelector("#cc-tune-aggressive").checked,
     repo_path: card.querySelector("#cc-repo-path").value.trim() || null,
   };
 
@@ -316,24 +318,31 @@ wireComposer("chat-input", "chat-send", async (message) => {
   if (!message) return;
   textBubble("user", message);
   if (!state.scanId) return;
-  const active = !TERMINAL_STATES.has(state.lifecycle) && state.lifecycle !== "cancelled";
-  if (!active) {
-    textBubble("assistant", "This assessment has already finished; start a new assessment for a different target or objective.");
-    return;
-  }
+  // Real conversational Q&A (W1): POST /ask returns an actual LLM answer generated from live
+  // scan state, and also steers the scan when it's still active. Works after completion too
+  // (ask it to explain a finding). A transient "…" bubble stands in while the model replies.
+  textBubble("assistant", "…");
+  const pending = $("chat-log").lastElementChild;
+  const setReply = (txt) => {
+    const bubble = pending && pending.querySelector(".msg-bubble");
+    if (bubble) bubble.textContent = txt;
+    else textBubble("assistant", txt);
+    $("chat-log").scrollTop = $("chat-log").scrollHeight;
+  };
   try {
-    const r = await fetch("/api/scan/" + state.scanId + "/steer", {
+    const r = await fetch("/api/scan/" + state.scanId + "/ask", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ message }),
     });
     if (r.ok) {
-      textBubble("assistant", "Noted — I'll factor that in at the next decision point. This won't redirect anything already in flight.");
+      const j = await r.json();
+      setReply(j.answer || "(no reply)");
     } else {
-      textBubble("assistant", "Couldn't queue that note right now; the assessment may have just finished.");
+      setReply("Couldn't reach the agent right now; the scan state is in the tabs on the right.");
     }
   } catch (_e) {
-    textBubble("assistant", "Couldn't reach the server to queue that note.");
+    setReply("Couldn't reach the server to ask that.");
   }
 });
 
@@ -434,15 +443,21 @@ function updateChatHeader(j) {
   pill.hidden = false;
   pill.textContent = LIFECYCLE_LABEL[lifecycle] || lifecycle;
   pill.className = "chat-header-lifecycle " + lifecycle;
-  $("cancel-scan").hidden = !j.can_cancel;
-  $("pause-scan").hidden = !j.can_pause;
-  $("resume-scan").hidden = !j.can_resume;
+  // W3: once cancellation is in flight, keep the button visible but disabled and relabelled
+  // so the operator gets clear feedback and a second click can't fire another cancel.
+  const cancelling = lifecycle === "cancelling" || j.cancel_requested;
+  const cancelBtn = $("cancel-scan");
+  cancelBtn.hidden = !j.can_cancel && !cancelling;
+  cancelBtn.disabled = cancelling;
+  cancelBtn.textContent = cancelling ? "Cancelling…" : "Cancel";
+  $("pause-scan").hidden = !j.can_pause || cancelling;
+  $("resume-scan").hidden = !j.can_resume || cancelling;
 }
 
 function renderScanSnapshot(j) {
   updateChatHeader(j);
   renderMetrics(j.graph);
-  renderFindingsList(j.findings);
+  renderFindingsList(j.findings, j.suspected);
   renderSurfaceTree(j.graph && j.graph.available ? null : null); // surface fetched separately below
   fetchSurface();
   renderAuditList(j.audit);
@@ -507,6 +522,15 @@ function setTerminalLive(live) {
 
 function appendTerminalRows(events) {
   if (!events.length) return;
+  // W1: the agent's own decision rationale (kind "assistant-note") is a conversational turn —
+  // route it into the chat log, not the terminal feed, so talking with the agent shows its
+  // live reasoning too. Everything else stays in the terminal.
+  const terminalEvents = [];
+  events.forEach((e) => {
+    if (e.kind === "assistant-note" && e.message) textBubble("assistant", e.message);
+    else terminalEvents.push(e);
+  });
+  if (!terminalEvents.length) return;
   const feed = $("term-feed");
   // The scrollable element is the .work-body ancestor (#tab-terminal), not
   // #term-feed itself — #term-feed has no overflow/height of its own, so
@@ -515,7 +539,7 @@ function appendTerminalRows(events) {
   const emptyPlaceholder = feed.querySelector(".term-empty");
   if (emptyPlaceholder) emptyPlaceholder.remove();
   const atBottom = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 40;
-  events.forEach((e) => feed.appendChild(terminalRow(e)));
+  terminalEvents.forEach((e) => feed.appendChild(terminalRow(e)));
   $("term-count").textContent = feed.children.length + " events";
   if (atBottom) scroller.scrollTop = scroller.scrollHeight;
 }
@@ -638,14 +662,52 @@ function addMetaRow(parent, label, value) {
   parent.appendChild(row);
 }
 
-function renderFindingsList(findings) {
+function renderSuspectedInto(box, suspected) {
+  // W2: the Suspected/Unconfirmed tier, rendered visibly SEPARATE from confirmed findings —
+  // leads the oracle didn't prove, for manual review, never counted as confirmed.
+  if (!suspected || !suspected.length) return;
+  const divider = document.createElement("div");
+  divider.className = "suspected-divider";
+  divider.textContent = "Suspected / Unconfirmed — " + suspected.length + " (not oracle-verified)";
+  box.appendChild(divider);
+  suspected.forEach((s) => {
+    const card = document.createElement("div");
+    card.className = "fcard suspected";
+    const head = document.createElement("div");
+    head.className = "fhead";
+    const cls = document.createElement("span");
+    cls.className = "fclass";
+    cls.textContent = s.vuln_class || "suspected";
+    const sev = document.createElement("span");
+    sev.className = "fsev";
+    sev.textContent = "unconfirmed";
+    head.append(cls, sev);
+    card.appendChild(head);
+    const meta = document.createElement("div");
+    meta.className = "fmeta";
+    addMetaRow(meta, "Endpoint", s.endpoint);
+    addMetaRow(meta, "Location", s.location);
+    addMetaRow(meta, "Source", s.source);
+    addMetaRow(meta, "Why unconfirmed", s.reason);
+    card.appendChild(meta);
+    box.appendChild(card);
+  });
+}
+
+function renderFindingsList(findings, suspected) {
   const box = $("findings-list");
-  if (!findings || !findings.length) {
+  if ((!findings || !findings.length) && (!suspected || !suspected.length)) {
     box.innerHTML = '<div class="empty">No oracle-confirmed findings yet.</div>';
     return;
   }
   box.innerHTML = "";
-  findings.forEach((f) => {
+  if (!findings || !findings.length) {
+    const note = document.createElement("div");
+    note.className = "empty";
+    note.textContent = "No oracle-confirmed findings yet.";
+    box.appendChild(note);
+  }
+  (findings || []).forEach((f) => {
     const card = document.createElement("div");
     card.className = "fcard " + (f.severity || "");
     const head = document.createElement("div");
@@ -684,6 +746,7 @@ function renderFindingsList(findings) {
     });
     box.appendChild(card);
   });
+  renderSuspectedInto(box, suspected);
 }
 
 function renderSurfaceTree(surface) {

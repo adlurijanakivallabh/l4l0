@@ -200,3 +200,23 @@ def test_recovery_hint_failure_still_degrades_gracefully(tmp_path: Path) -> None
     stopped = [e for e in events if e.kind == "control-stopped"]
     assert stopped
     assert "recovery hint applied" not in stopped[0].message
+
+
+def test_decision_rationale_is_surfaced_as_an_assistant_note_for_the_chat() -> None:
+    """W1: the agent's own loop-decision reasoning is emitted as kind 'assistant-note'
+    so the GUI can render it into the chat panel, not just the terminal feed."""
+    events: list = []
+
+    scan_all_classes(
+        base_url=_BASE,
+        in_scope="control-loop.test",
+        transport=httpx.MockTransport(_clean_handler),
+        require_llm=True,
+        planner_client=_FakePlannerClient(),
+        control_client=_ContinueAdvisor(),
+        events=events,
+    )
+
+    notes = [e for e in events if e.kind == "assistant-note"]
+    assert notes, "expected at least one assistant-note event carrying the decision rationale"
+    assert any("test advisor" in e.message for e in notes)

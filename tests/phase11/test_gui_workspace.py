@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 
 from reachagent.graph.nodes import Endpoint, Finding, FindingStatus
 from reachagent.graph.store import ReachabilityGraph
-from reachagent.gui.app import _scans, app
+from reachagent.gui.app import _ScanControl, _scans, app
 from reachagent.scan.orchestrator import ScanEvent
 
 
@@ -27,7 +27,7 @@ def _scan(scan_id: str, *, graph: ReachabilityGraph | None = None) -> dict[str, 
         "created_at": "2026-08-30T12:00:00+00:00",
         "updated_at": "2026-08-30T12:00:01+00:00",
         "finished_at": None,
-        "cancel_event": threading.Event(),
+        "control": _ScanControl(),
         "cancel_requested": False,
     }
 
@@ -76,15 +76,19 @@ def test_event_delta_redacts_secrets_and_ephemeral_handles() -> None:
 def test_cancel_is_cooperative_and_does_not_confirm_anything() -> None:
     scan_id = "phase11-cancel"
     item = _scan(scan_id)
-    cancel_event = item["cancel_event"]
-    assert isinstance(cancel_event, threading.Event)
+    control = item["control"]
+    assert isinstance(control, _ScanControl)
+    assert isinstance(control.cancel_event, threading.Event)
     _scans[scan_id] = item
     try:
         response = TestClient(app).post(f"/api/scan/{scan_id}/cancel")
         assert response.status_code == 200
-        assert cancel_event.is_set()
+        # Cooperative: the worker's cancel_event is set; nothing is force-killed.
+        assert control.cancel_event.is_set()
         assert response.json()["status"] == "cancelling"
-        assert response.json()["lifecycle"] == "running"
+        # W3: cancelling is now a DISTINCT lifecycle (was collapsed to "running"),
+        # so the operator gets real feedback the cancel registered.
+        assert response.json()["lifecycle"] == "cancelling"
         assert response.json()["counts"] == {}
     finally:
         _scans.pop(scan_id, None)

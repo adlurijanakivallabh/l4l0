@@ -40,7 +40,7 @@ from reachagent.detection.oracle_gateway import OracleOutcome
 from reachagent.execution.audit import AuditLog
 from reachagent.execution.firer import RequestFirer
 from reachagent.execution.scope import ScopeGuard
-from reachagent.graph.nodes import Endpoint, Finding, SinkType
+from reachagent.graph.nodes import Endpoint, Finding, SinkType, SuspectedFinding
 from reachagent.graph.store import ReachabilityGraph, identity_id
 from reachagent.oracles import OracleMechanism
 from reachagent.oracles.base import OracleVerdict
@@ -151,6 +151,11 @@ def _class_priority_signals(
     methods = sorted({ep.method for _, ep in endpoints if ep.method})
     if methods:
         signals["methods"] = ",".join(methods)[:120]
+    # Application-domain inference (v2 W18): a host-level advisory fact, order-only, exactly
+    # like host_tech — hospital/ecommerce/banking steers WHICH classes to prioritize.
+    domains = sorted({h.app_domain for _, h in graph.hosts() if h.app_domain})
+    if domains:
+        signals["app_domain"] = ",".join(domains)[:120]
     techs = sorted({h.technology for _, h in graph.hosts() if h.technology})
     if techs:
         signals["host_tech"] = ",".join(techs)[:200]
@@ -340,6 +345,39 @@ class _ValidatorSeam:
     def last(self) -> OracleVerdict | None:
         """The most recent oracle verdict — the one a multi-probe detector confirmed on."""
         return self._last
+
+    def record_suspected(
+        self,
+        vuln_class: str,
+        *,
+        endpoint: str = "",
+        location: str = "",
+        source: str = "",
+        reason: str = "",
+        evidence: str = "",
+        severity: str = "info",
+        confidence: str = "",
+    ) -> str:
+        """Record a tried-but-unconfirmed lead into the Suspected tier (Build Order v2 W2).
+
+        The honest counterpart to :meth:`write` — called when a candidate was genuinely probed
+        but the oracle did NOT confirm it (or a signal-gated scanner claimed it and the oracle
+        couldn't re-prove it). Writes a structurally-separate ``SuspectedFinding`` node, never a
+        ``Finding`` — so the "no Finding without run_oracle" guarantee is untouched. Idempotent
+        (dedups on class/endpoint/location/source), advisory-only, never counted as confirmed.
+        """
+        return self.graph.add_suspected_finding(
+            SuspectedFinding(
+                vuln_class=vuln_class,
+                endpoint=endpoint,
+                location=location,
+                source=source or "oracle",
+                reason=reason,
+                evidence=evidence,
+                severity=severity,
+                confidence=confidence,
+            )
+        )
 
     def write(
         self,
@@ -732,6 +770,8 @@ def run_jwt_forgery(
                         events, "payloads", "finding", f"jwt forgery accepted ({name})", path=path
                     )
                 break
+        # Not recorded as Suspected: every variant rejected is the expected outcome for
+        # correctly-implemented JWT validation, not a lead — see the note in run_nosqli.
     return found
 
 
@@ -1017,6 +1057,12 @@ def run_nosqli(
                     param=param.name,
                 )
                 found.append(nid)
+        # Note: a non-confirm here is the NORMAL, expected outcome for a properly-secured
+        # parameter (auth-bypass differential + timing both ran and found nothing) — it is
+        # NOT a "suspected lead" and must not be recorded as one (that would flood the
+        # Suspected tier with every clean parameter on every scan). The Suspected tier is
+        # reserved for a genuine external assertion (a signal-gated tool's claim) that
+        # couldn't be reconfirmed — see `_make_signal_reconfirm`'s `_suspect` helper.
 
     for ep_node, ep in graph.endpoints():
         for _param_node, param in graph.parameters_of(ep_node):
@@ -1093,6 +1139,8 @@ def run_ldap(
                     param=param.name,
                 )
                 found.append(nid)
+        # Not recorded as Suspected: a non-confirm here is the expected, common outcome for
+        # a properly-secured parameter, not a lead — see the matching note in run_nosqli.
 
     for ep_node, ep in graph.endpoints():
         for _param_node, param in graph.parameters_of(ep_node):
@@ -1158,6 +1206,8 @@ def run_command_injection(
                     param=param.name,
                 )
                 found.append(nid)
+        # Not recorded as Suspected: a non-confirm here is the expected, common outcome for
+        # a properly-secured parameter, not a lead — see the matching note in run_nosqli.
 
     for ep_node, ep in graph.endpoints():
         for _param_node, param in graph.parameters_of(ep_node):
@@ -3073,9 +3123,34 @@ def _make_signal_reconfirm(
             vuln_class=candidate.vuln_class, severity=severity, oracle_used="", evidence_ref=""
         )
 
+    def _suspect(candidate: Any, reason: str) -> None:
+        # W2: a signal-gated tool (nuclei/sqlmap/dalfox) CLAIMED this, but the oracle did not
+        # (or could not) independently confirm it. Never a Finding — surface it as a suspected
+        # lead for manual review instead of silently dropping the tool's claim on the floor.
+        try:
+            graph.add_suspected_finding(
+                SuspectedFinding(
+                    vuln_class=str(candidate.vuln_class),
+                    endpoint=str(getattr(candidate, "endpoint_node", "")),
+                    location=str(getattr(candidate, "param_node", "") or ""),
+                    source="signal-gated-tool",
+                    reason=reason,
+                    severity="info",
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 — a suspected-tier write must never break the scan
+            _emit(
+                events,
+                "verification",
+                "error",
+                f"suspected-tier write skipped: {type(exc).__name__}",
+            )
+
     def _reconfirm(candidate: Any) -> object:
         builder = _RECONFIRM_BUILDERS.get((candidate.vuln_class, candidate.suggested_oracle))
         if builder is None:
+            # The tool flagged a class/oracle pair we have no deterministic re-check for.
+            _suspect(candidate, "no_oracle_for_class")
             return None
         try:
             evidence = builder(
@@ -3095,8 +3170,10 @@ def _make_signal_reconfirm(
                 "error",
                 f"signal-gated reconfirm probe failed: {type(exc).__name__}",
             )
+            _suspect(candidate, "reconfirm_probe_failed")
             return None
         if evidence is None:
+            _suspect(candidate, "reconfirm_probe_unavailable")
             return None
         node_id = reconfirm_candidate(
             candidate,
@@ -3115,6 +3192,10 @@ def _make_signal_reconfirm(
                 finding=node_id,
                 endpoint=candidate.endpoint_node,
             )
+        else:
+            # Oracle ran on the tool's claim and did NOT confirm — the classic
+            # "scanner says vuln, proof says no" case → suspected, not dropped.
+            _suspect(candidate, "scanner_claim_unverified")
         return node_id
 
     return _reconfirm
@@ -3824,6 +3905,16 @@ def scan_all_classes(
                     hint=decision.hint,
                     target_phase=decision.target_phase,
                 )
+                # W1: surface the agent's own reasoning into the chat panel, not just the
+                # terminal feed, so the conversation reflects what it decided and why. The
+                # GUI routes kind="assistant-note" into the chat log; other consumers ignore it.
+                if decision.rationale.strip():
+                    _emit(
+                        events_out,
+                        phase,
+                        "assistant-note",
+                        decision.rationale.strip(),
+                    )
             return decision
         except ScanCancelled:
             control_state.cancel()
@@ -4115,6 +4206,27 @@ def scan_all_classes(
                 f"{whitebox_summary['package_dependencies']} dependencies, "
                 f"{whitebox_summary['static_advisories']} known-CVE match(es)",
                 **whitebox_summary,
+            )
+
+    # Application-domain inference (v2 W18): one bounded LLM call classifies WHAT the app is
+    # (hospital/ecommerce/banking/...) from the observed surface, stored as a host-level
+    # advisory fact that steers Phase-3 class priority (order-only, never a gate). Only when
+    # LLM is active; fails open to no profile. Set on every host so the signal is stable.
+    if require_llm:
+        from reachagent.scan.app_domain import classify_app_domain
+
+        app_domain = classify_app_domain(graph)
+        if app_domain:
+            from dataclasses import replace as _dc_replace
+
+            for _host_node, host in graph.hosts():
+                graph.add_host(_dc_replace(host, app_domain=app_domain))  # merge-enrich, order-only
+            _emit(
+                events_out,
+                "endpoints",
+                "assistant-note",
+                f"This looks like a {app_domain}; I'll prioritize the vuln classes that matter "
+                f"most for that kind of app.",
             )
 
     # LLM-driven surface prioritization (flag-gated, ordering only): after

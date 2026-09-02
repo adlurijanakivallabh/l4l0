@@ -60,6 +60,14 @@ from reachagent.recon.tools._net import output_preview as _recon_output_preview
 from reachagent.recon.tools.base import RECON_ENV_LIVE, _scope_url
 from reachagent.tools.candidate import Candidate, ResponseSignal
 
+# Aggressive mode (Build Order v2 W4, opt-in, default off): when set, the signal gate is
+# bypassed so a signal-gated tool (nuclei/sqlmap/dalfox) fires even without a prior class
+# signal in the graph — "try much harder" like the reference tools. Every emitted candidate
+# still passes the oracle reconfirm (or lands in the Suspected tier), and every OTHER gate
+# (scope, binary presence, memory, read-only) is untouched. Read via the same contextvar/env
+# flag mechanism the tuning flags use, so the GUI can turn it on per-scan.
+_AGGRESSIVE_FLAG = "REACHAGENT_AGGRESSIVE"
+
 _LIVE_TIMEOUT = 300.0
 # Same rationale as base.py's _MIN_FREE_MEMORY_MB — this tier includes
 # memory-heavy tools too (sqlmap).
@@ -453,8 +461,13 @@ class SignalGatedToolRunner:
         """
         # Gate 1: the signal gate — the defining §9 precondition. No graph signal
         # for this tool's class → the tool is not a candidate source here at all.
+        # Aggressive mode (opt-in, default off) bypasses this ONE gate so claims are parsed
+        # even without a prior signal; every candidate still passes the oracle reconfirm
+        # downstream, and the scope gate below is untouched. This must mirror run()'s bypass
+        # because run() finishes by calling ingest() — otherwise an aggressive spawn would
+        # parse to nothing. Read directly from os.environ (scan-scoped), matching run().
         base_metadata = metadata or SignalGatedMetadata(output_chars=len(raw_output or ""))
-        if not self.has_signal(target):
+        if not self.has_signal(target) and os.environ.get(_AGGRESSIVE_FLAG) != "1":
             self._audit(target, SignalGatedOutcome.REFUSED_NO_SIGNAL, base_metadata)
             return SignalGatedResult(
                 self.name,
@@ -533,7 +546,13 @@ class SignalGatedToolRunner:
             )
 
         # Signal gate before any spawn — the §9 precondition, even on the live path.
-        if not self.has_signal(target):
+        # Aggressive mode (opt-in) bypasses THIS gate only: the tool fires broadly even with
+        # no prior class signal. Every emitted candidate still passes the oracle reconfirm
+        # (or → Suspected tier), and scope/binary/memory/read-only gates below are untouched.
+        # Read directly from the (scan-scoped) env — the same mechanism the surface/signal/
+        # transport tuning flags use — not flag_enabled, whose contextvar branch shadows env
+        # with a fixed whitelist during an active scan.
+        if not self.has_signal(target) and env.get(_AGGRESSIVE_FLAG) != "1":
             self._audit(target, SignalGatedOutcome.REFUSED_NO_SIGNAL, base_metadata)
             return SignalGatedResult(
                 self.name, target, SignalGatedOutcome.REFUSED_NO_SIGNAL, metadata=base_metadata
