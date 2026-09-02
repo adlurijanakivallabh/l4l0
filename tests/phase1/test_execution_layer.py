@@ -188,3 +188,27 @@ def test_from_raw_normalizes_full_urls_in_both_in_scope_and_out_of_scope() -> No
     scope = ScopeGuard.from_raw("http://target.test:8080", "http://admin.target.test:8080")
     assert scope.is_in_scope("http://target.test:8080/orders")
     assert not scope.is_in_scope("http://admin.target.test:8080/orders")
+
+
+# ---------------------------------------------------------------------------
+# ScopeGuard.from_raw — V1: path/port-narrowed entries ("don't touch /admin")
+# ---------------------------------------------------------------------------
+
+
+def test_from_raw_out_of_scope_entry_can_narrow_by_path() -> None:
+    scope = ScopeGuard.from_raw("target.test", "target.test/admin")
+    assert scope.is_in_scope("https://target.test/orders")
+    assert not scope.is_in_scope("https://target.test/admin/users")
+    assert not scope.is_in_scope("https://target.test/admin")
+
+
+def test_from_raw_in_scope_entry_can_narrow_by_port() -> None:
+    scope = ScopeGuard.from_raw("target.test:8080")
+    assert scope.is_in_scope("https://target.test:8080/orders")
+    assert not scope.is_in_scope("https://target.test:9090/orders")
+
+
+def test_from_raw_bare_host_path_entry_keeps_default_schemes() -> None:
+    scope = ScopeGuard.from_raw("target.test/api")
+    assert scope.is_in_scope("https://target.test/api/users")
+    assert scope.is_in_scope("http://target.test/api/users")

@@ -91,34 +91,49 @@ class ScopeGuard:
 
     @classmethod
     def from_raw(cls, in_scope: str | None, out_of_scope: str | None = None) -> ScopeGuard:
-        """Comma-separated host patterns → guard (wildcard-aware).
+        """Comma-separated ``host[:port][/path]`` patterns → guard (wildcard-aware).
 
         A caller may hand a full URL instead of a bare host (e.g. a confirmed
         target URL reused as its own default scope, as the GUI does when the
         operator leaves "in-scope hosts" blank) — a rule literally holding
         ``http://localhost:3000`` as its host never matches a real request's
         parsed host (``localhost``), refusing every single request as
-        out-of-scope. Each entry is normalized to a bare host first so this
-        can't silently produce a guard that allows nothing.
+        out-of-scope. Each entry is parsed into a full :class:`ScopeRule`
+        (V1: an operator can now write ``example.com/admin`` or
+        ``example.com:8080`` directly in the confirmation card's scope text
+        to narrow a rule by path or port, not just host) rather than
+        collapsed to a bare host string. A scheme is only constrained when
+        the entry explicitly names one; a bare host/path keeps today's
+        http+https default.
         """
 
-        def _parse(raw: str | None) -> list[str]:
+        def _parse(raw: str | None) -> list[ScopeRule]:
             if not raw:
                 return []
-            hosts: list[str] = []
+            rules: list[ScopeRule] = []
             for part in raw.split(","):
                 entry = part.strip()
                 if not entry:
                     continue
-                if "://" in entry:
-                    try:
-                        entry = httpx.URL(entry).host or entry
-                    except Exception:  # noqa: BLE001, S110 — malformed entry, fall back as-is
-                        pass
-                hosts.append(entry.lower())
-            return hosts
+                explicit_scheme = entry.startswith(("http://", "https://"))
+                try:
+                    url = httpx.URL(entry if "://" in entry else f"https://{entry}")
+                except Exception:  # noqa: BLE001, S112 — malformed entry, skip it
+                    continue
+                host = (url.host or "").lower()
+                if not host:
+                    continue
+                kwargs: dict[str, object] = {"host": host}
+                if url.port is not None:
+                    kwargs["port"] = url.port
+                if url.path and url.path != "/":
+                    kwargs["path_prefix"] = url.path
+                if explicit_scheme:
+                    kwargs["allowed_schemes"] = frozenset({url.scheme})
+                rules.append(ScopeRule(**kwargs))
+            return rules
 
-        return cls.from_hosts(_parse(in_scope), _parse(out_of_scope))
+        return cls(_parse(in_scope), _parse(out_of_scope))
 
     def is_in_scope(self, url: str | httpx.URL) -> bool:
         """True only if some rule allows this URL in full (deny-by-default)."""
