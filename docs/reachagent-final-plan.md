@@ -1,6 +1,39 @@
 # ReachAgent — Web/API Exploitation Agent
 ### Final Project Plan (July 2026)
 
+**Status: Locked — v2.12 (Phase 6, Stage E — real evidence, intent-parsing fixes, multi-panel
+GUI pass).** Changes from v2.11: operator feedback round 2 after reviewing the live GUI —
+**E1 real evidence capture + display**: oracle evidence (e.g. `StructuralEvidence`) already
+carried the deciding data at decision time but nothing captured it into `Finding.metadata`;
+`StructuralOracle.run()` now auto-fills a bounded, secret-scrubbed `body_projection` from the
+evidence's own response_body/sentinel (mirroring its existing header auto-fill), `write_finding`
+already persists it with zero new plumbing, and a new shared `report/renderer.py::evidence_snippet()`
+surfaces it in both the GUI's finding cards (a real code-style evidence block, baseline-vs-probe
+pair for differential findings) and the markdown/HTML report (a `~~~`-fenced block). **E2
+intent-parsing hardening**: `/api/parse-intent`'s two bare `except Exception` blocks collapsed
+every failure mode into one generic message; now returns a `reason` code (no_provider/
+provider_error/malformed_reply) with a specific frontend message per case, and recovers a
+shorthand credential string (`"admin/admin123"`) instead of silently dropping the whole
+credentials list. Verified live end to end. **E4 multi-panel GUI pass**: Audit/Surface/Report
+panels redesigned to match Stage A's Findings-tab work (Terminal got a narrower, deliberate
+polish only — the full PentAGI task-tree restructure stays explicitly deferred). A self-caught
+Surface-tab flicker regression this stage's own animation work introduced was fixed with the
+same count-based signature-skip technique as the Stage A findings-list fix.
+
+Two more real bugs surfaced by this session's Stage D live-verification runs (4 concurrent GUI
+scans against the local eval targets), fixed the same session: **(1)** a named-provider
+concurrency bug — `gui/app.py`'s `_run_scan` threaded the LLM connection fields (base_url/
+api_key/model/api_style) through raw `os.environ` mutation, so two concurrent scans in one
+process could race on that global state (one scan finishing wiped the connection info a
+DIFFERENT still-running scan needed, surfacing as an unrelated "LLM base URL is required"
+crash); fixed by extending `llm/runtime.py`'s existing `RuntimeConfig`/`override()` contextvar
+(already used for `provider`, explicitly built "without mutating process-global environment
+state") to also carry these fields. **(2)** a `response_body` evidence-size crash — a real
+target's multi-megabyte response hit `StructuralEvidence`/`ExecutionConfirmationEvidence`'s own
+1,000,000-char validation cap, raising `ValueError` deep inside a live oracle call with nothing
+upstream to catch it, aborting the whole scan; fixed by capping the body at the point it's
+resolved server-side from a `fire_ref` (`mcp/server.py`) — a graceful degrade instead of a crash.
+
 **Status: Locked — v2.11 (Phase 6, Stage C — closing reference-project gaps).** Changes from
 v2.10: operator asked for the reference-project gap list to be actually built, not just
 documented. Two items closed this pass: **DVWA local eval target** — new

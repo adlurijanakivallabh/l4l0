@@ -517,3 +517,39 @@ browser recon, attack-path chaining (W17), app-domain inference (W18), LLM-autho
   LLM payload proposal, live intercepting-proxy integration (needs real
   infra), and response-content-aware LLM review (would touch a design
   property this session's own adversarial review just verified as clean).
+
+## Phase 6, Stage D live-verification bugs (shipped 2026-09-02)
+
+- Running 4 concurrent GUI scans against local targets found two real bugs:
+  - Named-provider concurrency: `_run_scan` threaded LLM connection fields
+    through raw `os.environ`, so one scan finishing could wipe the
+    connection info a different still-running scan needed (an unrelated
+    "LLM base URL is required" crash). Fixed by extending the existing
+    `RuntimeConfig`/`override()` contextvar to carry these fields too.
+  - `response_body` evidence-size crash: a real multi-megabyte response
+    hit the oracle evidence's own validation cap, aborting the whole scan
+    with an uncaught `ValueError`. Fixed by capping the body where it's
+    resolved server-side, a graceful degrade instead of a crash.
+
+## Phase 6, Stage E: real evidence, intent-parsing fixes, GUI pass (shipped 2026-09-02)
+
+- **E1 real evidence**: `StructuralOracle.run()` now auto-fills a bounded,
+  secret-scrubbed `body_projection` from the evidence it already decides
+  on (mirroring its existing header auto-fill) — `write_finding` already
+  persists it, a new shared `evidence_snippet()` surfaces it in both the
+  GUI finding cards (a real code block, baseline-vs-probe pair for
+  differential findings) and the markdown/HTML report.
+- **E2 intent-parsing hardening**: `/api/parse-intent` now returns a
+  specific `reason` (no_provider/provider_error/malformed_reply) instead
+  of one generic message for every failure mode, and recovers a shorthand
+  credential string ("admin/admin123") instead of dropping the whole list.
+  Verified live end to end.
+- **E4 multi-panel GUI pass**: Audit/Surface/Report redesigned to match
+  Stage A's Findings work; Terminal got a narrower polish only (the full
+  PentAGI task-tree restructure stays deferred). Self-caught: a Surface-tab
+  flicker regression from this stage's own new entrance animation
+  (fetchSurface() rebuilds unconditionally every ~2.5s poll) — fixed with
+  the same count-based signature-skip already used for the Stage A
+  findings-list fix. Also caught a testing-process gap: a CSS-only edit
+  needs a fresh page navigation to actually apply, since `index.html`'s
+  `<style>` block only loads once at page load.
