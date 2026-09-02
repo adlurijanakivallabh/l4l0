@@ -399,3 +399,33 @@ browser recon, attack-path chaining (W17), app-domain inference (W18), LLM-autho
   path is completely untouched — zero risk to existing report tests.
 - 9 new tests (7 unit on generate_llm_authored_report incl. multi-finding coverage
   and graph-immutability; 2 GUI wiring tests for both the success and fallback paths).
+
+## v2 Capability-Expansion — W5: widen candidate generation, nosqli/ldap (shipped 2026-09-02)
+
+- `run_nosqli`/`run_ldap` in `scan/orchestrator.py` move from one hardcoded bypass
+  value each to a named multi-variant tuple tried in order — `_NOSQL_BYPASS_VALUES`
+  (ne-null/ne-empty/gt-empty/regex-wildcard/exists-true) and `_LDAP_BYPASS_VALUES`
+  (wildcard-classic/objectclass-wildcard/admin-password-bypass/cn-wildcard) —
+  mirroring `run_jwt_forgery`'s existing 4-variant loop pattern. First oracle
+  confirmation wins (`break`); a WAF/filter that strips one operator/wildcard shape
+  may not catch another.
+- Flakiness-safe by construction: only the LAST variant in each loop may exercise
+  the real wall-clock timing fallback (`_paired_timing`). Every earlier variant uses
+  a fake `_no_timing_signal()` (identical fabricated latencies, zero live network
+  calls, can never itself confirm) — widening candidates does not multiply real
+  timing probes fired per parameter, so it can't reintroduce the documented
+  TIMING_STATISTICAL flakiness class.
+- The confirming `variant_name` now rides on `evidence_ref`/`finding_id` (e.g.
+  `orchestrator/nosqli /admin/secret user:gt-empty`) and the emitted event message,
+  so the report/GUI can show which bypass shape actually worked.
+- Updated `tests/scan/test_attack_path_chaining.py`'s hardcoded expected finding_id
+  to include the new `:ne-null` variant suffix (the mock target's first-tried
+  variant already confirms deterministically). 3 new tests in
+  `tests/scan/test_blind_injection_drivers.py`: a WAF-like handler proving the loop
+  tries later variants when earlier ones are blocked (nosqli + ldap), and a
+  request-count assertion proving the real timing round fires exactly once (on the
+  final variant only), not once per variant.
+- Disclosed scope limit: this is the curated-list version of "widen candidate
+  generation," not the plan's original freeform-LLM-proposes-payloads vision — an
+  open-ended checklist feeding `llm/planner.py`/`tools/candidate.py` remains a
+  future increment, deliberately deferred rather than rushed.

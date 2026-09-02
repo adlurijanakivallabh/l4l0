@@ -209,3 +209,64 @@ def test_nosqli_omits_chaining_entirely_when_derived_identities_not_passed() -> 
     graph, _ep = _graph(SinkType.NOSQL)
     findings = _run(run_nosqli, graph, _firer(_bypass_handler(("$ne", "$"))))
     assert "nosqli" in {f.vuln_class for _fid, f in findings}
+
+
+def test_nosqli_tries_later_variants_when_earlier_ones_are_blocked() -> None:
+    """v2 W5: a WAF-like filter that strips '$ne' but is blind to '$gt' — the loop
+    must not give up after the first (blocked) variant."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        value = request.url.params.get("user", "")
+        if value == "baseline" or value.startswith("reachagent-canary"):
+            return httpx.Response(401, text="invalid credentials")
+        if "$gt" in value:
+            return httpx.Response(200, json={"token": "granted"})
+        return httpx.Response(401, text="blocked by waf")  # $ne variants filtered
+
+    graph, _ep = _graph(SinkType.NOSQL)
+    findings = _run(run_nosqli, graph, _firer(handler))
+    [(fid, finding)] = findings
+    assert finding.vuln_class == "nosqli"
+    assert fid.endswith(":gt-empty")  # the 3rd variant tried, not the 1st
+
+
+def test_ldap_tries_later_variants_when_earlier_ones_are_blocked() -> None:
+    """Same proof as above, for the LDAP wildcard variants."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        value = request.url.params.get("user", "")
+        if value == "baseline" or value.startswith("reachagent-canary"):
+            return httpx.Response(401)
+        if "password=*" in value:
+            return httpx.Response(200, json={"token": "granted"})
+        return httpx.Response(401)  # wildcard variants filtered by a stricter filter
+
+    graph, _ep = _graph(SinkType.LDAP)
+    findings = _run(run_ldap, graph, _firer(handler))
+    [(fid, finding)] = findings
+    assert finding.vuln_class == "ldap_injection"
+    assert fid.endswith(":admin-password-bypass")  # the 3rd variant tried, not the 1st
+
+
+def test_nosqli_does_not_spray_real_timing_probes_across_every_variant(monkeypatch) -> None:  # noqa: ANN001
+    """Only the LAST bypass variant may trigger the real timing fallback — the
+    other variants use a fake always-clean TimingProbe, so a WAF that blocks
+    every auth-bypass shape causes exactly one round of real timing, not five."""
+    monkeypatch.setattr(_orchestrator, "_TIMING_TRIALS", _DENOISED_TRIALS)
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        value = request.url.params.get("user", "")
+        calls.append(value)
+        if "$where" in value and "sleep" in value:
+            time.sleep(0.02)
+            return httpx.Response(200, text="pong")
+        return httpx.Response(401, text="nope")
+
+    graph, _ep = _graph(SinkType.NOSQL)
+    findings = _run(run_nosqli, graph, _firer(handler))
+    assert "nosqli" in {f.vuln_class for _fid, f in findings}
+    variant_count = len(_orchestrator._NOSQL_BYPASS_VALUES)
+    # Each variant fires 2 bypass requests (baseline + probe); only the final
+    # variant additionally runs a real paired-timing round (2 x _TIMING_TRIALS).
+    assert len(calls) == variant_count * 2 + 2 * _DENOISED_TRIALS

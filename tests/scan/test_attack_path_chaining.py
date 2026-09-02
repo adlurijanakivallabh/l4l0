@@ -131,8 +131,10 @@ def test_confirmed_nosqli_bypass_spawns_identity_and_confirms_a_new_finding_via_
     # can occasionally also fire from pure scheduler jitter — that's a property of
     # exercising every class hermetically, not something this test asserts against;
     # what matters is that the SPECIFIC admin/secret nosqli finding is among the new
-    # ones and is correctly linked back.
-    admin_finding_id = finding_id("nosqli", "orchestrator/nosqli /admin/secret user")
+    # ones and is correctly linked back. The mock's `injected` check matches the
+    # very first bypass variant tried ("$ne": null / "ne-null"), so that's the
+    # variant suffix on the confirming evidence_ref (v2 W5 multi-variant probing).
+    admin_finding_id = finding_id("nosqli", "orchestrator/nosqli /admin/secret user:ne-null")
     assert admin_finding_id in new_ids
     assert admin_finding_id != login_finding_id
 

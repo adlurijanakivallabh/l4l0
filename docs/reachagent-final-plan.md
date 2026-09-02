@@ -1,6 +1,28 @@
 # ReachAgent — Web/API Exploitation Agent
 ### Final Project Plan (July 2026)
 
+**Status: Locked — v2.9 (Capability-Expansion Phase 2, W5).** Changes from v2.8: **(W5) Widen
+candidate generation for the nosqli/ldap bypass drivers** — `run_nosqli`/`run_ldap`
+(`scan/orchestrator.py`) move from one hardcoded bypass string each to a named multi-variant list
+tried in sequence (`_NOSQL_BYPASS_VALUES`: `ne-null`/`ne-empty`/`gt-empty`/`regex-wildcard`/
+`exists-true`; `_LDAP_BYPASS_VALUES`: `wildcard-classic`/`objectclass-wildcard`/
+`admin-password-bypass`/`cn-wildcard`), mirroring `run_jwt_forgery`'s existing 4-variant loop —
+a WAF/input filter that strips one operator or wildcard shape may well miss another. First oracle
+confirmation wins (`break`); every candidate still only ever reaches a `Finding` through
+`run_oracle`/`seam.write`, unchanged. Flakiness-safe by construction: only the LAST variant in each
+loop may trigger the real wall-clock timing fallback (`_paired_timing`) — every earlier variant
+uses a fake `_no_timing_signal()` (fabricated identical latencies, zero extra live requests, can
+never itself confirm), so widening candidates does not multiply real timing probes or reintroduce
+the documented TIMING_STATISTICAL flakiness class. The confirming `variant_name` now rides on
+`evidence_ref`/`finding_id` and the emitted event message (e.g.
+`orchestrator/nosqli /admin/secret user:gt-empty`), so the report/GUI can show which bypass shape
+actually worked. **Disclosed scope limit**: this ships the curated-list version of "widen candidate
+generation," not the plan's original freeform-LLM-proposes-payloads vision (an open-ended checklist
+feeding `llm/planner.py`) — `tools/candidate.py`/`tools/payload_chain.py`/`llm/planner.py` are
+untouched this pass; that broader increment is deferred, honestly, rather than rushed. 3 new tests
+prove the loop tries later variants when a WAF blocks earlier ones (nosqli + ldap) and that the real
+timing round fires exactly once per probe (on the final variant only), not once per variant.
+
 **Status: Locked — v2.8 (Capability-Expansion Phase 4, W13).** Changes from v2.7: **(W13) LLM gets full authority over the report phase.** New `report/llm_full_report.py::generate_llm_authored_report` — unlike the existing `generate_narrative` (LLM writes only the executive-summary prose over a fixed template), this hands the LLM full creative authority over structure, the executive summary, every per-finding narrative/risk/remediation, prioritization/ordering, and how it presents the Suspected/Unconfirmed section — a genuinely LLM-authored report, not slot-filling. **The one hard boundary (unchanged non-negotiable): the LLM cannot invent a confirmed finding.** The confirmed-findings list and their evidence are built from `run_oracle` results (`build_evidence_index`) *before* the LLM ever sees the data, handed over as immutable ground truth; a defense-in-depth check after generation confirms every one of those `finding_id`s appears verbatim in the output — if even one is missing, the report is silently discarded in favor of the existing deterministic template (`report/professional.py::render_professional_report_markdown`), never partially trusted (this module never calls `run_oracle`/`write_finding` either way — the check is belt-and-braces on presentation, not the safety boundary itself). Wired additively into the GUI's report-generation step: try LLM-authored first, fall back to the unchanged deterministic template on any failure/omission — the existing, heavily-tested template path is untouched. 9 new tests (7 unit + 2 GUI wiring, both success and fallback paths).
 
 **Status: Locked — v2.7 (Capability-Expansion Phase 4, W12).** Changes from v2.6: **(W12) Per-host circuit breaker** — `RequestFirer` gains an always-on, per-host breaker (Gate 1.1, right after scope enforcement, applying to every fire including read-only): after `REACHAGENT`-internal `_CIRCUIT_FAILURE_THRESHOLD` (5) *consecutive transport-level failures* (a raised exception — connection refused, timeout, DNS failure), the host opens for `_CIRCUIT_COOLDOWN_SECONDS` (30s), refusing further requests with a new `CircuitOpenError` before any I/O; a clean response resets the counter; cooldown elapsed → one probe let through (half-open). Deliberately counts **only** transport-level exceptions, never an HTTP status code — a 401/403/404/500 is frequently the exact signal an oracle needs, not a "host is down" indicator, so counting it would make the breaker an accidental second detection mechanism; this narrow definition is also what makes an always-on default safe (no hermetic MockTransport-based test raises a transport exception across the several consecutive `fire()` calls needed to trip it — verified against the existing transport-error tests, each firing once). Composes with, never replaces, `ScopeGuard`: an out-of-scope host is still refused by scope first, always. New `CircuitOpenError` exported from `execution/__init__.py`. 6 new tests.
