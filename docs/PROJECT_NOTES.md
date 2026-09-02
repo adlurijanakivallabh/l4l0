@@ -731,3 +731,11 @@ recorded as standing principles for every future v3 workstream, not just this on
 24 new tests across 3 files, all git-stash-verified. Verified live in a browser: both new
 GUI controls render and wire correctly, zero console errors. Full recon+scan+gui suite: 150
 passed.
+
+**Follow-up shipped same day**: `preferred_wordlist` gained the analogous size/tech
+dimensions for content-discovery tools (gobuster/ffuf/feroxbuster/dirb) —
+`REACHAGENT_WORDLIST_SIZE` (small/medium/large, real vendored SecLists paths) and
+`REACHAGENT_WORDLIST_TECH` (wordpress/joomla, keyed off the same fingerprint labels
+`Host.technology` uses), wired as a GUI floor exactly like nmap's depth select. Disclosed
+scope, matching nmap's own two-stage delivery: this is the resolver/floor half only: an
+autonomous escalate-on-zero-results decision for wordlists remains a deferred follow-up.
