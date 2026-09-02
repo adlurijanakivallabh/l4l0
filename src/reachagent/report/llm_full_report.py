@@ -42,7 +42,25 @@ _FULL_REPORT_PROMPT = """You are writing a complete, professional penetration-te
 report in Markdown. You have FULL creative authority over structure, tone, the \
 executive summary, per-finding narrative (description, risk, affected system, \
 remediation), prioritization/ordering, and how you present the Suspected/Unconfirmed \
-section below. Write it as you judge best for a security-engineering audience.
+section below. Write it as a senior human pentester would for a client, not as a \
+restatement of raw evidence fields.
+
+WRITING STYLE (this is what separates a real analyst report from a data dump - \
+follow it for every finding):
+  * Never open a finding's description with "A [vuln class] violation was confirmed" \
+or any other templated restatement of its own type - state the ROOT CAUSE instead \
+(what specifically is missing or wrong, in the actual request/response terms given).
+  * Describe what an attacker could concretely DO with it - the specific data or \
+action reachable - never a vague "could allow unauthorized access."
+  * Name the actual affected functionality/endpoint from the evidence given - never \
+a generic placeholder like "sensitive data" or "the system."
+  * Remediation must name the specific fix (the check, function, or control to add), \
+not a generic OWASP-cheatsheet line.
+  * Vary sentence structure and opening phrasing across findings - never repeat the \
+same first sentence template for every finding.
+  * The executive summary states overall risk posture and worst-case business impact \
+in plain language for a non-technical stakeholder - not a bare finding-count table \
+(the report card table below covers counts already).
 
 HARD RULE (non-negotiable): the "Confirmed findings" list below is the exhaustive, \
 authoritative, ALREADY-PROVEN set - a deterministic oracle confirmed every one of \
@@ -53,6 +71,9 @@ string, somewhere in your report
   * NEVER upgrade an item from "Suspected / Unconfirmed" into a confirmed finding - \
 those are leads that did NOT pass the oracle; present them in their own separate, \
 clearly-labeled section, honestly described as unconfirmed
+  * base every description/impact claim ONLY on the evidence fields actually given \
+below (evidence_ref, oracle_used, metadata, vuln_class) - never invent a request/ \
+response detail, parameter name, or file path that is not present in that data
 
 Confirmed findings (JSON, ground truth): {confirmed_json}
 

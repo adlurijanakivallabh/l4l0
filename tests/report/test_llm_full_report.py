@@ -115,3 +115,16 @@ def test_never_writes_a_finding_or_touches_the_graph() -> None:
 def _prompt_after_call(graph: ReachabilityGraph, fake: _FakeClient) -> str:
     generate_llm_authored_report(graph, client=fake)
     return fake.seen_prompt
+
+
+def test_prompt_forbids_generic_templated_restatement_of_evidence() -> None:
+    """A real LLM-authored report once read like a raw field dump ('A path-traversal
+    violation was confirmed... The associated probe response is referenced as
+    fire-87') — this locks in the concrete anti-genericness rules added after that,
+    so a future prompt refactor can't silently drop them."""
+    graph = _graph_with_confirmed()
+    fake = _FakeClient("finding:sqli:ev1 confirmed.")
+    prompt = _prompt_after_call(graph, fake)
+    assert "root cause" in prompt.lower()
+    assert "never invent a request/" in prompt.lower()
+    assert "generic" in prompt.lower()

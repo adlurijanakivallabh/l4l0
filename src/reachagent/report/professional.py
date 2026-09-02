@@ -221,6 +221,27 @@ def _wstg_for(vuln_class: str) -> tuple[str, str]:
     return _WSTG.get(vuln_class, _WSTG_DEFAULT)
 
 
+def vuln_class_context(vuln_class: str, severity: str = "") -> dict[str, str]:
+    """The deterministic per-class narrative context — description, remediation, WSTG
+    reference, CVSS/likelihood/impact — used by every finding section in this report AND
+    (Build Order v2, GUI-detail workstream) by the GUI's live finding cards, so both
+    surfaces show the exact same reviewed, non-generated text instead of a bare field
+    dump. No new data: every value here already backed ``_finding_section_markdown``.
+    """
+    wstg_id, wstg_name = _wstg_for(vuln_class)
+    severity_key = severity.lower()
+    likelihood, impact = _LIKELIHOOD_IMPACT.get(severity_key, ("", ""))
+    return {
+        "wstg_id": wstg_id,
+        "wstg_name": wstg_name,
+        "description": _DESCRIPTION.get(vuln_class, _DESCRIPTION_DEFAULT),
+        "remediation": _REMEDIATION.get(vuln_class, _REMEDIATION_DEFAULT),
+        "cvss": _SEVERITY_SCORE.get(severity_key, ""),
+        "likelihood": likelihood,
+        "impact": impact,
+    }
+
+
 def _report_card_markdown(confirmed: list[dict[str, Any]]) -> str:
     severity_counts: dict[str, int] = {}
     class_counts: dict[str, int] = {}
@@ -247,14 +268,15 @@ def _finding_section_markdown(
 ) -> str:
     vuln_class = str(record["vuln_class"])
     severity = str(record["severity"]).lower()
-    wstg_id, wstg_name = _wstg_for(vuln_class)
+    ctx = vuln_class_context(vuln_class, severity)
+    wstg_id, wstg_name = ctx["wstg_id"], ctx["wstg_name"]
     provenance = record.get("provenance", {})
     affected = (
         (provenance.get("endpoint") or provenance.get("target"))
         if isinstance(provenance, Mapping)
         else None
     ) or "See evidence reference"
-    description = _DESCRIPTION.get(vuln_class, _DESCRIPTION_DEFAULT)
+    description = ctx["description"]
     handles = record.get("evidence_handles", {})
     evidence_lines = "".join(f"- `{key}`: `{value}`\n" for key, value in handles.items())
     chain_lines = "".join(
@@ -263,7 +285,7 @@ def _finding_section_markdown(
 
     heading = f"### {position}. {vuln_class} — {severity.capitalize()}"
     if not informational:
-        cvss = _SEVERITY_SCORE.get(severity, "n/a")
+        cvss = ctx["cvss"] or "n/a"
         heading += f" (indicative CVSS {cvss})"
     parts = [
         heading + "\n\n",
@@ -273,7 +295,8 @@ def _finding_section_markdown(
         f"{description}\n\n",
     ]
     if not informational:
-        likelihood, impact = _LIKELIHOOD_IMPACT.get(severity, ("Unknown", "Unknown"))
+        likelihood = ctx["likelihood"] or "Unknown"
+        impact = ctx["impact"] or "Unknown"
         parts.append(f"**Risk**  \n- Likelihood: {likelihood}\n- Impact: {impact}\n\n")
     parts.append(f"**Affected System**  \n`{affected}`\n\n")
     parts.append(
@@ -285,8 +308,7 @@ def _finding_section_markdown(
     parts.append(chain_lines)
     parts.append("\n")
     if not informational:
-        remediation = _REMEDIATION.get(vuln_class, _REMEDIATION_DEFAULT)
-        parts.append(f"**Remediation**  \n{remediation}\n\n")
+        parts.append(f"**Remediation**  \n{ctx['remediation']}\n\n")
     parts.append(
         f"**References**  \n- OWASP Web Security Testing Guide — {wstg_id}: {wstg_name}\n\n"
     )
