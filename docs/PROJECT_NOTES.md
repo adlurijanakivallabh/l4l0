@@ -308,3 +308,27 @@ browser recon, attack-path chaining (W17), app-domain inference (W18), LLM-autho
   mid-scan-spawned identity cannot authenticate through the existing firer without either
   rebuilding it or adding a new registration method. `merge_new_findings` is findings-only
   and would silently drop a spawned Session/Identity node if reused unchanged for chaining.
+
+## v2 Capability-Expansion — Phase 3.5: attack-path chaining (shipped 2026-09-01)
+
+- **W17**: a confirmed nosqli/ldap auth-bypass whose probe response carries REAL session
+  material (reusing `identity.login._extract_session_material` — the same parser the real
+  login flow uses) spawns a fresh synthetic (`AuthState.SYNTHETIC`/`Provenance.DERIVED`)
+  identity and re-hunts the full Phase-3 class order under it, exactly once. New
+  `RequestFirer.register_identity()` — the one additive seam needed since the firer's
+  identity stores were otherwise frozen at construction. New `scan/chaining.py`. New
+  findings link back to the confirming finding via `add_enables` (already rendered by the
+  report/GUI's existing chain display). This is the literal "SQLi -> admin creds -> deeper
+  bug only reachable as admin" scenario.
+- Bounded: exactly one re-hunt pass (no chain-of-chains), sequential dispatch path only
+  (concurrent-specialist path deliberately untouched to avoid touching Build Order 2c's
+  already-reviewed thread-safety guarantees).
+- Disclosed limit: re-hunts the SAME already-discovered endpoint set under the new
+  identity's privilege — does not trigger new content discovery (an admin route never
+  crawled unauthenticated stays invisible).
+- Two real bugs caught and fixed during test-writing itself (not production code): a
+  timing-oracle flakiness class (denoised via the codebase's own established
+  `_TIMING_TRIALS` remedy, matching `test_blind_injection_drivers.py`'s documented
+  pattern) and a test-design flaw (the first mock target granted the derived identity
+  access unconditionally, leaving no genuine bypass shape for the auth-bypass oracle to
+  confirm — fixed by giving the admin-authenticated path its own two-layer bypass shape).

@@ -1008,8 +1008,16 @@ def run_nosqli(
     seam: _ValidatorSeam,
     events: list[ScanEvent],
     library: Any | None = None,
+    derived_identities: list[Any] | None = None,
 ) -> list[str]:
-    """NoSQL injection via the dedicated detector — auth-bypass first, timing fallback."""
+    """NoSQL injection via the dedicated detector — auth-bypass first, timing fallback.
+
+    ``derived_identities`` (v2 W17, optional): when a confirmed auth-bypass's probe
+    response carries real, reusable session material (not just a 2xx), a
+    ``DerivedIdentityLead`` is appended for the caller to spawn + re-hunt at the
+    Phase-3→4 boundary — never acted on here. ``bypass_identity_hint`` was previously
+    computed by the detector and silently dropped by this driver; this is that gap closed.
+    """
     from reachagent.nosql.detector import (
         AuthBypassProbe,
         NoSqliProber,
@@ -1017,6 +1025,7 @@ def run_nosqli(
         detect_nosqli,
     )
     from reachagent.oracles.differential import Observation
+    from reachagent.scan.chaining import DerivedIdentityLead, capture_bypass_session
     from reachagent.tools.explorer_context import ExplorerContext
 
     ctx = ExplorerContext(
@@ -1026,9 +1035,13 @@ def run_nosqli(
 
     def _probe(ep: Endpoint, param: Any) -> None:
         fire = _fire_value_fn(ctx, identity, base_url, ep, param)
+        last_bypass_result: Any = None
 
         def _obs(value: str, label: str) -> Observation:
+            nonlocal last_bypass_result
             result = fire(value)
+            if label == "injected":
+                last_bypass_result = result
             body = result.body.decode("utf-8", errors="replace") if result is not None else ""
             status = result.status_code if result is not None else 0
             return Observation(label=label, status_code=status, body=body)
@@ -1060,6 +1073,22 @@ def run_nosqli(
                     param=param.name,
                 )
                 found.append(nid)
+                if (
+                    derived_identities is not None
+                    and result.bypass_identity_hint
+                    and last_bypass_result is not None
+                ):
+                    body_text = last_bypass_result.body.decode("utf-8", errors="replace")
+                    captured = capture_bypass_session(last_bypass_result, body_text)
+                    if captured is not None:
+                        derived_identities.append(
+                            DerivedIdentityLead(
+                                finding_id=nid,
+                                vuln_class="nosqli",
+                                role_hint=result.bypass_identity_hint,
+                                captured=captured,
+                            )
+                        )
         # Note: a non-confirm here is the NORMAL, expected outcome for a properly-secured
         # parameter (auth-bypass differential + timing both ran and found nothing) — it is
         # NOT a "suspected lead" and must not be recorded as one (that would flood the
@@ -1083,10 +1112,15 @@ def run_ldap(
     seam: _ValidatorSeam,
     events: list[ScanEvent],
     library: Any | None = None,
+    derived_identities: list[Any] | None = None,
 ) -> list[str]:
     """LDAP injection via the dedicated detector — wildcard auth-bypass, timing fallback.
 
     No OOB path: LDAP has no out-of-band channel (§5) — the detector omits it.
+
+    ``derived_identities`` (v2 W17, optional): same as ``run_nosqli`` — a confirmed
+    auth-bypass whose probe response carries real session material queues a
+    ``DerivedIdentityLead`` for the caller to spawn + re-hunt at the Phase-3→4 boundary.
     """
     from reachagent.ldap.detector import (
         AuthBypassProbe,
@@ -1095,6 +1129,7 @@ def run_ldap(
         detect_ldapi,
     )
     from reachagent.oracles.differential import Observation
+    from reachagent.scan.chaining import DerivedIdentityLead, capture_bypass_session
     from reachagent.tools.explorer_context import ExplorerContext
 
     ctx = ExplorerContext(
@@ -1104,9 +1139,13 @@ def run_ldap(
 
     def _probe(ep: Endpoint, param: Any) -> None:
         fire = _fire_value_fn(ctx, identity, base_url, ep, param)
+        last_bypass_result: Any = None
 
         def _obs(value: str, label: str) -> Observation:
+            nonlocal last_bypass_result
             result = fire(value)
+            if label == "wildcard-inject":
+                last_bypass_result = result
             body = result.body.decode("utf-8", errors="replace") if result is not None else ""
             status = result.status_code if result is not None else 0
             return Observation(label=label, status_code=status, body=body)
@@ -1142,6 +1181,22 @@ def run_ldap(
                     param=param.name,
                 )
                 found.append(nid)
+                if (
+                    derived_identities is not None
+                    and result.bypass_identity_hint
+                    and last_bypass_result is not None
+                ):
+                    body_text = last_bypass_result.body.decode("utf-8", errors="replace")
+                    captured = capture_bypass_session(last_bypass_result, body_text)
+                    if captured is not None:
+                        derived_identities.append(
+                            DerivedIdentityLead(
+                                finding_id=nid,
+                                vuln_class="ldap_injection",
+                                role_hint=result.bypass_identity_hint,
+                                captured=captured,
+                            )
+                        )
         # Not recorded as Suspected: a non-confirm here is the expected, common outcome for
         # a properly-secured parameter, not a lead — see the matching note in run_nosqli.
 
@@ -3230,6 +3285,7 @@ def _build_phase3_drivers(
     library: Any,
     allow_cross_user_writes: bool,
     events: list[ScanEvent],
+    derived_identities: list[Any] | None = None,
 ) -> dict[str, Callable[[], None]]:
     """Build the class_name -> driver-call dict, bound to one (graph, seam) pair.
 
@@ -3240,6 +3296,14 @@ def _build_phase3_drivers(
     (firer/identity/auth_headers/identities/transport/library) is shared
     read-mostly state, safe across concurrent children (see the Build Order
     2c prerequisite fix to TokenStore/IdentityStore locking).
+
+    ``derived_identities`` (v2 W17, optional): threaded only into nosqli/ldap — the
+    two classes whose detectors already document an auth-bypass-derives-credentials
+    intent. Deliberately left unwired in the concurrent-specialist path (each
+    `_run_phase3_concurrent` child omits it): the sequential dispatch already covers
+    the single scan-wide re-hunt this increment supports, and NOT sharing a mutable
+    list across concurrently-running child threads keeps this new capability from
+    touching Build Order 2c's already-adversarially-reviewed thread-safety guarantees.
     """
     from reachagent.scan.prototype_pollution import run_prototype_pollution
     from reachagent.scan.xss_dom import run_xss_dom
@@ -3388,6 +3452,7 @@ def _build_phase3_drivers(
             seam=seam,
             events=events,
             library=library,
+            derived_identities=derived_identities,
         ),
         "ldap": lambda: run_ldap(
             graph=graph,
@@ -3397,6 +3462,7 @@ def _build_phase3_drivers(
             seam=seam,
             events=events,
             library=library,
+            derived_identities=derived_identities,
         ),
         "command_injection": lambda: run_command_injection(
             graph=graph,
@@ -3526,6 +3592,87 @@ def _dispatch_classes(
             )
         drivers[class_name]()
         touch()
+
+
+def _run_attack_path_chain(
+    *,
+    lead: Any,
+    graph: ReachabilityGraph,
+    seam: _ValidatorSeam,
+    firer: RequestFirer,
+    base_url: str,
+    auth_headers: Mapping[str, str],
+    identities: IdentityStore,
+    transport: httpx.BaseTransport | None,
+    library: Any,
+    allow_cross_user_writes: bool,
+    events: list[ScanEvent],
+    cancel_check: object | None,
+    check_cancel: Callable[[object | None], None],
+    control_state: Any,
+) -> list[str]:
+    """Spawn ``lead``'s derived identity and re-hunt ALL Phase-3 classes under it —
+    exactly ONE pass, never recursive (v2 W17). Returns the new finding ids, each
+    already linked back to ``lead.finding_id`` via an ``enables`` edge so the report's
+    existing chain rendering (``chain_paths``) shows the causal path.
+    """
+    from reachagent.scan.chaining import spawn_derived_identity
+
+    spawned = spawn_derived_identity(
+        identities, firer, graph, role_hint=lead.role_hint, captured=lead.captured
+    )
+    if spawned is None:
+        _emit(
+            events,
+            "payloads",
+            "info",
+            f"attack-path chaining: {lead.vuln_class} yielded credentials but the "
+            "spawn/registration failed — no re-hunt",
+        )
+        return []
+    new_identity, session_node = spawned
+    graph.add_derived_credential(lead.finding_id, session_node)
+    _emit(
+        events,
+        "payloads",
+        "finding",
+        f"attack-path chain: confirmed {lead.vuln_class} yielded new credentials — "
+        f"re-hunting as {new_identity}",
+        finding=lead.finding_id,
+        derived_identity=new_identity,
+    )
+    before = {fid for fid, _ in graph.findings()}
+    new_auth_headers = identities.auth_headers(new_identity)
+    rehunt_drivers = _build_phase3_drivers(
+        graph=graph,
+        seam=seam,
+        firer=firer,
+        base_url=base_url,
+        identity=new_identity,
+        auth_headers=new_auth_headers,
+        identities=identities,
+        transport=transport,
+        library=library,
+        allow_cross_user_writes=allow_cross_user_writes,
+        events=events,
+        # Deliberately no derived_identities here — bounded to ONE re-hunt pass,
+        # never a chain-of-chains, per the plan's explicit "bounded depth" line.
+    )
+    _dispatch_classes(
+        _PHASE3_CLASS_ORDER,
+        graph=graph,
+        drivers=rehunt_drivers,
+        events=events,
+        operator_prompt=None,
+        cancel_check=cancel_check,
+        check_cancel=check_cancel,
+        touch=control_state.touch,
+        label=f"chain:{new_identity}",
+    )
+    new_ids = [fid for fid, _ in graph.findings() if fid not in before]
+    for new_id in new_ids:
+        graph.add_enables(lead.finding_id, new_id)
+    return new_ids
 
 
 def _run_phase3_concurrent(
@@ -4430,6 +4577,7 @@ def scan_all_classes(
         # semantics as before Build Order 2c — _dispatch_classes is the same
         # continuous re-rank-then-dispatch loop (Build Order 2) extracted so
         # a specialist child can reuse it unchanged.
+        derived_identities: list[Any] = []
         phase3_drivers = _build_phase3_drivers(
             graph=graph,
             seam=seam,
@@ -4442,6 +4590,7 @@ def scan_all_classes(
             library=lib,
             allow_cross_user_writes=allow_cross_user_writes,
             events=events_out,
+            derived_identities=derived_identities,
         )
         _dispatch_classes(
             _PHASE3_CLASS_ORDER,
@@ -4453,6 +4602,33 @@ def scan_all_classes(
             check_cancel=check_cancel,
             touch=control_state.touch,
         )
+
+        # Attack-path chaining (v2 W17): a confirmed nosqli/ldap auth-bypass that
+        # captured REAL session material spawns a fresh synthetic identity and
+        # re-hunts under it once — bounded to exactly one re-hunt pass per scan
+        # (never a chain-of-chains), and only the FIRST such lead (if several
+        # fired) is acted on. Disclosed limit: this re-tests the SAME
+        # already-discovered endpoint set under the new identity's privilege — it
+        # does not trigger new content discovery, so an admin-only route never
+        # crawled unauthenticated stays invisible. Sequential path only (see
+        # _build_phase3_drivers's docstring for why the concurrent path omits it).
+        if identities is not None and derived_identities:
+            _run_attack_path_chain(
+                lead=derived_identities[0],
+                graph=graph,
+                seam=seam,
+                firer=firer,
+                base_url=base_url,
+                auth_headers=auth_headers,
+                identities=identities,
+                transport=transport,
+                library=lib,
+                allow_cross_user_writes=allow_cross_user_writes,
+                events=events_out,
+                cancel_check=cancel_check,
+                check_cancel=check_cancel,
+                control_state=control_state,
+            )
 
     findings = [fid for fid, _ in graph.findings()]
     _emit(events_out, "payloads", "info", "phase 3 done", findings=len(findings))

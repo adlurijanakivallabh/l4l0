@@ -146,6 +146,12 @@ class RequestFirer:
         # between test identities.
         self._read_only_cleared: set[tuple[str, str]] = set()
         self._clearance_lock = threading.Lock()
+        # Guards mid-scan registrations into _identity_stores/_identity_headers
+        # (v2 W17 attack-path chaining) — dict assignment is already atomic under
+        # the GIL, but a dedicated lock keeps this consistent with the class's
+        # other mutable-shared-state guards (checkpoint/clearance) rather than
+        # relying on that CPython implementation detail.
+        self._identity_registration_lock = threading.Lock()
 
     @property
     def scope(self) -> ScopeGuard:
@@ -163,6 +169,27 @@ class RequestFirer:
         transport = getattr(self._client, "_transport", None)
         pool = getattr(transport, "_pool", None)
         return bool(getattr(pool, "_http2", False))
+
+    def register_identity(
+        self, name: str, store: object, *, headers: Mapping[str, str] | None = None
+    ) -> None:
+        """Register a new identity's credential store after construction (v2 W17).
+
+        ``_identity_stores``/``_identity_headers`` are otherwise fixed at
+        ``__init__`` — this is the one additive seam that lets a mid-scan-derived
+        identity (e.g. a session captured from a confirmed auth-bypass) actually
+        authenticate through this SAME firer, instead of requiring a fresh
+        ``RequestFirer`` (which would lose accumulated read-only clearance and the
+        one-shot operator checkpoint state). ``store`` must expose a
+        ``headers() -> Mapping[str, str]`` method, matching ``TokenStore``'s
+        shape (the identity module's own type). Overwrites any existing
+        registration for ``name`` — re-registering is intentionally idempotent,
+        never an error.
+        """
+        with self._identity_registration_lock:
+            self._identity_stores[str(name)] = store
+            if headers is not None:
+                self._identity_headers[str(name)] = dict(headers)
 
     @staticmethod
     def _endpoint_key(url: httpx.URL) -> str:

@@ -148,3 +148,64 @@ def test_drivers_fire_only_get_requests() -> None:
     graph, _ep = _graph(SinkType.NOSQL)
     _run(run_nosqli, graph, _firer(handler))
     assert seen and all(method == "GET" for method in seen)
+
+
+def test_nosqli_authbypass_with_real_token_queues_a_derived_identity_lead() -> None:
+    """v2 W17: a confirmed auth-bypass whose probe response carries REAL session
+    material (here, {"token": "granted"}) queues a DerivedIdentityLead for the
+    caller to spawn + re-hunt — bypass_identity_hint is no longer dropped."""
+    from reachagent.scan.chaining import DerivedIdentityLead
+
+    graph, _ep = _graph(SinkType.NOSQL)
+    seam = _ValidatorSeam(graph)
+    leads: list = []
+    run_nosqli(
+        graph=graph,
+        firer=_firer(_bypass_handler(("$ne", "$"))),
+        base_url=_BASE,
+        identity="anon",
+        seam=seam,
+        events=[],
+        derived_identities=leads,
+    )
+    assert len(leads) == 1
+    lead = leads[0]
+    assert isinstance(lead, DerivedIdentityLead)
+    assert lead.vuln_class == "nosqli"
+    assert lead.role_hint == "nosqli-bypass-principal"
+    assert lead.captured.token == "granted"
+
+
+def test_nosqli_authbypass_with_no_real_session_material_queues_nothing() -> None:
+    """A bypass that returns a bare 2xx with no token/cookie grants nothing to
+    chain into — no lead should be queued."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        value = request.url.params.get("user", "")
+        if value == "baseline" or value.startswith("reachagent-canary"):
+            return httpx.Response(401, text="invalid credentials")
+        if "$ne" in value or "$" in value:
+            return httpx.Response(200, json={"ok": True})  # no token, no cookie
+        return httpx.Response(401, text="invalid credentials")
+
+    graph, _ep = _graph(SinkType.NOSQL)
+    seam = _ValidatorSeam(graph)
+    leads: list = []
+    run_nosqli(
+        graph=graph,
+        firer=_firer(handler),
+        base_url=_BASE,
+        identity="anon",
+        seam=seam,
+        events=[],
+        derived_identities=leads,
+    )
+    assert leads == []
+
+
+def test_nosqli_omits_chaining_entirely_when_derived_identities_not_passed() -> None:
+    """Backward-compatible default: callers that don't opt in (derived_identities
+    left as None) get identical behavior to before W17 — no crash, no side effect."""
+    graph, _ep = _graph(SinkType.NOSQL)
+    findings = _run(run_nosqli, graph, _firer(_bypass_handler(("$ne", "$"))))
+    assert "nosqli" in {f.vuln_class for _fid, f in findings}
