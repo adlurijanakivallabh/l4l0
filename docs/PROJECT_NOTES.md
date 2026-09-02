@@ -553,3 +553,43 @@ browser recon, attack-path chaining (W17), app-domain inference (W18), LLM-autho
   findings-list fix. Also caught a testing-process gap: a CSS-only edit
   needs a fresh page navigation to actually apply, since `index.html`'s
   `<style>` block only loads once at page load.
+
+## E3: ground-truth validation vs. real local targets — 7 real bugs found live (2026-09-02)
+
+Manually compared confirmed findings from real GUI scans against researched, documented
+vulnerabilities for VAmPI/DVWA/Juice Shop/crAPI (the automated harness itself is still open).
+Found and fixed, each git-stash-verified:
+
+1. `recon/surface.py::_path_and_query` never checked a resolved URL's netloc against the
+   current page — an external absolute link (DVWA's own footer link to its GitHub repo)
+   materialized as a phantom same-host endpoint (`/digininja/DVWA`). User-reported live via the
+   GUI chat persona noticing the mismatch. Fixed at the one shared choke point.
+2. `cloud_bucket/detector.py::derive_seed_names` guessed bucket names from an IP address's
+   dotted octets (`"127.0.0.1"` → `"127"`/`"0"`), probing real third-party S3/GCS/Azure buckets
+   and confirming a false positive on VAmPI. Fixed: returns no seeds for an IP hostname.
+3. `oracles/structural.py`'s response_body size cap crashed a live scan (crAPI's
+   cache_poisoning driver) — the earlier MCP-boundary fix didn't cover in-process driver calls.
+   Fixed at the real choke point: `StructuralEvidence.__post_init__` truncates at construction.
+4. `scan/orchestrator.py::_dispatch_classes` had no exception handling — one driver crashing
+   (bug #3) took the ENTIRE remaining scan down. Fixed: catch per-class, re-raise
+   `ControlError`/`ScanCancelled` untouched, continue. Strictly improves on the existing
+   per-specialist crash isolation from Build Order 2c.
+5. `run_file_upload`'s `FILE_UPLOAD_BYPASS` check is pure status-code based; Juice Shop's
+   permissive-CORS/catch-all backend answers 2xx for ANY made-up path, "confirming" 4 phantom
+   upload bypasses at once. Fixed with a canary probe, same pattern as the existing
+   `recon/calibration.py` wildcard guard.
+6. The IP-address guard from bug #2 didn't survive a `host:port` hostname (crAPI's Host fact is
+   `"127.0.0.1:8888"`) — `ipaddress.ip_address()` raises on a string with a port, silently
+   defeating the guard. Fixed: strip a single unambiguous port suffix first.
+7. **Diagnosed, deliberately not yet fixed**: DVWA's login succeeds but
+   `identity/login.py::_extract_session_material` only recognizes a session cookie newly issued
+   in the login response — DVWA sets its cookie on the pre-login page load and never rotates it,
+   so the scan correctly detects login success but can't recognize the session as usable, and
+   halts (`status: blocked`) rather than silently scanning unauthenticated. A real fix needs new
+   `RequestFirer`/identity-layer API surface (security-sensitive session code) — not a rushed
+   bolt-on. Next up.
+
+Also found, self-inflicted and unrelated to product code: the first DVWA scan launch this
+session called `/api/scan` directly with credentials only as free text in the `prompt` field,
+never populating the structured `identities` field the scan actually consumes — so it scanned
+fully unauthenticated. Fixed by relaunching with `identities` populated correctly.

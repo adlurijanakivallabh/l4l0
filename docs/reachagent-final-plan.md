@@ -1,6 +1,36 @@
 # ReachAgent — Web/API Exploitation Agent
 ### Final Project Plan (July 2026)
 
+**Status: Locked — v2.13 (Phase 6, Stage E3 — ground-truth validation, 7 real bugs found live).**
+Changes from v2.12: manually compared confirmed findings from real GUI scans against researched,
+documented vulnerabilities for VAmPI/DVWA/Juice Shop/crAPI. Found and fixed 6 real bugs, each
+git-stash-verified: **(1)** `recon/surface.py::_path_and_query` never checked a resolved URL's
+netloc against the current page, so an external absolute link (DVWA's own GitHub footer link)
+materialized as a phantom same-host endpoint — user-reported live via the GUI chat persona
+noticing the mismatch. **(2)** `cloud_bucket/detector.py::derive_seed_names` guessed bucket
+names from an IP address's dotted octets, probing real third-party buckets and confirming a
+false positive on VAmPI. **(3)** the response_body evidence-size cap (v2.12's fix only covered
+the MCP boundary) crashed a live scan via an in-process orchestrator driver
+(`cachepoisoning/detector.py`) — fixed at the real choke point,
+`StructuralEvidence.__post_init__`. **(4)** `_dispatch_classes` had no exception handling, so
+bug (3) took the ENTIRE remaining scan down — fixed with per-class fail-open, re-raising
+`ControlError`/`ScanCancelled` untouched (strictly improves on the existing Build Order 2c
+per-specialist crash isolation). **(5)** `run_file_upload`'s pure status-code check "confirmed"
+4 phantom bypasses at once on Juice Shop's permissive-CORS/catch-all backend — fixed with a
+canary probe, the same pattern as the existing `recon/calibration.py` wildcard guard. **(6)**
+bug (2)'s IP guard didn't survive a `host:port` hostname (crAPI's own Host fact) — fixed by
+stripping an unambiguous port suffix first. A 7th bug — DVWA's login succeeds but
+`identity/login.py` can't recognize the resulting session as usable, since DVWA never rotates
+its session cookie on login and the capture logic only recognizes a newly-issued one — was
+precisely diagnosed but deliberately left unfixed this pass: it needs new
+`RequestFirer`/identity-layer API surface, a real design change to security-sensitive
+session-isolation code. Ground-truth results so far: VAmPI and DVWA (unauthenticated) each
+produced one genuine oracle-confirmed true positive matching documented vulnerabilities; the
+Suspected/`llm_judgment` tier on VAmPI correctly matched 6 of 9 documented vulnerabilities with
+exactly one false lead correctly kept out of the confirmed set — validating the two-tier design.
+The automated precision/recall harness itself (mirroring VAmPI's/Juice Shop's existing gates)
+remains open.
+
 **Status: Locked — v2.12 (Phase 6, Stage E — real evidence, intent-parsing fixes, multi-panel
 GUI pass).** Changes from v2.11: operator feedback round 2 after reviewing the live GUI —
 **E1 real evidence capture + display**: oracle evidence (e.g. `StructuralEvidence`) already
