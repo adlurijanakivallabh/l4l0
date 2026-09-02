@@ -1735,6 +1735,31 @@ def _report_html(
     return render_report_html(report_md, graph, audit, context=context)
 
 
+_EXTERNAL_IMG_SRC = re.compile(
+    r"""(<img\b[^>]*\bsrc\s*=\s*)(["'])(?!data:)[^"']*\2""", re.IGNORECASE
+)
+
+
+def _no_external_url_fetcher() -> object:
+    """A WeasyPrint ``URLFetcher`` restricted to ``data:`` URIs only — an SSRF
+    guard (report content is derived in part from a scanned target's own
+    response text, which this codebase never trusts to be inert;
+    render_report_html emits no <img>/@import today, but a PDF renderer that
+    would silently fetch any embedded external URL server-side is a live
+    vector the moment that changes, so it is blocked unconditionally rather
+    than relying on today's content happening to have none)."""
+    from weasyprint import URLFetcher
+
+    return URLFetcher(allowed_protocols=("data",))
+
+
+def _strip_external_img_src(html: str) -> str:
+    """Same SSRF guard for the docx path: html2docx has no pluggable fetcher
+    hook and will call ``urllib.request.urlopen`` on any non-``data:`` <img>
+    src, so external ones are neutralized before html2docx ever sees them."""
+    return _EXTERNAL_IMG_SRC.sub(r"\1\2\2", html)
+
+
 @app.get("/api/scan/{scan_id}/export")
 def export_report(scan_id: str, format: str = "markdown") -> Response:
     """Download a deterministic report, evidence index, bundle, or SARIF document."""
@@ -1792,13 +1817,19 @@ def export_report(scan_id: str, format: str = "markdown") -> Response:
             from weasyprint import HTML as _WeasyHTML
 
             html_body = _report_html(report_md, graph, audit, context=context)
-            body, media, ext = _WeasyHTML(string=html_body).write_pdf(), "application/pdf", "pdf"
+            body, media, ext = (
+                _WeasyHTML(string=html_body, url_fetcher=_no_external_url_fetcher()).write_pdf(),
+                "application/pdf",
+                "pdf",
+            )
         elif normalized == "docx":
             # Same source HTML as the pdf branch — html2docx is pure-Python (no
             # system pandoc dependency), so this stays portable across deploys.
             from html2docx import html2docx as _html2docx
 
-            html_body = _report_html(report_md, graph, audit, context=context)
+            html_body = _strip_external_img_src(
+                _report_html(report_md, graph, audit, context=context)
+            )
             body, media, ext = (
                 _html2docx(html_body, title="ReachAgent report").getvalue(),
                 "application/vnd.openxmlformats-officedocument.wordprocessingml.document",

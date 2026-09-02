@@ -9,7 +9,13 @@ from fastapi.testclient import TestClient
 from reachagent.execution.audit import AuditLog
 from reachagent.graph.nodes import Finding, FindingStatus, Session
 from reachagent.graph.store import ReachabilityGraph, session_id
-from reachagent.gui.app import _finding_rows, _scans, app
+from reachagent.gui.app import (
+    _finding_rows,
+    _no_external_url_fetcher,
+    _scans,
+    _strip_external_img_src,
+    app,
+)
 
 
 def _g_with_chain() -> tuple[ReachabilityGraph, str, str]:
@@ -182,6 +188,34 @@ def test_export_docx_renders_from_the_same_html_report() -> None:
     )
     assert "attachment" in r.headers["content-disposition"]
     assert r.content.startswith(b"PK\x03\x04")  # a .docx is a zip archive
+
+
+def test_no_external_url_fetcher_blocks_a_live_http_url() -> None:
+    """SSRF guard (security review): the pdf export's WeasyPrint URLFetcher
+    must refuse anything but a data: URI, even though today's report content
+    never embeds an external URL — a defense-in-depth line, not a reaction to
+    a currently-live path."""
+    import pytest
+
+    with pytest.raises(ValueError, match="disallowed protocol"):
+        _no_external_url_fetcher().fetch("http://169.254.169.254/latest/meta-data/")
+
+
+def test_no_external_url_fetcher_allows_a_data_uri() -> None:
+    response = _no_external_url_fetcher().fetch("data:text/plain;base64,aGVsbG8=")
+    assert response.read() == b"hello"
+
+
+def test_strip_external_img_src_neutralizes_a_non_data_image() -> None:
+    html = '<p>x</p><img src="http://169.254.169.254/secret.png"><p>y</p>'
+    cleaned = _strip_external_img_src(html)
+    assert "169.254.169.254" not in cleaned
+    assert '<img src="">' in cleaned
+
+
+def test_strip_external_img_src_leaves_a_data_uri_image_untouched() -> None:
+    html = '<img src="data:image/png;base64,aGVsbG8=">'
+    assert _strip_external_img_src(html) == html
 
 
 def test_export_unknown_format_defaults_markdown() -> None:
