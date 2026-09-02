@@ -561,6 +561,30 @@ Return ONLY a JSON object with exactly these keys, no prose, no markdown fences:
 """
 
 
+# v2 Phase 6 Stage E2: distinguishes *why* extraction didn't happen — the old code
+# collapsed "no provider configured," "provider call failed (bad key/network/non-2xx),"
+# and "malformed model JSON" into the exact same generic frontend message, so a
+# perfectly-phrased prompt looked identical to a config problem that had nothing to
+# do with the prompt's wording. The frontend shows a reason-specific line instead.
+_INTENT_FAILURE_REASONS = {
+    "no_provider": "No LLM provider is configured yet — add one in Settings, then try again.",
+    "provider_error": "Couldn't reach the LLM provider — check its settings/connectivity below.",
+    "malformed_reply": "The model's reply couldn't be parsed — try rephrasing, or try again.",
+}
+# A shorthand credential like "admin/admin123" or "admin:admin123" the model echoes
+# back as a bare string instead of the requested {username, password} object — the
+# prompt never shows a worked example converting this shape, so recover it here
+# rather than silently dropping the whole credentials list to [].
+_CRED_SHORTHAND = re.compile(r"^\s*([^\s/:]+)\s*[/:]\s*(\S+)\s*$")
+
+
+def _parse_credential_shorthand(text: str) -> dict[str, str] | None:
+    match = _CRED_SHORTHAND.match(text)
+    if not match:
+        return None
+    return {"username": match.group(1), "password": match.group(2), "role": "user"}
+
+
 @app.post("/api/parse-intent")
 def parse_intent(payload: dict[str, Any]) -> JSONResponse:
     """Best-effort free-text → ``{target, in_scope, credentials, goal}`` proposal.
@@ -568,39 +592,57 @@ def parse_intent(payload: dict[str, Any]) -> JSONResponse:
     Never executes anything — this only proposes fields for the operator to
     review/edit in the chat UI before a scan is actually started via
     ``POST /api/scan``. An unconfigured provider or a flaky/malformed LLM
-    reply degrades to an unextracted proposal (``extracted: false``), never
-    a hard error the chat flow can't recover from.
+    reply degrades to an unextracted proposal (``extracted: false``, plus a
+    ``reason`` code the frontend maps to a specific message), never a hard
+    error the chat flow can't recover from.
     """
     message = str(payload.get("message", "") or "").strip()
     if not message:
         return JSONResponse({"error": "message required"}, status_code=400)
-    empty = {
-        "target": "",
-        "in_scope": "",
-        "out_of_scope": "",
-        "credentials": [],
-        "goal": message,
-        "extracted": False,
-    }
+
+    def _empty(reason: str) -> dict[str, Any]:
+        return {
+            "target": "",
+            "in_scope": "",
+            "out_of_scope": "",
+            "credentials": [],
+            "goal": message,
+            "extracted": False,
+            "reason": reason,
+        }
+
     llm_provider, named_overrides, err = _resolve_llm_provider(payload, require_explicit=False)
     if err is not None:
         return err
     try:
         client = _build_llm_client(llm_provider, named_overrides)
     except Exception:  # noqa: BLE001 — no usable provider → unextracted proposal
-        return JSONResponse(empty)
+        return JSONResponse(_empty("no_provider"))
     try:
         result = client.propose_json(_INTENT_PROMPT.format(message=message), max_tokens=600)
-    except Exception:  # noqa: BLE001 — a flaky/malformed LLM reply must not break the chat flow
-        return JSONResponse(empty)
+    except Exception as exc:  # noqa: BLE001 — a flaky/malformed LLM reply must not break the chat flow
+        from reachagent.llm.client import is_model_output_error
+
+        reason = "malformed_reply" if is_model_output_error(exc) else "provider_error"
+        return JSONResponse(_empty(reason))
     finally:
         client.close()
     credentials: list[dict[str, str]] = []
     raw_credentials = result.get("credentials")
+    candidate_rows: list[object]
     if isinstance(raw_credentials, list):
-        for row in raw_credentials[:20]:
-            if not isinstance(row, dict):
-                continue
+        candidate_rows = raw_credentials
+    elif isinstance(raw_credentials, str) and raw_credentials.strip():
+        candidate_rows = [raw_credentials]  # a bare "admin/admin123" at the top level
+    else:
+        candidate_rows = []
+    for row in candidate_rows[:20]:
+        if isinstance(row, str):
+            shorthand = _parse_credential_shorthand(row)
+            if shorthand:
+                credentials.append(shorthand)
+            continue
+        if isinstance(row, dict):
             username = str(row.get("username", "") or "").strip()
             password = str(row.get("password", "") or "").strip()
             if not username or not password:

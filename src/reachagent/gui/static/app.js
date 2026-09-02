@@ -104,6 +104,31 @@ function textBubble(role, text) {
 // ---------------------------------------------------------------------------
 // New assessment flow: message -> /api/parse-intent -> confirmation card -> /api/scan
 // ---------------------------------------------------------------------------
+// v2 Phase 6 Stage E2: a specific reason per failure mode instead of one generic
+// "I'll need a bit more to go on" for every case — a well-phrased prompt used to
+// look identical to a config problem that had nothing to do with its wording.
+const INTENT_FAILURE_MESSAGES = {
+  no_provider:
+    "No LLM provider is configured yet — add one in Settings (gear icon), then try again.",
+  provider_error:
+    "I couldn't reach the configured LLM provider — check its API key/URL in Settings, then try again.",
+  malformed_reply: "The model's reply didn't parse cleanly — try rephrasing, or send it again.",
+};
+
+function introMessageFor(proposal) {
+  if (proposal.extracted && proposal.target) {
+    return (
+      "Got it — here's what I'll run against " +
+      proposal.target +
+      ". Adjust anything below, then confirm to start."
+    );
+  }
+  const reasonNote = INTENT_FAILURE_MESSAGES[proposal.reason];
+  return reasonNote
+    ? reasonNote + " You can still fill in the target, scope, and credentials manually below."
+    : "I'll need a bit more to go on. Fill in the target, scope, and any credentials below to continue.";
+}
+
 async function startNewAssessment(message) {
   message = message.trim();
   if (!message) return;
@@ -127,12 +152,7 @@ async function startNewAssessment(message) {
     /* degrade to the empty proposal below — the confirmation card still works */
   }
   thinkingBubble.remove();
-  textBubble(
-    "assistant",
-    proposal.extracted && proposal.target
-      ? "Got it — here's what I'll run against " + proposal.target + ". Adjust anything below, then confirm to start."
-      : "I'll need a bit more to go on. Fill in the target, scope, and any credentials below to continue."
-  );
+  textBubble("assistant", introMessageFor(proposal));
   renderConfirmationCard(proposal, message);
 }
 

@@ -421,7 +421,112 @@ def test_parse_intent_degrades_on_malformed_llm_reply(monkeypatch: pytest.Monkey
         json={"message": "pentest this site", "llm_provider": "named:unit-provider"},
     )
     assert response.status_code == 200
-    assert response.json()["extracted"] is False
+    body = response.json()
+    assert body["extracted"] is False
+    assert body["reason"] == "malformed_reply"
+
+
+def test_parse_intent_distinguishes_provider_call_failure_from_malformed_reply(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """v2 Phase 6 Stage E2: a network/auth failure talking TO the provider is a
+    different, actionable reason than the model replying with unparseable JSON —
+    the old code collapsed both into the same generic "couldn't extract" message."""
+    _stub_named_provider(monkeypatch)
+
+    class _NetworkFailureClient:
+        def propose_json(self, prompt: str, *, max_tokens: int = 600) -> dict[str, object]:
+            raise RuntimeError("connection refused")
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(gui_app, "_build_llm_client", lambda *_a, **_k: _NetworkFailureClient())
+    response = TestClient(app).post(
+        "/api/parse-intent",
+        json={"message": "pentest this site", "llm_provider": "named:unit-provider"},
+    )
+    assert response.status_code == 200
+    assert response.json()["reason"] == "provider_error"
+
+
+def test_parse_intent_no_provider_configured_has_its_own_reason(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A saved "openai-compatible" provider with no base_url fails at CLIENT
+    CONSTRUCTION (before any network call) — the one path _build_llm_client itself
+    raises on, distinct from a call that reaches the provider and then fails."""
+    monkeypatch.setattr(
+        gui_app,
+        "_load_providers",
+        lambda: [
+            {
+                "id": "broken-provider",
+                "name": "broken",
+                "provider": "openai-compatible",
+                "base_url": "",
+            }
+        ],
+    )
+    monkeypatch.setattr("reachagent.llm.runtime.selected_provider", lambda: "")
+    response = TestClient(app).post(
+        "/api/parse-intent", json={"message": "pentest https://demo.example"}
+    )
+    assert response.status_code == 200
+    assert response.json()["reason"] == "no_provider"
+
+
+def test_parse_intent_recovers_a_shorthand_credential_string_in_a_list(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """v2 Phase 6 Stage E2: the extraction prompt never shows a worked example
+    converting "admin/admin123" away from a bare string, so the model sometimes
+    echoes it back as one instead of {username, password} — recover it instead of
+    silently dropping the whole credentials list to []."""
+    _stub_named_provider(monkeypatch)
+
+    class _FakeClient:
+        def propose_json(self, prompt: str, *, max_tokens: int = 600) -> dict[str, object]:
+            return {"target": "https://demo.example", "credentials": ["admin/admin123"], "goal": ""}
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(gui_app, "_build_llm_client", lambda *_a, **_k: _FakeClient())
+    response = TestClient(app).post(
+        "/api/parse-intent",
+        json={
+            "message": "pentest this, admin/admin123",
+            "llm_provider": "named:unit-provider",
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["extracted"] is True
+    assert body["credentials"] == [{"username": "admin", "password": "admin123", "role": "user"}]
+
+
+def test_parse_intent_recovers_a_bare_shorthand_credential_string_not_in_a_list(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _stub_named_provider(monkeypatch)
+
+    class _FakeClient:
+        def propose_json(self, prompt: str, *, max_tokens: int = 600) -> dict[str, object]:
+            return {"target": "https://demo.example", "credentials": "admin:s3cret", "goal": ""}
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(gui_app, "_build_llm_client", lambda *_a, **_k: _FakeClient())
+    response = TestClient(app).post(
+        "/api/parse-intent",
+        json={"message": "pentest this, admin:s3cret", "llm_provider": "named:unit-provider"},
+    )
+    assert response.status_code == 200
+    assert response.json()["credentials"] == [
+        {"username": "admin", "password": "s3cret", "role": "user"}
+    ]
 
 
 # === Inline chat-provided identities (/api/scan) ==============================
