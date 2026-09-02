@@ -1,6 +1,25 @@
 # ReachAgent — Web/API Exploitation Agent
 ### Final Project Plan (July 2026)
 
+**Status: Locked — v2.11 (Phase 6, Stage C — closing reference-project gaps).** Changes from
+v2.10: operator asked for the reference-project gap list to be actually built, not just
+documented. Two items closed this pass: **DVWA local eval target** — new
+`docker-compose.dvwa.yml` (`vulnerables/web-dvwa`, bound to `127.0.0.1` only after a
+security-review catch flagged the default all-interfaces binding on an intentionally-vulnerable
+app), verified live end to end (container up, one-time `/setup.php` DB creation, admin login).
+**Attack-chain discovery narrowed** (not fully closed, honestly) — `scan/browser_recon.py`
+now also materializes rendered `<a href>` links as new GET `Endpoint` facts (reusing
+`_form_endpoint`, a link is just a GET "form" with no controls), and `_run_attack_path_chain`
+re-runs browser recon under the newly-derived identity before re-hunting, so an admin-only nav
+link a SPA only renders for an elevated session becomes real, testable surface the same pass.
+Precisely scoped: endpoint-level STRUCTURAL checks can test the new endpoint immediately;
+per-parameter injection classes still can't, since new parameters aren't auto-fingerprinted —
+the same disclosed limit the existing form-materialization path already had. Four remaining
+gaps (recon-blocks-testing/W4b, freeform LLM payload proposal, live intercepting-proxy
+integration, response-content-aware LLM review) stay honestly open — each needs its own
+dedicated scoped session (concurrency research, a live proxy instance, or a deliberate
+privacy-tradeoff call), not a rushed bolt-on alongside everything else already shipped.
+
 **Status: Locked — v2.10 (Phase 5 close-out + operator-requested Phase 6, Stages A/B).**
 Changes from v2.9: **(W16) Adversarial review + live verification, closing Phase 5.** Two
 independent read-only review agents (Suspected-tier isolation; chat-persona role boundary)

@@ -498,3 +498,22 @@ browser recon, attack-path chaining (W17), app-domain inference (W18), LLM-autho
   remediation, vary sentence structure, a plain-language exec summary — paired
   with an explicit anti-hallucination guard so pushing for specificity can't
   invent a technical detail not actually in the evidence.
+
+## Phase 6, Stage C: closing reference-project gaps (in progress, 2026-09-02)
+
+- Operator asked for the gap list to be actually BUILT, not just documented.
+  Two items closed:
+  - DVWA local eval target: `docker-compose.dvwa.yml`, verified live
+    end-to-end (setup, login). Bound to `127.0.0.1` only after a
+    security-review catch on the default all-interfaces port binding.
+  - Attack-chain discovery narrowed: `browser_recon.py` now materializes
+    rendered links (not just forms) as new endpoints; `_run_attack_path_chain`
+    re-runs it under the newly-derived identity before re-hunting, so an
+    admin-only nav link becomes real, graph-visible surface the same pass.
+    Honestly scoped: only endpoint-level STRUCTURAL checks test the new
+    endpoint immediately, since new parameters still aren't auto-fingerprinted.
+- Four items stay open, each needing dedicated future scoping rather than a
+  rush job: W4b (recon blocks vuln-testing, needs concurrency rigor), freeform
+  LLM payload proposal, live intercepting-proxy integration (needs real
+  infra), and response-content-aware LLM review (would touch a design
+  property this session's own adversarial review just verified as clean).
