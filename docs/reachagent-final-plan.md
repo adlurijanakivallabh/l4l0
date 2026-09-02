@@ -1,6 +1,43 @@
 # ReachAgent — Web/API Exploitation Agent
 ### Final Project Plan (July 2026)
 
+**Status: Locked — v2.10 (Phase 5 close-out + operator-requested Phase 6, Stages A/B).**
+Changes from v2.9: **(W16) Adversarial review + live verification, closing Phase 5.** Two
+independent read-only review agents (Suspected-tier isolation; chat-persona role boundary)
+found zero exploitable issues in either boundary — both flagged the same class of gap (test
+coverage, not a live defect), closed with 3 new regression tests
+(`tests/scan/test_suspected_tier.py` ×2: severity-stat exclusion, `add_enables`/
+`add_derived_credential` reject a suspected id; `tests/gui/test_gui_slices.py` ×1: a chat reply
+that textually impersonates a `write_finding` instruction is returned verbatim as text, never
+acted on). Live verification against `http://demo.testfire.net` caught a real bug on the first
+attempt: `llm/planner.py`'s 3-round validation-fixer loop repeated only the raw error text on a
+rejected plan, never reminding the model which phase a misplaced tool belongs to — two different
+real model backends both failed to self-correct within 3 rounds on exactly this. Fixed: the
+fixer prompt now includes a compact `{tool: required_phase}` map. Re-verified live after the fix:
+the scan progressed recon → payloads → report and confirmed 11 real findings against the demo
+target. **New, operator-requested: LLM-driven vulnerability review** (`scan/llm_vuln_review.py`)
+— a bounded LLM call reasoning over the discovered surface (Shannon/Strix-style judgment, but
+structure only, never response content) proposes leads that land ONLY in the `SuspectedFinding`
+tier (`source="llm_judgment"`), never bypassing `run_oracle`/`write_finding` — the CLAUDE.md
+non-negotiable holds by the same construction as the existing signal-gated-tool Suspected path.
+**Phase 6, Stage A (GUI live-data richness)**: the GUI's finding cards were serializing only
+`vuln_class`/`severity`/`oracle_used`/`evidence_ref`/`status` — a real, previously-existing
+deterministic narrative context (`report/professional.py`'s WSTG/description/remediation/CVSS
+tables, already used by the markdown report) now reaches the GUI too via a new
+`vuln_class_context()` helper (factored out of `_finding_section_markdown`, behavior-preserving).
+`.fcard` rebuilt as an expandable `<details>` card; `ScanEvent` gained a `timestamp` field;
+Inter+JetBrains Mono fonts, staggered fade-in, and animated metric counters added. Two real bugs
+caught and fixed during live browser verification: a font-stack find-replace accidentally made
+`--font-mono` a circular self-reference (computed to nothing, silently falling back to the sans
+font everywhere), and the existing ~2.5s poll cycle would have snapped every expanded finding
+card shut every tick (fixed with a cheap count-based render-skip signature). **Phase 6, Stage B
+(report-writing quality)**: `report/llm_full_report.py`'s prompt gave the LLM no writing-quality
+guidance, producing generic field-restatement prose (*"A path-traversal violation was
+confirmed..."*) instead of real analyst writing — a new WRITING STYLE block (root-cause-first,
+concrete attacker-action framing, specific remediation, varied phrasing), grounded in research
+into real pentest report templates/guidance, paired with an explicit anti-hallucination guard so
+pushing for specificity can't invent unfounded technical detail.
+
 **Status: Locked — v2.9 (Capability-Expansion Phase 2, W5).** Changes from v2.8: **(W5) Widen
 candidate generation for the nosqli/ldap bypass drivers** — `run_nosqli`/`run_ldap`
 (`scan/orchestrator.py`) move from one hardcoded bypass string each to a named multi-variant list

@@ -429,3 +429,72 @@ browser recon, attack-path chaining (W17), app-domain inference (W18), LLM-autho
   generation," not the plan's original freeform-LLM-proposes-payloads vision — an
   open-ended checklist feeding `llm/planner.py`/`tools/candidate.py` remains a
   future increment, deliberately deferred rather than rushed.
+
+## W16: adversarial review + live verification, closing Phase 5 (shipped 2026-09-02)
+
+- Two read-only review agents (Suspected-tier isolation; chat-persona role
+  boundary) found zero exploitable issues — both only flagged a test-coverage
+  gap, closed with 3 new regression tests locking in the invariants explicitly
+  (severity-stat exclusion, `add_enables`/`add_derived_credential` reject a
+  suspected id, a chat reply that impersonates a tool instruction is inert).
+- Live verification against `http://demo.testfire.net` found a REAL bug on the
+  first live attempt: the LLM planner's 3-round validation-fixer loop only
+  repeated the raw error text, never reminding the model which phase a
+  misplaced tool belongs to — two different real models both failed to
+  self-correct. Fixed by adding a compact `{tool: required_phase}` map to the
+  fixer prompt. Re-verified: the same scan then completed with 11 real
+  confirmed findings (command_injection, path_traversal, clickjacking ×6,
+  default_credentials, ...).
+
+## Operator-requested: LLM-driven vulnerability review (shipped 2026-09-02)
+
+- New `scan/llm_vuln_review.py::run_llm_vulnerability_review` — the LLM gets
+  genuine Shannon/Strix-style judgment over the discovered surface (paths,
+  methods, params, sink types, app-domain — structure only, not response
+  content, since the audit trail never persists bodies). Every lead lands ONLY
+  as a `SuspectedFinding` (`source="llm_judgment"`) — never `write_finding`/
+  `run_oracle`. Bounded to one call per scan, capped at 12 leads, fail-open.
+- This was an explicit operator ask mid-session for the LLM to "detect
+  vulnerabilities like the reference projects" — delivered as an ADDITIVE
+  capability that never weakens the oracle proof gate, not a replacement for
+  it. 13 new tests.
+
+## Phase 6, Stage A: GUI live-data richness (shipped 2026-09-02)
+
+- Root cause of the operator's complaint ("clickjacking medium / Oracle:
+  structural / Evidence: .../security.htm / Status: confirmed_violation" and
+  nothing else): the GUI's finding rows never included the rich, ALREADY-BUILT
+  deterministic narrative context the markdown report already used
+  (description/remediation/WSTG/CVSS/likelihood/impact). New
+  `report/professional.py::vuln_class_context()` factors that out so both
+  surfaces read the exact same reviewed text — no duplication, no new LLM cost.
+- `.fcard` rebuilt as an expandable `<details>` card (same idiom as the
+  existing surface-tree disclosure elements) showing the new fields; `ScanEvent`
+  gained a `timestamp` field; Inter+JetBrains Mono fonts; staggered fade-in;
+  animated metric counters.
+- Two real bugs caught during LIVE Playwright verification, not by code
+  reading alone: (1) a broad font-stack find/replace turned `--font-mono`'s own
+  definition into a circular self-reference, silently breaking every monospace
+  font on the page (computed value came back empty); (2) the existing ~2.5s
+  poll cycle rebuilds the whole findings list unconditionally, which would have
+  snapped every expanded `<details>` card shut every tick — fixed with a cheap
+  count-based signature that skips the rebuild when nothing changed.
+- Deferred, disclosed: a phase-progress stepper was scoped but not built — the
+  top-level scan `phase` field only has 4 coarse values, not the full 7-stage
+  pipeline, so a stepper against it would show misleadingly-stuck progress.
+  Needs the per-event phase stream tracked as state instead — left for later
+  rather than shipped half-right.
+
+## Phase 6, Stage B: report-writing quality (shipped 2026-09-02)
+
+- The LLM-authored report's prompt gave no writing-quality guidance, so it
+  produced generic field-restatement prose ("A path-traversal violation was
+  confirmed... The associated probe response is referenced as fire-87...")
+  instead of real analyst writing. Researched real pentest report templates/
+  guidance (OWASP's reporting standard, TCM Security's sample report,
+  FireCompass's good-vs-bad finding-writing guidance) and added a concrete
+  WRITING STYLE block to the prompt: root-cause-first, concrete attacker-action
+  framing, name the actual affected functionality, specific (not cheatsheet)
+  remediation, vary sentence structure, a plain-language exec summary — paired
+  with an explicit anti-hallucination guard so pushing for specificity can't
+  invent a technical detail not actually in the evidence.
