@@ -6,7 +6,7 @@ vulnerability classes**, found via a live reachability graph and deterministic
 verification instead of LLM judgment.
 
 Full design: [`docs/reachagent-final-plan.md`](docs/reachagent-final-plan.md)
-(v1.14, locked). The current GUI execution plan is
+(v2.9, locked). The current GUI execution plan is
 [`docs/llm-first-execution-plan.md`](docs/llm-first-execution-plan.md).
 
 ## What it does
@@ -16,7 +16,7 @@ recon → endpoint/insertion-point discovery → custom tagged payloads → opti
 signal-gated verification → chains → report. The planner selects only existing
 ReachAgent adapters (including nmap, gobuster, feroxbuster, sqlmap, nuclei,
 dalfox, commix, and the other catalogued tools) for the target shape and budget.
-The orchestrator attempts all 23 supported attack classes; every finding is
+The orchestrator attempts all 29 supported attack classes; every finding is
 written only by the **Validator on a confirmed `run_oracle` verdict** — the LLM
 never adjudicates.
 
@@ -26,7 +26,21 @@ factors your guidance into its next decision (it can never write a finding). The
 report has two clearly-separated tiers: **Confirmed** (oracle-proven, zero false
 positives) and **Suspected / Unconfirmed** — tried-but-unproven leads (an oracle
 that ran and didn't confirm, or a scanner claim the oracle couldn't re-prove),
-surfaced for manual review and never blended with confirmed findings.
+surfaced for manual review and never blended with confirmed findings. An
+optional **LLM-authored report** writes the full narrative end to end (falls
+back to the deterministic template if it can't be verified to cover every
+confirmed finding by ID).
+
+A confirmed auth-bypass (nosqli/ldap) that captures a real session
+automatically spawns a synthetic identity and **re-hunts once under it**
+(attack-path chaining), linking any new finding back via an `enables` edge.
+An opt-in **aggressive mode** (`REACHAGENT_AGGRESSIVE`, default off) loosens
+when signal-gated tools (nuclei/sqlmap/dalfox) are allowed to fire — every
+extra claim still only reaches the confirmed tier through the oracle, or lands
+in Suspected. A per-host **circuit breaker** opens after repeated
+transport-level failures so a dead host can't be hammered. An optional
+repo path enables **white-box mode** (SAST/SCA/secrets fused with live
+testing).
 
 No CLI, no TUI: the GUI is the only entry point (plan v2). No Docker is needed to
 run the loop itself; Docker Compose provisions the eval *target* labs only.

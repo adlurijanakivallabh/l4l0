@@ -1,7 +1,7 @@
 # ReachAgent — CLAUDE.md
 
 Project: ReachAgent, a Web/API authorization-and-vulnerability testing agent.
-Full spec: `docs/reachagent-final-plan.md` (v1.4, locked). Read it before any
+Full spec: `docs/reachagent-final-plan.md` (v2.9, locked). Read it before any
 architectural change — this file is operating instructions, not a replacement
 for it.
 
@@ -25,6 +25,10 @@ for it.
   unconfirmed). Do not add a third without updating the plan.
 - No external scanners (sqlmap, Nuclei, ZAP, Burp Scanner, Caido Scanner) as
   detection dependencies. (Plan §9.)
+- Aggressive mode (`REACHAGENT_AGGRESSIVE`, opt-in, default off) only loosens
+  *when* signal-gated tools are allowed to fire — it never bypasses `run_oracle`
+  and never trusts a tool's claim directly. A candidate it surfaces still ends
+  up either a confirmed `Finding` (reconfirmed) or a `SuspectedFinding` (not).
 - Read-only-first: no state-changing request against a live target until the
   read-only case is confirmed safe. (Plan §10.)
 - Scope allowlist is enforced at the execution layer, not just documented.

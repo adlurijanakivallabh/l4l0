@@ -2,11 +2,11 @@
 
 ReachAgent is an authorized Web/API authorization-and-vulnerability testing
 agent. This file is a durable digest of the design/decision/audit record.
-Source of truth for architecture: `docs/reachagent-final-plan.md` (v1.14,
+Source of truth for architecture: `docs/reachagent-final-plan.md` (v2.9,
 locked). Operational history: `docs/build-plan.md` and the
 `docs/decisions-*.md` per-phase records.
 
-## What is locked (the v1.14 plan invariants and positioning)
+## What is locked (the plan invariants and positioning, unchanged since v1.14)
 
 Positioning (`docs/reachagent-final-plan.md`): confirmed multi-hop, cross-class
 attack **chains**, not single-request scanning. Three-role agent split —
