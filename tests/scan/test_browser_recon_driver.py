@@ -83,6 +83,7 @@ def test_discovered_form_materializes_a_new_endpoint_and_parameters(
         local_storage_keys: tuple = ()
         session_storage_keys: tuple = ()
         console_messages: tuple = ()
+        links: tuple = ()
         status_code = 200
 
         class _Form:
@@ -115,6 +116,66 @@ def test_discovered_form_materializes_a_new_endpoint_and_parameters(
     assert all(e.kind != "finding" for e in events)
 
 
+def test_discovered_link_materializes_a_new_get_endpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """v2 Phase 6 Stage C: a rendered <a href> the shim collects (not just a form)
+    becomes a real GET Endpoint too — reused by _run_attack_path_chain so an
+    admin-only nav link a derived identity's session reveals is testable."""
+    _patch_playwright(monkeypatch)
+
+    class _FakeReconResult:
+        local_storage_keys: tuple = ()
+        session_storage_keys: tuple = ()
+        console_messages: tuple = ()
+        status_code = 200
+        forms: tuple = ()
+        links = ("/admin/panel?tab=users",)
+
+    monkeypatch.setattr(
+        "reachagent.browser.shim.run_browser_recon_async",
+        lambda *_a, **_k: _async_return(_FakeReconResult()),
+    )
+
+    graph = _html_graph()
+    events: list = []
+    materialized = run_browser_recon(
+        graph=graph, firer=_firer(), base_url=_BASE, identity="seed", events=events
+    )
+
+    assert materialized == 1
+    new_ep_node, new_ep = next((n, ep) for n, ep in graph.endpoints() if ep.path == "/admin/panel")
+    assert new_ep.method == "GET"
+    param_names = {p.name for _n, p in graph.parameters_of(new_ep_node)}
+    assert param_names == {"tab"}  # query string on the link is captured too
+    assert any("rendered link discovered" in e.message for e in events)
+    assert all(e.kind != "finding" for e in events)
+
+
+def test_a_link_to_an_already_known_path_is_not_re_materialized(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_playwright(monkeypatch)
+
+    class _FakeReconResult:
+        local_storage_keys: tuple = ()
+        session_storage_keys: tuple = ()
+        console_messages: tuple = ()
+        status_code = 200
+        forms: tuple = ()
+        links = ("/",)  # already exists in the graph
+
+    monkeypatch.setattr(
+        "reachagent.browser.shim.run_browser_recon_async",
+        lambda *_a, **_k: _async_return(_FakeReconResult()),
+    )
+    graph = _html_graph()
+    materialized = run_browser_recon(
+        graph=graph, firer=_firer(), base_url=_BASE, identity="seed", events=[]
+    )
+    assert materialized == 0
+
+
 def test_does_not_re_materialize_an_already_known_endpoint(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -124,6 +185,7 @@ def test_does_not_re_materialize_an_already_known_endpoint(
         local_storage_keys: tuple = ()
         session_storage_keys: tuple = ()
         console_messages: tuple = ()
+        links: tuple = ()
         status_code = 200
 
         class _Form:
@@ -152,6 +214,7 @@ def test_storage_keys_are_surfaced_but_never_the_values(monkeypatch: pytest.Monk
         local_storage_keys = ("jwt", "theme")
         session_storage_keys = ()
         console_messages = ()
+        links: tuple = ()
         forms = ()
         status_code = 200
 

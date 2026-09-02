@@ -157,6 +157,105 @@ def test_confirmed_nosqli_bypass_spawns_identity_and_confirms_a_new_finding_via_
     assert any("attack-path chain" in e.message for e in events)
 
 
+def _lead_from_first_pass(monkeypatch: pytest.MonkeyPatch) -> tuple:
+    """Shared setup: run pass 1 to get a real DerivedIdentityLead, everything else
+    the caller needs to drive _run_attack_path_chain directly."""
+    monkeypatch.setattr(_orchestrator, "_TIMING_TRIALS", _DENOISED_TRIALS)
+    graph, _login_ep, _admin_ep = _two_endpoint_graph()
+    identities = IdentityStore()
+    firer = RequestFirer(
+        httpx.Client(transport=httpx.MockTransport(_handler)),
+        ScopeGuard.from_hosts(["t.test"]),
+        identity_stores=identities,
+    )
+    seam = _ValidatorSeam(graph)
+    leads: list = []
+    run_nosqli(
+        graph=graph,
+        firer=firer,
+        base_url=_BASE,
+        identity="anon",
+        seam=seam,
+        events=[],
+        derived_identities=leads,
+    )
+    assert len(leads) == 1
+    return graph, identities, firer, seam, leads[0]
+
+
+def test_attack_path_chain_runs_browser_recon_under_the_new_derived_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """v2 Phase 6 Stage C: the chain re-runs browser recon under the FRESHLY
+    DERIVED identity (not the original anon one) before re-hunting."""
+    graph, identities, firer, seam, lead = _lead_from_first_pass(monkeypatch)
+    calls: list[str] = []
+
+    def fake_browser_recon(*, graph, firer, base_url, identity, events):  # noqa: ANN001
+        calls.append(identity)
+        return 0
+
+    monkeypatch.setattr("reachagent.scan.browser_recon.run_browser_recon", fake_browser_recon)
+
+    control_state = types.SimpleNamespace(touch=lambda: None)
+    _run_attack_path_chain(
+        lead=lead,
+        graph=graph,
+        seam=seam,
+        firer=firer,
+        base_url=_BASE,
+        auth_headers={},
+        identities=identities,
+        transport=None,
+        library=None,
+        allow_cross_user_writes=False,
+        events=[],
+        cancel_check=None,
+        check_cancel=lambda _c: None,
+        control_state=control_state,
+    )
+
+    assert len(calls) == 1
+    assert calls[0].startswith("derived-")
+    assert calls[0] in identities.names()
+
+
+def test_attack_path_chain_browser_recon_failure_does_not_abort_the_rehunt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    graph, identities, firer, seam, lead = _lead_from_first_pass(monkeypatch)
+
+    def boom(**_kwargs: object) -> int:
+        raise RuntimeError("playwright crashed")
+
+    monkeypatch.setattr("reachagent.scan.browser_recon.run_browser_recon", boom)
+
+    control_state = types.SimpleNamespace(touch=lambda: None)
+    events: list = []
+    new_ids = _run_attack_path_chain(
+        lead=lead,
+        graph=graph,
+        seam=seam,
+        firer=firer,
+        base_url=_BASE,
+        auth_headers={},
+        identities=identities,
+        transport=None,
+        library=None,
+        allow_cross_user_writes=False,
+        events=events,
+        cancel_check=None,
+        check_cancel=lambda _c: None,
+        control_state=control_state,
+    )
+
+    # The re-hunt still ran and confirmed the admin finding despite the browser
+    # recon crash — a browser/Playwright failure never aborts the chain.
+    admin_finding_id = finding_id("nosqli", "orchestrator/nosqli /admin/secret user:ne-null")
+    assert admin_finding_id in new_ids
+    assert any("attack-path chain browser recon failed" in e.message for e in events)
+
+
 def test_chaining_is_a_no_op_when_no_lead_captured_real_session_material() -> None:
     """If /login's bypass never returns real session material, nothing to chain into."""
 

@@ -3680,10 +3680,12 @@ def _run_attack_path_chain(
     check_cancel: Callable[[object | None], None],
     control_state: Any,
 ) -> list[str]:
-    """Spawn ``lead``'s derived identity and re-hunt ALL Phase-3 classes under it —
-    exactly ONE pass, never recursive (v2 W17). Returns the new finding ids, each
-    already linked back to ``lead.finding_id`` via an ``enables`` edge so the report's
-    existing chain rendering (``chain_paths``) shows the causal path.
+    """Spawn ``lead``'s derived identity, run browser recon under it (v2 Phase 6 Stage
+    C — surfaces any admin-only rendered link/form the new privilege unlocks), then
+    re-hunt ALL Phase-3 classes — exactly ONE pass, never recursive (v2 W17). Returns
+    the new finding ids, each already linked back to ``lead.finding_id`` via an
+    ``enables`` edge so the report's existing chain rendering (``chain_paths``) shows
+    the causal path.
     """
     from reachagent.scan.chaining import spawn_derived_identity
 
@@ -3712,6 +3714,41 @@ def _run_attack_path_chain(
     )
     before = {fid for fid, _ in graph.findings()}
     new_auth_headers = identities.auth_headers(new_identity)
+
+    # v2 Phase 6 Stage C: re-run browser recon (W11) under the NEW identity, before
+    # re-hunting — narrows (doesn't fully close) the disclosed "re-hunts only
+    # already-discovered endpoints" limit. An admin-only nav link a SPA only renders
+    # for an elevated session becomes a real Endpoint fact here (drivers read
+    # graph.endpoints() fresh at call time, so endpoint-level STRUCTURAL checks below
+    # can test it this same pass); its parameters are NOT auto-fingerprinted, so
+    # per-parameter injection classes still won't test it until a separate
+    # fingerprinting pass runs — same disclosed limit run_browser_recon's form path
+    # already has. Not a general crawler/brute-force replacement — an endpoint
+    # nothing on any rendered page links to is still invisible. Fail-open, same
+    # discipline as every other browser_recon call site.
+    try:
+        from reachagent.scan.browser_recon import run_browser_recon
+
+        new_endpoints = run_browser_recon(
+            graph=graph, firer=firer, base_url=base_url, identity=new_identity, events=events
+        )
+        if new_endpoints:
+            _emit(
+                events,
+                "payloads",
+                "info",
+                f"attack-path chain: browser recon as {new_identity} surfaced "
+                f"{new_endpoints} new endpoint(s)",
+            )
+    except Exception as exc:  # noqa: BLE001 — browser recon must never abort the chain
+        _emit(
+            events,
+            "payloads",
+            "error",
+            f"attack-path chain browser recon failed: {type(exc).__name__}",
+            error_category="browser_recon",
+        )
+
     rehunt_drivers = _build_phase3_drivers(
         graph=graph,
         seam=seam,
