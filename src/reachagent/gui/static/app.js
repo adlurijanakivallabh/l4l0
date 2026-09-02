@@ -940,11 +940,34 @@ function renderFindingsList(findings, suspected) {
   renderSuspectedInto(box, suspected, (findings || []).length);
 }
 
+let _surfaceSignature = null;
+
 function renderSurfaceTree(surface) {
   if (surface === null) return; // caller fetches asynchronously and re-invokes
   const box = $("surface-tree");
   const hosts = (surface && surface.hosts) || [];
   const orphan = (surface && surface.orphan_endpoints) || [];
+  if (surface && surface.available === false) {
+    // A conversation switch's explicit reset — always force a real rebuild next
+    // time, never let a coincidentally-matching signature from a DIFFERENT scan
+    // suppress it.
+    _surfaceSignature = null;
+  } else {
+    // The recon-tier surface is add-only within a scan (hosts/endpoints/params
+    // are never removed once discovered), so a count-based signature is a cheap,
+    // sufficient diff — fetchSurface() re-fetches and rebuilds the WHOLE tree
+    // every ~2.5s poll unconditionally, which (after Stage A/E4 added an
+    // entrance animation to .surface-host) replayed on every single poll tick —
+    // a real, visible "flickering/blinking" regression. Skip the rebuild
+    // entirely when nothing actually changed.
+    const paramCount = (eps) => (eps || []).reduce((n, ep) => n + (ep.parameters || []).length, 0);
+    const endpointCount = hosts.reduce((n, h) => n + (h.endpoints || []).length, 0) + orphan.length;
+    const totalParams =
+      hosts.reduce((n, h) => n + paramCount(h.endpoints), 0) + paramCount(orphan);
+    const signature = [hosts.length, endpointCount, totalParams, orphan.length].join(":");
+    if (signature === _surfaceSignature) return;
+    _surfaceSignature = signature;
+  }
   if (!hosts.length && !orphan.length) {
     box.innerHTML = '<div class="empty">No endpoints discovered yet.</div>';
     return;
