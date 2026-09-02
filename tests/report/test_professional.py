@@ -70,6 +70,36 @@ def test_mixed_confirmed_and_informational_both_sections_present() -> None:
     assert out.index("## Confirmed Vulnerabilities") < out.index("## Informational Observations")
 
 
+def test_confirmed_finding_shows_the_real_captured_evidence_snippet() -> None:
+    """v2 Phase 6 Stage E1: the report must show the actual proof text an oracle
+    captured, not only an opaque evidence_ref handle string."""
+    from reachagent.oracles.structural import (
+        StructuralCheckType,
+        StructuralEvidence,
+        StructuralOracle,
+    )
+    from reachagent.tools import validator
+
+    g = ReachabilityGraph()
+    verdict = StructuralOracle().run(
+        StructuralEvidence(
+            check_type=StructuralCheckType.PATH_TRAVERSAL,
+            probe_status=200,
+            sentinel="root:x:0:0",
+            response_body="prefix " * 20 + "root:x:0:0:root:/root:/bin/bash",
+            evidence_ref="path_traversal/report-e2e",
+        )
+    )
+    validator.write_finding(
+        g,
+        Finding(vuln_class="path_traversal", severity="high", oracle_used="", evidence_ref=""),
+        verdict,
+    )
+    out = render_professional_report_markdown(g, client=_quiet_client())
+    assert "root:x:0:0:root:/root:/bin/bash" in out
+    assert "~~~" in out  # fenced evidence block, not just a `handle` reference
+
+
 def test_unknown_vuln_class_falls_back_to_generic_wstg_info() -> None:
     g = _graph(("not_a_real_class", "medium", "ref-x"))
     out = render_professional_report_markdown(g, client=_quiet_client())

@@ -115,6 +115,38 @@ def _safe_metadata(value: object) -> dict[str, object]:
     return result if isinstance(result, dict) else {}
 
 
+def evidence_snippet(metadata: Mapping[str, Any]) -> dict[str, Any]:
+    """The real proof behind a finding — a bounded, already-secret-scrubbed body
+    projection (and any decisive response headers) an oracle captured at decision
+    time (v2 Phase 6 Stage E1), for the GUI's finding cards and the markdown/HTML
+    report alike. ``write_finding`` already stores this as a JSON blob under
+    ``metadata["evidence_metadata"]`` (``EvidenceMetadata.as_json()``) whenever an
+    oracle populated one — this only reads it back for display, no new capture.
+    """
+    raw = metadata.get("evidence_metadata")
+    if not isinstance(raw, str) or not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except (TypeError, ValueError):
+        return {}
+    if not isinstance(parsed, dict):
+        return {}
+    snippet: dict[str, Any] = {}
+    for key in ("body_projection", "baseline_body_projection", "probe_body_projection"):
+        value = parsed.get(key)
+        if isinstance(value, str) and value:
+            snippet[key] = _safe_text(value, 2048)
+    headers = parsed.get("headers")
+    if isinstance(headers, list):
+        snippet["headers"] = [
+            [_safe_text(str(pair[0]), 80), _safe_text(str(pair[1]), 300)]
+            for pair in headers
+            if isinstance(pair, (list, tuple)) and len(pair) == 2
+        ][:20]
+    return snippet
+
+
 def finding_to_dict(finding_id: str, finding: object) -> dict[str, Any]:
     """Project one stored finding without mutating it or exposing secrets."""
     f: Any = finding

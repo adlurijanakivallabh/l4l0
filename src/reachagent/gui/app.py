@@ -32,6 +32,7 @@ from reachagent.report.professional import vuln_class_context
 from reachagent.report.renderer import (
     build_evidence_index,
     compare_graphs,
+    evidence_snippet,
     render_evidence_index_json,
     render_evidence_index_markdown,
     render_findings_json,
@@ -1488,6 +1489,7 @@ def _finding_rows(graph: ReachabilityGraph | None) -> list[dict[str, Any]]:
                 "cvss": _public_text(ctx["cvss"], 10),
                 "likelihood": _public_text(ctx["likelihood"], 20),
                 "impact": _public_text(ctx["impact"], 20),
+                "evidence": evidence_snippet(metadata),
             }
         )
     return rows

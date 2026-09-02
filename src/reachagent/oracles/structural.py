@@ -90,10 +90,33 @@ from reachagent.oracles import OracleMechanism
 from reachagent.oracles.base import Oracle, OracleVerdict, decision_reason
 from reachagent.oracles.evidence import (
     EvidenceMetadata,
+    EvidenceValidationError,
     validate_evidence_metadata,
     validate_evidence_ref,
     validate_status_code,
 )
+
+# v2 Phase 6 Stage E1: a bounded, real evidence snippet for the GUI/report to show
+# instead of only an opaque evidence_ref handle — window of context either side of
+# the matched sentinel (the actual proof a human would want to see), or the response
+# body's own start when no sentinel exists for this check type. _validate_projection
+# (oracles/evidence.py) already caps length and scrubs raw secret values; this just
+# picks WHICH bounded slice to hand it, mirroring the existing header auto-fill below.
+_BODY_PROJECTION_CONTEXT_CHARS = 200
+
+
+def _body_projection(evidence: StructuralEvidence) -> str:
+    body = evidence.response_body
+    if not body:
+        return ""
+    sentinel = evidence.sentinel or evidence.union_sentinel
+    if sentinel:
+        index = body.find(sentinel)
+        if index != -1:
+            start = max(0, index - _BODY_PROJECTION_CONTEXT_CHARS)
+            end = min(len(body), index + len(sentinel) + _BODY_PROJECTION_CONTEXT_CHARS)
+            return ("…" if start > 0 else "") + body[start:end] + ("…" if end < len(body) else "")
+    return body[: _BODY_PROJECTION_CONTEXT_CHARS * 2]
 
 
 class StructuralCheckType(StrEnum):
@@ -675,6 +698,16 @@ class StructuralOracle(Oracle):
             )
             if headers:
                 metadata = replace(metadata, headers=headers).validated()
+        if not metadata.body_projection:
+            projection = _body_projection(evidence)
+            if projection:
+                try:
+                    metadata = replace(metadata, body_projection=projection).validated()
+                except EvidenceValidationError:
+                    # Fail open on the evidence SNIPPET only — an accidental secret-like
+                    # match in a real target's response must never block the (already
+                    # independently decided) verdict itself from being returned.
+                    pass
         return OracleVerdict(
             mechanism=self.mechanism,
             status=status,

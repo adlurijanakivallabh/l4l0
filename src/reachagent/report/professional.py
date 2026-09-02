@@ -23,6 +23,7 @@ from reachagent.report.llm_report import ReportClient, generate_narrative
 from reachagent.report.renderer import (
     _SEVERITY_SCORE,
     build_evidence_index,
+    evidence_snippet,
     sanitize_report_markdown,
 )
 
@@ -263,6 +264,29 @@ def _report_card_markdown(confirmed: list[dict[str, Any]]) -> str:
     return "".join(lines)
 
 
+def _evidence_snippet_markdown(snippet: dict[str, Any]) -> str:
+    """Render the real captured proof (v2 Phase 6 Stage E1) as markdown — a fenced
+    block per body projection, distinct from the opaque handle refs listed above it.
+    ``~~~`` fences (not backticks) since a real target's response could itself
+    contain a literal ``` sequence that would otherwise break out of the block.
+    """
+    lines: list[str] = []
+    if snippet.get("baseline_body_projection") or snippet.get("probe_body_projection"):
+        if snippet.get("baseline_body_projection"):
+            lines.append(
+                f"**Baseline response:**\n~~~\n{snippet['baseline_body_projection']}\n~~~\n"
+            )
+        if snippet.get("probe_body_projection"):
+            lines.append(f"**Probe response:**\n~~~\n{snippet['probe_body_projection']}\n~~~\n")
+    elif snippet.get("body_projection"):
+        lines.append(f"**Response evidence:**\n~~~\n{snippet['body_projection']}\n~~~\n")
+    headers = snippet.get("headers")
+    if headers:
+        lines.append("**Decisive response headers:**\n")
+        lines.extend(f"- `{name}`: `{value}`\n" for name, value in headers)
+    return "".join(lines) + ("\n" if lines else "")
+
+
 def _finding_section_markdown(
     position: int, record: dict[str, Any], *, informational: bool = False
 ) -> str:
@@ -307,6 +331,9 @@ def _finding_section_markdown(
     parts.append(evidence_lines)
     parts.append(chain_lines)
     parts.append("\n")
+    snippet = evidence_snippet(record.get("metadata", {}))
+    if snippet:
+        parts.append(_evidence_snippet_markdown(snippet))
     if not informational:
         parts.append(f"**Remediation**  \n{ctx['remediation']}\n\n")
     parts.append(

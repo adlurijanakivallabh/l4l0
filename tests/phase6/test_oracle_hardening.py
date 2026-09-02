@@ -27,7 +27,7 @@ from reachagent.oracles.differential import (
 from reachagent.oracles.evidence import EvidenceMetadata, EvidenceValidationError
 from reachagent.oracles.execution_confirmation import ExecutionConfirmationEvidence
 from reachagent.oracles.oob_callback import OOBCallbackEvidence
-from reachagent.oracles.structural import StructuralCheckType, StructuralEvidence
+from reachagent.oracles.structural import StructuralCheckType, StructuralEvidence, StructuralOracle
 from reachagent.oracles.timing_statistical import (
     PairedTrialEvidence,
     ValidationError,
@@ -321,3 +321,61 @@ def test_verdict_constructors_are_confined_to_the_six_oracle_modules() -> None:
                 violations.append(f"{path}:{call.lineno}")
     assert count == 6
     assert violations == []
+
+
+def test_structural_oracle_auto_fills_a_real_evidence_snippet_around_the_sentinel() -> None:
+    """v2 Phase 6 Stage E1: the GUI/report must show real proof, not just an opaque
+    evidence_ref handle — the oracle already decides on response_body/sentinel, so it
+    auto-fills a bounded snippet centered on the match, mirroring the existing header
+    auto-fill this oracle already does for clickjacking/CORS."""
+    oracle = StructuralOracle()
+    body = ("x" * 300) + "root:x:0:0:root:/root:/bin/bash" + ("y" * 300)
+    verdict = oracle.run(
+        StructuralEvidence(
+            check_type=StructuralCheckType.PATH_TRAVERSAL,
+            probe_status=200,
+            sentinel="root:x:0:0",
+            response_body=body,
+            evidence_ref="path_traversal/test",
+        )
+    )
+    assert verdict.status is FindingStatus.CONFIRMED_VIOLATION
+    projection = verdict.evidence_metadata.body_projection
+    assert projection  # real content, not empty
+    assert "root:x:0:0:root:/root:/bin/bash" in projection
+    assert len(projection) < len(body)  # bounded — not the whole 600+ char body
+    assert projection.startswith("…")  # there was more body before the window
+    assert projection.endswith("…")  # and after
+
+
+def test_structural_oracle_does_not_overwrite_a_caller_supplied_projection() -> None:
+    oracle = StructuralOracle()
+    verdict = oracle.run(
+        StructuralEvidence(
+            check_type=StructuralCheckType.PATH_TRAVERSAL,
+            probe_status=200,
+            sentinel="root:x:0:0",
+            response_body="root:x:0:0" + ("z" * 500),
+            evidence_ref="path_traversal/test2",
+            metadata=EvidenceMetadata(body_projection="caller already supplied this"),
+        )
+    )
+    assert verdict.evidence_metadata.body_projection == "caller already supplied this"
+
+
+def test_structural_oracle_projection_never_raises_on_a_body_that_looks_secret_like() -> None:
+    """A real target's response could coincidentally contain something matching the
+    generic secret-value pattern (e.g. a long random-looking token in an error page)
+    — the ALREADY-DECIDED verdict must still come back; only the evidence snippet is
+    dropped, never the finding itself."""
+    oracle = StructuralOracle()
+    verdict = oracle.run(
+        StructuralEvidence(
+            check_type=StructuralCheckType.PATH_TRAVERSAL,
+            probe_status=200,
+            sentinel="root:x:0:0",
+            response_body='root:x:0:0 {"password": "super-secret-value-12345"}',
+            evidence_ref="path_traversal/test3",
+        )
+    )
+    assert verdict.status is FindingStatus.CONFIRMED_VIOLATION  # never blocked
