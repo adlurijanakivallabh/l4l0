@@ -11,6 +11,7 @@ const TERMINAL_STATES = new Set(["completed", "failed", "blocked", "cancelled"])
 const LIFECYCLE_LABEL = { queued: "Queued", running: "Running", paused: "Paused", cancelling: "Cancelling", blocked: "Blocked", completed: "Completed", failed: "Failed", cancelled: "Cancelled" };
 const PHASE_STEP = { plan: "PLAN", recon: "RECON", surface: "SURFACE", endpoints: "ENDPOINTS", "insertion-points": "INSERTION", payloads: "PAYLOADS", verification: "VERIFY", chains: "CHAINS", tools: "TOOLS", report: "REPORT" };
 const OUT_CLASS = { fired: "out-fired", refused: "out-refused", error: "out-error", ingested: "out-ingested" };
+const _WRITE_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 
 // ---------------------------------------------------------------------------
 // State
@@ -953,19 +954,32 @@ function renderSurfaceTree(surface) {
     const d = document.createElement("details");
     d.className = "surface-endpoint";
     const s = document.createElement("summary");
-    s.textContent = (ep.method || "GET") + " " + (ep.path || "");
+    const method = document.createElement("span");
+    const m0 = ep.method || "GET";
+    method.className = "audit-method " + (_WRITE_METHODS.has(m0) ? "write" : "read");
+    method.textContent = m0;
+    const path = document.createElement("span");
+    path.className = "surface-path";
+    path.textContent = ep.path || "";
+    s.append(method, path);
     d.appendChild(s);
     const m = document.createElement("div");
     m.className = "node-meta";
     m.textContent = (ep.access_restricted ? "restricted " + ep.access_restricted + " · " : "") + (ep.technology || ep.content_type || "endpoint");
     d.appendChild(m);
-    const ul = document.createElement("ul");
-    (ep.parameters || []).forEach((p) => {
-      const li = document.createElement("li");
-      li.textContent = (p.location || "query") + " " + (p.name || "") + (p.inferred_sink_type ? " → " + p.inferred_sink_type : "");
-      ul.appendChild(li);
-    });
-    if (ul.children.length) d.appendChild(ul);
+    const params = ep.parameters || [];
+    if (params.length) {
+      const wrap = document.createElement("div");
+      wrap.className = "surface-params";
+      params.forEach((p) => {
+        const pill = document.createElement("span");
+        pill.className = "surface-param" + (p.inferred_sink_type ? " sink" : "");
+        pill.textContent =
+          (p.location || "query") + ":" + (p.name || "") + (p.inferred_sink_type ? " → " + p.inferred_sink_type : "");
+        wrap.appendChild(pill);
+      });
+      d.appendChild(wrap);
+    }
     return d;
   };
   hosts.forEach((h) => {
@@ -998,9 +1012,18 @@ function renderAuditList(rows) {
     return;
   }
   box.innerHTML = "";
-  rows.forEach((r) => {
+  const head = document.createElement("div");
+  head.className = "audit-head";
+  ["Time", "Identity", "Method", "Target", "Outcome"].forEach((label) => {
+    const cell = document.createElement("span");
+    cell.textContent = label;
+    head.appendChild(cell);
+  });
+  box.appendChild(head);
+  rows.forEach((r, i) => {
     const row = document.createElement("div");
     row.className = "audit-row";
+    row.style.setProperty("--i", Math.min(i, 30));
     const ts = document.createElement("span");
     ts.className = "muted";
     ts.textContent = (r.timestamp || "").slice(11, 19);
@@ -1008,10 +1031,11 @@ function renderAuditList(rows) {
     id.className = "id";
     id.textContent = r.identity || "—";
     const m = document.createElement("span");
-    m.className = "muted";
-    m.textContent = r.method || "—";
+    const method = r.method || "—";
+    m.className = "audit-method " + (_WRITE_METHODS.has(method) ? "write" : "read");
+    m.textContent = method;
     const tgt = document.createElement("span");
-    tgt.className = "muted";
+    tgt.className = "audit-target";
     tgt.textContent = r.target || "—";
     const key = (r.outcome || "").split(":")[0];
     const out = document.createElement("span");
