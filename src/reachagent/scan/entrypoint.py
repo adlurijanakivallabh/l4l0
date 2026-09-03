@@ -1120,26 +1120,17 @@ def scan_target(
                 if stop:
                     break
 
-            # Bind configured identities before spec/API mapping so every subsequent
-            # endpoint probe carries the selected isolated session.
-            if not dry_run:
-                _checkpoint("auth", completed_tools=completed_names, pending_tools=("auth",))
-                try:
-                    _authenticate_configured()
-                except Exception as exc:  # noqa: BLE001 — persist blocked auth state
-                    _checkpoint(
-                        "auth",
-                        status="errored",
-                        completed_tools=completed_names,
-                        last_error=type(exc).__name__,
-                    )
-                    raise
-                _checkpoint("auth", status="completed", completed_tools=completed_names)
-
             # Spec-first API discovery (Task 27, live only — it fires read-only GET
-            # probes). After --surface seeding and cold-start recon, before the
-            # Coordinator loop: probe for OpenAPI/GraphQL specs, parse into
-            # Endpoint/Parameter facts, else a bounded combinatorial fallback.
+            # probes). Runs BEFORE identity binding: for a pure JSON API (VAmPI,
+            # etc.) the login endpoint is very often only discoverable via its own
+            # OpenAPI/Swagger spec — never a common HTML alias, never linked from a
+            # crawled page — so authenticating first found no login surface at all
+            # even though credentials were correctly supplied (a real live-scan
+            # finding, not a hermetic-only gap: the eval harness's own --surface
+            # seeding above pre-populates endpoints and never exercised this
+            # ordering). discover_api uses its own fixed internal identity, never
+            # the operator's configured ones, so running it first has no downstream
+            # dependency on auth having already happened.
             if not dry_run:
                 from reachagent.recon.api_discovery import discover_api
 
@@ -1173,6 +1164,25 @@ def scan_target(
                         forms=discovery.forms_found,
                     )
                 _checkpoint("endpoints", status="completed", completed_tools=completed_names)
+
+            # Bind configured identities after spec/API mapping, so a login surface
+            # only discoverable via the spec (above) is already in the graph for
+            # detect_login_forms to find; every subsequent endpoint probe still
+            # carries the selected isolated session, since the Coordinator loop
+            # runs after this point.
+            if not dry_run:
+                _checkpoint("auth", completed_tools=completed_names, pending_tools=("auth",))
+                try:
+                    _authenticate_configured()
+                except Exception as exc:  # noqa: BLE001 — persist blocked auth state
+                    _checkpoint(
+                        "auth",
+                        status="errored",
+                        completed_tools=completed_names,
+                        last_error=type(exc).__name__,
+                    )
+                    raise
+                _checkpoint("auth", status="completed", completed_tools=completed_names)
 
         # On resume there is no cold-start block above; authenticate before the
         # coordinator replays any unexplored endpoint. Dry runs never submit creds.
