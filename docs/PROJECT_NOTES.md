@@ -1039,3 +1039,19 @@ building anything on it. `professional.py`'s `_CVSS_VECTOR` table gives each cla
 typical vector (same honesty discipline as `_WSTG`/`_CWE`); the score is always derived from it,
 never independently chosen. GUI CVSS badge shows the vector as a tooltip. 18 new tests,
 git-stash-verified, verified live via Playwright. Full sweep green (426 passed).
+
+**Item 9 (Steps-to-Reproduce + PoC) investigated, deliberately deferred, not built.** Two real
+foundation-level problems found before writing any template code: (1) only RESPONSE-side data
+(body projections, headers) is captured in `EvidenceMetadata` — no request method/URL/body
+reaches the report at all, and adding that would touch every oracle-evidence construction site
+across every detector module, a genuinely large change; (2) a real, pre-existing, never-tested
+latent gap: `renderer.py::_finding_record` already tries to attach real audit-trail rows to each
+finding via `ref in row["outcome"]`, but `RequestFirer.fire()` never embeds the evidence_ref into
+`outcome` (just short labels like `"fired:200"`) — so this join very plausibly never matches,
+and zero tests anywhere verify it does. Deferred with this precise reasoning, matching the
+W4b/V8/BUSINESS_RULE precedent — a future session should fix/verify the audit join first, then
+decide if that's enough to build the section from.
+
+**Next-phase audit closed out**: 8 of 9 punch-list items shipped, 1 precisely deferred. Every
+shipped item git-stash-verified with a full regression sweep; GUI-touching items verified live
+via Playwright.

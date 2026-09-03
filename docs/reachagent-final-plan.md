@@ -1,6 +1,25 @@
 # ReachAgent — Web/API Exploitation Agent
 ### Final Project Plan (July 2026)
 
+**Status: Locked — v3.15 (next-phase audit closed: 8 of 9 items shipped, 1 precisely
+deferred).** Investigated the final punch-list item (Steps-to-Reproduce + PoC report sections)
+before writing any template code, and found two real foundation-level problems: only
+response-side data (body projections, headers) is captured anywhere in `EvidenceMetadata` — no
+request method/URL/body reaches the report, and adding that would touch every oracle-evidence
+construction site across every detector module; and a real, pre-existing, never-tested latent
+gap in `renderer.py::_finding_record`'s own attempt to join audit-trail rows to a finding via
+`ref in row["outcome"]` — `RequestFirer.fire()` never actually embeds the evidence_ref into
+`outcome` (just short labels like `"fired:200"`), so this join very plausibly never matches
+anything, confirmed by zero existing tests verifying it does. Deferred with this precise
+reasoning, matching the W4b/V8/BUSINESS_RULE precedent, rather than building a report section on
+an unverified foundation. **This closes the v3.11 next-phase audit's punch list**: 8 of 9 items
+shipped (CWE-id lookup, autonomous wordlist escalation, confirmation-card scope textarea, stop
+over-truncating the operator's objective, skip_tools intake, full CVSS v3.1 vector string —
+`EngagementRules` was reassessed and deprioritized once its underlying capability gaps closed
+via flat fields, and the confirmation-card skip/deny UI folded into skip_tools' own field), 1
+precisely deferred. Every shipped item is git-stash-verified with a regression sweep; GUI-
+touching items verified live via Playwright.
+
 **Status: Locked — v3.14 (next-phase item 6 shipped: full CVSS v3.1 vector string).** New
 `report/cvss.py` implements the official FIRST.org CVSS v3.1 base-score formula (deterministic,
 not a heuristic) — verified against two independently hand-derived, widely-published reference
