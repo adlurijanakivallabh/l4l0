@@ -1,6 +1,28 @@
 # ReachAgent — Web/API Exploitation Agent
 ### Final Project Plan (July 2026)
 
+**Status: Locked — v3.4 (V3 corroboration sweep: 7 slices shipped, paused with an honest
+accounting of what's left).** Changes from v3.3: shipped 6 more technique-diversity
+corroboration slices beyond the open_redirect first slice — BOLA/IDOR (a third identity's
+independent write), JWT_FORGERY (next forgery technique must also confirm — the one A1-loop
+extension research judged genuinely safe, since all 4 techniques are symptoms of one shared
+validator flaw), CORS_MISCONFIG (second attacker origin), FILE_UPLOAD_BYPASS (second disguise
+extension), WEB_CACHE_POISONING (third delayed re-read), and stored XSS (second identity's
+independent read — flagged "near-mandatory" since it's what actually distinguishes genuinely-
+stored from reflected-in-a-confirmation-page). A real design mistake was found and reverted
+before ever reaching a commit: the SAME "next variant must also confirm" pattern applied to
+nosqli/ldap's AUTH_BYPASS loop was caught by an existing regression test (a WAF correctly
+blocking `$ne` while blind to `$gt` is a realistic single-technique bypass; requiring a SECOND
+operator to also succeed suppressed that true positive) — JWT forgery techniques are symptoms
+of one shared flaw, nosqli/ldap operator variants are independent filter probes, and the
+analogy did not hold. Every remaining candidate from the original research now has a specific,
+named complication (dead/indirect code paths, a shared generic dispatch loop that doesn't
+cleanly support corroboration without a special-case hack, a genuine recall-cost tradeoff, a
+branch that never writes a Finding, a proven-unsafe pattern, a real self-inflicted-lockout
+risk, or a materially heavier browser-based cost) — the sweep pauses here as a deliberate,
+justified stopping point rather than forcing an increasingly awkward fit. See the living plan
+file for the full per-item reasoning and the "next slices" list for whoever picks this back up.
+
 **Status: Locked — v3.3 (V3 first slice: technique-diversity corroboration).** Changes from
 v3.2: researched via a 5-agent workflow (call-site audit, per-check-type corroboration-action
 design across all 6 oracle families, role-boundary feasibility, reference-project shapes)
