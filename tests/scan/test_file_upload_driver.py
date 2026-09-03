@@ -14,12 +14,27 @@ from __future__ import annotations
 
 import httpx
 
+from reachagent.detection.oracle_gateway import OracleOutcome
 from reachagent.execution import RequestFirer, ScopeGuard
 from reachagent.graph.store import ReachabilityGraph
+from reachagent.oracles.base import OracleVerdict
 from reachagent.scan.orchestrator import _ValidatorSeam, run_file_upload
-from tests._oracle_test_support import CONFIRMS, FixedJudgmentClient
+from tests._oracle_test_support import CONFIRMS, INCONCLUSIVE, FixedJudgmentClient
 
 _BASE = "http://upload.test"
+
+
+def _real_evidence_run(self: _ValidatorSeam, mechanism: object, evidence: object) -> OracleOutcome:
+    """v3 V3: judges FILE_UPLOAD_BYPASS on the real probe_status (2xx = accepted)
+    instead of a blanket fixed verdict, so a test can distinguish the primary
+    upload's outcome from the corroborating second technique's outcome."""
+    status = CONFIRMS if 200 <= evidence.probe_status < 300 else INCONCLUSIVE  # type: ignore[attr-defined]
+    ref = str(getattr(evidence, "evidence_ref", "") or "")
+    verdict = OracleVerdict(
+        mechanism=mechanism, status=status, evidence_ref=ref, reason="test-fixed-verdict"
+    )
+    self._last = verdict
+    return OracleOutcome(verdict)
 
 
 def _firer(handler: object) -> RequestFirer:
@@ -80,6 +95,38 @@ def test_real_upload_endpoint_still_confirms_when_no_catch_all_exists(monkeypatc
     classes = {f.vuln_class for _fid, f in findings}
     assert "file_upload" in classes
     assert all(f.status.value == "confirmed_violation" for _fid, f in findings)
+
+
+def test_second_disguise_technique_also_accepted_corroborates(monkeypatch) -> None:  # noqa: ANN001
+    monkeypatch.setattr(_ValidatorSeam, "run", _real_evidence_run)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/upload":
+            return httpx.Response(204 if request.method == "OPTIONS" else 200)
+        return httpx.Response(404)
+
+    findings = _run(handler)
+    assert any(f.vuln_class == "file_upload" for _fid, f in findings)
+
+
+def test_second_disguise_technique_refused_fails_closed(monkeypatch) -> None:  # noqa: ANN001
+    """A server that blocks the .phtml extension (a narrow single-extension
+    denylist gap for .php only) must NOT confirm a systemic bypass — never
+    fall back to trusting the uncorroborated single accept."""
+    monkeypatch.setattr(_ValidatorSeam, "run", _real_evidence_run)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path != "/upload":
+            return httpx.Response(404)
+        if request.method == "OPTIONS":
+            return httpx.Response(204)
+        body = request.content
+        if b"shell.phtml" in body:
+            return httpx.Response(403, text="blocked")
+        return httpx.Response(200, text="ok")
+
+    findings = _run(handler)
+    assert not any(f.vuln_class == "file_upload" for _fid, f in findings)
 
 
 def test_no_endpoint_at_all_yields_no_findings() -> None:

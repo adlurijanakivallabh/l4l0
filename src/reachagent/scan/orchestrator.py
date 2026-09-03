@@ -670,6 +670,7 @@ def run_file_upload(
     guaranteed-nonexistent path, run the same way as a real candidate, detects
     this before any real path is even tried.
     """
+    from reachagent.confirmation.corroboration import corroborate_with_variant
     from reachagent.oracles.structural import StructuralCheckType, StructuralEvidence
 
     canary_path = f"/reachagent-cal-{uuid.uuid4().hex}"
@@ -764,7 +765,51 @@ def run_file_upload(
                 evidence_ref=f"orchestrator/file_upload{path}",
             ),
         )
+        # Technique-diversity corroboration (v3 V3): a SECOND, different
+        # disguise technique (a distinct executable extension) must also be
+        # accepted before trusting a single hit — rules out a narrow
+        # single-extension denylist gap rather than a systemic upload-type
+        # bypass.
+        confirmed = verdict.is_violation
+
+        def _second_upload_attempt(
+            _url: str = url,
+            _label: str = label,
+            _baseline_status: int = baseline.status_code,
+            _path: str = path,
+        ) -> object:
+            try:
+                second_probe = firer.fire(
+                    identity,
+                    "POST",
+                    _url,
+                    state_changing=True,
+                    headers=dict(auth_headers),
+                    files={
+                        "file": ("shell.phtml", b"<?php echo 'reachagent'; ?>", "application/x-php")
+                    },
+                )
+            except Exception as exc:  # noqa: BLE001 — a refused corroborating probe is not a violation
+                _emit(
+                    events,
+                    "payloads",
+                    "error",
+                    f"{_label}: corroborating probe refused ({type(exc).__name__})",
+                )
+                return SimpleNamespace(is_violation=False)
+            return seam.run(
+                OracleMechanism.STRUCTURAL,
+                StructuralEvidence(
+                    check_type=StructuralCheckType.FILE_UPLOAD_BYPASS,
+                    baseline_status=_baseline_status,
+                    probe_status=second_probe.status_code,
+                    evidence_ref=f"orchestrator/file_upload{_path}",
+                ),
+            )
+
         if verdict.is_violation:
+            confirmed = corroborate_with_variant(verdict, _second_upload_attempt).corroborated
+        if confirmed and seam.last is not None:
             nid = seam.write("file_upload", seam.last, severity="high")
             if nid:
                 found.append(nid)
