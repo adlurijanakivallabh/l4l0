@@ -87,3 +87,81 @@ def test_detector_non_2xx_probe_not_confirmed() -> None:
         evidence_ref="cp/error",
     )
     assert result.confirmed is False
+
+
+# === Technique-diversity corroboration (v3 V3): a delayed third read -------
+
+
+class _SequencedRunner:
+    """Returns a different fixed verdict on each successive call."""
+
+    def __init__(self, verdicts: list) -> None:
+        self._verdicts = list(verdicts)
+
+    def __call__(self, mechanism, evidence):  # noqa: ANN001
+        return fixed_oracle_runner(self._verdicts.pop(0))(mechanism, evidence)
+
+
+def test_no_delayed_reread_configured_is_byte_for_byte_unchanged() -> None:
+    body = f'<link rel="canonical" href="https://{_MARKER}/">'
+    result = detect_cache_poisoning(
+        _prober(status=200, poisoned_body=body, reread_body=body, verdict=CONFIRMS),
+        evidence_ref="cp/single",
+    )
+    assert result.confirmed is True
+    assert result.corroborated is False
+
+
+def test_marker_still_present_in_delayed_reread_corroborates() -> None:
+    body = f'<link rel="canonical" href="https://{_MARKER}/">'
+    runner = _SequencedRunner([CONFIRMS, CONFIRMS])
+    prober = CachePoisoningProber(
+        fire_probe=lambda: CachePoisoningProbe(
+            poisoned_status=200, poisoned_body=body, reread_body=body
+        ),
+        marker=_MARKER,
+        oracle_runner=runner,
+        fire_delayed_reread=lambda: body,
+    )
+    result = detect_cache_poisoning(prober, evidence_ref="cp/corroborated")
+    assert result.confirmed is True
+    assert result.corroborated is True
+
+
+def test_marker_gone_by_delayed_reread_fails_closed() -> None:
+    """A marker present only in the immediate re-read (not a later, delayed
+    one) is exactly the 'reused the same pooled upstream connection' false
+    positive this corroboration rules out — must NOT confirm."""
+    body = f'<link rel="canonical" href="https://{_MARKER}/">'
+    runner = _SequencedRunner([CONFIRMS, INCONCLUSIVE])
+    prober = CachePoisoningProber(
+        fire_probe=lambda: CachePoisoningProbe(
+            poisoned_status=200, poisoned_body=body, reread_body=body
+        ),
+        marker=_MARKER,
+        oracle_runner=runner,
+        fire_delayed_reread=lambda: "<html>clean, marker expired</html>",
+    )
+    result = detect_cache_poisoning(prober, evidence_ref="cp/contradicted")
+    assert result.confirmed is False
+    assert result.corroborated is False
+
+
+def test_delayed_reread_never_fired_when_primary_does_not_confirm() -> None:
+    calls = {"n": 0}
+
+    def _delayed() -> str:
+        calls["n"] += 1
+        return "irrelevant"
+
+    prober = CachePoisoningProber(
+        fire_probe=lambda: CachePoisoningProbe(
+            poisoned_status=200, poisoned_body="<html>unrelated</html>", reread_body=""
+        ),
+        marker=_MARKER,
+        oracle_runner=fixed_oracle_runner(INCONCLUSIVE),
+        fire_delayed_reread=_delayed,
+    )
+    result = detect_cache_poisoning(prober, evidence_ref="cp/no-primary")
+    assert result.confirmed is False
+    assert calls["n"] == 0  # no wasted delayed probe confirming a negative

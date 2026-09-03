@@ -57,10 +57,15 @@ def test_confirms_when_marker_replayed_from_simulated_cache(monkeypatch) -> None
     builder it constructs internally.
     """
     import reachagent.oracles.llm_judgment as _llm_judgment
+    import reachagent.scan.orchestrator as _orchestrator
 
     monkeypatch.setattr(
         _llm_judgment, "build_openai_compatible_client", lambda: FixedJudgmentClient(CONFIRMS.value)
     )
+    # v3 V3: the corroborating third read sleeps a real _CACHE_REREAD_DELAY_S
+    # before firing — zero it out so this test pays no wall-clock cost for a
+    # delay whose only purpose is real-scan realism, not test correctness.
+    monkeypatch.setattr(_orchestrator, "_CACHE_REREAD_DELAY_S", 0.0)
 
     cache: dict[str, str] = {}
 
@@ -75,6 +80,12 @@ def test_confirms_when_marker_replayed_from_simulated_cache(monkeypatch) -> None
     classes = {f.vuln_class for _fid, f in findings}
     assert "web_cache_poisoning" in classes
     assert all(f.status.value == "confirmed_violation" for _fid, f in findings)
+    # v3 V3: the corroborating delayed re-read also sees the persistently
+    # cached marker (this test's own `cache` dict genuinely persists across
+    # requests, unlike a per-connection artifact) — wiring test only, the
+    # corroboration DECISION logic itself is covered in
+    # tests/phase3/test_cache_poisoning.py.
+    assert any(f.metadata.get("corroborated") == "1" for _fid, f in findings)
 
 
 def test_per_request_reflection_with_no_cache_is_not_confirmed() -> None:

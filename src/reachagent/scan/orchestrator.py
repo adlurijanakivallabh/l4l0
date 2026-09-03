@@ -29,6 +29,7 @@ import logging
 import os
 import re
 import threading
+import time
 import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
@@ -1982,6 +1983,12 @@ def run_open_redirect(
 # ---------------------------------------------------------------------------
 
 _UNKEYED_HEADER = "X-Forwarded-Host"
+# v3 V3: how long the corroborating third read waits before firing — long
+# enough that a hit can't be explained by the immediate re-read simply
+# reusing the same pooled upstream connection (a real cache entry, not a
+# per-connection artifact). A module-level constant so tests can monkeypatch
+# it down to 0 rather than paying the real delay.
+_CACHE_REREAD_DELAY_S = 2.0
 
 
 def run_cache_poisoning(
@@ -2046,19 +2053,39 @@ def run_cache_poisoning(
                 reread_body=reread.body.decode("utf-8", errors="replace") if reread else "",
             )
 
-        prober = CachePoisoningProber(fire_probe=_fire_probe, marker=marker, oracle_runner=seam.run)
+        def _fire_delayed_reread(_url: str = url, _label: str = label) -> str:
+            time.sleep(_CACHE_REREAD_DELAY_S)
+            delayed = _fire_readonly(
+                firer,
+                identity,
+                "GET",
+                _url,
+                events=events,
+                label=f"{_label}/reread-delayed",
+                headers=auth_headers,
+            )
+            return delayed.body.decode("utf-8", errors="replace") if delayed else ""
+
+        prober = CachePoisoningProber(
+            fire_probe=_fire_probe,
+            marker=marker,
+            oracle_runner=seam.run,
+            fire_delayed_reread=_fire_delayed_reread,
+        )
         result = detect_cache_poisoning(prober, evidence_ref=f"orchestrator/cache_poisoning{path}")
         if result.confirmed and seam.last is not None:
-            nid = seam.write("web_cache_poisoning", seam.last, severity="medium")
+            nid = seam.write(
+                "web_cache_poisoning",
+                seam.last,
+                severity="medium",
+                metadata={"corroborated": "1"} if result.corroborated else {},
+            )
             if nid:
                 found.append(nid)
-                _emit(
-                    events,
-                    "payloads",
-                    "finding",
-                    f"web cache poisoning — {_UNKEYED_HEADER} replayed from cache",
-                    path=path,
-                )
+                message = f"web cache poisoning — {_UNKEYED_HEADER} replayed from cache"
+                if result.corroborated:
+                    message += " (corroborated by a delayed re-read)"
+                _emit(events, "payloads", "finding", message, path=path)
 
     if not found:
         _emit(

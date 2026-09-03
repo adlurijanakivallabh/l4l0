@@ -23,6 +23,15 @@ injected marker; tests supply in-memory fakes; the live path supplies
 firer-backed implementations. The detector never imports
 ``reachagent.tools.validator`` — confirmation crosses the oracle seam (§13,
 CLAUDE.md non-negotiable).
+
+Optional technique-diversity corroboration (v3 V3): ``fire_delayed_reread``
+lets the caller wire in a THIRD, later, independent re-read of the same
+cache-busted URL — a confirmed poisoning is only trusted once the marker
+also survives into a delayed read, ruling out the immediate re-read
+coincidentally reusing the same pooled upstream connection (per-request
+reflection with no real shared-cache persistence) rather than a genuine
+cache hit. Optional and additive: when omitted (the default), behavior is
+byte-for-byte unchanged from before this was added.
 """
 
 from __future__ import annotations
@@ -30,6 +39,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from reachagent.confirmation.corroboration import corroborate_with_variant
 from reachagent.detection.oracle_gateway import OracleRunner, registry_runner
 from reachagent.oracles import OracleMechanism
 from reachagent.oracles.structural import StructuralCheckType, StructuralEvidence
@@ -52,11 +62,14 @@ class CachePoisoningProber:
     clean re-read GET against the same cache-busted URL; return both bodies.
     ``marker``: the run-unique value injected — reflection is judged against it.
     ``oracle_runner``: injectable oracle seam; defaults to registry (no validator import).
+    ``fire_delayed_reread`` (v3 V3, optional): a THIRD, later, independent
+    re-read's body — see module docstring.
     """
 
     fire_probe: Callable[[], CachePoisoningProbe]
     marker: str
     oracle_runner: OracleRunner = registry_runner
+    fire_delayed_reread: Callable[[], str] | None = None
 
 
 @dataclass(frozen=True)
@@ -65,6 +78,7 @@ class CachePoisoningResult:
 
     confirmed: bool
     evidence_ref: str = ""
+    corroborated: bool = False
 
 
 def detect_cache_poisoning(
@@ -76,6 +90,10 @@ def detect_cache_poisoning(
 
     Fires both probes and routes their bodies through the STRUCTURAL oracle's
     WEB_CACHE_POISONING branch. Read-only GETs (§10); no state is changed.
+    When ``prober.fire_delayed_reread`` is set, a confirmed poisoning is
+    corroborated against a third, delayed read before being trusted (v3 V3)
+    — a contradicted corroboration fails closed to not-confirmed, never
+    falls back to the uncorroborated result.
     """
     probe = prober.fire_probe()
     evidence = StructuralEvidence(
@@ -87,4 +105,22 @@ def detect_cache_poisoning(
         evidence_ref=evidence_ref,
     )
     verdict = prober.oracle_runner(OracleMechanism.STRUCTURAL, evidence)
-    return CachePoisoningResult(confirmed=verdict.is_violation, evidence_ref=evidence_ref)
+    if prober.fire_delayed_reread is None:
+        return CachePoisoningResult(confirmed=verdict.is_violation, evidence_ref=evidence_ref)
+
+    def _second_attempt() -> object:
+        delayed_body = prober.fire_delayed_reread()  # type: ignore[misc]
+        delayed_evidence = StructuralEvidence(
+            check_type=StructuralCheckType.WEB_CACHE_POISONING,
+            probe_status=probe.poisoned_status,
+            sentinel=prober.marker,
+            response_body=probe.poisoned_body,
+            reread_response_body=delayed_body,
+            evidence_ref=evidence_ref,
+        )
+        return prober.oracle_runner(OracleMechanism.STRUCTURAL, delayed_evidence)
+
+    result = corroborate_with_variant(verdict, _second_attempt)
+    return CachePoisoningResult(
+        confirmed=result.corroborated, evidence_ref=evidence_ref, corroborated=result.corroborated
+    )
