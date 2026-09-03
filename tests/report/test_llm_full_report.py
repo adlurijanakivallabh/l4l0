@@ -8,7 +8,7 @@ template) if even one confirmed finding_id is missing from its output.
 
 from __future__ import annotations
 
-from reachagent.graph.nodes import Finding, FindingStatus, SuspectedFinding
+from reachagent.graph.nodes import Finding, FindingStatus
 from reachagent.graph.store import ReachabilityGraph
 from reachagent.report.llm_full_report import generate_llm_authored_report
 
@@ -99,21 +99,6 @@ def test_multiple_confirmed_findings_must_all_be_present() -> None:
 
     both = _FakeClient("Report mentions finding:sqli:ev1 and finding:xss_reflected:ev2.")
     assert generate_llm_authored_report(graph, client=both) is not None
-
-
-def test_suspected_leads_are_included_in_the_prompt_but_not_required_in_output() -> None:
-    graph = _graph_with_confirmed()
-    graph.add_suspected_finding(
-        SuspectedFinding(
-            vuln_class="nosqli",
-            endpoint="/api/x",
-            location="filter",
-            source="oracle:nosqli",
-            reason="oracle_tested_no_confirmation",
-        )
-    )
-    fake = _FakeClient("finding:sqli:ev1 confirmed. No suspected leads worth noting.")
-    assert "nosqli" in _prompt_after_call(graph, fake)
 
 
 def test_never_writes_a_finding_or_touches_the_graph() -> None:

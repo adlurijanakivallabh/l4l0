@@ -1644,28 +1644,6 @@ def _finding_rows(graph: ReachabilityGraph | None) -> list[dict[str, Any]]:
     return rows
 
 
-def _suspected_rows(graph: ReachabilityGraph | None) -> list[dict[str, Any]]:
-    """The Suspected/Unconfirmed tier (W2), kept structurally apart from confirmed findings."""
-    if graph is None:
-        return []
-    rows: list[dict[str, Any]] = []
-    for sid, s in graph.suspected_findings():
-        vuln_class = getattr(s, "vuln_class", "")
-        rows.append(
-            {
-                "suspected_id": _public_text(sid, 200),
-                "vuln_class": _public_text(vuln_class, 100),
-                "endpoint": _public_text(getattr(s, "endpoint", ""), 200),
-                "location": _public_text(getattr(s, "location", ""), 120),
-                "source": _public_text(getattr(s, "source", ""), 80),
-                "reason": _public_text(getattr(s, "reason", ""), 120),
-                "severity": _public_text(getattr(s, "severity", ""), 24),
-                "description": _public_text(vuln_class_context(vuln_class)["description"], 500),
-            }
-        )
-    return rows
-
-
 @app.get("/api/scan/{scan_id}")
 def get_scan(scan_id: str) -> JSONResponse:
     with _scan_lock:
@@ -1697,7 +1675,6 @@ def get_scan(scan_id: str) -> JSONResponse:
             "audit": _audit_rows(snapshot.get("audit")),
             "graph": _graph_snapshot(graph),
             "findings": _finding_rows(graph),
-            "suspected": _suspected_rows(graph),
             "report_md": snapshot.get("report_md", ""),
             "error": _public_text(snapshot.get("error", ""), 500)
             if snapshot.get("error")

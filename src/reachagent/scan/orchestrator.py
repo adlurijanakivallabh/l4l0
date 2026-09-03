@@ -43,7 +43,7 @@ from reachagent.detection.oracle_gateway import OracleOutcome
 from reachagent.execution.audit import AuditLog
 from reachagent.execution.firer import RequestFirer
 from reachagent.execution.scope import ScopeGuard
-from reachagent.graph.nodes import Endpoint, Finding, SinkType, SuspectedFinding
+from reachagent.graph.nodes import Endpoint, Finding, SinkType
 from reachagent.graph.store import ReachabilityGraph, identity_id
 from reachagent.oracles import OracleMechanism
 from reachagent.oracles.base import OracleVerdict
@@ -362,39 +362,6 @@ class _ValidatorSeam:
     def last(self) -> OracleVerdict | None:
         """The most recent oracle verdict — the one a multi-probe detector confirmed on."""
         return self._last
-
-    def record_suspected(
-        self,
-        vuln_class: str,
-        *,
-        endpoint: str = "",
-        location: str = "",
-        source: str = "",
-        reason: str = "",
-        evidence: str = "",
-        severity: str = "info",
-        confidence: str = "",
-    ) -> str:
-        """Record a tried-but-unconfirmed lead into the Suspected tier (Build Order v2 W2).
-
-        The honest counterpart to :meth:`write` — called when a candidate was genuinely probed
-        but the oracle did NOT confirm it (or a signal-gated scanner claimed it and the oracle
-        couldn't re-prove it). Writes a structurally-separate ``SuspectedFinding`` node, never a
-        ``Finding`` — so the "no Finding without run_oracle" guarantee is untouched. Idempotent
-        (dedups on class/endpoint/location/source), advisory-only, never counted as confirmed.
-        """
-        return self.graph.add_suspected_finding(
-            SuspectedFinding(
-                vuln_class=vuln_class,
-                endpoint=endpoint,
-                location=location,
-                source=source or "oracle",
-                reason=reason,
-                evidence=evidence,
-                severity=severity,
-                confidence=confidence,
-            )
-        )
 
     def write(
         self,
@@ -3735,27 +3702,19 @@ def _make_signal_reconfirm(
         )
 
     def _suspect(candidate: Any, reason: str) -> None:
-        # W2: a signal-gated tool (nuclei/sqlmap/dalfox) CLAIMED this, but the oracle did not
-        # (or could not) independently confirm it. Never a Finding — surface it as a suspected
-        # lead for manual review instead of silently dropping the tool's claim on the floor.
-        try:
-            graph.add_suspected_finding(
-                SuspectedFinding(
-                    vuln_class=str(candidate.vuln_class),
-                    endpoint=str(getattr(candidate, "endpoint_node", "")),
-                    location=str(getattr(candidate, "param_node", "") or ""),
-                    source="signal-gated-tool",
-                    reason=reason,
-                    severity="info",
-                )
-            )
-        except Exception as exc:  # noqa: BLE001 — a suspected-tier write must never break the scan
-            _emit(
-                events,
-                "verification",
-                "error",
-                f"suspected-tier write skipped: {type(exc).__name__}",
-            )
+        # v4 R1: an external tool CLAIMED this, but the agent's own judgment call
+        # (run via reconfirm_candidate's run_oracle, when reached) did not confirm
+        # it — or couldn't even be reached (no re-check builder, a probe error).
+        # That's a real "no", exactly like any other routine non-confirm in this
+        # codebase — dropped, not written as any kind of node. Kept as an event
+        # for operator visibility/audit, same as every other non-confirm.
+        _emit(
+            events,
+            "verification",
+            "info",
+            f"{candidate.vuln_class} claim by an external tool not independently "
+            f"confirmed: {reason}",
+        )
 
     def _reconfirm(candidate: Any) -> object:
         builder = _RECONFIRM_BUILDERS.get((candidate.vuln_class, candidate.suggested_oracle))

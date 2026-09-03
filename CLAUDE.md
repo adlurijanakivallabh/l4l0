@@ -35,14 +35,14 @@ gate removed as the explicit, informed tradeoff the operator chose.
   confirmation isn't a single self-attestation the way a naive LLM-only
   agent's is — see the v3 plan's "What changes with the oracle removed" for
   the full design and rationale.
-- **Confirmed vs. Suspected**: a finding that completed the full multi-stage
-  pipeline (corroborated across multiple real attempts) is `Finding`
-  (confirmed). A lead that only got a single-shot judgment, or an external
-  tool's claim (Burp/nuclei/sqlmap/etc.) that hasn't been run through the
-  pipeline yet, stays `SuspectedFinding` — a structurally separate node type
-  (like `StaticAdvisory`), never blended into confirmed severity stats,
-  always its own labelled report section. Do not add a third non-Finding
-  tier without updating the plan.
+- **Single-tier findings (v4 R1, superseding the "Confirmed vs. Suspected"
+  split this section previously described):** the `SuspectedFinding` node
+  type is removed. Every judgment call — an evidence-grounded probe or a
+  broader surface-shape review — goes through the same `judge()`/`run_oracle`
+  seam, and a `confirmed_violation` verdict is a real `Finding`, full stop.
+  There is no second, permanently-unconfirmed tier. `StaticAdvisory` (a
+  known-CVE manifest match from the white-box pass) is unrelated and
+  unchanged — it was never an LLM judgment call, just a static fact.
 - **Role separation still holds, updated for the new decision process**:
   Explorer proposes candidates and never writes findings. Coordinator never
   fires requests or writes findings. Only the Validator runs the multi-stage

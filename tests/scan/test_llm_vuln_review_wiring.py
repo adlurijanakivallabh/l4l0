@@ -129,15 +129,23 @@ def test_llm_vuln_review_failure_never_aborts_the_scan(monkeypatch) -> None:  # 
     assert any("LLM vulnerability review" in e.message and "failed" in e.message for e in events)
 
 
-def test_llm_vuln_review_new_leads_land_in_the_scans_graph_as_suspected_only(
+def test_llm_vuln_review_new_leads_land_in_the_scans_graph_as_real_findings(
     monkeypatch,  # noqa: ANN001
 ) -> None:
-    from reachagent.graph.nodes import SuspectedFinding
+    """v4 R1: the review's own confirmed leads are real Findings in the scan's
+    graph — the same graph scan_all_classes returns, not a separate tier."""
+    from reachagent.graph.nodes import Finding, FindingStatus
     from reachagent.payloads import PayloadLibrary
 
     def fake_review(*, graph, client=None, events=None):  # noqa: ANN001
-        graph.add_suspected_finding(
-            SuspectedFinding(vuln_class="idor", endpoint="/x", source="llm_judgment")
+        graph.add_finding(
+            Finding(
+                vuln_class="idor",
+                severity="high",
+                oracle_used="structural",
+                evidence_ref="llm-vuln-review/idor/x",
+                status=FindingStatus.CONFIRMED_VIOLATION,
+            )
         )
         return 1
 
@@ -153,6 +161,5 @@ def test_llm_vuln_review_new_leads_land_in_the_scans_graph_as_suspected_only(
         control_client=_FakeAdvisor(),
     )
 
-    classes = {s.vuln_class for _sid, s in result["graph"].suspected_findings()}
+    classes = {f.vuln_class for _fid, f in result["graph"].findings()}
     assert "idor" in classes
-    assert result["graph"].findings() == []  # never a Finding

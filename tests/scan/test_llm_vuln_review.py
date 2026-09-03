@@ -1,10 +1,12 @@
-"""LLM-driven vulnerability review (v2, operator-requested).
+"""LLM-driven vulnerability review (v4 R1).
 
-Shannon/Strix-style LLM judgment over the discovered surface — but the ONLY place its
-output can land is the structurally-separate Suspected/Unconfirmed tier, never a
-`Finding`. This is the hard boundary under test throughout: no matter what the LLM
-returns, `run_llm_vulnerability_review` must never touch `graph.add_finding`/
-`write_finding`/`run_oracle`, and must fail open to zero leads on any error.
+A broad surface-shape survey proposes leads; each proposed lead is then
+independently confirmed through the real `run_oracle`/`judge()` seam before
+anything is written — no separate lower-confidence tier. The fake client
+below answers differently depending on which of the two calls it's serving
+(the survey call names "Discovered surface:"; the per-lead confirmation call
+is `judge()`'s own prompt, which names "Mechanism family:") so both stages
+are genuinely exercised, not just the first one.
 """
 
 from __future__ import annotations
@@ -17,13 +19,18 @@ from reachagent.scan.llm_vuln_review import run_llm_vulnerability_review
 
 
 class _FakeClient:
-    def __init__(self, reply: dict) -> None:
-        self.reply = reply
+    def __init__(self, leads_reply: dict, *, confirm_status: str = "confirmed_violation") -> None:
+        self.leads_reply = leads_reply
+        self.confirm_status = confirm_status
         self.seen_prompt = ""
+        self.confirm_prompts: list[str] = []
 
     def propose_json(self, prompt: str, *, max_tokens: int = 1500) -> dict:
+        if "Mechanism family:" in prompt:  # judge()'s own confirmation call
+            self.confirm_prompts.append(prompt)
+            return {"status": self.confirm_status, "reason": "matches the surface context given"}
         self.seen_prompt = prompt
-        return self.reply
+        return self.leads_reply
 
 
 def _graph_with_surface() -> ReachabilityGraph:
@@ -34,7 +41,7 @@ def _graph_with_surface() -> ReachabilityGraph:
     return g
 
 
-def test_review_writes_a_suspected_finding_never_a_finding() -> None:
+def test_review_writes_a_real_finding_once_confirmed() -> None:
     g = _graph_with_surface()
     fake = _FakeClient(
         {
@@ -51,19 +58,33 @@ def test_review_writes_a_suspected_finding_never_a_finding() -> None:
     )
     written = run_llm_vulnerability_review(graph=g, client=fake)
     assert written == 1
-    assert g.findings() == []  # never a Finding
-    suspected = g.suspected_findings()
-    assert len(suspected) == 1
-    _sid, lead = suspected[0]
-    assert lead.vuln_class == "bola"
-    assert lead.source == "llm_judgment"
-    assert lead.severity == "high"
+    findings = g.findings()
+    assert len(findings) == 1
+    _fid, finding = findings[0]
+    assert finding.vuln_class == "bola"
+    assert finding.status is FindingStatus.CONFIRMED_VIOLATION
+    assert finding.oracle_used == "structural"
     assert "invoices" in fake.seen_prompt  # the real surface was actually sent
+    assert len(fake.confirm_prompts) == 1  # the lead really was independently confirmed
 
 
-def test_review_emits_one_event_per_lead_not_a_silent_batch() -> None:
+def test_review_drops_a_lead_whose_confirmation_does_not_hold_up() -> None:
+    """The survey proposing something is not enough on its own — confirmation can
+    still say no, and that lead must not become a Finding."""
+    g = _graph_with_surface()
+    fake = _FakeClient(
+        {"leads": [{"vuln_class": "bola", "endpoint": "/a", "reason": "r", "severity": "high"}]},
+        confirm_status="inconclusive",
+    )
+    written = run_llm_vulnerability_review(graph=g, client=fake)
+    assert written == 0
+    assert g.findings() == []
+    assert len(fake.confirm_prompts) == 1  # confirmation was genuinely attempted
+
+
+def test_review_emits_one_event_per_confirmed_finding_not_a_silent_batch() -> None:
     """Operator feedback: leads only ever became visible via the next full-graph
-    poll, reading as everything showing up at once. Each written lead must now
+    poll, reading as everything showing up at once. Each written finding must now
     carry its own live event, the same as every other driver's finding events."""
     from reachagent.scan.orchestrator import ScanEvent
 
@@ -79,10 +100,10 @@ def test_review_emits_one_event_per_lead_not_a_silent_batch() -> None:
     events: list[ScanEvent] = []
     written = run_llm_vulnerability_review(graph=g, client=fake, events=events)
     assert written == 2
-    lead_events = [e for e in events if "suspected lead" in e.message]
-    assert len(lead_events) == 2
-    assert any("bola" in e.message and "/a" in e.message for e in lead_events)
-    assert any("ssrf" in e.message and "/b" in e.message for e in lead_events)
+    finding_events = [e for e in events if e.kind == "finding"]
+    assert len(finding_events) == 2
+    assert any("bola" in e.message and "/a" in e.message for e in finding_events)
+    assert any("ssrf" in e.message and "/b" in e.message for e in finding_events)
 
 
 def test_review_without_events_param_still_works() -> None:
@@ -98,7 +119,32 @@ def test_review_fails_open_on_provider_error() -> None:
 
     g = _graph_with_surface()
     assert run_llm_vulnerability_review(graph=g, client=Boom()) == 0
-    assert g.suspected_findings() == []
+    assert g.findings() == []
+
+
+def test_review_one_lead_confirmation_failure_does_not_abort_the_rest() -> None:
+    """One lead's own confirmation call raising must not lose every other lead."""
+
+    class _FlakyConfirm:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def propose_json(self, prompt: str, *, max_tokens: int = 1500) -> dict:
+            if "Mechanism family:" not in prompt:
+                return {
+                    "leads": [
+                        {"vuln_class": "bola", "endpoint": "/a", "reason": "r1"},
+                        {"vuln_class": "ssrf", "endpoint": "/b", "reason": "r2"},
+                    ]
+                }
+            self.calls += 1
+            if self.calls == 1:
+                raise RuntimeError("transient provider error")
+            return {"status": "confirmed_violation", "reason": "ok"}
+
+    g = _graph_with_surface()
+    written = run_llm_vulnerability_review(graph=g, client=_FlakyConfirm())
+    assert written == 1  # the second lead still confirmed despite the first's failure
 
 
 def test_review_empty_graph_is_a_no_op() -> None:
@@ -110,7 +156,7 @@ def test_review_ignores_a_malformed_reply() -> None:
     g = _graph_with_surface()
     for bad_reply in ({"leads": "not-a-list"}, {"nope": []}, {}):
         assert run_llm_vulnerability_review(graph=g, client=_FakeClient(bad_reply)) == 0
-    assert g.suspected_findings() == []
+    assert g.findings() == []
 
 
 def test_review_drops_a_lead_with_no_vuln_class() -> None:
@@ -133,11 +179,11 @@ def test_review_invalid_severity_defaults_to_info() -> None:
         {"leads": [{"vuln_class": "xss_reflected", "endpoint": "/e", "severity": "apocalyptic"}]}
     )
     run_llm_vulnerability_review(graph=g, client=fake)
-    _sid, lead = g.suspected_findings()[0]
-    assert lead.severity == "info"
+    _fid, finding = g.findings()[0]
+    assert finding.severity == "info"
 
 
-def test_review_prompt_excludes_already_confirmed_and_suspected_from_repetition() -> None:
+def test_review_prompt_excludes_already_confirmed_from_repetition() -> None:
     g = _graph_with_surface()
     g.add_finding(
         Finding(

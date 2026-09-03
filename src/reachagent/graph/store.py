@@ -48,7 +48,6 @@ from reachagent.graph.nodes import (
     SinkType,
     SourceFile,
     StaticAdvisory,
-    SuspectedFinding,
 )
 from reachagent.oracles import evidence as _evidence
 
@@ -220,12 +219,6 @@ def secret_id(path: str, line: int, detector: str) -> str:
 def static_advisory_id(ecosystem: str, package: str, version: str, cve_id: str) -> str:
     """Stable id for a :class:`StaticAdvisory` known-CVE match (§6, Build Order 7)."""
     return f"static_advisory:{ecosystem}:{package}:{version}:{cve_id}"
-
-
-def suspected_finding_id(vuln_class: str, endpoint: str, location: str, source: str) -> str:
-    """Stable id for a :class:`SuspectedFinding` lead (Build Order v2 W2). Idempotent so the
-    same unconfirmed lead probed twice collapses to one node."""
-    return f"suspected:{vuln_class}:{endpoint}:{location}:{source}"
 
 
 def _merge_host(existing: Host, incoming: Host) -> Host:
@@ -478,17 +471,6 @@ class ReachabilityGraph:
             advisory.ecosystem, advisory.package, advisory.version, advisory.cve_id
         )
         self._g.add_node(node, **{_KIND: "static_advisory", _DATA: advisory})
-        return node
-
-    def add_suspected_finding(self, suspected: SuspectedFinding) -> str:
-        """Record a tried-but-unconfirmed lead (Build Order v2 W2). Deliberately never touches
-        ``Finding``/``add_finding``: a structurally distinct node type, so "no Finding without
-        run_oracle" holds by construction. Idempotent, keyed by
-        ``(vuln_class, endpoint, location, source)``."""
-        node = suspected_finding_id(
-            suspected.vuln_class, suspected.endpoint, suspected.location, suspected.source
-        )
-        self._g.add_node(node, **{_KIND: "suspected_finding", _DATA: suspected})
         return node
 
     def add_resolves_to(self, host_node: str, endpoint_node: str) -> None:
@@ -754,11 +736,6 @@ class ReachabilityGraph:
         """All known-CVE-dependency nodes as ``(id, StaticAdvisory)`` pairs. Never a
         ``Finding`` — see :meth:`add_static_advisory`."""
         return [(n, d) for n, d in self._nodes_of_kind("static_advisory")]  # type: ignore[misc]
-
-    def suspected_findings(self) -> list[tuple[str, SuspectedFinding]]:
-        """All tried-but-unconfirmed leads as ``(id, SuspectedFinding)`` pairs. Never a
-        ``Finding`` — see :meth:`add_suspected_finding`."""
-        return [(n, d) for n, d in self._nodes_of_kind("suspected_finding")]  # type: ignore[misc]
 
     def host(self, host_node: str) -> Host:
         """The :class:`Host` dataclass stored at ``host_node``."""

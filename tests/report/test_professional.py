@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from unittest.mock import Mock
 
-from reachagent.graph.nodes import Finding, FindingStatus, SuspectedFinding
+from reachagent.graph.nodes import Finding, FindingStatus
 from reachagent.graph.store import ReachabilityGraph
 from reachagent.report.professional import methodology_markdown, render_professional_report_markdown
 
@@ -48,30 +48,12 @@ def test_report_includes_a_real_methodology_section() -> None:
     assert out.index("## Methodology") < out.index("## Confirmed Vulnerabilities")
 
 
-def test_methodology_mentions_llm_leads_only_when_any_exist() -> None:
-    graph = ReachabilityGraph()
-    without = methodology_markdown(graph, target="http://x.test")
-    assert "LLM surface-judgment pass" not in without
-
-    graph.add_suspected_finding(
-        SuspectedFinding(
-            vuln_class="idor",
-            endpoint="/api/orders/{id}",
-            location="id",
-            source="llm_judgment",
-            reason="flagged by LLM surface review",
-            severity="medium",
-            confidence="advisory — not oracle-verified",
-        )
-    )
-    with_lead = methodology_markdown(graph, target="http://x.test")
-    assert "LLM surface-judgment pass" in with_lead
-    assert "1 lead(s)" in with_lead
-
-
-def test_methodology_never_confuses_oracle_proof_with_llm_judgment() -> None:
+def test_methodology_states_a_single_confirmation_bar() -> None:
+    """v4 R1: there is no separate lower-confidence tier — the methodology text
+    must say so plainly, not carry over the old two-tier "never decide" language."""
     out = methodology_markdown(ReachabilityGraph())
-    assert "never to decide that a finding is confirmed" in out
+    assert "no separate lower-confidence tier" in out
+    assert "never to decide that a finding is confirmed" not in out
 
 
 def test_confirmed_finding_gets_full_structured_section() -> None:

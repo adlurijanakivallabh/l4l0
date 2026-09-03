@@ -1537,31 +1537,6 @@ def test_cancel_is_idempotent_and_reports_a_distinct_cancelling_lifecycle() -> N
         _scans.pop(scan_id, None)
 
 
-def test_scan_snapshot_exposes_suspected_tier_separate_from_findings() -> None:
-    from reachagent.graph.nodes import SuspectedFinding
-
-    graph = ReachabilityGraph()
-    graph.add_suspected_finding(
-        SuspectedFinding(
-            vuln_class="sqli",
-            endpoint="/login",
-            location="user",
-            source="signal-gated-tool",
-            reason="scanner_claim_unverified",
-        )
-    )
-    scan_id = "suspected-slice"
-    _scans[scan_id] = {"graph": graph, "status": "done", "events": [], "findings": []}
-    try:
-        j = TestClient(app).get(f"/api/scan/{scan_id}").json()
-        assert j["findings"] == []
-        assert len(j["suspected"]) == 1
-        assert j["suspected"][0]["vuln_class"] == "sqli"
-        assert j["suspected"][0]["reason"] == "scanner_claim_unverified"
-    finally:
-        _scans.pop(scan_id, None)
-
-
 def test_scan_endpoint_passes_aggressive_flag_as_env_override(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

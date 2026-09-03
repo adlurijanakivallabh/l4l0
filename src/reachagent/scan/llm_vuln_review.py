@@ -1,32 +1,37 @@
-"""LLM-driven vulnerability review (v2, operator-requested) — Shannon/Strix-style LLM
-judgment, WITHOUT weakening "no Finding without run_oracle".
+"""LLM-driven vulnerability review (v4 R1) — a broad surface-shape survey whose
+own judgment is now a real confirmed finding when it holds up under confirmation.
 
-The reference projects (Shannon, Strix, CAI, ...) let an LLM look at a target's surface
-and directly decide "this is vulnerable" — their own code shows this is literal
-self-attestation (e.g. Shannon's exploit validator is ``async () => true``). ReachAgent
-keeps the deterministic-oracle proof gate (CLAUDE.md non-negotiable, kept deliberately
-after this project's own research into those references), so this module gives the LLM
-that same judgment call, but its output can only ever land in the structurally-separate
-``SuspectedFinding`` tier — exactly like a signal-gated scanner's unverified claim
-(``_make_signal_reconfirm``'s ``_suspect`` helper) or a white-box ``StaticAdvisory``. It
-NEVER calls ``run_oracle``/``write_finding``/``add_finding``, and is rendered in the
-report's permanently separate "Suspected / Unconfirmed (not oracle-verified)" section,
-never counted in confirmed severity stats.
+This module lets an LLM look at a target's discovered surface and propose
+specific things it believes are vulnerable, the same broad judgment style
+common to autonomous pentest agents generally. ReachAgent's own `run_oracle`
+seam already made this move for every other detector: `judge()`
+(`oracles/llm_judgment.py`) has full, unconditional decision authority — no
+fixed `decide()` logic left anywhere. This module used to carve out an
+exception for its OWN broad survey judgment, writing a permanently-unconfirmed
+tier instead of ever calling `run_oracle` — an inconsistency the operator
+explicitly overrode (v4 R1): every LLM judgment is a real, confirmed finding,
+this one included, one findings list.
+
+Two-stage, same as before: one bounded survey call proposes up to `_MAX_ITEMS` specific
+leads from the discovered surface shape; each proposed lead then gets its own real
+`run_oracle` judgment call (`oracles/surface_judgment.py::SurfaceJudgmentEvidence`) before
+anything is written — the survey call alone was never enough to write a Finding, exactly
+the same two-step shape every other signal-gated candidate in this codebase already uses
+(a source proposes, `run_oracle` decides).
 
 Called at two bounded points in a scan (a structural surface digest — paths/methods/
-params/sink types/app-domain/tech — plus what is already confirmed/suspected, so it
-doesn't repeat them), reasoning the same way a human pentester would from surface shape
-alone: once after recon/surface-mapping (before Phase 3 vulnerability testing starts),
-so a first batch of leads is visible live well before the report phase, and once more
-after Phase 3 confirms its own findings, so the final review sees the fuller surface and
-the now-populated confirmed list. Each call passes the OTHER call's own leads through
-"already SUSPECTED" so the two passes don't repeat each other (operator feedback: leads
+params/sink types/app-domain/tech — plus what is already confirmed, so it doesn't repeat
+itself): once after recon/surface-mapping (before Phase 3 vulnerability testing starts),
+so a first batch is visible live well before the report phase, and once more after Phase 3
+confirms its own findings, so the final review sees the fuller surface and the now-larger
+confirmed list. Each call passes the OTHER call's own already-confirmed findings through
+"already CONFIRMED" so the two passes don't repeat each other (operator feedback: leads
 were previously all written in one silent batch at the very end of the scan, reading as
 "dumped at once" rather than found live).
 **Disclosed limit**: this reviews structure, not live response content — ReachAgent's
 audit trail deliberately never persists response bodies (secrets/privacy), so this is
 not a review of actual traffic the way a human manually reading responses would do.
-Fails open (empty / no leads) on any error, exactly like ``classify_app_domain``.
+Fails open (nothing written) on any error, exactly like ``classify_app_domain``.
 """
 
 from __future__ import annotations
@@ -34,9 +39,12 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from reachagent.graph.nodes import SuspectedFinding
+from reachagent.graph.nodes import Finding
 from reachagent.graph.store import ReachabilityGraph
 from reachagent.llm.client import build_openai_compatible_client
+from reachagent.oracles import OracleMechanism
+from reachagent.oracles.surface_judgment import SurfaceJudgmentEvidence
+from reachagent.tools import validator
 
 if TYPE_CHECKING:
     from reachagent.scan.orchestrator import ScanEvent
@@ -50,20 +58,18 @@ _VALID_SEVERITIES = frozenset({"critical", "high", "medium", "low", "info"})
 
 _PROMPT = (
     "You are an experienced web/API pentester reviewing a scan's discovered surface for an "
-    "AUTHORIZED assessment. A separate deterministic verifier has ALREADY independently "
-    "confirmed the findings listed as CONFIRMED below — do not repeat those, and do not "
-    "repeat anything already listed as SUSPECTED. Based on your own judgment (naming "
-    "conventions, parameter shapes, missing controls, what this kind of application "
-    "usually gets wrong), flag up to {max_items} SPECIFIC things you suspect could be "
-    "vulnerabilities and are worth a human testing by hand. Name the actual endpoint/"
-    "parameter — never a generic category with no target. This is advisory only: it will "
-    "be shown as 'Suspected, not oracle-verified', never as a proven finding.\n\n"
+    "AUTHORIZED assessment. Findings listed as CONFIRMED below are already proven — do not "
+    "repeat those. Based on your own judgment (naming conventions, parameter shapes, missing "
+    "controls, what this kind of application usually gets wrong), flag up to {max_items} "
+    "SPECIFIC things you believe are real vulnerabilities, worth reporting. Name the actual "
+    "endpoint/parameter — never a generic category with no target. Each one you name will be "
+    "independently judged against this same context before being reported — only name things "
+    "you're actually confident hold up.\n\n"
     'Reply ONLY as JSON: {{"leads": [{{"vuln_class": "...", "endpoint": "...", '
     '"location": "...", "reason": "one short sentence", "severity": '
     '"critical|high|medium|low|info"}}]}} (empty list if nothing stands out).\n\n'
     "Application: {app_domain}\n\n"
     "CONFIRMED (do not repeat):\n{confirmed}\n\n"
-    "Already SUSPECTED (do not repeat):\n{already_suspected}\n\n"
     "Discovered surface:\n{surface}"
 )
 
@@ -101,15 +107,18 @@ def run_llm_vulnerability_review(
     client: object | None = None,
     events: list[ScanEvent] | None = None,
 ) -> int:
-    """One bounded LLM pass proposing Suspected leads from surface judgment alone.
+    """One bounded LLM survey pass, each lead independently confirmed before writing.
 
-    Returns the number of new ``SuspectedFinding`` nodes written (0 on any failure, an
-    empty model reply, or when nothing was discovered yet). ``client`` (any object
-    exposing ``propose_json``) is injectable for tests. ``events``, when given, gets one
-    event PER lead as it's written (not just a final count) — operator feedback: leads
-    only ever showed up via the next GUI poll re-reading the whole graph, reading as a
-    silent batch dump rather than something found live, the same class of gap every
-    other driver in this codebase already avoids by emitting its own per-item event.
+    Returns the number of new ``Finding`` nodes written (0 on any failure, an empty
+    model reply, when nothing was discovered yet, or when no proposed lead's own
+    confirmation judgment holds up). ``client`` (any object exposing ``propose_json``)
+    is injectable for tests, and reused for BOTH the survey call and every per-lead
+    confirmation call in this pass (one client, not one build per lead). ``events``,
+    when given, gets one event PER confirmed finding as it's written (not just a final
+    count) — operator feedback: leads only ever showed up via the next GUI poll
+    re-reading the whole graph, reading as a silent batch dump rather than something
+    found live, the same class of gap every other driver in this codebase already
+    avoids by emitting its own per-item event.
     """
     if not list(graph.endpoints()):
         return 0
@@ -117,9 +126,7 @@ def run_llm_vulnerability_review(
     confirmed = _findings_digest(
         [f"{f.vuln_class}: {f.evidence_ref[:120]}" for _fid, f in graph.findings()]
     )
-    already_suspected = _findings_digest(
-        [f"{s.vuln_class}: {s.endpoint} ({s.location})" for _sid, s in graph.suspected_findings()]
-    )
+    surface = _surface_digest(graph)
     try:
         reviewer = client if client is not None else build_openai_compatible_client()
         if reviewer is None:
@@ -129,8 +136,7 @@ def run_llm_vulnerability_review(
                 max_items=_MAX_ITEMS,
                 app_domain=app_domain,
                 confirmed=confirmed,
-                already_suspected=already_suspected,
-                surface=_surface_digest(graph),
+                surface=surface,
             ),
             max_tokens=1500,
         )
@@ -153,17 +159,24 @@ def run_llm_vulnerability_review(
         if severity not in _VALID_SEVERITIES:
             severity = "info"
         reason = _clean(raw.get("reason")) or "flagged by LLM surface review"
-        graph.add_suspected_finding(
-            SuspectedFinding(
-                vuln_class=vuln_class,
-                endpoint=endpoint,
-                location=location,
-                source="llm_judgment",
-                reason=reason,
-                severity=severity,
-                confidence="advisory — not oracle-verified",
-            )
+        evidence = SurfaceJudgmentEvidence(
+            vuln_class=vuln_class,
+            endpoint=endpoint,
+            location=location,
+            reason=reason,
+            surface_context=surface,
+            evidence_ref=f"llm-vuln-review/{vuln_class}/{endpoint or 'unspecified'}",
         )
+        try:
+            verdict = validator.run_oracle(OracleMechanism.STRUCTURAL, evidence, client=reviewer)
+        except Exception as exc:  # noqa: BLE001 — one lead's confirmation failing must not
+            # abort the rest of the review pass.
+            _log.warning("surface-judgment confirmation failed (%s); lead dropped", exc)
+            continue
+        if not verdict.is_violation:
+            continue  # the LLM's own confirmation judgment did not hold up — dropped, not written
+        finding = Finding(vuln_class=vuln_class, severity=severity, oracle_used="", evidence_ref="")
+        node_id = validator.write_finding(graph, finding, verdict)
         written += 1
         if events is not None:
             from reachagent.scan.orchestrator import ScanEvent as _ScanEvent
@@ -171,12 +184,11 @@ def run_llm_vulnerability_review(
             events.append(
                 _ScanEvent(
                     phase="payloads",
-                    kind="info",
+                    kind="finding",
                     message=(
-                        f"LLM suspected lead: {vuln_class} at {endpoint or '(unspecified)'}"
-                        f" — {reason}"
+                        f"LLM review confirmed: {vuln_class} at {endpoint or '(unspecified)'}"
                     ),
-                    details={"path": endpoint, "severity": severity},
+                    details={"path": endpoint, "severity": severity, "finding": node_id},
                 )
             )
     return written

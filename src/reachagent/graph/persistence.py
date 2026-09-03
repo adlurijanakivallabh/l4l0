@@ -91,7 +91,6 @@ from reachagent.graph.nodes import (
     SinkType,
     SourceFile,
     StaticAdvisory,
-    SuspectedFinding,
 )
 from reachagent.graph.store import (
     _DATA,
@@ -133,7 +132,6 @@ _NODE_CLASSES: dict[str, type] = {
     "package_dependency": PackageDependency,
     "secret": Secret,
     "static_advisory": StaticAdvisory,
-    "suspected_finding": SuspectedFinding,
 }
 
 # kind → {field: enum type} for StrEnum fields, re-coerced on load (JSON gives

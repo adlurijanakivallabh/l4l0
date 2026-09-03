@@ -530,7 +530,7 @@ function renderScanSnapshot(j) {
   updateChatHeader(j);
   renderPendingConfirmationBubble(j);
   renderMetrics(j.graph);
-  renderFindingsList(j.findings, j.suspected);
+  renderFindingsList(j.findings);
   renderSurfaceTree(j.graph && j.graph.available ? null : null); // surface fetched separately below
   fetchSurface();
   renderAuditList(j.audit);
@@ -811,8 +811,8 @@ function buildChainRows(chains) {
 // elsewhere in this file, so opening a finding for detail is a familiar interaction.
 // A short entrance animation plays once, staggered by `index` (--i), the first time a
 // card is created; polling never recreates an existing card (see the signature guard in
-// renderFindingsList/renderSuspectedInto below), so an operator's expanded card survives
-// every subsequent poll instead of snapping shut every ~1s.
+// renderFindingsList below), so an operator's expanded card survives every subsequent
+// poll instead of snapping shut every ~1s.
 // Real captured proof (v2 Phase 6 Stage E1) — a bounded, already secret-scrubbed
 // response snippet an oracle captured at decision time, not just the opaque
 // evidence_ref handle string. Differential-family findings get a baseline-vs-probe
@@ -919,81 +919,30 @@ function buildFindingCard(f, index) {
   return card;
 }
 
-function buildSuspectedCard(s, index) {
-  const card = document.createElement("details");
-  card.className = "fcard suspected";
-  card.style.setProperty("--i", index);
-  const summary = document.createElement("summary");
-  summary.className = "fhead";
-  const cls = document.createElement("span");
-  cls.className = "fclass";
-  cls.textContent = s.vuln_class || "suspected";
-  const sev = document.createElement("span");
-  sev.className = "fsev";
-  sev.textContent = "unconfirmed";
-  summary.append(cls, sev);
-  card.appendChild(summary);
-
-  const body = document.createElement("div");
-  body.className = "fbody";
-  if (s.description) {
-    const p = document.createElement("p");
-    p.className = "fdesc";
-    p.textContent = s.description;
-    body.appendChild(p);
-  }
-  const meta = document.createElement("div");
-  meta.className = "fmeta";
-  addMetaRow(meta, "Endpoint", s.endpoint);
-  addMetaRow(meta, "Location", s.location);
-  addMetaRow(meta, "Source", s.source);
-  addMetaRow(meta, "Why unconfirmed", s.reason);
-  body.appendChild(meta);
-  card.appendChild(body);
-  return card;
-}
-
-function renderSuspectedInto(box, suspected, startIndex) {
-  // W2: the Suspected/Unconfirmed tier, rendered visibly SEPARATE from confirmed findings —
-  // leads the oracle didn't prove, for manual review, never counted as confirmed.
-  if (!suspected || !suspected.length) return;
-  const divider = document.createElement("div");
-  divider.className = "suspected-divider";
-  divider.textContent = "Suspected / Unconfirmed — " + suspected.length + " (not oracle-verified)";
-  box.appendChild(divider);
-  suspected.forEach((s, i) => box.appendChild(buildSuspectedCard(s, startIndex + i)));
-}
-
 let _findingsSignature = null;
 
-function renderFindingsList(findings, suspected) {
+function renderFindingsList(findings) {
   const box = $("findings-list");
   if (findings === null) {
     _findingsSignature = null;
     box.innerHTML = "";
     return;
   }
-  if ((!findings || !findings.length) && (!suspected || !suspected.length)) {
-    _findingsSignature = "0:0";
-    box.innerHTML = '<div class="empty">No oracle-confirmed findings yet.</div>';
+  if (!findings || !findings.length) {
+    _findingsSignature = "0";
+    box.innerHTML = '<div class="empty">No confirmed findings yet.</div>';
     return;
   }
-  // Polling re-fetches the full list every ~1s; findings/suspected leads are add-only
-  // and immutable once written, so a count signature is a sufficient, cheap diff — skip
-  // the rebuild entirely when nothing changed, so an operator-expanded <details> card
-  // (and scroll position) survive the next poll instead of resetting every second.
-  const signature = (findings || []).length + ":" + (suspected || []).length;
+  // Polling re-fetches the full list every ~1s; findings are add-only and
+  // immutable once written, so a count signature is a sufficient, cheap diff —
+  // skip the rebuild entirely when nothing changed, so an operator-expanded
+  // <details> card (and scroll position) survive the next poll instead of
+  // resetting every second.
+  const signature = String(findings.length);
   if (signature === _findingsSignature) return;
   _findingsSignature = signature;
   box.innerHTML = "";
-  if (!findings || !findings.length) {
-    const note = document.createElement("div");
-    note.className = "empty";
-    note.textContent = "No oracle-confirmed findings yet.";
-    box.appendChild(note);
-  }
-  (findings || []).forEach((f, i) => box.appendChild(buildFindingCard(f, i)));
-  renderSuspectedInto(box, suspected, (findings || []).length);
+  findings.forEach((f, i) => box.appendChild(buildFindingCard(f, i)));
 }
 
 let _surfaceSignature = null;

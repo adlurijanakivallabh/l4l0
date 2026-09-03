@@ -3,8 +3,8 @@
 Unlike ``generate_narrative`` (the LLM writes only the executive-summary prose over
 a fixed template, in ``report/llm_report.py``), this hands the LLM full creative
 authority over structure, the executive summary, per-finding narrative (description,
-risk, affected system, remediation), prioritization/ordering, and how it presents the
-Suspected/Unconfirmed section — a genuinely LLM-authored report, not slot-filling.
+risk, affected system, remediation), and prioritization/ordering — a genuinely
+LLM-authored report, not slot-filling.
 
 **The one hard boundary (CLAUDE.md's non-negotiable, unchanged): the LLM cannot
 invent a CONFIRMED finding.** The confirmed-findings list and their evidence are
@@ -42,9 +42,8 @@ _MAX_CONTEXT_CHARS = 12_000
 _FULL_REPORT_PROMPT = """You are writing a complete, professional penetration-testing \
 report in Markdown. You have FULL creative authority over structure, tone, the \
 executive summary, per-finding narrative (description, risk, affected system, \
-remediation), prioritization/ordering, and how you present the Suspected/Unconfirmed \
-section below. Write it as a senior human pentester would for a client, not as a \
-restatement of raw evidence fields.
+remediation), and prioritization/ordering. Write it as a senior human pentester \
+would for a client, not as a restatement of raw evidence fields.
 
 WRITING STYLE (this is what separates a real analyst report from a data dump - \
 follow it for every finding):
@@ -64,14 +63,11 @@ in plain language for a non-technical stakeholder - not a bare finding-count tab
 (the report card table below covers counts already).
 
 HARD RULE (non-negotiable): the "Confirmed findings" list below is the exhaustive, \
-authoritative, ALREADY-PROVEN set - a deterministic oracle confirmed every one of \
-them before you ever saw this data. You must:
+authoritative, ALREADY-CONFIRMED set - the agent's own judgment already confirmed \
+every one of them before you ever saw this data. You must:
   * include EVERY confirmed finding listed below, referenced by its exact finding_id \
 string, somewhere in your report
   * NEVER invent an additional confirmed finding beyond this list
-  * NEVER upgrade an item from "Suspected / Unconfirmed" into a confirmed finding - \
-those are leads that did NOT pass the oracle; present them in their own separate, \
-clearly-labeled section, honestly described as unconfirmed
   * base every description/impact claim ONLY on the evidence fields actually given \
 below (evidence_ref, oracle_used, metadata, vuln_class) - never invent a request/ \
 response detail, parameter name, or file path that is not present in that data
@@ -79,9 +75,6 @@ response detail, parameter name, or file path that is not present in that data
 approach, and proof standard is appended automatically after your report
 
 Confirmed findings (JSON, ground truth): {confirmed_json}
-
-Suspected / Unconfirmed leads (JSON - NOT proven, present separately and honestly): \
-{suspected_json}
 
 Target: {target}
 Testing objective: {objective}
@@ -115,17 +108,6 @@ def generate_llm_authored_report(
     confirmed = [f for f in all_findings if str(f["severity"]).lower() != "informational"]
     confirmed_ids = {str(f["finding_id"]) for f in confirmed}
 
-    suspected = [
-        {
-            "vuln_class": s.vuln_class,
-            "endpoint": s.endpoint,
-            "location": s.location,
-            "source": s.source,
-            "reason": s.reason,
-        }
-        for _sid, s in graph.suspected_findings()
-    ]
-
     try:
         tuner: FullReportClient | OpenAICompatibleClient | None = client
         if tuner is None:
@@ -135,7 +117,6 @@ def generate_llm_authored_report(
             tuner = compatible
         prompt = _FULL_REPORT_PROMPT.format(
             confirmed_json=json.dumps(confirmed, indent=2, default=str)[:_MAX_CONTEXT_CHARS],
-            suspected_json=json.dumps(suspected, indent=2, default=str)[:_MAX_CONTEXT_CHARS],
             target=target or "(not specified)",
             objective=(operator_prompt or "(none given)")[:500],
         )
