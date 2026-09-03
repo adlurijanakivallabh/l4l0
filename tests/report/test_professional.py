@@ -134,6 +134,23 @@ def test_unknown_vuln_class_falls_back_to_generic_cwe() -> None:
     assert "**CWE:** CWE-693" in out
 
 
+def test_finding_section_shows_the_full_cvss_vector_and_a_matching_score() -> None:
+    g = _graph(("sqli", "high", "ref-cvss"))
+    out = render_professional_report_markdown(g, client=_quiet_client())
+    assert "**CVSS Vector:** `CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H`" in out
+    # The heading's own "indicative CVSS" score must be DERIVED from that same
+    # vector (9.8), never an independently-chosen severity-keyed number.
+    assert "(indicative CVSS 9.8)" in out
+
+
+def test_informational_findings_never_show_a_cvss_vector() -> None:
+    """An informational observation (e.g. information_exposure) is never
+    presented with CVSS scoring machinery meant for confirmed vulnerabilities."""
+    g = _graph(("information_exposure", "informational", "ref-info"))
+    out = render_professional_report_markdown(g, client=_quiet_client())
+    assert "CVSS Vector" not in out
+
+
 def test_report_card_orders_severity_critical_first() -> None:
     g = _graph(("sqli", "low", "ref-a"), ("xxe", "critical", "ref-b"))
     out = render_professional_report_markdown(g, client=_quiet_client())

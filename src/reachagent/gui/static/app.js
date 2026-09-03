@@ -751,10 +751,11 @@ function addMetaRow(parent, label, value) {
   parent.appendChild(row);
 }
 
-function addBadge(parent, text) {
+function addBadge(parent, text, title) {
   const b = document.createElement("span");
   b.className = "fbadge";
   b.textContent = text;
+  if (title) b.title = title;
   parent.appendChild(b);
 }
 
@@ -862,7 +863,7 @@ function buildFindingCard(f, index) {
   badges.className = "fbadges";
   if (f.wstg_id) addBadge(badges, f.wstg_id);
   if (f.cwe_id) addBadge(badges, f.cwe_id);
-  if (f.cvss) addBadge(badges, "CVSS " + f.cvss);
+  if (f.cvss) addBadge(badges, "CVSS " + f.cvss, f.cvss_vector || "");
   if (f.likelihood) addBadge(badges, "Likelihood " + f.likelihood);
   if (f.impact) addBadge(badges, "Impact " + f.impact);
   if (badges.childNodes.length) body.appendChild(badges);

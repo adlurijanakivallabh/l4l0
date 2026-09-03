@@ -19,9 +19,9 @@ from datetime import UTC, datetime
 from typing import Any
 
 from reachagent.graph.store import ReachabilityGraph
+from reachagent.report.cvss import base_score, format_score, full_vector_string
 from reachagent.report.llm_report import ReportClient, generate_narrative
 from reachagent.report.renderer import (
-    _SEVERITY_SCORE,
     build_evidence_index,
     evidence_snippet,
     sanitize_report_markdown,
@@ -108,6 +108,62 @@ _CWE: dict[str, str] = {
     "prototype_pollution": "CWE-1321",
 }
 _CWE_DEFAULT = "CWE-693"  # Protection Mechanism Failure — a generic, defensible fallback
+
+# vuln_class -> CVSS v3.1 BASE metric vector (no "CVSS:3.1/" prefix — see
+# report/cvss.py). A per-instance-accurate CVSS score isn't possible without
+# target-specific detail this report doesn't have (does this SQLi hit an
+# admin-only endpoint? does this XSS fire in an authenticated context?) — the
+# same simplification real scanners make when shipping a default CVSS per
+# rule/check type. Each vector reflects the TYPICAL real-world shape of that
+# class (informed by how comparable published CVEs are commonly scored), not
+# a worst-case or best-case extreme. The numeric score is always DERIVED from
+# this vector via the real CVSS formula (report/cvss.py::base_score), never a
+# second, independently-chosen number that could drift out of sync with it.
+_CVSS_VECTOR: dict[str, str] = {
+    "sqli": "AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
+    "sqli_blind": "AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
+    "nosqli": "AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
+    "ldap_injection": "AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:L/A:N",
+    "command_injection": "AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
+    "xxe": "AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:L",
+    "path_traversal": "AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N",
+    "ssrf": "AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:L/A:N",
+    "ssti": "AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
+    "xss_reflected": "AV:N/AC:L/PR:N/UI:R/S:C/C:L/I:L/A:N",
+    "xss_stored": "AV:N/AC:L/PR:N/UI:R/S:C/C:L/I:L/A:N",
+    "xss_dom": "AV:N/AC:L/PR:N/UI:R/S:C/C:L/I:L/A:N",
+    "clickjacking": "AV:N/AC:L/PR:N/UI:R/S:U/C:N/I:L/A:N",
+    "csrf_missing_protection": "AV:N/AC:L/PR:N/UI:R/S:U/C:N/I:H/A:N",
+    "cors_misconfig": "AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N",
+    "bola": "AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:N",
+    "bfla": "AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:N",
+    "idor": "AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:N",
+    "mass_assignment": "AV:N/AC:L/PR:L/UI:N/S:U/C:N/I:H/A:N",
+    "default_credentials": "AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
+    "credential_reuse": "AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
+    "rate_limit_absence": "AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:N/A:N",
+    "open_redirect": "AV:N/AC:L/PR:N/UI:R/S:U/C:L/I:N/A:N",
+    "web_cache_poisoning": "AV:N/AC:H/PR:N/UI:N/S:C/C:L/I:L/A:N",
+    "request_smuggling": "AV:N/AC:H/PR:N/UI:N/S:U/C:H/I:H/A:H",
+    "subdomain_takeover": "AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:N",
+    "cloud_bucket_exposure": "AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N",
+    "jwt_forgery": "AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
+    "graphql": "AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:N/A:N",
+    "business_logic": "AV:N/AC:L/PR:L/UI:N/S:U/C:N/I:H/A:N",
+    "race": "AV:N/AC:H/PR:L/UI:N/S:U/C:N/I:H/A:N",
+    "file_upload": "AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
+    "information_exposure": "AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:N/A:N",
+    "prototype_pollution": "AV:N/AC:L/PR:N/UI:N/S:C/C:N/I:H/A:H",
+}
+# A generic, moderate "unauthenticated read/write exposure" vector — used
+# only when a class has no reviewed entry above, mirroring _WSTG_DEFAULT's
+# own honest-fallback discipline.
+_CVSS_VECTOR_DEFAULT = "AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:L/A:N"
+
+
+def _cvss_vector_for(vuln_class: str) -> str:
+    return _CVSS_VECTOR.get(vuln_class, _CVSS_VECTOR_DEFAULT)
+
 
 _DESCRIPTION: dict[str, str] = {
     "sqli": "User-controlled input reaches a SQL query in a way that alters its logic.",
@@ -283,13 +339,19 @@ def vuln_class_context(vuln_class: str, severity: str = "") -> dict[str, str]:
     wstg_id, wstg_name = _wstg_for(vuln_class)
     severity_key = severity.lower()
     likelihood, impact = _LIKELIHOOD_IMPACT.get(severity_key, ("", ""))
+    vector = _cvss_vector_for(vuln_class)
     return {
         "wstg_id": wstg_id,
         "wstg_name": wstg_name,
         "cwe_id": _cwe_for(vuln_class),
         "description": _DESCRIPTION.get(vuln_class, _DESCRIPTION_DEFAULT),
         "remediation": _REMEDIATION.get(vuln_class, _REMEDIATION_DEFAULT),
-        "cvss": _SEVERITY_SCORE.get(severity_key, ""),
+        # A per-class CVSS base score, DERIVED from cvss_vector (never a second,
+        # independently-chosen number) — supersedes the old severity-keyed
+        # _SEVERITY_SCORE for this report's own per-finding display (that table
+        # is kept, unchanged, for SARIF's own security-severity field only).
+        "cvss": format_score(base_score(vector)),
+        "cvss_vector": full_vector_string(vector),
         "likelihood": likelihood,
         "impact": impact,
     }
@@ -426,10 +488,16 @@ def _finding_section_markdown(
         heading + "\n\n",
         f"**WSTG Reference:** {wstg_id} — {wstg_name}  \n",
         f"**CWE:** {ctx['cwe_id']}  \n",
-        f"**Finding ID:** `{record['finding_id']}`\n\n",
-        "**Description**  \n",
-        f"{description}\n\n",
     ]
+    if not informational:
+        parts.append(f"**CVSS Vector:** `{ctx['cvss_vector']}`  \n")
+    parts.extend(
+        [
+            f"**Finding ID:** `{record['finding_id']}`\n\n",
+            "**Description**  \n",
+            f"{description}\n\n",
+        ]
+    )
     if not informational:
         likelihood = ctx["likelihood"] or "Unknown"
         impact = ctx["impact"] or "Unknown"

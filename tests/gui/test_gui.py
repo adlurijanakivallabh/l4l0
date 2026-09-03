@@ -77,6 +77,7 @@ def test_finding_rows_include_the_deterministic_narrative_context() -> None:
     assert row["wstg_id"] == "WSTG-ATHZ-04"
     assert row["cwe_id"] == "CWE-639"
     assert row["cvss"]
+    assert row["cvss_vector"].startswith("CVSS:3.1/AV:")
     assert row["likelihood"] == "High"
     assert row["impact"] == "High"
 
