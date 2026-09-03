@@ -301,6 +301,11 @@ _GENERIC_CLASSES = frozenset(
 )
 
 _ATTACKER_ORIGIN = "https://reachagent.evil.example"
+# v3 V3: a second, independent attacker origin for CORS corroboration — a
+# genuinely different Origin value must ALSO be reflected before trusting a
+# single hit, ruling out a coincidental exact-match against one allowlist
+# entry rather than true arbitrary-origin reflection.
+_ATTACKER_ORIGIN_2 = "https://reachagent-second.evil.example"
 _UPLOAD_PATHS = (
     "/upload",
     "/file-upload",
@@ -490,6 +495,7 @@ def run_structural_headers(
     STRUCTURAL oracle with the exact evidence shape the existing detectors use. The server
     response is the only input; nothing is state-changing.
     """
+    from reachagent.confirmation.corroboration import corroborate_with_variant
     from reachagent.oracles.structural import StructuralCheckType, StructuralEvidence
 
     targets: list[str] = []
@@ -586,7 +592,38 @@ def run_structural_headers(
                 evidence_ref=f"orchestrator/cors{path}",
             ),
         )
+        # Technique-diversity corroboration (v3 V3): a second, DIFFERENT
+        # attacker origin must also be reflected before trusting a single
+        # hit — rules out a coincidental exact-match against one allowlist
+        # entry rather than true arbitrary-origin reflection.
+        cors_confirmed = verdict.is_violation
+
+        def _second_cors_attempt(_url: str = url, _label: str = label, _path: str = path) -> object:
+            second_headers = dict(auth_headers)
+            second_headers["Origin"] = _ATTACKER_ORIGIN_2
+            second_result = _fire_readonly(
+                firer,
+                identity,
+                "GET",
+                _url,
+                events=events,
+                label=f"{_label}/cors/corroborate",
+                headers=second_headers,
+            )
+            return seam.run(
+                OracleMechanism.STRUCTURAL,
+                StructuralEvidence(
+                    check_type=StructuralCheckType.CORS_MISCONFIG,
+                    acao=_hdr(second_result, "access-control-allow-origin"),
+                    acac=_hdr(second_result, "access-control-allow-credentials"),
+                    probe_origin=_ATTACKER_ORIGIN_2,
+                    evidence_ref=f"orchestrator/cors{_path}",
+                ),
+            )
+
         if verdict.is_violation:
+            cors_confirmed = corroborate_with_variant(verdict, _second_cors_attempt).corroborated
+        if cors_confirmed and seam.last is not None:
             nid = seam.write("cors_misconfig", seam.last, severity="medium")
             if nid:
                 found.append(nid)
