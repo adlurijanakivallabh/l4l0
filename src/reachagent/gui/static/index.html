@@ -161,11 +161,18 @@ a{color:inherit;text-decoration:none}
 .msg-bubble p:last-child{margin-bottom:0}
 .msg-bubble code{padding:1px 5px;border-radius:4px;background:var(--field);font:11.5px var(--font-mono);color:var(--cyan)}
 
-/* Confirmation card (proposed scan config) */
-.confirm-card{min-width:340px;padding:15px;border:1px solid var(--line-hi);border-radius:14px;background:linear-gradient(160deg,var(--panel-2),var(--panel) 65%);box-shadow:var(--glow),var(--shadow-md)}
-.confirm-card .cc-title{display:flex;align-items:center;gap:8px;margin-bottom:12px;font-size:12px;font-weight:700}
-.confirm-card .cc-title svg{width:14px;color:var(--cyan)}
-.confirm-note{margin:-4px 0 12px;padding:8px 10px;border:1px solid rgba(246,195,88,.3);border-radius:8px;background:rgba(246,195,88,.08);color:var(--amber);font-size:10.5px;line-height:1.5}
+/* Conversational proposal summary (v3: prompts-and-response, no big form) */
+.proposal-summary{min-width:280px;max-width:100%}
+.proposal-fields{display:grid;gap:6px 14px;margin-bottom:4px}
+.proposal-row{display:flex;gap:8px;align-items:baseline;font-size:12px;line-height:1.5}
+.proposal-key{flex:none;min-width:88px;color:var(--muted);font-size:10px;font-weight:650;text-transform:uppercase;letter-spacing:.02em}
+.proposal-val{color:var(--text);word-break:break-word}
+.confirm-note{margin:8px 0 4px;padding:8px 10px;border:1px solid rgba(246,195,88,.3);border-radius:8px;background:rgba(246,195,88,.08);color:var(--amber);font-size:10.5px;line-height:1.5}
+.proposal-actions{display:flex;align-items:center;gap:8px;margin-top:12px}
+.proposal-provider{padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--field);color:var(--text);font-size:11.5px}
+.proposal-hint{margin-top:8px;color:var(--dim);font-size:10px;line-height:1.5}
+.proposal-summary.superseded{opacity:.5}
+/* Shared field styling — still used by the Settings modal's provider form + Scan defaults */
 .cc-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
 .cc-field{min-width:0}
 .cc-field.span-2{grid-column:span 2}
@@ -173,19 +180,6 @@ a{color:inherit;text-decoration:none}
 .cc-field input,.cc-field textarea,.cc-field select{width:100%;padding:8px 10px;border:1px solid var(--line);border-radius:8px;outline:0;background:var(--field);color:var(--text);font-size:12px;transition:border-color .15s,box-shadow .15s}
 .cc-field input:focus,.cc-field textarea:focus,.cc-field select:focus{border-color:var(--signal);box-shadow:0 0 0 3px var(--accent-soft)}
 .cc-field textarea{min-height:44px;resize:vertical}
-.cc-creds{grid-column:span 2;display:grid;gap:7px}
-.cred-row{display:grid;grid-template-columns:1fr 1fr 84px 26px;gap:7px;align-items:center}
-.cred-row input,.cred-row select{padding:7px 9px;border:1px solid var(--line);border-radius:7px;background:var(--field);color:var(--text);font-size:11.5px}
-.cred-row select{padding-right:6px}
-.cred-remove{display:grid;place-items:center;width:26px;height:26px;border:1px solid var(--line);border-radius:7px;background:transparent;color:var(--dim);transition:border-color .15s,color .15s}
-.cred-remove:hover{border-color:var(--red);color:var(--red)}
-.cred-add{justify-self:start;padding:6px 10px;border:1px dashed var(--line-hi);border-radius:7px;background:transparent;color:var(--muted);font-size:11px}
-.cred-add:hover{border-color:var(--signal);color:var(--text)}
-.cc-advanced summary{cursor:pointer;list-style:none;padding:6px 0;color:var(--muted);font-size:10.5px;font-weight:650}
-.cc-advanced summary::-webkit-details-marker{display:none}
-.cc-advanced summary:before{content:"▸ ";color:var(--dim)}
-.cc-advanced[open] summary:before{content:"▾ "}
-.cc-advanced-body{display:grid;gap:10px;padding-top:8px}
 .tuning-grid{display:flex;gap:7px;flex-wrap:wrap}
 .tuning-chip{display:flex;align-items:center;gap:7px;padding:7px 11px;border:1px solid var(--line);border-radius:5px;background:var(--field);color:var(--muted);font-size:10.5px;cursor:pointer;transition:border-color .15s,color .15s,background .15s}
 .tuning-chip:hover{border-color:var(--line-hi);color:var(--text)}
@@ -194,8 +188,6 @@ a{color:inherit;text-decoration:none}
 .tuning-chip .box svg{width:9px;height:9px;stroke:#191206;stroke-width:3;opacity:0;transform:scale(.6);transition:opacity .12s,transform .12s}
 .tuning-chip input:checked+.box{border-color:var(--signal);background:var(--accent-grad)}
 .tuning-chip input:checked+.box svg{opacity:1;transform:scale(1)}
-.cc-footer{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:14px}
-.cc-hint{color:var(--dim);font-size:9.5px;line-height:1.5;max-width:60%}
 .primary-btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;padding:10px 16px;border:1px solid var(--signal);border-radius:6px;background:var(--accent-grad);color:#191206;font-size:13px;font-weight:700;transition:filter .12s,opacity .15s}
 .primary-btn:hover{filter:brightness(1.12)}
 .primary-btn:disabled{cursor:wait;opacity:.5;filter:none}
@@ -553,6 +545,39 @@ a{color:inherit;text-decoration:none}
       <div class="cc-field span-2" style="display:flex;align-items:center;justify-content:space-between">
         <span id="prov-form-error" style="color:var(--red);font-size:10px"></span>
         <div style="display:flex;gap:8px"><button id="prov-test" class="header-btn" type="button">Test</button><button id="prov-save" class="primary-btn" type="button">Save</button></div>
+      </div>
+    </form>
+
+    <div class="modal-head" style="margin-top:22px"><h2>Scan defaults</h2></div>
+    <p class="composer-hint" style="text-align:left;margin:0 0 12px">Applied to every new assessment automatically — stored only in this browser.</p>
+    <form id="scan-defaults-form" autocomplete="off" onsubmit="return false">
+      <div class="cc-grid">
+        <div class="cc-field"><label for="sd-max-attempts">Max attempts</label><input id="sd-max-attempts" type="number" value="20" min="5" max="200"></div>
+        <div class="cc-field"><label for="sd-recon-depth">Nmap recon depth</label><select id="sd-recon-depth">
+          <option value="quick">Quick (default)</option>
+          <option value="full">Full (all 65535 ports)</option>
+          <option value="scripted">Scripted (NSE vuln scripts)</option>
+        </select></div>
+        <div class="cc-field"><label for="sd-wordlist-size">Content-discovery wordlist</label><select id="sd-wordlist-size">
+          <option value="medium">Medium (default)</option>
+          <option value="small">Small (faster)</option>
+          <option value="large">Large (thorough)</option>
+        </select></div>
+        <div class="cc-field"><label for="sd-repo-path">Repo path (white-box, optional)</label><input id="sd-repo-path" type="text" placeholder="/path/to/local/repo"></div>
+      </div>
+      <div style="margin-top:10px">
+        <label style="display:block;margin:0 0 7px;color:var(--muted);font-size:10px;font-weight:650">Recon tuning (opt-in)</label>
+        <div class="tuning-grid">
+          <label class="tuning-chip"><input id="sd-tune-surface" type="checkbox"><span class="box"><svg viewBox="0 0 24 24" fill="none"><path d="M5 13l4 4L19 7"/></svg></span>Surface priority</label>
+          <label class="tuning-chip"><input id="sd-tune-signal" type="checkbox"><span class="box"><svg viewBox="0 0 24 24" fill="none"><path d="M5 13l4 4L19 7"/></svg></span>Signal-tool</label>
+          <label class="tuning-chip"><input id="sd-tune-transport" type="checkbox"><span class="box"><svg viewBox="0 0 24 24" fill="none"><path d="M5 13l4 4L19 7"/></svg></span>Transport</label>
+          <label class="tuning-chip"><input id="sd-tune-guardian" type="checkbox"><span class="box"><svg viewBox="0 0 24 24" fill="none"><path d="M5 13l4 4L19 7"/></svg></span>Guardian advisor</label>
+          <label class="tuning-chip"><input id="sd-tune-concurrent" type="checkbox"><span class="box"><svg viewBox="0 0 24 24" fill="none"><path d="M5 13l4 4L19 7"/></svg></span>Concurrent specialists</label>
+          <label class="tuning-chip"><input id="sd-tune-aggressive" type="checkbox"><span class="box"><svg viewBox="0 0 24 24" fill="none"><path d="M5 13l4 4L19 7"/></svg></span>Aggressive mode</label>
+          <label class="tuning-chip"><input id="sd-tune-depth" type="checkbox"><span class="box"><svg viewBox="0 0 24 24" fill="none"><path d="M5 13l4 4L19 7"/></svg></span>Autonomous depth escalation</label>
+          <label class="tuning-chip"><input id="sd-tune-wordlist-depth" type="checkbox"><span class="box"><svg viewBox="0 0 24 24" fill="none"><path d="M5 13l4 4L19 7"/></svg></span>Autonomous wordlist escalation</label>
+          <label class="tuning-chip"><input id="sd-tune-ratelimit" type="checkbox"><span class="box"><svg viewBox="0 0 24 24" fill="none"><path d="M5 13l4 4L19 7"/></svg></span>Rate-limit corroboration</label>
+        </div>
       </div>
     </form>
   </div>

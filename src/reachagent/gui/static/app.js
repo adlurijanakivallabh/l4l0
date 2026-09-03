@@ -18,6 +18,7 @@ const _WRITE_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 // ---------------------------------------------------------------------------
 const state = {
   scanId: null,
+  pendingProposal: null,
   eventsAfter: 0,
   fastTimer: null,
   slowTimer: null,
@@ -43,6 +44,7 @@ function resetPollState() {
 // ---------------------------------------------------------------------------
 function showLanding() {
   state.scanId = null;
+  state.pendingProposal = null;
   resetPollState();
   $("landing").hidden = false;
   $("convo-view").hidden = true;
@@ -68,6 +70,7 @@ function resetWorkPane() {
 
 function showConversation(scanId) {
   state.scanId = scanId;
+  state.pendingProposal = null;
   $("landing").hidden = true;
   $("convo-view").hidden = false;
   $("chat-log").innerHTML = "";
@@ -131,9 +134,19 @@ function introMessageFor(proposal) {
 }
 
 async function startNewAssessment(message) {
+  await handleProposalTurn(message, null);
+}
+
+// v3 conversational-confirmation flow (pentagi-style): every turn before a scan
+// starts is a normal chat exchange — no big form. The assistant's reply is a
+// short text summary of what it understood plus one "Start assessment" button;
+// the operator refines by typing more ("also skip ffuf", "the password is
+// actually X") rather than editing fields, which /api/parse-intent's `previous`
+// refine mode folds onto the existing proposal instead of re-extracting blind.
+async function handleProposalTurn(message, previous) {
   message = message.trim();
   if (!message) return;
-  showConversation(null); // clears the log; scanId stays null until confirmed
+  if (!previous) showConversation(null); // first turn: clears the log; scanId stays null until confirmed
   textBubble("user", message);
 
   const thinkingP = document.createElement("div");
@@ -141,117 +154,81 @@ async function startNewAssessment(message) {
   thinkingP.innerHTML = "<span></span><span></span><span></span>";
   const thinkingBubble = addBubble("assistant", thinkingP, { id: "thinking-bubble" });
 
-  let proposal = { target: "", in_scope: "", out_of_scope: "", credentials: [], goal: message, skip_tools: "", extracted: false };
+  let proposal = previous || { target: "", in_scope: "", out_of_scope: "", credentials: [], goal: message, skip_tools: "", extracted: false };
   try {
     const r = await fetch("/api/parse-intent", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message }),
+      body: JSON.stringify(previous ? { message, previous } : { message }),
     });
     if (r.ok) proposal = await r.json();
   } catch (_e) {
-    /* degrade to the empty proposal below — the confirmation card still works */
+    /* degrade to the previous/empty proposal below — the summary bubble still works */
   }
   thinkingBubble.remove();
   textBubble("assistant", introMessageFor(proposal));
-  renderConfirmationCard(proposal, message);
+  renderProposalSummary(proposal, message);
 }
 
-function credRow(cred) {
-  cred = cred || { username: "", password: "", role: "user" };
-  const row = document.createElement("div");
-  row.className = "cred-row";
-  row.innerHTML =
-    '<input class="cred-username" type="text" placeholder="username" value="' + esc(cred.username) + '">' +
-    '<input class="cred-password" type="text" placeholder="password" value="' + esc(cred.password) + '">' +
-    // v3 V1: role is a free-form identity label (e.g. "owner", "mechanic"), not
-    // just user/admin — a <select> could only ever express the binary case, so a
-    // richer role (already fully supported downstream by identity/store.py's
-    // Credential.role: str) was silently collapsed to "user" the moment it
-    // reached this UI. A text input + datalist keeps user/admin one click away
-    // while allowing anything else.
-    '<input class="cred-role" type="text" list="cred-role-options" placeholder="role" value="' + esc(cred.role || "user") + '">' +
-    '<button class="cred-remove" type="button" aria-label="Remove">✕</button>';
-  row.querySelector(".cred-remove").onclick = () => row.remove();
-  return row;
+function maskedCredLine(c) {
+  const dots = "•".repeat(Math.max(4, (c.password || "").length));
+  return c.username + " / " + dots + (c.role && c.role !== "user" ? " (" + c.role + ")" : "");
 }
 
-function renderConfirmationCard(proposal, originalMessage) {
-  const card = document.createElement("div");
-  card.className = "confirm-card";
+// Any earlier proposal bubble's Start button is disabled once a newer one
+// exists — only the latest understanding of the request should be launchable.
+function supersedePriorProposals() {
+  document.querySelectorAll("#chat-log .proposal-summary:not(.superseded)").forEach((el) => {
+    el.classList.add("superseded");
+    const btn = el.querySelector(".pp-start");
+    if (btn) btn.disabled = true;
+  });
+}
 
-  const title = document.createElement("div");
-  title.className = "cc-title";
-  title.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="9"/></svg>Review before I start';
-  card.appendChild(title);
+function renderProposalSummary(proposal, message) {
+  supersedePriorProposals();
+  state.pendingProposal = proposal;
+
+  const wrap = document.createElement("div");
+  wrap.className = "proposal-summary";
+
+  const rows = [
+    ["Target", proposal.target],
+    ["In-scope", proposal.in_scope],
+    ["Out-of-scope", proposal.out_of_scope],
+    ["Credentials", (proposal.credentials || []).map(maskedCredLine).join(", ")],
+    ["Skipping", proposal.skip_tools],
+    ["Objective", proposal.goal || message],
+  ].filter(([, v]) => v);
+  const fields = document.createElement("div");
+  fields.className = "proposal-fields";
+  fields.innerHTML = rows
+    .map(([k, v]) => '<div class="proposal-row"><span class="proposal-key">' + esc(k) + '</span><span class="proposal-val">' + esc(v) + "</span></div>")
+    .join("");
+  wrap.appendChild(fields);
 
   if (!proposal.extracted) {
     const note = document.createElement("div");
     note.className = "confirm-note";
-    note.textContent = "I couldn't auto-detect scope from that message — fill in the target below to continue.";
-    card.appendChild(note);
+    note.textContent = "I couldn't fully work that out — tell me the target, credentials, or scope and I'll update this.";
+    wrap.appendChild(note);
   }
 
-  const grid = document.createElement("div");
-  grid.className = "cc-grid";
-  grid.innerHTML =
-    '<div class="cc-field span-2"><label>Target URL</label><input id="cc-target" type="text" placeholder="https://authorized-target.example" value="' + esc(proposal.target) + '"></div>' +
-    '<div class="cc-field"><label>In-scope hosts</label><textarea id="cc-scope" rows="2" placeholder="same as target">' + esc(proposal.in_scope) + '</textarea></div>' +
-    '<div class="cc-field"><label>Out-of-scope (optional)</label><textarea id="cc-outscope" rows="2" placeholder="admin.example, target.test/admin, target.test:8443">' + esc(proposal.out_of_scope || "") + '</textarea></div>' +
-    '<div class="cc-field span-2"><label>Objective</label><textarea id="cc-goal" rows="2">' + esc(proposal.goal || originalMessage) + '</textarea></div>' +
-    '<div class="cc-field span-2 cc-creds"><label>Credentials</label><div id="cc-cred-rows"></div><button id="cc-cred-add" class="cred-add" type="button">+ Add credential</button>' +
-    '<datalist id="cred-role-options"><option value="user"></option><option value="admin"></option></datalist></div>';
-  card.appendChild(grid);
+  const actions = document.createElement("div");
+  actions.className = "proposal-actions";
+  actions.innerHTML =
+    '<select class="pp-provider proposal-provider"><option value="">Server default</option></select>' +
+    '<button class="pp-start primary-btn" type="button"' + (proposal.target ? "" : " disabled") + '><span>Start assessment</span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m5 12 14 0M13 6l6 6-6 6"/></svg></button>';
+  wrap.appendChild(actions);
+  populateProviderSelect(actions.querySelector(".pp-provider"));
 
-  const credBox = grid.querySelector("#cc-cred-rows");
-  (proposal.credentials || []).forEach((c) => credBox.appendChild(credRow(c)));
-  grid.querySelector("#cc-cred-add").onclick = () => credBox.appendChild(credRow());
+  const hint = document.createElement("div");
+  hint.className = "proposal-hint";
+  hint.textContent = "Tell me what to change, or start when this looks right.";
+  wrap.appendChild(hint);
 
-  const advanced = document.createElement("details");
-  advanced.className = "cc-advanced";
-  advanced.innerHTML =
-    '<summary>Advanced</summary>' +
-    '<div class="cc-advanced-body">' +
-    '<div class="cc-grid">' +
-    '<div class="cc-field"><label>LLM provider</label><select id="cc-provider"><option value="">Server default</option></select></div>' +
-    '<div class="cc-field"><label>Max attempts</label><input id="cc-attempts" type="number" value="20" min="5" max="200"></div>' +
-    '<div class="cc-field"><label>Nmap recon depth</label><select id="cc-recon-depth">' +
-    '<option value="quick">Quick (default)</option>' +
-    '<option value="full">Full (all 65535 ports)</option>' +
-    '<option value="scripted">Scripted (NSE vuln scripts)</option>' +
-    '</select></div>' +
-    '<div class="cc-field"><label>Content-discovery wordlist</label><select id="cc-wordlist-size">' +
-    '<option value="medium">Medium (default)</option>' +
-    '<option value="small">Small (faster)</option>' +
-    '<option value="large">Large (thorough)</option>' +
-    '</select></div>' +
-    '<div class="cc-field"><label>Repo path (white-box, optional)</label><input id="cc-repo-path" type="text" placeholder="/path/to/local/repo"></div>' +
-    '<div class="cc-field"><label>Skip recon tools (optional)</label><input id="cc-skip-tools" type="text" placeholder="nmap, gobuster" value="' + esc(proposal.skip_tools || "") + '"></div>' +
-    '</div>' +
-    '<div><label style="display:block;margin:0 0 7px;color:var(--muted);font-size:10px;font-weight:650">Recon tuning (opt-in)</label>' +
-    '<div class="tuning-grid">' +
-    tuningChip("cc-tune-surface", "Surface priority") +
-    tuningChip("cc-tune-signal", "Signal-tool") +
-    tuningChip("cc-tune-transport", "Transport") +
-    tuningChip("cc-tune-guardian", "Guardian advisor") +
-    tuningChip("cc-tune-concurrent", "Concurrent specialists") +
-    tuningChip("cc-tune-aggressive", "Aggressive mode") +
-    tuningChip("cc-tune-depth", "Autonomous depth escalation") +
-    tuningChip("cc-tune-wordlist-depth", "Autonomous wordlist escalation") +
-    tuningChip("cc-tune-ratelimit", "Rate-limit corroboration") +
-    '</div></div></div>';
-  card.appendChild(advanced);
-  populateProviderSelect(advanced.querySelector("#cc-provider"));
-
-  const footer = document.createElement("div");
-  footer.className = "cc-footer";
-  footer.innerHTML =
-    '<span class="cc-hint">Credentials are sent only to launch this assessment — never written to disk.</span>' +
-    '<button id="cc-start" class="primary-btn" type="button"><span>Start assessment</span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m5 12 14 0M13 6l6 6-6 6"/></svg></button>';
-  card.appendChild(footer);
-
-  const bubble = addBubble("assistant", card, { id: "confirm-card-bubble" });
-  footer.querySelector("#cc-start").onclick = () => confirmAndStart(card, bubble, originalMessage);
+  const bubble = addBubble("assistant", wrap, { id: "proposal-bubble" });
+  actions.querySelector(".pp-start").onclick = () => confirmProposal(wrap, bubble, message);
 }
 
 function tuningChip(id, label) {
@@ -261,54 +238,34 @@ function tuningChip(id, label) {
   );
 }
 
-async function confirmAndStart(card, bubble, originalMessage) {
-  const target = card.querySelector("#cc-target").value.trim();
-  if (!target) {
-    card.querySelector("#cc-target").focus();
-    return;
-  }
-  const startBtn = card.querySelector("#cc-start");
+async function confirmProposal(wrap, bubble, message) {
+  const proposal = state.pendingProposal || {};
+  const target = (proposal.target || "").trim();
+  if (!target) return;
+  const startBtn = wrap.querySelector(".pp-start");
   startBtn.disabled = true;
   startBtn.querySelector("span").textContent = "Starting…";
 
-  const credentials = Array.from(card.querySelectorAll(".cred-row"))
-    .map((row) => ({
-      username: row.querySelector(".cred-username").value.trim(),
-      password: row.querySelector(".cred-password").value.trim(),
-      role: row.querySelector(".cred-role").value.trim() || "user",
-    }))
-    .filter((c) => c.username && c.password);
-
-  const body = {
+  const credentials = (proposal.credentials || []).filter((c) => c.username && c.password);
+  const inScope = (proposal.in_scope || "").trim() || target;
+  const body = Object.assign({}, loadScanDefaults(), {
     target,
-    in_scope: card.querySelector("#cc-scope").value.trim() || target,
-    out_of_scope: card.querySelector("#cc-outscope").value.trim() || null,
-    prompt: card.querySelector("#cc-goal").value.trim() || originalMessage,
-    max_attempts: parseInt(card.querySelector("#cc-attempts").value, 10) || 20,
+    in_scope: inScope,
+    out_of_scope: (proposal.out_of_scope || "").trim() || null,
+    prompt: (proposal.goal || message || "").trim() || message,
     use_llm: true,
-    llm_provider: card.querySelector("#cc-provider").value || null,
+    llm_provider: wrap.querySelector(".pp-provider").value || null,
     identities: credentials.length ? credentials : undefined,
-    surface_tuning: card.querySelector("#cc-tune-surface").checked,
-    signal_tuning: card.querySelector("#cc-tune-signal").checked,
-    transport_tuning: card.querySelector("#cc-tune-transport").checked,
-    guardian_advisor: card.querySelector("#cc-tune-guardian").checked,
-    concurrent_specialists: card.querySelector("#cc-tune-concurrent").checked,
-    aggressive: card.querySelector("#cc-tune-aggressive").checked,
-    recon_depth: card.querySelector("#cc-recon-depth").value,
-    wordlist_size: card.querySelector("#cc-wordlist-size").value,
-    recon_depth_tuning: card.querySelector("#cc-tune-depth").checked,
-    wordlist_depth_tuning: card.querySelector("#cc-tune-wordlist-depth").checked,
-    rate_limit_corroboration: card.querySelector("#cc-tune-ratelimit").checked,
-    repo_path: card.querySelector("#cc-repo-path").value.trim() || null,
-    skip_tools: card.querySelector("#cc-skip-tools").value.trim() || null,
-  };
+    skip_tools: (proposal.skip_tools || "").trim() || null,
+  });
 
   try {
     const r = await fetch("/api/scan", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
     const j = await r.json();
     if (!r.ok || j.error) throw new Error(j.error || "Could not queue assessment");
-    freezeConfirmationCard(bubble, target, body.in_scope, credentials.length);
+    freezeProposalSummary(bubble, target, inScope, credentials.length);
     state.scanId = j.scan_id;
+    state.pendingProposal = null;
     beginLiveTracking();
     renderConvoList();
     scheduleSidebarRefresh();
@@ -318,11 +275,11 @@ async function confirmAndStart(card, bubble, originalMessage) {
     const errNote = document.createElement("div");
     errNote.className = "confirm-note";
     errNote.textContent = String(err.message || err);
-    card.appendChild(errNote);
+    wrap.appendChild(errNote);
   }
 }
 
-function freezeConfirmationCard(bubble, target, scope, credCount) {
+function freezeProposalSummary(bubble, target, scope, credCount) {
   const frozen = document.createElement("div");
   frozen.className = "cc-frozen";
   frozen.innerHTML =
@@ -331,6 +288,44 @@ function freezeConfirmationCard(bubble, target, scope, credCount) {
     "<span>Credentials: <b>" + credCount + "</b></span>" +
     "<span>Starting assessment…</span>";
   bubble.querySelector(".msg-bubble").replaceChildren(frozen);
+}
+
+// v3 V6: the 9 tuning checkboxes + recon-depth/wordlist/max-attempts/repo-path
+// live once in Settings ("Scan defaults") instead of being re-asked per scan —
+// set once, applied to every /api/scan call from here on.
+const SCAN_DEFAULTS_KEY = "reachagent.scanDefaults";
+const DEFAULT_SCAN_DEFAULTS = {
+  max_attempts: 20,
+  recon_depth: "quick",
+  wordlist_size: "medium",
+  repo_path: null,
+  surface_tuning: false,
+  signal_tuning: false,
+  transport_tuning: false,
+  guardian_advisor: false,
+  concurrent_specialists: false,
+  aggressive: false,
+  recon_depth_tuning: false,
+  wordlist_depth_tuning: false,
+  rate_limit_corroboration: false,
+};
+
+function loadScanDefaults() {
+  try {
+    const raw = localStorage.getItem(SCAN_DEFAULTS_KEY);
+    if (!raw) return Object.assign({}, DEFAULT_SCAN_DEFAULTS);
+    return Object.assign({}, DEFAULT_SCAN_DEFAULTS, JSON.parse(raw));
+  } catch (_e) {
+    return Object.assign({}, DEFAULT_SCAN_DEFAULTS);
+  }
+}
+
+function saveScanDefaults(defaults) {
+  try {
+    localStorage.setItem(SCAN_DEFAULTS_KEY, JSON.stringify(defaults));
+  } catch (_e) {
+    /* localStorage unavailable (private mode, quota) — defaults just won't persist */
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -363,8 +358,14 @@ wireComposer("landing-input", "landing-send", startNewAssessment);
 wireComposer("chat-input", "chat-send", async (message) => {
   message = message.trim();
   if (!message) return;
+  if (!state.scanId) {
+    // Pre-scan: this composer is the SAME box used for reviewing/refining the
+    // proposal before it's launched (state.pendingProposal set) — route there
+    // instead of silently swallowing the message.
+    await handleProposalTurn(message, state.pendingProposal);
+    return;
+  }
   textBubble("user", message);
-  if (!state.scanId) return;
   // Real conversational Q&A (W1): POST /ask returns an actual LLM answer generated from live
   // scan state, and also steers the scan when it's still active. Works after completion too
   // (ask it to explain a finding). A transient "…" bubble stands in while the model replies.
@@ -1448,9 +1449,52 @@ $("prov-test").onclick = async () => {
   }
 };
 
+// v3 V6: "Scan defaults" section of the Settings modal — the recon-tuning
+// checkboxes + max-attempts/recon-depth/wordlist/repo-path settings that used
+// to be re-asked in every scan's confirmation form now live here, set once.
+function populateScanDefaultsForm() {
+  const d = loadScanDefaults();
+  $("sd-max-attempts").value = d.max_attempts;
+  $("sd-recon-depth").value = d.recon_depth;
+  $("sd-wordlist-size").value = d.wordlist_size;
+  $("sd-repo-path").value = d.repo_path || "";
+  $("sd-tune-surface").checked = !!d.surface_tuning;
+  $("sd-tune-signal").checked = !!d.signal_tuning;
+  $("sd-tune-transport").checked = !!d.transport_tuning;
+  $("sd-tune-guardian").checked = !!d.guardian_advisor;
+  $("sd-tune-concurrent").checked = !!d.concurrent_specialists;
+  $("sd-tune-aggressive").checked = !!d.aggressive;
+  $("sd-tune-depth").checked = !!d.recon_depth_tuning;
+  $("sd-tune-wordlist-depth").checked = !!d.wordlist_depth_tuning;
+  $("sd-tune-ratelimit").checked = !!d.rate_limit_corroboration;
+}
+
+function persistScanDefaultsForm() {
+  saveScanDefaults({
+    max_attempts: parseInt($("sd-max-attempts").value, 10) || 20,
+    recon_depth: $("sd-recon-depth").value,
+    wordlist_size: $("sd-wordlist-size").value,
+    repo_path: $("sd-repo-path").value.trim() || null,
+    surface_tuning: $("sd-tune-surface").checked,
+    signal_tuning: $("sd-tune-signal").checked,
+    transport_tuning: $("sd-tune-transport").checked,
+    guardian_advisor: $("sd-tune-guardian").checked,
+    concurrent_specialists: $("sd-tune-concurrent").checked,
+    aggressive: $("sd-tune-aggressive").checked,
+    recon_depth_tuning: $("sd-tune-depth").checked,
+    wordlist_depth_tuning: $("sd-tune-wordlist-depth").checked,
+    rate_limit_corroboration: $("sd-tune-ratelimit").checked,
+  });
+}
+
+document.querySelectorAll("#scan-defaults-form input, #scan-defaults-form select").forEach((el) => {
+  el.addEventListener("change", persistScanDefaultsForm);
+});
+
 $("open-settings").onclick = () => {
   $("settings-overlay").hidden = false;
   loadProviders();
+  populateScanDefaultsForm();
 };
 $("settings-close").onclick = () => {
   $("settings-overlay").hidden = true;
