@@ -6,7 +6,11 @@ from dataclasses import dataclass
 
 import pytest
 
-from reachagent.confirmation.corroboration import corroborate, corroborate_with_variant
+from reachagent.confirmation.corroboration import (
+    corroborate,
+    corroborate_by_refutation,
+    corroborate_with_variant,
+)
 
 
 @dataclass(frozen=True)
@@ -139,3 +143,42 @@ def test_variant_contradicting_the_primary_fails_closed() -> None:
     result = corroborate_with_variant(primary, lambda: secondary)
     assert result.corroborated is False
     assert result.secondary_verdict is secondary  # still surfaced for evidence/audit
+
+
+# --- corroborate_by_refutation (v3 V3): inverted-polarity control probe -----
+
+
+def test_refutation_primary_not_confirmed_never_fires_the_control_probe() -> None:
+    calls = {"n": 0}
+
+    def refutation() -> _FakeVerdict:
+        calls["n"] += 1
+        return _FakeVerdict(is_violation=False)
+
+    primary = _FakeVerdict(is_violation=False)
+    result = corroborate_by_refutation(primary, refutation)
+    assert result.corroborated is False
+    assert result.refutation_verdict is None
+    assert calls["n"] == 0  # no wasted probe confirming a negative
+
+
+def test_refutation_probe_correctly_refused_corroborates() -> None:
+    """The control probe is EXPECTED to fail — its refusal (not another
+    success) is what corroborates the primary."""
+    primary = _FakeVerdict(is_violation=True)
+    refutation_verdict = _FakeVerdict(is_violation=False)  # correctly refused
+    result = corroborate_by_refutation(primary, lambda: refutation_verdict)
+    assert result.corroborated is True
+    assert result.primary_verdict is primary
+    assert result.refutation_verdict is refutation_verdict
+
+
+def test_refutation_probe_unexpectedly_succeeding_fails_closed() -> None:
+    """A control probe deliberately built to fail that instead SUCCEEDS means
+    the underlying check can't actually discriminate — the primary is not
+    trusted, the same fail-closed posture corroborate_with_variant uses."""
+    primary = _FakeVerdict(is_violation=True)
+    refutation_verdict = _FakeVerdict(is_violation=True)  # unexpectedly granted
+    result = corroborate_by_refutation(primary, lambda: refutation_verdict)
+    assert result.corroborated is False
+    assert result.refutation_verdict is refutation_verdict  # still surfaced for evidence/audit

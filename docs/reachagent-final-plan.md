@@ -1,6 +1,23 @@
 # ReachAgent — Web/API Exploitation Agent
 ### Final Project Plan (July 2026)
 
+**Status: Locked — v3.8 (V3 11th and final tractable slice: DEFAULT_CREDENTIALS
+inverted-polarity corroboration — sweep closed).** Changes from v3.7: built the
+previously-deferred inverted-polarity design once the sweep ran out of clean pattern-matched
+candidates. New shared primitive `confirmation/corroboration.py::corroborate_by_refutation` —
+the third alongside `corroborate`/`corroborate_with_variant` — fires a control probe
+deliberately built to fail only when the primary confirmed, and treats that expected refusal
+(not another success) as what corroborates. `default_creds/detector.py::detect_default_credentials`
+gains optional `refutation_credential`, reusing the existing `attempt_login` callback's own
+raise/return contract as the verdict (no new oracle round-trip). `scan/orchestrator.py::
+run_default_credentials` wires a fixed control pair with the same collision-safety check as
+RATE_LIMIT_ABSENT. No opt-in flag: this adds one more attempt on an already-bounded 5-attempt
+loop, gated behind an already-confirmed positive — materially smaller than RATE_LIMIT_ABSENT's
+doubled full burst. 14 new tests, git-stash-verified. **This closes the v3 V3 corroboration
+sweep as far as it honestly goes** — 11 slices shipped total; what remains
+(`_reconfirm_sqli`/DATABASE_ERROR, BUSINESS_RULE) needs real architectural restructuring of a
+shared dispatch loop, a dedicated future session's work.
+
 **Status: Locked — v3.7 (V3 10th slice: DOM XSS corroboration — the "materially heavier"
 candidate, reassessed and built).** Changes from v3.6: the sweep-pause note had deferred DOM
 XSS as too costly (a full Chromium lifecycle per corroborating probe); reading the actual code

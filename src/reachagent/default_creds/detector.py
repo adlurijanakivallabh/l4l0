@@ -23,6 +23,21 @@ oracle call goes through the Validator's ``run_oracle`` (CLAUDE.md
 non-negotiable); this module never mints a verdict itself, and a failed
 credential attempt is never even offered to the oracle — only the one
 successful attempt (if any) becomes evidence.
+
+Optional, INVERTED-polarity technique-diversity corroboration (v3 V3):
+``refutation_credential`` lets the caller supply a deliberately-wrong, never-
+allowlisted pair to try against the SAME form once a candidate has already
+confirmed. Different default-credential pairs are INDEPENDENT probes of a
+filter/allowlist (a target may have exactly one working seeded account,
+same shape as the AUTH_BYPASS mistake this project made and reverted) — so
+"another pair must also succeed" is the WRONG corroboration shape here.
+Instead, the control pair is expected to be REFUSED; that expected refusal
+(not another success) is what corroborates — see
+``confirmation/corroboration.py::corroborate_by_refutation``. An unexpected
+grant means the login form doesn't actually discriminate on credentials at
+all (e.g. issuing a session to any POST), so the original finding is not
+trusted. Optional and additive: when omitted (the default), behavior is
+byte-for-byte unchanged from before this was added.
 """
 
 from __future__ import annotations
@@ -32,6 +47,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Protocol
 
+from reachagent.confirmation.corroboration import corroborate_by_refutation
 from reachagent.detection.oracle_gateway import OracleRunner, registry_runner
 from reachagent.identity.login import CapturedSession, DetectedLoginForm, LoginError
 from reachagent.oracles import OracleMechanism
@@ -131,6 +147,17 @@ class DefaultCredsResult:
     confirmed: bool
     username: str = ""
     evidence_ref: str = ""
+    corroborated: bool = False
+
+
+class _RefutationVerdict:
+    """Minimal ``_HasIsViolation``-shaped wrapper for the refutation probe's
+    raw raise/return outcome — no StructuralEvidence/oracle round-trip is
+    needed since ``attempt_login``'s own contract (raise on failure, return
+    only on genuine success) already IS the answer."""
+
+    def __init__(self, *, is_violation: bool) -> None:
+        self.is_violation = is_violation
 
 
 def detect_default_credentials(
@@ -140,6 +167,7 @@ def detect_default_credentials(
     order: tuple[tuple[str, str], ...] = CREDENTIAL_ALLOWLIST,
     oracle_runner: OracleRunner = registry_runner,
     evidence_ref: str = "",
+    refutation_credential: tuple[str, str] | None = None,
 ) -> DefaultCredsResult:
     """Try each candidate pair in order; stop at the first genuine success.
 
@@ -148,6 +176,12 @@ def detect_default_credentials(
     return a ``CapturedSession`` only on real, session-backed success. A
     failed attempt is never sent to the oracle — only a candidate the
     detector already believes succeeded is (still) independently reconfirmed.
+
+    When ``refutation_credential`` is set, a confirmed pair is corroborated
+    by trying that deliberately-wrong pair against the same form (v3 V3,
+    inverted polarity — see module docstring): a ``LoginError`` (correctly
+    refused) corroborates; anything else (an unexpected session, or a
+    transport error — ambiguous, treated as a contradiction) fails closed.
     """
     del form  # kept for call-site clarity / future per-form customization
     for username, password in order[:_MAX_ATTEMPTS]:
@@ -166,6 +200,28 @@ def detect_default_credentials(
             evidence_ref=evidence_ref,
         )
         verdict = oracle_runner(OracleMechanism.STRUCTURAL, evidence)
-        if verdict.is_violation:
+        if not verdict.is_violation:
+            continue
+        if refutation_credential is None:
             return DefaultCredsResult(confirmed=True, username=username, evidence_ref=evidence_ref)
+
+        def _refutation_attempt() -> object:
+            garbage_username, garbage_password = refutation_credential  # type: ignore[misc]
+            try:
+                attempt_login(garbage_username, garbage_password)
+            except LoginError:
+                return _RefutationVerdict(is_violation=False)  # correctly refused
+            except Exception as exc:  # noqa: BLE001 — ambiguous outcome fails closed, not loudly
+                _log.debug("default-credential refutation probe errored: %s", exc)
+                return _RefutationVerdict(is_violation=True)  # ambiguous — do not corroborate
+            else:
+                return _RefutationVerdict(is_violation=True)  # unexpectedly granted a session
+
+        result = corroborate_by_refutation(verdict, _refutation_attempt)
+        return DefaultCredsResult(
+            confirmed=result.corroborated,
+            username=username,
+            evidence_ref=evidence_ref,
+            corroborated=result.corroborated,
+        )
     return DefaultCredsResult(confirmed=False, evidence_ref=evidence_ref)

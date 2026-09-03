@@ -2511,6 +2511,16 @@ def run_known_vulnerable_version(
     return found
 
 
+# A deliberately-wrong, never-allowlisted pair — used only as a control
+# probe after a real candidate has already confirmed (v3 V3, inverted-
+# polarity corroboration). Never a real credential, never mutating state
+# beyond the same login POST the primary loop already fires.
+_DEFAULT_CREDS_REFUTATION_CREDENTIAL = (
+    "reachagent-refutation-probe",
+    "definitely-not-a-real-password-9f3a",
+)
+
+
 def run_default_credentials(
     *,
     graph: ReachabilityGraph,
@@ -2519,6 +2529,7 @@ def run_default_credentials(
     identity: str,
     seam: _ValidatorSeam,
     events: list[ScanEvent],
+    identities: IdentityStore | None = None,
 ) -> list[str]:
     """Try well-known default credentials against a discovered login form (§7, Build Order 0).
 
@@ -2528,6 +2539,17 @@ def run_default_credentials(
     credential pairs themselves are a closed, fixed allowlist; the LLM may
     only reorder/subset that allowlist from target-tech context, never
     invent a pair (`default_creds.propose_credential_order`).
+
+    Technique-diversity corroboration (v3 V3, inverted polarity): once a
+    real pair confirms, one deliberately-wrong control pair is tried against
+    the same form — its expected refusal (not another success) is what
+    corroborates. No opt-in flag needed: unlike RATE_LIMIT_ABSENT's second
+    FULL burst (doubling a 6-attempt burst to 12), this adds exactly ONE
+    more login attempt on top of the already-existing, unchanged primary
+    loop — the same "one more probe against an already-confirmed positive"
+    shape every other default-on v3 V3 slice already uses. Skipped, like
+    RATE_LIMIT_ABSENT, if the control username collides with any real seeded
+    identity's own login username.
     """
     from reachagent.default_creds.detector import (
         detect_default_credentials,
@@ -2563,22 +2585,48 @@ def run_default_credentials(
         def _attempt(username: str, password: str, _form: object = form) -> CapturedSession:
             return submit_login(firer, identity, _form, username, password)  # type: ignore[arg-type]
 
+        refutation_credential = _DEFAULT_CREDS_REFUTATION_CREDENTIAL
+        if identities is not None:
+            control_username = refutation_credential[0]
+            collides = any(
+                identities.credential(name).username == control_username
+                for name in identities.names()
+            )
+            if collides:
+                refutation_credential = None
+                _emit(
+                    events,
+                    "payloads",
+                    "step",
+                    "default_credentials: corroboration skipped (control username collides "
+                    "with a seeded identity)",
+                )
+
         result = detect_default_credentials(
             form,
             attempt_login=_attempt,
             order=order,
             oracle_runner=seam.run,
             evidence_ref=f"orchestrator/default_credentials/{form.url}",
+            refutation_credential=refutation_credential,
         )
         if result.confirmed and seam.last is not None:
-            nid = seam.write("default_credentials", seam.last, severity="high")
+            nid = seam.write(
+                "default_credentials",
+                seam.last,
+                severity="high",
+                metadata={"corroborated": "1"} if result.corroborated else {},
+            )
             if nid:
                 found.append(nid)
+                suffix = (
+                    " (corroborated by a refutation control probe)" if result.corroborated else ""
+                )
                 _emit(
                     events,
                     "payloads",
                     "finding",
-                    f"default credentials — {result.username}:*** works at {form.url}",
+                    f"default credentials — {result.username}:*** works at {form.url}{suffix}",
                 )
                 break  # one confirmed default-credential login is enough
     return found
@@ -3789,6 +3837,7 @@ def _build_phase3_drivers(
             identity=identity,
             seam=seam,
             events=events,
+            identities=identities,
         ),
         "rate_limit_absence": lambda: run_rate_limit_absence(
             graph=graph,

@@ -936,3 +936,30 @@ This closes out every remaining v3 V3 candidate that fit a driver-calls-oracle-d
 What's left — DEFAULT_CREDENTIALS (inverted-polarity design), `_reconfirm_sqli`/DATABASE_ERROR
 and BUSINESS_RULE (shared generic-dispatch-loop architecture) — all genuinely need their own
 dedicated restructuring session, not a pattern-match to an already-shipped slice.
+
+## v3: V3 11th and final tractable slice — DEFAULT_CREDENTIALS inverted-polarity
+## corroboration (2026-09-02)
+
+Revisited once the sweep ran out of clean pattern-matched candidates — the design had been
+fully specified when originally deferred, the only open question was rigor, not feasibility.
+New shared primitive `confirmation/corroboration.py::corroborate_by_refutation` (the third
+alongside `corroborate` and `corroborate_with_variant`): fires a control probe only when the
+primary confirmed, and `corroborated = NOT refutation_verdict.is_violation` — a control probe
+DELIBERATELY built to fail, whose expected refusal (not another success) is what corroborates.
+`default_creds/detector.py::detect_default_credentials` gains optional
+`refutation_credential`; once a real pair confirms, the SAME `attempt_login` callback tries one
+deliberately-wrong, never-allowlisted pair — its own raise/return contract already IS the
+verdict (`LoginError` = correctly refused = corroborates; an unexpected captured session or a
+transport error = ambiguous = fails closed), no new oracle round-trip needed.
+`scan/orchestrator.py::run_default_credentials` wires a fixed control pair with the same
+collision-safety check as RATE_LIMIT_ABSENT (skip if it matches a real seeded identity's
+username). No opt-in flag: this adds exactly ONE more login attempt on top of the existing,
+unchanged, already-bounded primary loop (5 attempts) — a materially smaller addition than
+RATE_LIMIT_ABSENT's doubled full burst, and the same "one more probe on an already-confirmed
+positive" shape every other default-on slice already uses. 14 new tests (6 for the new
+primitive, 5 detector-level, 3 orchestrator-level), all git-stash-verified.
+
+**This closes the v3 V3 corroboration sweep as far as it honestly goes** — 11 slices shipped.
+What remains (`_reconfirm_sqli`/DATABASE_ERROR, BUSINESS_RULE's 4 templates) both need real
+architectural restructuring of a shared, generic dispatch/evidence-building loop used by
+multiple vuln classes — a dedicated future session's work, not a continuation of this sweep.
