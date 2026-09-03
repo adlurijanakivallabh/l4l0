@@ -502,8 +502,33 @@ function updateChatHeader(j) {
   $("resume-scan").hidden = !j.can_resume || cancelling;
 }
 
+// Read-only-first checkpoint (CLAUDE.md): the scan pauses once before its
+// first state-changing request. A generic "Paused" pill gave the operator no
+// way to see WHAT was pending — this renders it once, in the chat, the
+// moment it's first observed.
+function renderPendingConfirmationBubble(j) {
+  const pc = j.pending_confirmation;
+  if (!pc || j.lifecycle !== "paused") return;
+  const id = "pending-confirm-" + j.scan_id;
+  if ($(id)) return; // already shown for this scan's one-time checkpoint
+  const p = document.createElement("p");
+  p.textContent =
+    "Paused before the first state-changing request: " +
+    pc.method +
+    " " +
+    pc.target +
+    " (as " +
+    pc.identity +
+    "). Resume to allow it, or Cancel to stop here.";
+  const wrap = document.createElement("div");
+  wrap.className = "confirm-note";
+  wrap.appendChild(p);
+  addBubble("assistant", wrap, { id });
+}
+
 function renderScanSnapshot(j) {
   updateChatHeader(j);
+  renderPendingConfirmationBubble(j);
   renderMetrics(j.graph);
   renderFindingsList(j.findings, j.suspected);
   renderSurfaceTree(j.graph && j.graph.available ? null : null); // surface fetched separately below

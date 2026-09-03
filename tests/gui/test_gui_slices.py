@@ -900,6 +900,34 @@ def test_cancel_still_works_from_a_paused_scan() -> None:
 # pause/resume tests above), so these run it on a background thread.
 
 
+def test_get_scan_surfaces_pending_confirmation_while_paused() -> None:
+    """Live end-to-end GUI verification finding: GET /api/scan/{id} (what the
+    main conversation panel actually polls every ~2.5s) built its own response
+    dict from scratch and never included pending_confirmation at all — only
+    the sidebar's GET /api/scans list did (via _scan_summary). An operator
+    watching the main panel during a real read-only-first checkpoint pause
+    saw a generic "paused" pill with no way to tell what was pending."""
+    scan_id = "pending-confirmation-slice"
+    _running_scan(scan_id)
+    _scans[scan_id]["status"] = "paused"
+    _scans[scan_id]["pending_confirmation"] = {
+        "method": "POST",
+        "target": "http://target.test/books/v1",
+        "identity": "name1",
+    }
+    try:
+        response = TestClient(app).get(f"/api/scan/{scan_id}")
+        assert response.status_code == 200
+        body = response.json()
+        assert body["pending_confirmation"] == {
+            "method": "POST",
+            "target": "http://target.test/books/v1",
+            "identity": "name1",
+        }
+    finally:
+        _scans.pop(scan_id, None)
+
+
 def test_checkpoint_blocks_until_resumed_then_returns_normally() -> None:
     import threading
     import time

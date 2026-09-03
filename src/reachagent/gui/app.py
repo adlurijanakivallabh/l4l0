@@ -1709,6 +1709,7 @@ def get_scan(scan_id: str) -> JSONResponse:
             "can_cancel": status in {"queued", "running", "cancelling", "paused"},
             "can_pause": status == "running",
             "can_resume": status == "paused",
+            "pending_confirmation": snapshot.get("pending_confirmation"),
             "stale_after_seconds": 20,
         }
     )
