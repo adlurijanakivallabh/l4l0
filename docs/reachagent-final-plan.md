@@ -1,6 +1,21 @@
 # ReachAgent — Web/API Exploitation Agent
 ### Final Project Plan (July 2026)
 
+**Status: Locked — v3.7 (V3 10th slice: DOM XSS corroboration — the "materially heavier"
+candidate, reassessed and built).** Changes from v3.6: the sweep-pause note had deferred DOM
+XSS as too costly (a full Chromium lifecycle per corroborating probe); reading the actual code
+found the cost is real but narrow and bounded — like every other slice, the second navigation
+only fires on an already-confirmed candidate, never speculatively. `scan/xss_dom.py::run_xss_dom`
+predates `xss/detector.py`'s injectable `XssProber` pattern and had zero prior test coverage;
+rather than refactoring it first, the corroboration (a second, independent navigation to the
+same URL, through the same audited `TransportDispatcher` pair) was wired directly in, and the
+first dedicated test file for this driver was written (5 tests, reusing
+`test_prototype_pollution.py`'s Playwright-mocking pattern). No opt-in flag: the corroborating
+navigation is read-only, same as the primary one. 5 new tests, git-stash-verified. This closes
+out every remaining v3 V3 candidate with a driver-calls-oracle-directly shape — what's left
+(DEFAULT_CREDENTIALS, `_reconfirm_sqli`/DATABASE_ERROR, BUSINESS_RULE) all need their own
+dedicated restructuring session.
+
 **Status: Locked — v3.6 (V3 9th slice: CLOUD_BUCKET_EXPOSURE corroboration, no opt-in
 needed; DEFAULT_CREDENTIALS deliberately deferred).** Changes from v3.5: reading the actual
 driver/detector code for both remaining opt-in-flagged candidates found they need genuinely

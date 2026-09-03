@@ -1,8 +1,21 @@
-"""DOM XSS detection via the taint-tracking shim and execution oracle."""
+"""DOM XSS detection via the taint-tracking shim and execution oracle.
+
+Technique-diversity corroboration (v3 V3): a confirmed flow is corroborated
+against a SECOND, independent browser navigation to the same URL before being
+trusted — ruling out a one-off flake in async JS execution or the taint
+shim's own instrumentation rather than a genuinely reproducible sink. This
+driver predates ``xss/detector.py``'s ``XssProber`` pattern (it dispatches the
+oracle inline rather than through that module) so the corroboration is wired
+directly here, following the same ``corroborate_with_variant`` shape as every
+other v3 V3 slice. No opt-in flag: the second navigation only ever fires on
+an already-confirmed candidate (never speculative), and — like every browser
+probe in this module — is read-only (no state-changing request).
+"""
 
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
 from reachagent.execution.firer import RequestFirer
@@ -27,6 +40,7 @@ def run_xss_dom(
 
     from reachagent.browser.playwright_driver import AsyncPlaywrightDriver
     from reachagent.browser.shim import run_taint_shim_async
+    from reachagent.confirmation.corroboration import corroborate_with_variant
     from reachagent.oracles import OracleMechanism
     from reachagent.oracles.execution_confirmation import (
         ExecutionConfirmationEvidence,
@@ -104,18 +118,52 @@ def run_xss_dom(
             OracleMechanism.EXECUTION_CONFIRMATION,
             ExecutionConfirmationEvidence(**kwargs),
         )
-        if verdict.is_violation:
-            nid = seam.write("xss_dom", seam.last, severity="high")
-            if nid:
-                found.append(nid)
-                events.append(
-                    ScanEvent(
-                        phase="payloads",
-                        kind="finding",
-                        message=f"dom xss at {endpoint.path}",
-                        details={"path": endpoint.path},
-                    )
+        if not verdict.is_violation:
+            continue
+
+        def _second_attempt(
+            _url: str = url,
+            _path: str = endpoint.path,
+            _dispatcher: TransportDispatcher = dispatcher,
+        ) -> object:
+            try:
+                _dispatcher.prepare_browser(identity, _url)
+                second_result = asyncio.run(asyncio.wait_for(_probe(_url), timeout=_PROBE_TIMEOUT))
+            except Exception:  # noqa: BLE001 — a flaky corroborating probe fails closed, not loudly
+                return SimpleNamespace(is_violation=False)
+            _dispatcher.record_browser(
+                identity,
+                second_result.final_url or _url,
+                method="GET",
+                status_code=second_result.status_code,
+            )
+            if not second_result.flows and not second_result.executed:
+                return SimpleNamespace(is_violation=False)
+            second_kwargs: dict[str, Any] = {
+                "executed": second_result.executed,
+                "evidence_ref": f"orchestrator/xss_dom{_path}",
+            }
+            if second_result.flows:
+                second_kwargs["flows"] = second_result.flows
+            return seam.run(
+                OracleMechanism.EXECUTION_CONFIRMATION,
+                ExecutionConfirmationEvidence(**second_kwargs),
+            )
+
+        result = corroborate_with_variant(verdict, _second_attempt)
+        if not result.corroborated:
+            continue
+        nid = seam.write("xss_dom", seam.last, severity="high", metadata={"corroborated": "1"})
+        if nid:
+            found.append(nid)
+            events.append(
+                ScanEvent(
+                    phase="payloads",
+                    kind="finding",
+                    message=f"dom xss at {endpoint.path} (corroborated by a second navigation)",
+                    details={"path": endpoint.path},
                 )
+            )
 
     if not found:
         events.append(

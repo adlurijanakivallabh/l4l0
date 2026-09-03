@@ -913,3 +913,26 @@ also succeed would repeat the exact AUTH_BYPASS mistake already made and reverte
 The only safe shape is trying a deliberately-wrong pair afterward and expecting REFUSAL — left
 for a dedicated pass given the plan's own standing caution that this polarity is "genuinely
 more bug-prone."
+
+## v3: V3 10th slice — DOM XSS corroboration, "materially heavier" reassessed and built
+## (2026-09-02)
+
+The original sweep note deferred DOM XSS as "materially heavier — full Chromium lifecycle per
+probe." Reading the actual code found the concern is real but narrow (wall-clock cost, not a
+safety/precision risk) and, like every other slice, the second navigation only ever fires on an
+already-confirmed candidate — the same bounded-cost discipline every prior slice already
+follows. Built it: `scan/xss_dom.py::run_xss_dom` predates `xss/detector.py`'s injectable
+`XssProber` pattern (drives Playwright directly, dispatches the oracle inline, and had ZERO
+existing test coverage before this change) — rather than refactoring it onto that pattern first,
+the corroboration was wired directly in, following the same `corroborate_with_variant` shape: a
+confirmed flow triggers a second, independent navigation to the same URL (through the same
+`TransportDispatcher.prepare_browser`/`record_browser` audit pair the primary navigation uses),
+and only a flow that reproduces is trusted. Wrote the first dedicated test file for this driver
+(`tests/scan/test_xss_dom_driver.py`, 5 tests), reusing `test_prototype_pollution.py`'s own
+Playwright-mocking pattern rather than inventing a new one. All git-stash-verified. Full suite
+green: 778 passed, 3 skipped (Docker-gated).
+
+This closes out every remaining v3 V3 candidate that fit a driver-calls-oracle-directly shape.
+What's left — DEFAULT_CREDENTIALS (inverted-polarity design), `_reconfirm_sqli`/DATABASE_ERROR
+and BUSINESS_RULE (shared generic-dispatch-loop architecture) — all genuinely need their own
+dedicated restructuring session, not a pattern-match to an already-shipped slice.
