@@ -51,7 +51,14 @@ gate removed as the explicit, informed tradeoff the operator chose.
   confirmation as separate responsibilities is unchanged. The GUI chat agent
   (`/api/scan/{id}/ask`) stays read-only Q&A + steering only — it can
   explain, summarize, and queue steering hints, but never calls
-  `write_finding` and never short-circuits the pipeline.
+  `write_finding` and never short-circuits the pipeline. A corroboration
+  probe (the pipeline's "try additional files/techniques" step, v3 V3) is a
+  driver-owned closure over the already-scoped firer/identity — built and
+  invoked from the same Validator-invoking driver code that calls
+  `run_oracle` today, never a firer living inside the oracle/judgment layer
+  itself. This keeps every new fire subject to the exact same `ScopeGuard`/
+  read-only-first gate as any other request, regardless of which stage of
+  the pipeline triggers it.
 - **External tools (Burp Suite Pro MCP, nuclei, sqlmap, dalfox, ...) are
   candidate/evidence sources feeding the pipeline, never confirmation
   authorities on their own.** A tool's own "this is vulnerable" claim is one

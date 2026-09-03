@@ -1,6 +1,28 @@
 # ReachAgent — Web/API Exploitation Agent
 ### Final Project Plan (July 2026)
 
+**Status: Locked — v3.3 (V3 first slice: technique-diversity corroboration).** Changes from
+v3.2: researched via a 5-agent workflow (call-site audit, per-check-type corroboration-action
+design across all 6 oracle families, role-boundary feasibility, reference-project shapes)
+before implementing the mechanism that stands in for the removed oracle gate's rigor. Real
+discovery mid-research: a `confirmation/corroboration.py` module already existed (Build Order
+5) doing REPEAT-and-vote corroboration (identical re-measurement, majority agreement) for
+signal-noisy families like TIMING_STATISTICAL — a different mechanism from what CLAUDE.md's
+own worked example describes ("try additional files to corroborate"), which is VARY-and-
+confirm (a genuinely different probe ruling out a coincidental single-signal match, not
+measurement noise). Built the missing complementary `corroborate_with_variant()` in the same
+module. Also revised the research's own proposal to thread a new parameter through the shared
+`judge()`/`run_oracle` layers (touching ~20+ single-shot call sites) in favor of an opt-in
+extension at the detector level (the `*Prober` dataclass pattern every check-type already
+uses) — smaller blast radius, generalizes one module at a time. First shipped slice:
+`openredirect/detector.py` corroborates a confirmed open-redirect via a second, different
+redirect-shaped parameter on the same endpoint when one exists, failing closed if it doesn't
+also reflect. A full per-check-type table (which of the ~30 check-types/expectations across
+STRUCTURAL/DIFFERENTIAL/BUSINESS_RULE/TIMING_STATISTICAL/OOB_CALLBACK/EXECUTION_CONFIRMATION
+genuinely benefit vs. stay correctly single-stage) is recorded in the living plan file to
+guide subsequent slices. 24 new tests, git-stash-verified; full regression sweep (confirmation/
+phase3/scan/report): 714 passed.
+
 **Status: Locked — v3.2 (V2 shipped: nmap depth escalation, manual floor + autonomous LLM
 layer).** Changes from v3.1: `recon/tools/nmap.py` gained two independently-settable depth
 dimensions (`REACHAGENT_NMAP_WIDEN_PORTS`, `REACHAGENT_NMAP_SCRIPT_CATEGORY`, the latter

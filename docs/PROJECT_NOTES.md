@@ -739,3 +739,74 @@ dimensions for content-discovery tools (gobuster/ffuf/feroxbuster/dirb) —
 `Host.technology` uses), wired as a GUI floor exactly like nmap's depth select. Disclosed
 scope, matching nmap's own two-stage delivery: this is the resolver/floor half only: an
 autonomous escalate-on-zero-results decision for wordlists remains a deferred follow-up.
+
+## v3: V3 first slice — technique-diversity corroboration (2026-09-02)
+
+Researched via a 5-agent workflow before writing any code, given this is the mechanism that
+stands in for the removed oracle gate's own precision rigor: a call-site audit of every
+`seam.run`/`run_oracle` invocation in `orchestrator.py` (classified into per-variant loops
+already tried before judgment vs. genuine single-shot checks), a per-check-type
+corroboration-action design across all 6 oracle families, a role-boundary feasibility check
+against CLAUDE.md's own text, and a survey of hexstrike-ai/claude-bug-bounty for any
+reusable bounded-loop control-flow shape.
+
+**A real discovery revised the research's own first proposal before any code was written**:
+a `confirmation/corroboration.py` module already existed (Build Order 5) — but reading it in
+full showed it implements REPEAT-and-vote corroboration (re-run the IDENTICAL measurement N
+times, majority agreement), scoped specifically for signal-noisy oracle families like
+TIMING_STATISTICAL where network jitter/system load can tip one measurement. Its own
+docstring explicitly argues a deterministic sentinel-in-body STRUCTURAL/DIFFERENTIAL check
+gains nothing from a repeat, since it has no comparable flakiness — which reads, at first
+glance, like it CONTRADICTS CLAUDE.md's own worked example ("read a target file... try
+additional files to corroborate"). On closer reading, it doesn't: CLAUDE.md's example
+describes trying a DIFFERENT file, not repeating the identical one — a different failure
+mode entirely (ruling out a coincidental single-signal match, not measurement noise). Built
+the missing complementary mechanism, `corroborate_with_variant()`, in the same module,
+documented as addressing the OTHER failure mode, explicitly not competing with or replacing
+the existing `corroborate()`.
+
+**Also revised**: the research's synthesis proposed threading a new `corroborate` parameter
+through the three shared call layers every driver goes through (`judge()` →
+`validator.run_oracle` → `_ValidatorSeam.run`), which would have meant every one of the
+~20+ existing single-shot call sites at least needing to reason about (even if not use) the
+new parameter. Investigating the research's own recommended first slice — STRUCTURAL/
+PATH_TRAVERSAL, matching CLAUDE.md's literal example — found it has ZERO production callers:
+`pathtraversal/detector.py`'s `PathTraversalProber` is test-only; the actual live
+path-traversal detection goes through a more indirect MCP `fire_ref`-resolution path via
+`tools/payload_chain.py`/`mcp/server.py` that would need its own dedicated investigation.
+Chose a cleaner, smaller-blast-radius design instead: corroboration lives entirely at the
+DETECTOR level (the `*Prober` dataclass pattern every check-type already uses for hermetic
+testability), never touching `judge()`/`run_oracle`/the shared `OracleRunner` Protocol at
+all — generalizes one detector module at a time, with zero risk to the ~20+ untouched
+single-shot call sites.
+
+**Shipped, first slice**: `openredirect/detector.py`'s `OpenRedirectProber` gained optional
+`fire_second_probe`/`second_param_name` fields (default `None`/`""` — omitting them keeps
+today's exact single-probe behavior byte-for-byte unchanged). `detect_open_redirect`
+corroborates a confirmed first probe against a SECOND, different redirect-shaped parameter
+on the same endpoint (when one exists — most endpoints only have one, an honest disclosed
+limit) before trusting it, failing closed (not-confirmed) rather than falling back to the
+uncorroborated first result if the second parameter doesn't also reflect the attacker URL.
+`scan/orchestrator.py::run_open_redirect` wires the second param through when present.
+
+**Full per-check-type corroboration-action table** (from the research, recorded in the
+living plan file to guide subsequent slices): STRUCTURAL has 11 check-types that genuinely
+benefit (FILE_UPLOAD_BYPASS, PATH_TRAVERSAL, UNION_EXTRACTION, JWT_FORGERY, CORS_MISCONFIG,
+OPEN_REDIRECT ✅ shipped, WEB_CACHE_POISONING, SSRF_RESPONSE, DEFAULT_CREDENTIALS,
+RATE_LIMIT_ABSENT, CLOUD_BUCKET_EXPOSURE) and 6 that correctly stay single-stage
+(CLICKJACKING, CSRF_MISSING_PROTECTION — read-only-first forbids a corroborating
+state-changing fire — SUBDOMAIN_TAKEOVER, INFO_DISCLOSURE, KNOWN_VULNERABLE_VERSION,
+PROTOTYPE_POLLUTION, all static-config/externally-established/logically-unambiguous facts a
+refire proves nothing new about). All 5 DIFFERENTIAL expectations and all 4 BUSINESS_RULE
+templates genuinely benefit. TIMING_STATISTICAL and OOB_CALLBACK were deliberately NOT
+forced into this shape — they need a policy gate (corroborate only when marginal/high-severity,
+or a channel-count/poll-window policy) rather than a plain second-probe, flagged as an
+explicit follow-up. EXECUTION_CONFIRMATION: DOM XSS and Stored XSS benefit (a second
+independent read rules out a stale marker or distinguishes "stored" from "merely reflected
+in a save-confirmation page"); Reflected XSS stays single-stage (no persistence claim to
+verify).
+
+24 new tests across 3 files, all git-stash-verified. Full regression sweep (confirmation/
+phase3/scan/report directories): 714 passed, 3 pre-existing infra-gated skips. CLAUDE.md
+gained a one-line clarification that a corroboration probe is a driver-owned closure over
+the already-scoped firer, never a firer living inside the oracle/judgment layer itself.
