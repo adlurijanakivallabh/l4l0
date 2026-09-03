@@ -2572,6 +2572,7 @@ def run_rate_limit_absence(
     identity: str,
     seam: _ValidatorSeam,
     events: list[ScanEvent],
+    identities: IdentityStore | None = None,
 ) -> list[str]:
     """Bounded burst of wrong-credential login attempts (§7, Build Order 0).
 
@@ -2580,6 +2581,18 @@ def run_rate_limit_absence(
     triggered a defensive signal. Every attempt uses the same deliberately-
     wrong, never-real credential pair — the point is observing whether
     *behavior* changes across repeats, not guessing a real password.
+
+    Optional, OPT-IN technique-diversity corroboration (v3 V3): set
+    ``REACHAGENT_RATE_LIMIT_CORROBORATION=1`` to fire a SECOND, independent
+    burst after a real cooldown before trusting a confirmed absence — unlike
+    every other v3 V3 slice this one defaults OFF, since doubling live
+    attempts against a real auth endpoint is a materially different risk
+    profile than a read-only or idempotent-write re-probe (self-inflicted
+    lockout/DoS risk against the scan's own traffic). Also skipped, even when
+    the flag is on, if the probe username collides with any real seeded
+    identity's own login username — corroborating with a burst against a
+    real account would defeat the "never a real credential" safety property
+    this driver otherwise guarantees.
     """
     from reachagent.identity.login import detect_login_forms
     from reachagent.rate_limit.detector import (
@@ -2631,20 +2644,48 @@ def run_rate_limit_absence(
             status=result.status_code, body=result.body.decode("utf-8", errors="replace")
         )
 
-    prober = RateLimitProber(fire_attempt=_fire_attempt, oracle_runner=seam.run)
+    fire_second_attempt = None
+    if os.environ.get("REACHAGENT_RATE_LIMIT_CORROBORATION") == "1":
+        collides = False
+        if identities is not None:
+            collides = any(
+                identities.credential(name).username == username for name in identities.names()
+            )
+        if collides:
+            _emit(
+                events,
+                "payloads",
+                "step",
+                "rate_limit_absence: corroboration skipped (probe username collides "
+                "with a seeded identity)",
+            )
+        else:
+            fire_second_attempt = _fire_attempt
+
+    prober = RateLimitProber(
+        fire_attempt=_fire_attempt,
+        oracle_runner=seam.run,
+        fire_second_attempt=fire_second_attempt,
+    )
     result = detect_rate_limit_absence(
         prober, evidence_ref=f"orchestrator/rate_limit_absence/{form.url}"
     )
     if result.confirmed and seam.last is not None:
-        nid = seam.write("rate_limit_absence", seam.last, severity="medium")
+        nid = seam.write(
+            "rate_limit_absence",
+            seam.last,
+            severity="medium",
+            metadata={"corroborated": "1"} if result.corroborated else {},
+        )
         if nid:
             found.append(nid)
+            suffix = " (corroborated by a second independent burst)" if result.corroborated else ""
             _emit(
                 events,
                 "payloads",
                 "finding",
                 f"no login rate limiting observed after {result.attempts_completed} attempts "
-                f"at {form.url}",
+                f"at {form.url}{suffix}",
             )
     return found
 
@@ -3731,6 +3772,7 @@ def _build_phase3_drivers(
             identity=identity,
             seam=seam,
             events=events,
+            identities=identities,
         ),
         "structural_headers": lambda: run_structural_headers(
             graph=graph,

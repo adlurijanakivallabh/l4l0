@@ -726,6 +726,13 @@ async def start_scan(payload: dict[str, Any]) -> JSONResponse:
             # additive on top of (never below) whatever floor "Nmap recon depth" above
             # already set.
             ("recon_depth_tuning", "REACHAGENT_RECON_DEPTH_TUNING"),
+            # Rate-limit-absence technique-diversity corroboration (v3 V3), the
+            # ONE V3 slice that defaults off everywhere, never just here — see
+            # scan/orchestrator.py::run_rate_limit_absence. Doubling live wrong-
+            # credential attempts against a real auth endpoint is a materially
+            # different risk (self-inflicted lockout/DoS) than every other v3 V3
+            # slice's read-only or idempotent-write re-probe.
+            ("rate_limit_corroboration", "REACHAGENT_RATE_LIMIT_CORROBORATION"),
         )
         if payload.get(form_key) is True
     }

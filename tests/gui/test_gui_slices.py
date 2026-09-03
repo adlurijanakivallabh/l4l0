@@ -1431,6 +1431,35 @@ def test_scan_endpoint_passes_recon_depth_tuning_as_env_override(
     _scans.pop(response.json()["scan_id"], None)
 
 
+def test_scan_endpoint_passes_rate_limit_corroboration_as_env_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """v3 V3: the rate-limit corroboration checkbox must reach _run_scan as
+    REACHAGENT_RATE_LIMIT_CORROBORATION — this is the ONE v3 V3 slice that
+    defaults off, so an operator must be able to explicitly opt in via the GUI."""
+    _stub_named_provider(monkeypatch)
+    captured: list[object] = []
+
+    async def capturing_scan(*args: object, **_kwargs: object) -> None:
+        captured.extend(args)
+
+    monkeypatch.setattr(gui_app, "_run_scan", capturing_scan)
+    response = TestClient(app).post(
+        "/api/scan",
+        json={
+            "target": "https://demo.example",
+            "in_scope": "demo.example",
+            "use_llm": True,
+            "llm_provider": "named:unit-provider",
+            "rate_limit_corroboration": True,
+        },
+    )
+    assert response.status_code == 200
+    env_overrides = captured[-2]
+    assert env_overrides["REACHAGENT_RATE_LIMIT_CORROBORATION"] == "1"
+    _scans.pop(response.json()["scan_id"], None)
+
+
 def test_scan_endpoint_passes_wordlist_size_as_env_override(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
