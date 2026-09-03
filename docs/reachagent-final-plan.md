@@ -1,6 +1,20 @@
 # ReachAgent — Web/API Exploitation Agent
 ### Final Project Plan (July 2026)
 
+**Status: Locked — v3.12 (next-phase items 3-4 shipped: confirmation-card scope textarea,
+stop over-truncating the operator's objective).** Item 3: `gui/static/app.js`'s
+`cc-scope`/`cc-outscope` swap `<input>` for `<textarea>` (matching `cc-goal`'s existing
+treatment); `execution/scope.py::ScopeGuard.from_raw` now splits on commas OR newlines so the
+taller box's natural one-per-line input actually parses. Verified live via Playwright — zero
+console errors, correct multi-line rendering. Item 4: a full `grep -rn "operator_prompt\[:"`
+across `src/` found 13 sites (not just the one the audit flagged) sharing an identical
+`operator_prompt[:500]` cap (one at `[:400]`) — a genuine multi-sentence ROE clause was silently
+cut before nearly every LLM signal-building call ever saw it. Bumped all 13 uniformly to 2000
+characters — a pure numeric-literal change, no new logic, well within these calls' own modest
+output-token budgets. 4 new tests across both items, all git-stash-verified; item 4 got a full
+1765-test suite sweep given its breadth. Next up: `skip_tools`/`notes` intake fields, CVSS
+vector string, Steps-to-Reproduce + PoC report sections.
+
 **Status: Locked — v3.11 (next-phase audit + 2 items shipped: CWE-id lookup, autonomous
 wordlist escalation).** A 6-agent background audit checked V1/V5/V6/V7 and 5 known tail items
 against actual current code before picking what to build — the plan's own status tracker had

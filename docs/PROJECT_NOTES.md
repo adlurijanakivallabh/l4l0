@@ -1018,4 +1018,10 @@ mirrors `depth_escalation.py`'s nmap pattern, with one real design difference �
 linearly ordered so its floor logic is OR/max-like, while the tech hint stays
 authoritative-override like nmap's script category. Wired into `entrypoint.py` for any
 content-discovery tool yielding zero endpoints, not just nmap-specific; new GUI opt-in
-checkbox. 26 new tests. Both git-stash-verified.
+checkbox. 26 new tests. (3) **Confirmation-card scope textarea** — `cc-scope`/`cc-outscope`
+swap `<input>` for `<textarea>`; `ScopeGuard.from_raw` now splits on commas OR newlines so the
+taller box's natural one-per-line input actually parses. Verified live via Playwright. (4) **Stop
+over-truncating the operator's objective** — a full grep found 13 sites (not just the one the
+audit flagged) sharing an identical `operator_prompt[:500]` cap; bumped all uniformly to 2000
+characters. All four git-stash-verified; item 4's full-suite sweep (1765 passed) given how many
+files it touched.
