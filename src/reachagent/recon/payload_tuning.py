@@ -1,7 +1,8 @@
 """Live-reasoning payload choice — propose/validate/execute (proposal-only).
 
-Third layer of docs/live-reasoning-design.md §4b: given endpoint shape +
-vuln_class + the sink-matched bucket get_payloads already returned, the model
+Third layer of the live-reasoning propose/validate/execute model: given
+endpoint shape + vuln_class + the sink-matched bucket get_payloads already
+returned, the model
 ranks which *existing* payload_ref to try first. Dynamic allowlist is the
 exact bucket set — no invented string, value in tagging + oracle wiring.
 

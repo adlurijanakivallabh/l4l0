@@ -1,6 +1,6 @@
 """Live-reasoning recon tuning — propose/validate/execute separation (proposal-only).
 
-Three-layer model (see :doc:`docs/live-reasoning-design.md`):
+Three-layer model:
   1. PROPOSE — Claude (Anthropic API) picks *from* a fixed allowlist of safe
      wordlists / flag combos / status-code filters given target signals.
   2. VALIDATE — fixed code checks the proposal is a member of the allowlist;
