@@ -886,3 +886,30 @@ Remaining v3 V3 candidates unchanged from the prior pause note: DEFAULT_CREDENTI
 CLOUD_BUCKET_EXPOSURE (same opt-in-decision care as this slice), DOM XSS (real browser
 lifecycle per probe), `_reconfirm_sqli`/BUSINESS_RULE (shared generic-dispatch-loop
 architecture needs restructuring first).
+
+## v3: V3 9th slice — CLOUD_BUCKET_EXPOSURE corroboration, no opt-in needed (2026-09-02)
+
+Read the actual driver/detector code for both remaining opt-in-flagged candidates before
+proceeding — the two turned out to need genuinely different treatment. **CLOUD_BUCKET_EXPOSURE
+ships default-on**: every candidate bucket URL is an independent third-party resource
+(S3/GCS/Azure), so "try a different candidate" proves nothing about the original finding, but a
+DELAYED RE-READ of the SAME confirmed URL is a safe corroboration ruling out a transient
+exposure window — the exact shape `cachepoisoning/detector.py` already uses for
+WEB_CACHE_POISONING. `cloud_bucket/detector.py`'s `BucketProber` gains an optional
+`fire_delayed_reread`; a confirmed exposure is corroborated via `corroborate_with_variant`
+against a re-read of the same url after a real 2s delay (`_CLOUD_BUCKET_REREAD_DELAY_S`,
+monkeypatchable). No opt-in flag: every probe is read-only against a third party, never
+doubling load on the scanned target — none of RATE_LIMIT_ABSENT's self-inflicted-DoS risk.
+One refinement beyond the cache-poisoning precedent: since this detector loops over MANY
+independent candidates (not one fixed URL), a corroboration failure on one candidate doesn't
+abort the search — the loop moves on, since a different bucket being genuinely exposed is a
+separate question from whether THIS one merely flapped. 6 new tests, git-stash-verified.
+
+**DEFAULT_CREDENTIALS deliberately deferred, not built** — it needs the SAME inverted-polarity
+corroboration design already flagged (and deferred) for nosqli/ldap's baseline recheck, not
+the "next variant must also confirm" shape: different default-credential pairs are INDEPENDENT
+probes (a target may have exactly one working seeded account), so requiring a second pair to
+also succeed would repeat the exact AUTH_BYPASS mistake already made and reverted this session.
+The only safe shape is trying a deliberately-wrong pair afterward and expecting REFUSAL — left
+for a dedicated pass given the plan's own standing caution that this polarity is "genuinely
+more bug-prone."

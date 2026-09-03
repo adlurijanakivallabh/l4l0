@@ -1,6 +1,23 @@
 # ReachAgent — Web/API Exploitation Agent
 ### Final Project Plan (July 2026)
 
+**Status: Locked — v3.6 (V3 9th slice: CLOUD_BUCKET_EXPOSURE corroboration, no opt-in
+needed; DEFAULT_CREDENTIALS deliberately deferred).** Changes from v3.5: reading the actual
+driver/detector code for both remaining opt-in-flagged candidates found they need genuinely
+different treatment. CLOUD_BUCKET_EXPOSURE ships default-on: `cloud_bucket/detector.py`'s
+`BucketProber` gains an optional `fire_delayed_reread` — a confirmed exposure is corroborated
+against a delayed re-read of the SAME third-party bucket URL (mirrors WEB_CACHE_POISONING's own
+shape exactly), ruling out a transient exposure window; no opt-in flag needed since every probe
+is read-only against a third party, never the scanned target. One refinement beyond the
+cache-poisoning precedent: since this detector loops over many independent candidates, a
+corroboration failure on one doesn't abort the search — the loop moves on to the next candidate.
+DEFAULT_CREDENTIALS is deliberately NOT built the same way: different credential pairs are
+independent probes (unlike JWT_FORGERY's shared-flaw symptoms), so "next pair must also
+succeed" would repeat the exact AUTH_BYPASS mistake already reverted this session — the only
+safe shape needs an inverted-polarity recheck (try a wrong pair, expect refusal), already
+flagged elsewhere as "genuinely more bug-prone" and left for a dedicated pass. 6 new tests,
+git-stash-verified.
+
 **Status: Locked — v3.5 (V3 8th slice: RATE_LIMIT_ABSENT corroboration, opt-in).** Changes
 from v3.4: resumed the corroboration sweep on the operator's explicit instruction
 ("scoped carefully with the opt-in gate"). `rate_limit/detector.py`'s `RateLimitProber` gains

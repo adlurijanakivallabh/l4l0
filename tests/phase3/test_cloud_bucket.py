@@ -17,7 +17,7 @@ from reachagent.cloud_bucket.detector import (
     derive_seed_names,
     detect_cloud_bucket_exposure,
 )
-from tests._oracle_test_support import CONFIRMS, fixed_oracle_runner
+from tests._oracle_test_support import CONFIRMS, INCONCLUSIVE, fixed_oracle_runner
 
 _S3_MARKER = "<ListBucketResult"
 
@@ -112,3 +112,73 @@ def test_transport_failure_on_one_candidate_does_not_abort_the_rest() -> None:
     result = detect_cloud_bucket_exposure(prober, probes=probes)
     assert result.confirmed is True
     assert result.exposed_url == target_url
+
+
+class _SequencedRunner:
+    """Returns a different fixed verdict on each successive call — matches
+    tests/phase3/test_cache_poisoning.py's own pattern."""
+
+    def __init__(self, verdicts: list) -> None:
+        self._verdicts = list(verdicts)
+
+    def __call__(self, mechanism, evidence):  # noqa: ANN001
+        return fixed_oracle_runner(self._verdicts.pop(0))(mechanism, evidence)
+
+
+def test_no_fire_delayed_reread_is_byte_for_byte_unchanged() -> None:
+    target_url = "https://testfire.s3.amazonaws.com/"
+
+    def fire_probe(url: str) -> BucketProbe:
+        return BucketProbe(status=200, body=_S3_MARKER)
+
+    prober = BucketProber(fire_probe=fire_probe, oracle_runner=fixed_oracle_runner(CONFIRMS))
+    result = detect_cloud_bucket_exposure(prober, probes=((target_url, _S3_MARKER),))
+    assert result.confirmed is True
+    assert result.corroborated is False
+
+
+def test_delayed_reread_still_exposed_corroborates() -> None:
+    target_url = "https://testfire.s3.amazonaws.com/"
+
+    def fire_probe(url: str) -> BucketProbe:
+        return BucketProbe(status=200, body=_S3_MARKER)
+
+    prober = BucketProber(
+        fire_probe=fire_probe,
+        oracle_runner=_SequencedRunner([CONFIRMS, CONFIRMS]),
+        fire_delayed_reread=fire_probe,
+    )
+    result = detect_cloud_bucket_exposure(
+        prober, probes=((target_url, _S3_MARKER),), evidence_ref="ref-corroborated"
+    )
+    assert result.confirmed is True
+    assert result.corroborated is True
+    assert result.exposed_url == target_url
+
+
+def test_delayed_reread_no_longer_exposed_fails_closed_but_tries_the_next_candidate() -> None:
+    """A candidate that goes from exposed to locked-down between the two
+    reads must not be confirmed — but since every remaining candidate is a
+    wholly independent third-party bucket, the search still moves on and
+    can confirm a DIFFERENT, genuinely (and stably) exposed candidate."""
+    flapping_url = "https://a.s3.amazonaws.com/"
+    stable_url = "https://b.s3.amazonaws.com/"
+
+    def fire_probe(url: str) -> BucketProbe:
+        return BucketProbe(status=200, body=_S3_MARKER)
+
+    def fire_delayed_reread(url: str) -> BucketProbe:
+        if url == flapping_url:
+            return BucketProbe(status=403, body="<Error><Code>AccessDenied</Code></Error>")
+        return BucketProbe(status=200, body=_S3_MARKER)
+
+    prober = BucketProber(
+        fire_probe=fire_probe,
+        oracle_runner=_SequencedRunner([CONFIRMS, INCONCLUSIVE, CONFIRMS, CONFIRMS]),
+        fire_delayed_reread=fire_delayed_reread,
+    )
+    probes = ((flapping_url, _S3_MARKER), (stable_url, _S3_MARKER))
+    result = detect_cloud_bucket_exposure(prober, probes=probes)
+    assert result.confirmed is True
+    assert result.corroborated is True
+    assert result.exposed_url == stable_url

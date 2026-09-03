@@ -17,6 +17,17 @@ Azure), never the scanned target itself — the same reasoning that gives
 ``subdomain_takeover`` its own dedicated transport outside ``RequestFirer``:
 the guessed bucket host is, by construction, outside the scanned target's
 own ScopeGuard allowlist.
+
+Optional technique-diversity corroboration (v3 V3): ``fire_delayed_reread``
+lets the caller wire in a second, later, independent re-read of the SAME
+confirmed bucket URL — mirrors ``cachepoisoning.detector``'s own delayed
+re-read exactly (a different candidate URL is a different third-party
+resource entirely, so "try another guess" proves nothing about THIS one;
+only a repeat of the same URL rules out a transient exposure window). No
+opt-in flag needed (unlike RATE_LIMIT_ABSENT): every probe here is a
+read-only GET against a third party, never doubling load on the scanned
+target itself. Optional and additive: when omitted (the default), behavior
+is byte-for-byte unchanged from before this was added.
 """
 
 from __future__ import annotations
@@ -26,6 +37,7 @@ import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from reachagent.confirmation.corroboration import corroborate_with_variant
 from reachagent.detection.oracle_gateway import OracleRunner, registry_runner
 from reachagent.oracles import OracleMechanism
 from reachagent.oracles.structural import StructuralCheckType, StructuralEvidence
@@ -138,10 +150,13 @@ class BucketProber:
     ``fire_probe``: fire the read-only GET against one candidate bucket URL
     and return its status/body. ``oracle_runner``: injectable oracle seam;
     defaults to registry (no validator import).
+    ``fire_delayed_reread`` (v3 V3, optional): a second, later, independent
+    read of the SAME confirmed bucket URL — see module docstring.
     """
 
     fire_probe: Callable[[str], BucketProbe]
     oracle_runner: OracleRunner = registry_runner
+    fire_delayed_reread: Callable[[str], BucketProbe] | None = None
 
 
 @dataclass(frozen=True)
@@ -151,6 +166,7 @@ class BucketExposureResult:
     confirmed: bool
     exposed_url: str = ""
     evidence_ref: str = ""
+    corroborated: bool = False
 
 
 def detect_cloud_bucket_exposure(
@@ -165,6 +181,15 @@ def detect_cloud_bucket_exposure(
     oracle's CLOUD_BUCKET_EXPOSURE decision — the marker match here only
     selects a candidate worth asking the oracle about, exactly like
     subdomain_takeover's fingerprint match gates its own probe.
+
+    When ``prober.fire_delayed_reread`` is set, a confirmed exposure is
+    corroborated against a delayed re-read of the SAME url before being
+    trusted (v3 V3) — a contradicted corroboration fails closed for THAT
+    candidate (never falls back to the uncorroborated result), but since
+    each remaining candidate is a wholly independent third-party resource
+    (a different bucket, possibly a different provider), one candidate's
+    transient/flapping exposure does not stop the search — the loop moves
+    on to the next candidate rather than giving up entirely.
     """
     for url, marker in probes:
         try:
@@ -180,6 +205,25 @@ def detect_cloud_bucket_exposure(
             evidence_ref=evidence_ref,
         )
         verdict = prober.oracle_runner(OracleMechanism.STRUCTURAL, evidence)
-        if verdict.is_violation:
+        if not verdict.is_violation:
+            continue
+        if prober.fire_delayed_reread is None:
             return BucketExposureResult(confirmed=True, exposed_url=url, evidence_ref=evidence_ref)
+
+        def _second_attempt(_url: str = url, _marker: str = marker) -> object:
+            reread = prober.fire_delayed_reread(_url)  # type: ignore[misc]
+            reread_evidence = StructuralEvidence(
+                check_type=StructuralCheckType.CLOUD_BUCKET_EXPOSURE,
+                probe_status=reread.status,
+                sentinel=_marker,
+                response_body=reread.body,
+                evidence_ref=evidence_ref,
+            )
+            return prober.oracle_runner(OracleMechanism.STRUCTURAL, reread_evidence)
+
+        result = corroborate_with_variant(verdict, _second_attempt)
+        if result.corroborated:
+            return BucketExposureResult(
+                confirmed=True, exposed_url=url, evidence_ref=evidence_ref, corroborated=True
+            )
     return BucketExposureResult(confirmed=False, evidence_ref=evidence_ref)

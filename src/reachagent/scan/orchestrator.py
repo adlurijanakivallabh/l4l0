@@ -2312,6 +2312,13 @@ def run_subdomain_takeover(
     return found
 
 
+# v3 V3: how long the corroborating delayed re-read waits before firing —
+# long enough that a hit can't be explained by both reads landing in the same
+# brief window of a transient/flapping exposure. A module-level constant so
+# tests can monkeypatch it down to 0 rather than paying the real delay.
+_CLOUD_BUCKET_REREAD_DELAY_S = 2.0
+
+
 def run_cloud_bucket_exposure(
     *,
     graph: ReachabilityGraph,
@@ -2328,6 +2335,12 @@ def run_cloud_bucket_exposure(
     this class its own dedicated transport outside the firer. Never
     state-changing (GET only); every probe URL and outcome is narrated into
     the live event feed since it bypasses the firer's own audit.
+
+    Technique-diversity corroboration (v3 V3): a confirmed exposure is
+    corroborated against a delayed re-read of the SAME url before being
+    trusted — no opt-in flag needed (unlike RATE_LIMIT_ABSENT), since every
+    probe here is a read-only GET against a third party, never doubling
+    load on the scanned target itself.
     """
     from reachagent.cloud_bucket.detector import (
         BucketProbe,
@@ -2363,19 +2376,31 @@ def run_cloud_bucket_exposure(
             except httpx.HTTPError:
                 return BucketProbe(status=0, body="")
 
-        prober = BucketProber(fire_probe=_fire_probe, oracle_runner=seam.run)
+        def _fire_delayed_reread(url: str) -> BucketProbe:
+            time.sleep(_CLOUD_BUCKET_REREAD_DELAY_S)
+            return _fire_probe(url)
+
+        prober = BucketProber(
+            fire_probe=_fire_probe, oracle_runner=seam.run, fire_delayed_reread=_fire_delayed_reread
+        )
         result = detect_cloud_bucket_exposure(
             prober, probes=probes, evidence_ref=f"orchestrator/cloud_bucket_exposure/{hostname}"
         )
         if result.confirmed and seam.last is not None:
-            nid = seam.write("cloud_bucket_exposure", seam.last, severity="high")
+            nid = seam.write(
+                "cloud_bucket_exposure",
+                seam.last,
+                severity="high",
+                metadata={"corroborated": "1"} if result.corroborated else {},
+            )
             if nid:
                 found.append(nid)
+                suffix = " (corroborated by a delayed re-read)" if result.corroborated else ""
                 _emit(
                     events,
                     "payloads",
                     "finding",
-                    f"cloud bucket publicly listable — {result.exposed_url}",
+                    f"cloud bucket publicly listable — {result.exposed_url}{suffix}",
                     path=hostname,
                 )
                 break  # one confirmed exposure per scan is enough
