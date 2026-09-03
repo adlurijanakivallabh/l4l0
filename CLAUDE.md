@@ -105,11 +105,20 @@ gate removed as the explicit, informed tradeoff the operator chose.
 - Eval environment: `docker compose up -d` brings up both VAmPI instances the
   Phase 1 gate needs — vulnerable on :5000, secure on :5002, matching the URLs
   `reachagent.eval` defaults to (`docker compose down` to tear down). crAPI
-  (`docker-compose.crapi.yml`) and Juice Shop (`docker-compose.juiceshop.yml`)
-  bring up their own targets the same way. DVWA (`docker compose -f
-  docker-compose.dvwa.yml up -d`, port 8080) needs a one-time manual
-  `/setup.php` database creation after first boot — infrastructure only, no
-  numeric eval gate wired for it yet.
+  (`docker-compose.crapi.yml`, needs `CRAPI_COMPOSE_PATH` set to the local
+  crAPI checkout's own `deploy/docker/docker-compose.yml`) and Juice Shop
+  (`docker-compose.juiceshop.yml`) bring up their own targets the same way.
+  DVWA (`docker compose -f docker-compose.dvwa.yml up -d`, port 8080) needs a
+  one-time manual `/setup.php` database creation after first boot —
+  infrastructure only, no numeric eval gate wired for it yet.
+- **Operator standing instruction**: bring up a target's container(s) only
+  when a task actually needs a LIVE run against it (an eval gate, a
+  ground-truth validation pass, a live-verification check) — never leave one
+  running "just in case." crAPI's stack alone is ~10 containers; VAmPI/Juice
+  Shop/DVWA are each their own network. Tear down with the matching `docker
+  compose ... down` the moment that live work is done, before moving on to
+  unrelated work (hermetic test-writing, docs, refactors that don't touch a
+  live target need zero containers running).
 
 ## Working conventions
 
