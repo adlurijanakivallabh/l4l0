@@ -6,7 +6,7 @@ Tests need a deterministic stand-in so they can assert a specific
 ``FindingStatus`` without a live LLM call. Two shapes, matching the two ways a
 verdict gets reached in this codebase:
 
-- Most individual detectors (``pathtraversal/detector.py``, ``bola/detector.py``,
+- Most individual detectors (``bola/detector.py``, ``sqli/detector.py``,
   etc.) hold an injectable ``oracle_runner: OracleRunner`` field on their Prober
   dataclass, defaulting to ``detection.oracle_gateway.registry_runner``. Inject
   :func:`fixed_oracle_runner` there to assert on detector WIRING (does it

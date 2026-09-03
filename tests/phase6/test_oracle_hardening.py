@@ -287,7 +287,6 @@ def test_detector_modules_never_construct_verdict_or_finding() -> None:
         "graphql",
         "ldap",
         "nosql",
-        "pathtraversal",
         "race",
         "sqli",
         "xss",

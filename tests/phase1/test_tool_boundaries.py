@@ -283,7 +283,6 @@ _DETECTOR_PKGS = [
     "reachagent.ldap",
     "reachagent.xss",
     "reachagent.fileupload",
-    "reachagent.pathtraversal",
 ]
 
 
