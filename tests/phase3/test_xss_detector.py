@@ -157,6 +157,68 @@ def test_stored_xss_clean_readback_finds_nothing() -> None:
     assert result.xss_type is None
 
 
+# --- Technique-diversity corroboration (v3 V3): a second, independent read -
+
+
+def _sequenced_dom_then_stored_runner(stored_statuses: list):
+    """Like ``_dom_then_stored_runner``, but the stored leg returns a
+    DIFFERENT fixed verdict on each successive stored call — needed to
+    distinguish the primary read's outcome from the corroborating second
+    read's outcome."""
+    dom_runner = fixed_oracle_runner(INCONCLUSIVE)
+    remaining = list(stored_statuses)
+
+    def _runner(mechanism, evidence):
+        if evidence.payload_tag:
+            return fixed_oracle_runner(remaining.pop(0))(mechanism, evidence)
+        return dom_runner(mechanism, evidence)
+
+    return _runner
+
+
+def test_no_second_read_configured_is_byte_for_byte_unchanged() -> None:
+    prober = _stored_prober(tag_in_body=True, status=CONFIRMS)
+    result = detect_xss(prober, evidence_ref="xss/stored/single")
+    assert result.confirmed is True
+    assert result.corroborated is False
+
+
+def test_second_independent_read_also_showing_the_tag_corroborates() -> None:
+    prober = _stored_prober(tag_in_body=True, status=CONFIRMS)
+    prober.oracle_runner = _sequenced_dom_then_stored_runner([CONFIRMS, CONFIRMS])
+    prober.fire_second_stored_read = lambda: "<p>xss-tag-deadbeef</p>"
+    result = detect_xss(prober, evidence_ref="xss/stored/corroborated")
+    assert result.confirmed is True
+    assert result.corroborated is True
+
+
+def test_second_read_not_showing_the_tag_fails_closed() -> None:
+    """A tag present only in the immediate read-back (not a second,
+    independent one) is exactly the 'reflected only in a save-confirmation
+    view scoped to the writer's own session' false positive this
+    corroboration rules out — must NOT confirm."""
+    prober = _stored_prober(tag_in_body=True, status=CONFIRMS)
+    prober.oracle_runner = _sequenced_dom_then_stored_runner([CONFIRMS, INCONCLUSIVE])
+    prober.fire_second_stored_read = lambda: "<p>no tag here</p>"
+    result = detect_xss(prober, evidence_ref="xss/stored/contradicted")
+    assert result.confirmed is False
+    assert result.corroborated is False
+
+
+def test_second_read_never_fired_when_primary_does_not_confirm() -> None:
+    calls = {"n": 0}
+
+    def _second() -> str:
+        calls["n"] += 1
+        return "irrelevant"
+
+    prober = _stored_prober(tag_in_body=False, status=INCONCLUSIVE)
+    prober.fire_second_stored_read = _second
+    result = detect_xss(prober, evidence_ref="xss/stored/no-primary")
+    assert result.confirmed is False
+    assert calls["n"] == 0  # no wasted independent read confirming a negative
+
+
 def test_dom_confirmed_skips_stored_path() -> None:
     """Read-only-first (§10): stored write must not fire when DOM already confirmed."""
     stored_fired: list[bool] = []

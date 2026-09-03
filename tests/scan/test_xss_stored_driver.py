@@ -12,13 +12,35 @@ import json
 
 import httpx
 
+from reachagent.detection.oracle_gateway import OracleOutcome
 from reachagent.execution import RequestFirer, ScopeGuard
 from reachagent.graph.nodes import Endpoint, Parameter
 from reachagent.graph.store import ReachabilityGraph
+from reachagent.identity.store import Credential, IdentityStore
+from reachagent.oracles.base import OracleVerdict
 from reachagent.scan.orchestrator import _ValidatorSeam, run_xss_stored
-from tests._oracle_test_support import CONFIRMS, FixedJudgmentClient
+from tests._oracle_test_support import CONFIRMS, INCONCLUSIVE, FixedJudgmentClient
 
 _BASE = "http://xs.test"
+
+
+def _real_stored_evidence_run(
+    self: _ValidatorSeam, mechanism: object, evidence: object
+) -> OracleOutcome:
+    """v3 V3: judges on the real payload_tag-in-response_body content (DOM
+    flows are always empty in this driver, so DOM never confirms) instead of
+    a blanket fixed verdict — needed to reach the STORED corroboration path
+    at all, since a flat confirm would let the DOM leg (tried first in
+    detect_xss) confirm before the stored path is ever exercised."""
+    tag = getattr(evidence, "payload_tag", "") or ""
+    body = getattr(evidence, "response_body", "") or ""
+    status = CONFIRMS if tag and tag in body else INCONCLUSIVE
+    ref = str(getattr(evidence, "evidence_ref", "") or "")
+    verdict = OracleVerdict(
+        mechanism=mechanism, status=status, evidence_ref=ref, reason="test-fixed-verdict"
+    )
+    self._last = verdict
+    return OracleOutcome(verdict)
 
 
 def _graph() -> ReachabilityGraph:
@@ -80,6 +102,53 @@ def test_confirms_when_tag_reflects_in_independent_reread(monkeypatch) -> None: 
     classes = {f.vuln_class for _fid, f in findings}
     assert "xss_stored" in classes
     assert all(f.status.value == "confirmed_violation" for _fid, f in findings)
+
+
+def test_second_identity_wires_corroboration_through(monkeypatch) -> None:  # noqa: ANN001
+    """v3 V3 wiring test: when a SECOND identity with a session exists, it is
+    threaded through as the corroborating independent reader and the written
+    finding's metadata records the corroboration. The corroboration DECISION
+    logic itself (a contradicted second read fails closed) is already covered
+    at the detector level in tests/phase3/test_xss_detector.py — this only
+    proves the orchestrator wires a second identity through at all."""
+    monkeypatch.setattr(_ValidatorSeam, "run", _real_stored_evidence_run)
+
+    identities = IdentityStore()
+    identities.add(Credential("anon", "anon", "pw", "user"))
+    identities.add(Credential("second_reader", "second_reader", "pw", "user"))
+    identities.open_session("anon", "anon-token")
+    identities.open_session("second_reader", "second-token")
+
+    captured: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method in ("OPTIONS", "GET") and request.url.path == "/comments":
+            return httpx.Response(200, text="ok")
+        if request.method == "POST":
+            captured.append(json.loads(request.content))
+            return httpx.Response(200, json={"status": "created"})
+        if request.method == "GET":
+            injected = captured[0]["body"]
+            return httpx.Response(200, text=f"<p>{injected}</p>")
+        return httpx.Response(404)
+
+    graph = _graph()
+    seam = _ValidatorSeam(graph)
+    run_xss_stored(
+        graph=graph,
+        firer=_firer(handler),
+        base_url=_BASE,
+        identity="anon",
+        auth_headers={},
+        seam=seam,
+        events=[],
+        identities=identities,
+    )
+    findings = graph.findings()
+    assert findings
+    _fid, finding = findings[0]
+    assert finding.vuln_class == "xss_stored"
+    assert finding.metadata.get("corroborated") == "1"
 
 
 def test_secure_target_encodes_payload_no_finding() -> None:

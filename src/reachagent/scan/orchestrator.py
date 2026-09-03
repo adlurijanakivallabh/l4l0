@@ -1725,6 +1725,7 @@ def run_xss_stored(
     auth_headers: Mapping[str, str],
     seam: _ValidatorSeam,
     events: list[ScanEvent],
+    identities: IdentityStore | None = None,
 ) -> list[str]:
     """Inject a tagged script payload into one write field; confirm via an
     INDEPENDENT re-read of the resource reflecting the tag verbatim.
@@ -1735,6 +1736,14 @@ def run_xss_stored(
     is a no-op (no browser in this context, and DOM XSS is separately driven by
     ``run_xss_dom``), so ``detect_xss`` falls through to the stored write→reread
     confirmation on the first call.
+
+    Technique-diversity corroboration (v3 V3): when a SECOND identity with its
+    own session is configured, a confirmed stored payload is corroborated
+    against that other identity's independent read of the same resource
+    before being trusted — rules out the tag being visible only in a
+    save-confirmation view still scoped to the writer's own session/cache.
+    Skipped (single-read, unchanged) when only one identity is configured —
+    the common case.
     """
     from reachagent.browser.shim import BrowserFireResult
     from reachagent.payloads.payload_resolver import resolve
@@ -1827,19 +1836,56 @@ def run_xss_stored(
         def _fire_stored(_tag: str = tag, _body: str = readback_body) -> StoredProbe:
             return StoredProbe(payload_tag=_tag, readback_body=_body, write_logged=True)
 
-        prober = XssProber(fire_dom=_fire_dom, fire_stored=_fire_stored, oracle_runner=seam.run)
+        fire_second_stored_read = None
+        if identities is not None:
+            other_names = [
+                n for n in identities.names() if n != identity and identities.auth_headers(n)
+            ]
+            if other_names:
+                second_identity = other_names[0]
+                second_headers = identities.auth_headers(second_identity)
+
+                def _fire_second_stored_read(
+                    _identity: str = second_identity,
+                    _url: str = read_url,
+                    _headers: Mapping[str, str] = second_headers,
+                ) -> str:
+                    try:
+                        second_read = firer.fire(
+                            _identity, "GET", _url, state_changing=False, headers=dict(_headers)
+                        )
+                    except Exception:  # noqa: BLE001, S112 — a refused corroborating read is not a violation
+                        return ""
+                    return second_read.body.decode("utf-8", errors="replace")
+
+                fire_second_stored_read = _fire_second_stored_read
+
+        prober = XssProber(
+            fire_dom=_fire_dom,
+            fire_stored=_fire_stored,
+            oracle_runner=seam.run,
+            fire_second_stored_read=fire_second_stored_read,
+        )
         result = detect_xss(prober, evidence_ref=f"orchestrator/xss_stored{ep.path}")
         if result.confirmed and seam.last is not None:
             nid = seam.write(
-                "xss_stored", seam.last, severity="high", metadata={"endpoint": ep.path}
+                "xss_stored",
+                seam.last,
+                severity="high",
+                metadata={"endpoint": ep.path, "corroborated": "1"}
+                if result.corroborated
+                else {"endpoint": ep.path},
             )
             if nid:
                 found.append(nid)
+                message = f"stored xss — tag reflected in independent reread of {ep.path}"
+                if result.corroborated:
+                    message += " (corroborated by a second identity's read)"
                 _emit(
                     events,
                     "payloads",
                     "finding",
-                    f"stored xss — tag reflected in independent reread of {ep.path}",
+                    message,
                     path=ep.path,
                 )
 
@@ -3721,6 +3767,7 @@ def _build_phase3_drivers(
             auth_headers=auth_headers,
             seam=seam,
             events=events,
+            identities=identities,
         ),
         "open_redirect": lambda: run_open_redirect(
             graph=graph,
