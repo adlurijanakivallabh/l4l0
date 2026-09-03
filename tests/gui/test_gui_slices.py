@@ -1431,6 +1431,35 @@ def test_scan_endpoint_passes_recon_depth_tuning_as_env_override(
     _scans.pop(response.json()["scan_id"], None)
 
 
+def test_scan_endpoint_passes_wordlist_depth_tuning_as_env_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """v3 V2 follow-up: the autonomous wordlist-escalation checkbox must reach
+    _run_scan as REACHAGENT_WORDLIST_DEPTH_TUNING, or the LLM's own escalation
+    decision never activates even when the operator explicitly opts in."""
+    _stub_named_provider(monkeypatch)
+    captured: list[object] = []
+
+    async def capturing_scan(*args: object, **_kwargs: object) -> None:
+        captured.extend(args)
+
+    monkeypatch.setattr(gui_app, "_run_scan", capturing_scan)
+    response = TestClient(app).post(
+        "/api/scan",
+        json={
+            "target": "https://demo.example",
+            "in_scope": "demo.example",
+            "use_llm": True,
+            "llm_provider": "named:unit-provider",
+            "wordlist_depth_tuning": True,
+        },
+    )
+    assert response.status_code == 200
+    env_overrides = captured[-2]
+    assert env_overrides["REACHAGENT_WORDLIST_DEPTH_TUNING"] == "1"
+    _scans.pop(response.json()["scan_id"], None)
+
+
 def test_scan_endpoint_passes_rate_limit_corroboration_as_env_override(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

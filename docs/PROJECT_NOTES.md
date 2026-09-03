@@ -995,3 +995,27 @@ the vary-the-value approach.
 
 **The v3 V3 corroboration sweep is now complete as far as it can honestly go**: 12 slices
 shipped, 1 precisely-diagnosed-and-deferred (BUSINESS_RULE).
+
+## Next-phase audit + first two items shipped (2026-09-03)
+
+Operator: "continue with next phases." Ran a 6-agent background audit before picking anything,
+since the plan's own "Implementation status" tracker had already proven stale (V4/V2 shipped
+later but never marked; V7's PDF/DOCX export turned out already fully wired). Findings: V1's
+scope-narrowing and credential-role-fidelity pieces are already shipped (contrary to plan
+framing); V5 (Burp MCP) has no live instance right now (verified fresh via curl — connection
+refused) and zero wiring code, so it stays excluded; V6's "chain-of-custody view" line item is
+also already shipped; V7's format export is done but 4 content fields (CVSS vector, CWE, Steps
+to Reproduce, PoC) are genuinely missing; all 5 known tail items (W4b, freeform payloads, live
+proxy, response-content-aware review, Exploit-DB/PoC) reconfirmed still open, with wordlist
+depth escalation the one genuinely small, safely-buildable exception.
+
+Shipped, in order: (1) **CWE-id lookup** — a `_CWE` table in `report/professional.py`, same
+honesty discipline as the existing `_WSTG` table (real MITRE ids only, generic fallback for the
+few uncertain classes), threaded through `vuln_class_context` so report and GUI both render it;
+5 new tests. (2) **Autonomous wordlist escalation** — the disclosed V2 follow-up
+(`_wordlist.py`'s own docstring flagged this as deferred): new `recon/wordlist_escalation.py`
+mirrors `depth_escalation.py`'s nmap pattern, with one real design difference — wordlist size is
+linearly ordered so its floor logic is OR/max-like, while the tech hint stays
+authoritative-override like nmap's script category. Wired into `entrypoint.py` for any
+content-discovery tool yielding zero endpoints, not just nmap-specific; new GUI opt-in
+checkbox. 26 new tests. Both git-stash-verified.

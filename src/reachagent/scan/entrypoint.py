@@ -396,6 +396,54 @@ def _maybe_escalate_nmap_depth(
                 os.environ[key] = value
 
 
+def _maybe_escalate_wordlist(
+    runner: Any,
+    target_arg: str,
+    g: ReachabilityGraph,
+    *,
+    operator_prompt: str | None,
+    live_recon: bool,
+) -> tuple[str, ...]:
+    """After a content-discovery tool's first pass yields zero endpoints, ask
+    the LLM (v3 V2 follow-up, flag-gated — ``REACHAGENT_WORDLIST_DEPTH_TUNING``,
+    off by default) whether a bigger or tech-specific wordlist is warranted for
+    THIS target, on top of whatever floor the operator's own manual GUI
+    selection already set. Returns any additional graph node ids the follow-up
+    pass wrote (``()`` on no escalation, the flag being off, or any failure) —
+    an escalation decision or its follow-up run must never abort recon.
+    """
+    import os
+
+    from reachagent.recon.wordlist_escalation import WordlistChoice, propose_wordlist_escalation
+
+    floor = WordlistChoice(
+        size=os.environ.get("REACHAGENT_WORDLIST_SIZE", ""),
+        tech=os.environ.get("REACHAGENT_WORDLIST_TECH", ""),
+    )
+    escalation = propose_wordlist_escalation(
+        g.hosts(), floor=floor, operator_prompt=operator_prompt
+    )
+    if escalation is None:
+        return ()
+    env_updates = escalation.env()
+    saved = {key: os.environ.get(key) for key in env_updates}
+    os.environ.update(env_updates)
+    try:
+        follow_up = runner.run(
+            target_arg,
+            environ={"REACHAGENT_RECON_LIVE": "1"} if live_recon else None,
+        )
+        return follow_up.nodes
+    except Exception:  # noqa: BLE001 — a follow-up pass failing must not abort recon
+        return ()
+    finally:
+        for key, value in saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
 def _wind_down_hint(remaining: int) -> str:
     """Steering-hint text for the forced graceful wind-down (Agentic Coordinator, Phase 4)."""
     return (
@@ -972,6 +1020,23 @@ def scan_target(
                 # on a genuinely empty result. Count Endpoint nodes specifically —
                 # the actual useful yield the primary+fallback economy cares about.
                 endpoint_yield = sum(1 for n in result_nodes if n.startswith("endpoint:"))
+                if name in content_discovery and endpoint_yield == 0:
+                    escalated_nodes = _maybe_escalate_wordlist(
+                        runner,
+                        target_arg,
+                        g,
+                        operator_prompt=operator_prompt,
+                        live_recon=live_recon,
+                    )
+                    if escalated_nodes:
+                        result_nodes = tuple(dict.fromkeys((*result_nodes, *escalated_nodes)))
+                        endpoint_yield = sum(1 for n in result_nodes if n.startswith("endpoint:"))
+                        _tool_event(
+                            name,
+                            "escalated",
+                            detail="wordlist depth escalation follow-up pass",
+                            nodes=len(escalated_nodes),
+                        )
                 if name in content_discovery and endpoint_yield > 0:
                     # Primary+fallback economy (§C): one content brute-forcer's
                     # useful yield satisfies the family — drop the rest of the

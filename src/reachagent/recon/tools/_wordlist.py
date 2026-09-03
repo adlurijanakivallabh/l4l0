@@ -10,11 +10,12 @@ list — both validated against a fixed, curated table of REAL vendored
 SecLists paths, never an arbitrary path string. Falls back to dirb/common.txt
 if nothing on the candidate list exists on disk.
 
-Disclosed scope (v3 V2): this is the resolver half only — an operator-set
-floor via these two env vars. The autonomous half (an LLM deciding to
-escalate size/tech after a first pass yields little, mirroring
-recon/depth_escalation.py's nmap pattern) is a deliberately deferred
-follow-up, not built this pass.
+This resolver is the floor half only — an operator-set default via these two
+env vars. The autonomous half (an LLM deciding to escalate size/tech after a
+first content-discovery pass yields zero endpoints) lives in
+``recon/wordlist_escalation.py``, mirroring ``recon/depth_escalation.py``'s
+nmap pattern: it temporarily raises these same env vars for one follow-up
+pass, so this module never needs to know an escalation happened.
 """
 
 from __future__ import annotations
@@ -66,6 +67,14 @@ _TECH_CANDIDATES: dict[str, tuple[str, ...]] = {
     "wordpress": ("/usr/share/seclists/Discovery/Web-Content/CMS/wordpress.fuzz.txt",),
     "joomla": ("/usr/share/seclists/Discovery/Web-Content/CMS/joomla-plugins.fuzz.txt",),
 }
+
+
+# Public: the valid size-tier / tech-hint keys, for cross-module validation
+# (mirrors nmap.py's SAFE_SCRIPT_CATEGORIES) — recon/wordlist_escalation.py
+# validates an LLM's choice against these without reaching into this
+# module's own private path tables.
+SIZE_TIERS: frozenset[str] = frozenset(_SIZE_CANDIDATES)
+TECH_HINTS: frozenset[str] = frozenset(_TECH_CANDIDATES)
 
 
 def _first_existing(candidates: tuple[str, ...]) -> str | None:

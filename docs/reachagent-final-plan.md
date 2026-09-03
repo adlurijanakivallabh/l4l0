@@ -1,6 +1,24 @@
 # ReachAgent — Web/API Exploitation Agent
 ### Final Project Plan (July 2026)
 
+**Status: Locked — v3.11 (next-phase audit + 2 items shipped: CWE-id lookup, autonomous
+wordlist escalation).** A 6-agent background audit checked V1/V5/V6/V7 and 5 known tail items
+against actual current code before picking what to build — the plan's own status tracker had
+already proven stale (V2/V4/V7-export shipped later but never marked done). Findings: V1's
+scope-narrowing and credential-role-fidelity are already shipped; V5 (Burp MCP) has no live
+instance right now (verified fresh, connection refused) so it stays excluded; V6's
+chain-of-custody view is already shipped; V7's format export is done but CVSS-vector/CWE/
+Steps-to-Reproduce/PoC content fields are genuinely missing; all 5 tail items reconfirmed still
+open. Shipped, in priority order: CWE-id lookup (`report/professional.py`'s `_CWE` table,
+same honesty discipline as `_WSTG` — real MITRE ids only, generic fallback where uncertain; 5
+new tests) and autonomous wordlist escalation (new `recon/wordlist_escalation.py`, mirrors
+`depth_escalation.py`'s nmap pattern with one real difference — wordlist size is linearly
+ordered so its floor logic is OR/max-like rather than authoritative-override-like; wired into
+`entrypoint.py` for any content-discovery tool yielding zero endpoints; 26 new tests). Both
+git-stash-verified. Next up per the synthesized punch list: confirmation-card scope textarea,
+stop truncating operator objective, `skip_tools`/`notes` intake, `EngagementRules`, CVSS vector
+string, confirmation-card skip/deny UI, Steps-to-Reproduce + PoC report sections.
+
 **Status: Locked — v3.10 (V3 corroboration sweep CLOSED: 12 slices shipped, BUSINESS_RULE
 precisely diagnosed and deferred).** Investigated BUSINESS_RULE's 4 templates as the sweep's
 last candidate and found two distinct, real safety concerns rather than generic restructuring

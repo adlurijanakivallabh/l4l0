@@ -236,6 +236,7 @@ function renderConfirmationCard(proposal, originalMessage) {
     tuningChip("cc-tune-concurrent", "Concurrent specialists") +
     tuningChip("cc-tune-aggressive", "Aggressive mode") +
     tuningChip("cc-tune-depth", "Autonomous depth escalation") +
+    tuningChip("cc-tune-wordlist-depth", "Autonomous wordlist escalation") +
     tuningChip("cc-tune-ratelimit", "Rate-limit corroboration") +
     '</div></div></div>';
   card.appendChild(advanced);
@@ -295,6 +296,7 @@ async function confirmAndStart(card, bubble, originalMessage) {
     recon_depth: card.querySelector("#cc-recon-depth").value,
     wordlist_size: card.querySelector("#cc-wordlist-size").value,
     recon_depth_tuning: card.querySelector("#cc-tune-depth").checked,
+    wordlist_depth_tuning: card.querySelector("#cc-tune-wordlist-depth").checked,
     rate_limit_corroboration: card.querySelector("#cc-tune-ratelimit").checked,
     repo_path: card.querySelector("#cc-repo-path").value.trim() || null,
   };

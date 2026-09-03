@@ -726,6 +726,12 @@ async def start_scan(payload: dict[str, Any]) -> JSONResponse:
             # additive on top of (never below) whatever floor "Nmap recon depth" above
             # already set.
             ("recon_depth_tuning", "REACHAGENT_RECON_DEPTH_TUNING"),
+            # Autonomous wordlist-depth escalation (v3 V2 follow-up): after a
+            # content-discovery pass yields zero endpoints, the LLM decides
+            # whether a bigger/tech-specific wordlist is warranted — additive
+            # on top of (never below) whatever floor "Content-discovery
+            # wordlist" above already set.
+            ("wordlist_depth_tuning", "REACHAGENT_WORDLIST_DEPTH_TUNING"),
             # Rate-limit-absence technique-diversity corroboration (v3 V3), the
             # ONE V3 slice that defaults off everywhere, never just here — see
             # scan/orchestrator.py::run_rate_limit_absence. Doubling live wrong-
