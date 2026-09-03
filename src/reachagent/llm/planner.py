@@ -64,6 +64,7 @@ PHASE_ORDER = (
     "report",
 )
 TARGET_TYPES = frozenset({"domain", "url", "ip", "cidr", "host_port"})
+REQUIRED_PHASES = frozenset({"recon", "surface", "insertion-points", "payloads", "report"})
 
 
 class PlannerClient(Protocol):
@@ -793,9 +794,8 @@ def validate_execution_plan(
             )
         )
 
-    required_phases = {"recon", "surface", "insertion-points", "payloads", "report"}
     selected_phases = {phase.name for phase in phases}
-    missing_phases = sorted(required_phases - selected_phases)
+    missing_phases = sorted(REQUIRED_PHASES - selected_phases)
     if missing_phases:
         raise PlanValidationError(f"plan is missing required phases: {', '.join(missing_phases)}")
     if len(used_tools) > tool_budget:
@@ -842,9 +842,19 @@ def plan_execution(
             return validate_execution_plan(raw, context, catalog=entries)
         except PlanValidationError as exc:
             last_error = exc
+            missing_phase_hint = ""
+            if "missing required phases" in str(exc):
+                missing_phase_hint = (
+                    "\nEvery one of these phases MUST appear, in this relative order: "
+                    f"{', '.join(sorted(REQUIRED_PHASES, key=PHASE_ORDER.index))}. Add "
+                    "any missing one as its own object with 'name'/'rationale' set — "
+                    "'tools': [] is fine unless the phase is 'recon' (which needs at "
+                    "least one catalog tool).\n"
+                )
             fix_prompt = (
                 "Your previous plan JSON was rejected by strict validation.\n"
-                f"VALIDATION ERROR: {exc}\n\n"
+                f"VALIDATION ERROR: {exc}\n"
+                f"{missing_phase_hint}\n"
                 f"YOUR PREVIOUS (REJECTED) JSON:\n{json.dumps(raw)[:4000]}\n\n"
                 "Each tool's REQUIRED phase, from the catalog (a tool may ONLY appear "
                 f"under its own phase, or under 'surface' if its phase is 'recon'): "

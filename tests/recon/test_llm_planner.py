@@ -203,6 +203,60 @@ def test_planner_fixer_loop_recovers_once_told_the_correct_phase() -> None:
     assert result.phases[0].tools == ("httpx", "katana")
 
 
+def _plan_missing_surface() -> dict[str, object]:
+    """A live-verification finding: a real model's first plan simply omitted the
+    'surface' phase entirely (a phase-OMISSION error, not a tool-placement one) —
+    the fixer prompt's tool-phase-map guidance doesn't address this failure mode
+    at all, so a weaker model has no way to know it just needs to add the phase."""
+    plan = _plan()
+    plan["phases"] = [phase for phase in plan["phases"] if phase["name"] != "surface"]  # type: ignore[index]
+    return plan
+
+
+def test_planner_fixer_prompt_names_missing_required_phases() -> None:
+    """The fix prompt for a missing-phase rejection must explicitly say which
+    phase(s) are missing and that an empty tools list is fine for a non-recon
+    phase — not just repeat the raw validation-error text."""
+    seen_prompts: list[str] = []
+
+    class RecordingClient:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def propose_json(self, prompt: str, *, max_tokens: int = 512) -> dict[str, object]:
+            seen_prompts.append(prompt)
+            self.calls += 1
+            if self.calls == 1:
+                return _plan_missing_surface()
+            return _plan()
+
+    plan_execution(_context(), RecordingClient())
+    fix_prompt = seen_prompts[1]
+    assert "MUST appear" in fix_prompt
+    assert "surface" in fix_prompt
+    assert "'tools': []" in fix_prompt
+
+
+def test_planner_fixer_loop_recovers_once_told_which_phase_is_missing() -> None:
+    """A client that only adds the missing 'surface' phase once its own fix
+    prompt names it explicitly — proving the hint actually lets the fixer loop
+    converge, not just that the prompt text looks right."""
+    calls = 0
+
+    class SelfCorrectingClient:
+        def propose_json(self, prompt: str, *, max_tokens: int = 512) -> dict[str, object]:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                return _plan_missing_surface()
+            assert "MUST appear" in prompt  # only fixes it because it was told
+            return _plan()
+
+    result = plan_execution(_context(), SelfCorrectingClient())
+    assert calls == 2
+    assert {phase.name for phase in result.phases} >= {"recon", "surface"}
+
+
 def test_planner_raises_the_last_validation_error_after_exhausting_fixer_attempts() -> None:
     """A model that never listens still fails closed — no silent fallback plan,
     exactly the "provider errors propagate" design this planning boundary relies
