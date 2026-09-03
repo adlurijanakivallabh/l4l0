@@ -98,6 +98,75 @@ def test_gobuster_endpoints_not_host_filtered() -> None:
     assert "/admin" in paths
 
 
+_NMAP_FIXTURE_XML = (
+    '<?xml version="1.0"?><nmaprun><host><address addr="93.184.216.34"'
+    ' addrtype="ipv4"/><ports><port protocol="tcp" portid="80">'
+    '<state state="open"/><service name="http"/></port></ports></host></nmaprun>'
+)
+
+
+def test_skip_tools_excludes_a_named_recon_tool_entirely() -> None:
+    """v3 V1: an operator-named tool to skip must never even be considered —
+    not run initially, not offered to the adaptive selector."""
+    g = ReachabilityGraph()
+    a = AuditLog()
+    events: list = []
+    scan_target(
+        base_url="https://example.com",
+        in_scope="example.com",
+        dry_run=True,
+        graph=g,
+        audit=a,
+        events=events,
+        recon_tools=["nmap", "gobuster"],
+        skip_tools=["nmap"],
+        fixtures={
+            "nmap": _NMAP_FIXTURE_XML,
+            "gobuster": "/items (Status: 200)\n",
+        },
+    )
+    tool_names = {e.details.get("tool") for e in events if "tool" in e.details}
+    assert "nmap" not in tool_names
+    assert "gobuster" in tool_names
+    # nmap's own fixture was never even parsed, so its host never materialized.
+    assert "93.184.216.34" not in {host.address for _, host in g.hosts()}
+
+
+def test_skip_tools_is_case_insensitive_and_a_noop_when_empty() -> None:
+    g = ReachabilityGraph()
+    a = AuditLog()
+    events: list = []
+    scan_target(
+        base_url="https://example.com",
+        in_scope="example.com",
+        dry_run=True,
+        graph=g,
+        audit=a,
+        events=events,
+        recon_tools=["nmap"],
+        skip_tools=["NMAP"],
+        fixtures={"nmap": _NMAP_FIXTURE_XML},
+    )
+    tool_names = {e.details.get("tool") for e in events if "tool" in e.details}
+    assert "nmap" not in tool_names
+
+    g2 = ReachabilityGraph()
+    events2: list = []
+    scan_target(
+        base_url="https://example.com",
+        in_scope="example.com",
+        dry_run=True,
+        graph=g2,
+        audit=AuditLog(),
+        events=events2,
+        recon_tools=["nmap"],
+        skip_tools=None,
+        fixtures={"nmap": _NMAP_FIXTURE_XML},
+    )
+    tool_names2 = {e.details.get("tool") for e in events2 if "tool" in e.details}
+    assert "nmap" in tool_names2
+
+
 # -- Defense-in-depth: both directions ------------------------------------
 
 

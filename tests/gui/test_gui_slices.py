@@ -416,6 +416,65 @@ def test_parse_intent_preserves_a_non_user_admin_role_label(
     assert body["credentials"] == [{"username": "bob", "password": "hunter2", "role": "mechanic"}]
 
 
+def test_parse_intent_extracts_skip_tools(monkeypatch: pytest.MonkeyPatch) -> None:
+    """v3 V1: an operator who explicitly says not to run a tool must have that
+    honored — extraction is the first step of getting it into scan_target's
+    real skip_tools parameter."""
+    _stub_named_provider(monkeypatch)
+
+    class _FakeClient:
+        def propose_json(self, prompt: str, *, max_tokens: int = 600) -> dict[str, object]:
+            return {
+                "target": "https://demo.example",
+                "in_scope": "",
+                "out_of_scope": "",
+                "credentials": [],
+                "goal": "",
+                "skip_tools": "nmap, gobuster",
+            }
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(gui_app, "_build_llm_client", lambda *_a, **_k: _FakeClient())
+    response = TestClient(app).post(
+        "/api/parse-intent",
+        json={
+            "message": "test demo.example, but don't run nmap or gobuster",
+            "llm_provider": "named:unit-provider",
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()["skip_tools"] == "nmap, gobuster"
+
+
+def test_parse_intent_defaults_skip_tools_to_empty_string_when_unmentioned(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _stub_named_provider(monkeypatch)
+
+    class _FakeClient:
+        def propose_json(self, prompt: str, *, max_tokens: int = 600) -> dict[str, object]:
+            return {
+                "target": "https://demo.example",
+                "in_scope": "",
+                "out_of_scope": "",
+                "credentials": [],
+                "goal": "",
+            }
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(gui_app, "_build_llm_client", lambda *_a, **_k: _FakeClient())
+    response = TestClient(app).post(
+        "/api/parse-intent",
+        json={"message": "test demo.example", "llm_provider": "named:unit-provider"},
+    )
+    assert response.status_code == 200
+    assert response.json()["skip_tools"] == ""
+
+
 def test_parse_intent_defaults_out_of_scope_to_empty_string_when_unmentioned(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1011,6 +1070,66 @@ def test_repo_path_wiring_reaches_scan_all_classes(monkeypatch) -> None:  # noqa
         _scans.pop(scan_id, None)
 
     assert captured.get("repo_path") == "/some/repo"
+
+
+def test_skip_tools_wiring_reaches_scan_all_classes(monkeypatch) -> None:  # noqa: ANN001
+    """v3 V1: the skip_tools list must reach scan_all_classes (and from there
+    scan_target's own exclusion filter), or an operator's explicit
+    "don't run nmap" is silently dropped on the floor."""
+    import asyncio
+
+    captured: dict = {}
+
+    def fake_scan_all_classes(**kwargs):  # noqa: ANN001, ANN003
+        captured.update(kwargs)
+        raise RuntimeError("stop-here-test-only")
+
+    monkeypatch.setattr(gui_app, "scan_all_classes", fake_scan_all_classes)
+
+    scan_id = "skip-tools-flag-slice"
+    _scans[scan_id] = {"status": "queued", "events": [], "control": None}
+    try:
+        asyncio.run(
+            gui_app._run_scan_body(
+                scan_id,
+                "https://target.test",
+                "target.test",
+                None,
+                True,
+                20,
+                None,
+                None,
+                None,
+                skip_tools=["nmap", "gobuster"],
+            )
+        )
+    finally:
+        _scans.pop(scan_id, None)
+
+    assert captured.get("skip_tools") == ["nmap", "gobuster"]
+
+
+def test_scan_endpoint_parses_comma_separated_skip_tools(monkeypatch: pytest.MonkeyPatch) -> None:
+    _stub_named_provider(monkeypatch)
+    captured: list[object] = []
+
+    async def capturing_scan(*args: object, **kwargs: object) -> None:
+        captured.append(kwargs)
+
+    monkeypatch.setattr(gui_app, "_run_scan", capturing_scan)
+    response = TestClient(app).post(
+        "/api/scan",
+        json={
+            "target": "https://demo.example",
+            "in_scope": "demo.example",
+            "use_llm": True,
+            "llm_provider": "named:unit-provider",
+            "skip_tools": "nmap, gobuster",
+        },
+    )
+    assert response.status_code == 200
+    assert captured[-1]["skip_tools"] == ["nmap", "gobuster"]
+    _scans.pop(response.json()["scan_id"], None)
 
 
 def test_repo_path_defaults_to_none(monkeypatch) -> None:  # noqa: ANN001

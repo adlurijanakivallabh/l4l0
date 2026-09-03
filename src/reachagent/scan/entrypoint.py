@@ -473,6 +473,7 @@ def scan_target(
     operator_prompt: str | None = None,
     recon_tools: Iterable[str] | None = None,
     recon_candidates: Iterable[str] | None = None,
+    skip_tools: Iterable[str] | None = None,
     recon_selector: Callable[[dict[str, str], tuple[str, ...], tuple[str, ...]], object]
     | None = None,
     live_recon: bool = False,
@@ -495,6 +496,18 @@ def scan_target(
     allowlisted fact emitters or stop; it cannot change commands or confirmation
     authority. ``recon_candidates`` bounds the names it may add beyond the
     initial ``recon_tools`` sequence.
+
+    ``skip_tools`` (v3 V1) excludes named RECON tools outright — filtered out of
+    both ``initial_names`` and ``candidate_names`` at the same point they are
+    first computed, so a skipped tool is never run initially AND can never be
+    re-introduced by ``recon_selector``'s own adaptive picks (its choices are
+    filtered against ``candidate_names`` too). Disclosed scope limit: this
+    covers only the recon-tool dispatch loop above — a signal-gated tool
+    (sqlmap/nuclei/dalfox, gated by an existing graph signal rather than this
+    loop) is a different dispatch path and is not affected by this parameter.
+    Unlike the deferred ``skip_phases`` idea, this is safe to build as scoped:
+    it excludes at the very first point any tool name is ever considered, so
+    there is no "already ran before the check" hole the way phase-skipping had.
 
     Durable resume (D6/D2): ``resume_path`` loads a persisted graph + solver +
     audit and CONTINUES the loop (continue-not-replay — confirmed findings are
@@ -794,16 +807,26 @@ def scan_target(
                 }
             )
             default_names = tuple(rt.name for rt in default_types)
+            # v3 V1: an operator-named tool to skip is excluded at the SAME choke
+            # point initial_names/candidate_names are already built from — unlike
+            # skip_phases (deferred: recon runs before AdaptiveControlState is ever
+            # consulted), this IS the first place any tool name is ever considered,
+            # so there is no "runs before the skip check" hole to fall into.
+            # candidate_names is filtered too so the adaptive per-step LLM selector
+            # (pending_names is filtered against candidate_names below) can never
+            # re-introduce a skipped tool either.
+            skip_set = {str(name).strip().lower() for name in (skip_tools or ())}
             initial_names = (
                 tuple(
                     dict.fromkeys(
                         registry[str(name).strip().lower()].name
                         for name in recon_tools
                         if str(name).strip().lower() in registry
+                        and str(name).strip().lower() not in skip_set
                     )
                 )
                 if recon_tools is not None
-                else default_names
+                else tuple(name for name in default_names if name.lower() not in skip_set)
             )
             candidate_names = tuple(
                 dict.fromkeys(
@@ -812,6 +835,7 @@ def scan_target(
                         recon_candidates if recon_candidates is not None else initial_names
                     )
                     if str(name).strip().lower() in registry
+                    and str(name).strip().lower() not in skip_set
                 )
             )
             if not candidate_names:

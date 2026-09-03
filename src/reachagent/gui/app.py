@@ -557,7 +557,8 @@ Return ONLY a JSON object with exactly these keys, no prose, no markdown fences:
 - "in_scope": comma-separated additional in-scope hosts beyond target (empty string if none)
 - "out_of_scope": comma-separated hosts/subdomains the operator explicitly excludes, e.g. "admin.example.com, billing.example.com" (empty string if none mentioned)
 - "credentials": a JSON list of objects {{"username": "...", "password": "...", "role": "..."}} for every login/credential pair mentioned — "role" is usually "user" or "admin" but may be any short label the message clearly implies (e.g. "owner", "mechanic", "manager"); default to "user" if unclear (empty list if none)
-- "goal": one short sentence restating what the operator wants tested, in your own words (empty string if unclear)
+- "goal": what the operator wants tested, PRESERVING any specific instructions, constraints, or rules-of-engagement detail they gave — do not compress a multi-sentence request down to one generic line; quote or closely paraphrase explicit constraints rather than dropping them (empty string if unclear)
+- "skip_tools": comma-separated names of specific recon tools the operator explicitly says NOT to run (e.g. "nmap, gobuster") — only tools they explicitly excluded, never a guess (empty string if none mentioned)
 """
 
 
@@ -607,6 +608,7 @@ def parse_intent(payload: dict[str, Any]) -> JSONResponse:
             "out_of_scope": "",
             "credentials": [],
             "goal": message,
+            "skip_tools": "",
             "extracted": False,
             "reason": reason,
         }
@@ -665,6 +667,7 @@ def parse_intent(payload: dict[str, Any]) -> JSONResponse:
             "out_of_scope": str(result.get("out_of_scope", "") or "").strip(),
             "credentials": credentials,
             "goal": str(result.get("goal", "") or "").strip() or message,
+            "skip_tools": str(result.get("skip_tools", "") or "").strip(),
             "extracted": True,
         }
     )
@@ -693,6 +696,16 @@ async def start_scan(payload: dict[str, Any]) -> JSONResponse:
             {"error": "max_attempts must be an integer", "code": "invalid_input"}, status_code=400
         )
     concurrent_specialists = payload.get("concurrent_specialists") is True
+    # v3 V1: an operator-named RECON tool to exclude outright — comma-separated
+    # names, threaded straight through to scan_target's own skip_tools param
+    # (see its docstring for the exact exclusion point and disclosed scope
+    # limit — recon tools only, not signal-gated tools).
+    skip_tools_raw = _opt_str(payload.get("skip_tools"))
+    skip_tools = (
+        [name.strip() for name in skip_tools_raw.split(",") if name.strip()]
+        if skip_tools_raw
+        else None
+    )
     identities_path = _opt_str(payload.get("identities_path"))
     identities_inline_raw = payload.get("identities")
     identities_inline = (
@@ -823,6 +836,7 @@ async def start_scan(payload: dict[str, Any]) -> JSONResponse:
             identities_inline,
             concurrent_specialists=concurrent_specialists,
             repo_path=repo_path,
+            skip_tools=skip_tools,
         )
     )
     return JSONResponse({"scan_id": scan_id, "status": "queued", "lifecycle": "queued"})
@@ -1176,6 +1190,7 @@ async def _run_scan(
     *,
     concurrent_specialists: bool = False,
     repo_path: str | None = None,
+    skip_tools: list[str] | None = None,
 ) -> None:
     """``env_overrides`` merges LLM-provider config and the opt-in tuning-flag
     checkboxes for the scan's duration.
@@ -1225,6 +1240,7 @@ async def _run_scan(
                 identities_inline,
                 concurrent_specialists=concurrent_specialists,
                 repo_path=repo_path,
+                skip_tools=skip_tools,
             )
     finally:
         for key, old_value in saved.items():
@@ -1247,6 +1263,7 @@ async def _run_scan_body(
     *,
     concurrent_specialists: bool = False,
     repo_path: str | None = None,
+    skip_tools: list[str] | None = None,
 ) -> None:
     try:
         identities, id_error = _load_identities(identities_path, identities_inline)
@@ -1289,6 +1306,7 @@ async def _run_scan_body(
                 operator_checkpoint=_operator_checkpoint,
                 concurrent_specialists=concurrent_specialists,
                 repo_path=repo_path,
+                skip_tools=skip_tools,
             )
 
         loop = asyncio.get_running_loop()

@@ -31,7 +31,7 @@ import re
 import threading
 import time
 import uuid
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -4579,6 +4579,7 @@ def scan_all_classes(
     operator_checkpoint: Callable[[str, str, str], None] | None = None,
     concurrent_specialists: bool = False,
     repo_path: str | None = None,
+    skip_tools: Iterable[str] | None = None,
 ) -> dict[str, Any]:
     """Run the validated multi-phase LLM-driven loop over ALL attack classes.
 
@@ -4606,6 +4607,13 @@ def scan_all_classes(
     concurrently, each against its own graph snapshot, merged back as each
     finishes. Default False preserves the exact prior sequential behavior
     unchanged; see ``_run_phase3_concurrent`` for the full design rationale.
+
+    ``skip_tools`` (v3 V1) passes straight through to ``scan_target`` — an
+    operator-named RECON tool is excluded outright (never run initially, never
+    re-introduced by the adaptive recon selector). Disclosed scope limit: covers
+    only recon-tool dispatch, not signal-gated tools (sqlmap/nuclei/dalfox),
+    which are a different, signal-gated dispatch path this parameter does not
+    reach.
 
     ``repo_path`` (default None, Build Order 7 — white-box mode): when given,
     an optional local source-repo path, additive to the live black-box scan
@@ -4962,6 +4970,7 @@ def scan_all_classes(
             operator_prompt=operator_prompt,
             recon_tools=planned_recon_tools,
             recon_candidates=recon_candidates,
+            skip_tools=skip_tools,
             recon_selector=recon_selector,
             live_recon=live_recon,
             events=events_out,

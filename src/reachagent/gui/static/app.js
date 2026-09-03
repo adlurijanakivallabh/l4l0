@@ -141,7 +141,7 @@ async function startNewAssessment(message) {
   thinkingP.innerHTML = "<span></span><span></span><span></span>";
   const thinkingBubble = addBubble("assistant", thinkingP, { id: "thinking-bubble" });
 
-  let proposal = { target: "", in_scope: "", out_of_scope: "", credentials: [], goal: message, extracted: false };
+  let proposal = { target: "", in_scope: "", out_of_scope: "", credentials: [], goal: message, skip_tools: "", extracted: false };
   try {
     const r = await fetch("/api/parse-intent", {
       method: "POST",
@@ -226,6 +226,7 @@ function renderConfirmationCard(proposal, originalMessage) {
     '<option value="large">Large (thorough)</option>' +
     '</select></div>' +
     '<div class="cc-field"><label>Repo path (white-box, optional)</label><input id="cc-repo-path" type="text" placeholder="/path/to/local/repo"></div>' +
+    '<div class="cc-field"><label>Skip recon tools (optional)</label><input id="cc-skip-tools" type="text" placeholder="nmap, gobuster" value="' + esc(proposal.skip_tools || "") + '"></div>' +
     '</div>' +
     '<div><label style="display:block;margin:0 0 7px;color:var(--muted);font-size:10px;font-weight:650">Recon tuning (opt-in)</label>' +
     '<div class="tuning-grid">' +
@@ -299,6 +300,7 @@ async function confirmAndStart(card, bubble, originalMessage) {
     wordlist_depth_tuning: card.querySelector("#cc-tune-wordlist-depth").checked,
     rate_limit_corroboration: card.querySelector("#cc-tune-ratelimit").checked,
     repo_path: card.querySelector("#cc-repo-path").value.trim() || null,
+    skip_tools: card.querySelector("#cc-skip-tools").value.trim() || null,
   };
 
   try {
