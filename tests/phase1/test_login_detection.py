@@ -187,6 +187,15 @@ class TestSubmitLogin:
             method="POST",
         )
 
+    def _json_form(self) -> DetectedLoginForm:
+        return DetectedLoginForm(
+            url=_BASE + "/auth/login",
+            kind="json_api",
+            username_field="username",
+            password_field="password",
+            method="POST",
+        )
+
     def test_success_with_cookie(self) -> None:
         firer = MockFirer()
 
@@ -202,6 +211,26 @@ class TestSubmitLogin:
         captured = submit_login(firer, "test_user", self._html_form(), "admin", "pass123")
         assert captured.kind == "cookie"
         assert "session=xyz" in captured.token
+
+    def test_success_with_auth_token_json_field(self) -> None:
+        """Live-verification finding (VAmPI): a JSON API's own real login
+        response uses ``auth_token`` as its bearer-token field name — not any
+        of token/access_token/jwt/id_token/session_token — so a genuinely
+        successful login was raising "no session material captured"."""
+        firer = MockFirer()
+
+        def _fire(identity: str, method: str, url: str, **kw: object) -> FakeFireResult:
+            firer.fired.append((identity, method, url))
+            if "auth/login" in url and kw.get("state_changing"):
+                return FakeFireResult(
+                    200, '{"auth_token": "eyJhbGciOiJIUzI1NiJ9.x.y", "status": "success"}'
+                )
+            return FakeFireResult(200, "ok")
+
+        firer.fire = _fire  # type: ignore[assignment]
+        captured = submit_login(firer, "test_user", self._json_form(), "name1", "pass1")
+        assert captured.kind == "bearer"
+        assert captured.token == "eyJhbGciOiJIUzI1NiJ9.x.y"
 
     def test_wrong_credentials_raises_loud(self) -> None:
         firer = MockFirer()

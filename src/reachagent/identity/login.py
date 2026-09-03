@@ -67,7 +67,7 @@ _LOGIN_PATH_ALIASES = (
     "/doLogin",
 )
 _GRAPHQL_MUTATION = re.compile(r"\bmutation(?:\s+[A-Za-z_][\w]*)?\s*\{", re.IGNORECASE)
-_TOKEN_KEYS = ("access_token", "token", "jwt", "id_token", "session_token")
+_TOKEN_KEYS = ("access_token", "token", "jwt", "id_token", "session_token", "auth_token")
 _DEFAULT_TOKEN_SCHEME = "Bearer"  # noqa: S105 - HTTP auth scheme, not a credential
 
 
