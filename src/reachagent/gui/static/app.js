@@ -196,8 +196,8 @@ function renderConfirmationCard(proposal, originalMessage) {
   grid.className = "cc-grid";
   grid.innerHTML =
     '<div class="cc-field span-2"><label>Target URL</label><input id="cc-target" type="text" placeholder="https://authorized-target.example" value="' + esc(proposal.target) + '"></div>' +
-    '<div class="cc-field"><label>In-scope hosts</label><input id="cc-scope" type="text" placeholder="same as target" value="' + esc(proposal.in_scope) + '"></div>' +
-    '<div class="cc-field"><label>Out-of-scope (optional)</label><input id="cc-outscope" type="text" placeholder="admin.example, target.test/admin, target.test:8443" value="' + esc(proposal.out_of_scope || "") + '"></div>' +
+    '<div class="cc-field"><label>In-scope hosts</label><textarea id="cc-scope" rows="2" placeholder="same as target">' + esc(proposal.in_scope) + '</textarea></div>' +
+    '<div class="cc-field"><label>Out-of-scope (optional)</label><textarea id="cc-outscope" rows="2" placeholder="admin.example, target.test/admin, target.test:8443">' + esc(proposal.out_of_scope || "") + '</textarea></div>' +
     '<div class="cc-field span-2"><label>Objective</label><textarea id="cc-goal" rows="2">' + esc(proposal.goal || originalMessage) + '</textarea></div>' +
     '<div class="cc-field span-2 cc-creds"><label>Credentials</label><div id="cc-cred-rows"></div><button id="cc-cred-add" class="cred-add" type="button">+ Add credential</button>' +
     '<datalist id="cred-role-options"><option value="user"></option><option value="admin"></option></datalist></div>';

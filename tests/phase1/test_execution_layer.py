@@ -212,3 +212,20 @@ def test_from_raw_bare_host_path_entry_keeps_default_schemes() -> None:
     scope = ScopeGuard.from_raw("target.test/api")
     assert scope.is_in_scope("https://target.test/api/users")
     assert scope.is_in_scope("http://target.test/api/users")
+
+
+def test_from_raw_accepts_newline_separated_entries() -> None:
+    """v3 V6: a scope textarea invites one-entry-per-line input as naturally
+    as a comma-separated line."""
+    scope = ScopeGuard.from_raw("target.test\nadmin.target.test\n\napi.target.test")
+    assert scope.is_in_scope("https://target.test/")
+    assert scope.is_in_scope("https://admin.target.test/")
+    assert scope.is_in_scope("https://api.target.test/")
+    assert not scope.is_in_scope("https://other.test/")
+
+
+def test_from_raw_accepts_mixed_comma_and_newline_separators() -> None:
+    scope = ScopeGuard.from_raw("target.test, admin.target.test\napi.target.test")
+    assert scope.is_in_scope("https://target.test/")
+    assert scope.is_in_scope("https://admin.target.test/")
+    assert scope.is_in_scope("https://api.target.test/")

@@ -7,6 +7,7 @@ packet leaves the process; anything not explicitly allowed is rejected (§10).
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 import httpx
@@ -91,7 +92,7 @@ class ScopeGuard:
 
     @classmethod
     def from_raw(cls, in_scope: str | None, out_of_scope: str | None = None) -> ScopeGuard:
-        """Comma-separated ``host[:port][/path]`` patterns → guard (wildcard-aware).
+        """Comma- or newline-separated ``host[:port][/path]`` patterns → guard (wildcard-aware).
 
         A caller may hand a full URL instead of a bare host (e.g. a confirmed
         target URL reused as its own default scope, as the GUI does when the
@@ -111,7 +112,9 @@ class ScopeGuard:
             if not raw:
                 return []
             rules: list[ScopeRule] = []
-            for part in raw.split(","):
+            # v3 V6: a scope textarea invites one-entry-per-line input as
+            # naturally as a comma-separated line — split on either.
+            for part in re.split(r"[,\n]+", raw):
                 entry = part.strip()
                 if not entry:
                     continue
