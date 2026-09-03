@@ -122,6 +122,18 @@ def test_unknown_vuln_class_falls_back_to_generic_wstg_info() -> None:
     assert "Review the finding evidence" in out
 
 
+def test_finding_section_shows_the_real_cwe_id() -> None:
+    g = _graph(("sqli", "high", "ref-cwe"))
+    out = render_professional_report_markdown(g, client=_quiet_client())
+    assert "**CWE:** CWE-89" in out
+
+
+def test_unknown_vuln_class_falls_back_to_generic_cwe() -> None:
+    g = _graph(("not_a_real_class", "medium", "ref-x"))
+    out = render_professional_report_markdown(g, client=_quiet_client())
+    assert "**CWE:** CWE-693" in out
+
+
 def test_report_card_orders_severity_critical_first() -> None:
     g = _graph(("sqli", "low", "ref-a"), ("xxe", "critical", "ref-b"))
     out = render_professional_report_markdown(g, client=_quiet_client())

@@ -75,6 +75,7 @@ def test_finding_rows_include_the_deterministic_narrative_context() -> None:
     assert "another identity's object" in row["description"]
     assert row["remediation"]
     assert row["wstg_id"] == "WSTG-ATHZ-04"
+    assert row["cwe_id"] == "CWE-639"
     assert row["cvss"]
     assert row["likelihood"] == "High"
     assert row["impact"] == "High"

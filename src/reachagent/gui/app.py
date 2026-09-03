@@ -1558,6 +1558,7 @@ def _finding_rows(graph: ReachabilityGraph | None) -> list[dict[str, Any]]:
                 "remediation": _public_text(ctx["remediation"], 500),
                 "wstg_id": _public_text(ctx["wstg_id"], 20),
                 "wstg_name": _public_text(ctx["wstg_name"], 100),
+                "cwe_id": _public_text(ctx["cwe_id"], 20),
                 "cvss": _public_text(ctx["cvss"], 10),
                 "likelihood": _public_text(ctx["likelihood"], 20),
                 "impact": _public_text(ctx["impact"], 20),

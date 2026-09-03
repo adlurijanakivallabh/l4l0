@@ -857,6 +857,7 @@ function buildFindingCard(f, index) {
   const badges = document.createElement("div");
   badges.className = "fbadges";
   if (f.wstg_id) addBadge(badges, f.wstg_id);
+  if (f.cwe_id) addBadge(badges, f.cwe_id);
   if (f.cvss) addBadge(badges, "CVSS " + f.cvss);
   if (f.likelihood) addBadge(badges, "Likelihood " + f.likelihood);
   if (f.impact) addBadge(badges, "Impact " + f.impact);

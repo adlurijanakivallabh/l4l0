@@ -69,6 +69,46 @@ _WSTG: dict[str, tuple[str, str]] = {
 }
 _WSTG_DEFAULT: tuple[str, str] = ("WSTG-INFO", "Information Gathering")
 
+# vuln_class -> CWE id. Only well-established, confidently-known MITRE CWE
+# entries — same "never a fabricated/guessed id" discipline as _WSTG above.
+# A class with no single well-established specific match (subdomain_takeover,
+# cloud_bucket_exposure, graphql, web_cache_poisoning — each spans multiple
+# underlying weaknesses with no one dedicated CWE) cites the generic
+# protection-mechanism-failure category via _CWE_DEFAULT rather than guess.
+_CWE: dict[str, str] = {
+    "sqli": "CWE-89",
+    "sqli_blind": "CWE-89",
+    "nosqli": "CWE-943",
+    "ldap_injection": "CWE-90",
+    "command_injection": "CWE-78",
+    "xxe": "CWE-611",
+    "path_traversal": "CWE-22",
+    "ssrf": "CWE-918",
+    "ssti": "CWE-1336",
+    "xss_reflected": "CWE-79",
+    "xss_stored": "CWE-79",
+    "xss_dom": "CWE-79",
+    "clickjacking": "CWE-1021",
+    "csrf_missing_protection": "CWE-352",
+    "cors_misconfig": "CWE-942",
+    "bola": "CWE-639",
+    "bfla": "CWE-862",
+    "idor": "CWE-639",
+    "mass_assignment": "CWE-915",
+    "default_credentials": "CWE-1392",
+    "credential_reuse": "CWE-1392",
+    "rate_limit_absence": "CWE-307",
+    "open_redirect": "CWE-601",
+    "request_smuggling": "CWE-444",
+    "jwt_forgery": "CWE-347",
+    "business_logic": "CWE-841",
+    "race": "CWE-362",
+    "file_upload": "CWE-434",
+    "information_exposure": "CWE-200",
+    "prototype_pollution": "CWE-1321",
+}
+_CWE_DEFAULT = "CWE-693"  # Protection Mechanism Failure — a generic, defensible fallback
+
 _DESCRIPTION: dict[str, str] = {
     "sqli": "User-controlled input reaches a SQL query in a way that alters its logic.",
     "sqli_blind": "A SQL query's behavior changes in response to boolean/time-based "
@@ -229,6 +269,10 @@ def _wstg_for(vuln_class: str) -> tuple[str, str]:
     return _WSTG.get(vuln_class, _WSTG_DEFAULT)
 
 
+def _cwe_for(vuln_class: str) -> str:
+    return _CWE.get(vuln_class, _CWE_DEFAULT)
+
+
 def vuln_class_context(vuln_class: str, severity: str = "") -> dict[str, str]:
     """The deterministic per-class narrative context — description, remediation, WSTG
     reference, CVSS/likelihood/impact — used by every finding section in this report AND
@@ -242,6 +286,7 @@ def vuln_class_context(vuln_class: str, severity: str = "") -> dict[str, str]:
     return {
         "wstg_id": wstg_id,
         "wstg_name": wstg_name,
+        "cwe_id": _cwe_for(vuln_class),
         "description": _DESCRIPTION.get(vuln_class, _DESCRIPTION_DEFAULT),
         "remediation": _REMEDIATION.get(vuln_class, _REMEDIATION_DEFAULT),
         "cvss": _SEVERITY_SCORE.get(severity_key, ""),
@@ -380,6 +425,7 @@ def _finding_section_markdown(
     parts = [
         heading + "\n\n",
         f"**WSTG Reference:** {wstg_id} — {wstg_name}  \n",
+        f"**CWE:** {ctx['cwe_id']}  \n",
         f"**Finding ID:** `{record['finding_id']}`\n\n",
         "**Description**  \n",
         f"{description}\n\n",
