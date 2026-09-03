@@ -1,6 +1,24 @@
 # ReachAgent — Web/API Exploitation Agent
 ### Final Project Plan (July 2026)
 
+**Status: Locked — v3.10 (V3 corroboration sweep CLOSED: 12 slices shipped, BUSINESS_RULE
+precisely diagnosed and deferred).** Investigated BUSINESS_RULE's 4 templates as the sweep's
+last candidate and found two distinct, real safety concerns rather than generic restructuring
+difficulty: (1) varying the violating value (a second out-of-bounds quantity/price) is
+AUTH_BYPASS-unsafe here — real apps plausibly validate negative- and absurd-quantity abuse via
+independent checks, unlike JWT_FORGERY's shared-flaw symptoms or `_reconfirm_sqli`'s
+quote-style variants, so requiring both to succeed risks the exact AUTH_BYPASS mistake already
+reverted; (2) repeating the same replay (the DIFFERENTIAL family's own established safe shape)
+needs a second identity's fresh session to avoid colliding with the target's own
+resource-consumption state, but `run_business_logic` has no `identities` parameter at all
+today. Deferred with this precise reasoning — a future session should thread `identities`
+through first, then build second-identity repeat-and-vote corroboration only, never the
+vary-the-value approach. **The v3 V3 corroboration sweep is now complete as far as it can
+honestly go**: 12 slices shipped (open_redirect, IDOR/BOLA, JWT_FORGERY, CORS_MISCONFIG,
+FILE_UPLOAD_BYPASS, WEB_CACHE_POISONING, stored XSS, RATE_LIMIT_ABSENT, CLOUD_BUCKET_EXPOSURE,
+DOM XSS, DEFAULT_CREDENTIALS, `_reconfirm_sqli`), 1 precisely-diagnosed-and-deferred
+(BUSINESS_RULE).
+
 **Status: Locked — v3.9 (V3 12th slice: `_reconfirm_sqli` corroboration through the shared
 `reconfirm_candidate()` — the architectural concern was real but narrower than assessed).**
 Changes from v3.8: `reconfirm_candidate()` (shared by 5 vuln classes) gained one optional

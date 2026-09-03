@@ -978,7 +978,20 @@ making the fake client confirm unconditionally — caught by the "fails closed" 
 fixed with a synthetic marker instead. 3 new tests, git-stash-verified against the real
 production reconfirm path end to end.
 
-**This closes 12 of the v3 V3 sweep's candidates.** What remains — BUSINESS_RULE's 4
-templates — genuinely needs rule-type-specific logic inside an otherwise-fully-generic
-dispatch loop, a materially different (more special-case-heavy) shape than the
-`reconfirm_candidate` change just shipped. Left for a dedicated look.
+**This closes 12 of the v3 V3 sweep's candidates.** BUSINESS_RULE's 4 templates were
+investigated too and found to have TWO distinct, real safety concerns, not just generic
+restructuring difficulty: (1) "vary the violating value" (a second out-of-bounds
+quantity/price) is AUTH_BYPASS-unsafe here — unlike JWT_FORGERY's shared-flaw symptoms or
+`_reconfirm_sqli`'s quote-style variants, real apps plausibly validate negative-quantity and
+absurd-quantity abuse via INDEPENDENT checks, so requiring both to succeed would repeat the
+exact AUTH_BYPASS mistake already reverted; (2) "repeat the same replay" (the DIFFERENTIAL
+family's own established safe shape) needs a SECOND IDENTITY's fresh session to avoid
+colliding with the target's own resource-consumption state (a repeated order/coupon replay
+under the SAME identity risks a false non-corroboration) — but `run_business_logic` has no
+`identities` parameter at all today, unlike every other slice that needed one. Deferred with
+this precise reasoning, not generic reluctance — a future session should thread `identities`
+through first, then build second-identity repeat-and-vote corroboration, and explicitly avoid
+the vary-the-value approach.
+
+**The v3 V3 corroboration sweep is now complete as far as it can honestly go**: 12 slices
+shipped, 1 precisely-diagnosed-and-deferred (BUSINESS_RULE).
