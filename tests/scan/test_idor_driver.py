@@ -139,6 +139,54 @@ def test_no_read_only_clearance_never_fires_either_write() -> None:
     assert "PATCH" not in seen
 
 
+def test_third_identity_wires_corroboration_through(monkeypatch) -> None:  # noqa: ANN001
+    """v3 V3 wiring test: when a THIRD identity with a session exists, it is
+    threaded through as the corroborating probe and the written finding's
+    metadata records which identity corroborated. The corroboration DECISION
+    logic itself (a contradicted second probe fails closed) is already
+    covered at the detector level in tests/phase2/test_idor_detector.py —
+    this only proves the orchestrator wires a third identity through at all.
+    """
+    import reachagent.oracles.llm_judgment as _llm_judgment
+
+    monkeypatch.setattr(
+        _llm_judgment, "build_openai_compatible_client", lambda: FixedJudgmentClient(CONFIRMS.value)
+    )
+
+    identities = _identities()
+    identities.add(Credential("second_attacker", "eve", "pw", "user"))
+    identities.open_session("second_attacker", "second-attacker-token")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method in ("OPTIONS", "GET"):
+            return httpx.Response(200, text="ok")
+        return httpx.Response(200, json={"status": "updated"})
+
+    graph = _graph()
+    seam = _ValidatorSeam(graph)
+    run_authz_idor(
+        graph=graph,
+        firer=_firer(handler, identities),
+        base_url=_BASE,
+        identities=identities,
+        seam=seam,
+        events=[],
+        allow_cross_user_writes=True,
+    )
+    findings = graph.findings()
+    assert findings
+    _fid, finding = findings[0]
+    assert finding.vuln_class == "idor"
+    # Which of the two non-owner identities ends up "first" vs. "corroborating"
+    # depends on set iteration order (auth_ok is a set, not an ordered list) —
+    # not something this wiring test should hardcode. Just prove a THIRD
+    # identity's write genuinely corroborated the finding.
+    assert finding.metadata.get("corroborated_identity") in {
+        identity_id("attacker"),
+        identity_id("second_attacker"),
+    }
+
+
 def test_no_second_identity_with_a_session_never_fires() -> None:
     seen: list[str] = []
 

@@ -2570,6 +2570,14 @@ def run_authz_idor(
         non_owner = next((nid for nid in auth_ok if nid != owner), None)
         if non_owner is None:
             continue
+        # Technique-diversity corroboration (v3 V3): a THIRD identity, when
+        # configured, corroborates a confirmed write against a second,
+        # independent non-owner session — ruling out the first non-owner
+        # having its own unrelated delegated access to this one object.
+        # Fired lazily inside detect_idor, only if the primary already
+        # confirms — most scans only configure 2 identities, so this stays
+        # None (single-probe, unchanged) in the common case.
+        second_non_owner = next((nid for nid in auth_ok if nid not in (owner, non_owner)), None)
         for ep_node, ep in graph.endpoints():
             if ep.method.upper() not in ("PUT", "PATCH"):
                 continue
@@ -2649,21 +2657,45 @@ def run_authz_idor(
             def _fire_probe(status: int = probe_result.status_code) -> IdorProbe:
                 return IdorProbe(non_owner_status=status)
 
-            prober = IdorProber(fire_probe=_fire_probe, oracle_runner=seam.run)
+            fire_second_probe = None
+            if second_non_owner is not None:
+
+                def _fire_second_probe(
+                    _identity: str = second_non_owner,
+                    _method: str = ep.method,
+                    _url: str = url,
+                    _kwargs: dict[str, object] = fire_kwargs,
+                    _sub_label: str = f"{label}/second-non-owner",
+                ) -> IdorProbe:
+                    try:
+                        second_result = firer.fire(_identity, _method, _url, **_kwargs)
+                    except Exception as exc:  # noqa: BLE001, S112 — a refused probe is not a violation
+                        _emit(
+                            events,
+                            "payloads",
+                            "error",
+                            f"{_sub_label} refused ({type(exc).__name__})",
+                        )
+                        return IdorProbe(non_owner_status=0)
+                    return IdorProbe(non_owner_status=second_result.status_code)
+
+                fire_second_probe = _fire_second_probe
+
+            prober = IdorProber(
+                fire_probe=_fire_probe, oracle_runner=seam.run, fire_second_probe=fire_second_probe
+            )
             result = detect_idor(prober, evidence_ref=f"orchestrator/{label}")
             if result.confirmed and seam.last is not None:
-                nid = seam.write(
-                    "idor", seam.last, severity="critical", metadata={"path": concrete_path}
-                )
+                metadata = {"path": concrete_path}
+                if result.corroborated and second_non_owner is not None:
+                    metadata["corroborated_identity"] = second_non_owner
+                nid = seam.write("idor", seam.last, severity="critical", metadata=metadata)
                 if nid:
                     found.append(nid)
-                    _emit(
-                        events,
-                        "payloads",
-                        "finding",
-                        f"idor — cross-user write succeeded at {concrete_path}",
-                        path=concrete_path,
-                    )
+                    message = f"idor — cross-user write succeeded at {concrete_path}"
+                    if result.corroborated:
+                        message += f" (corroborated via {second_non_owner})"
+                    _emit(events, "payloads", "finding", message, path=concrete_path)
 
     if not found:
         _emit(events, "payloads", "not-applicable", "idor: no cross-user write confirmed")
