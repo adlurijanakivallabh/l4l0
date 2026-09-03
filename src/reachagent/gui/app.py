@@ -545,6 +545,8 @@ def _build_llm_client(llm_provider: str | None, named_overrides: dict[str, str] 
     return OpenAICompatibleClient(provider=llm_provider, timeout=30.0)
 
 
+_INTENT_SCHEMA_KEYS = ("target", "in_scope", "out_of_scope", "credentials", "goal", "skip_tools")
+
 _INTENT_PROMPT = """Extract a penetration-test request from the operator's message into strict JSON.
 
 Message:
@@ -559,6 +561,29 @@ Return ONLY a JSON object with exactly these keys, no prose, no markdown fences:
 - "credentials": a JSON list of objects {{"username": "...", "password": "...", "role": "..."}} for every login/credential pair mentioned — "role" is usually "user" or "admin" but may be any short label the message clearly implies (e.g. "owner", "mechanic", "manager"); default to "user" if unclear (empty list if none)
 - "goal": what the operator wants tested, PRESERVING any specific instructions, constraints, or rules-of-engagement detail they gave — do not compress a multi-sentence request down to one generic line; quote or closely paraphrase explicit constraints rather than dropping them (empty string if unclear)
 - "skip_tools": comma-separated names of specific recon tools the operator explicitly says NOT to run (e.g. "nmap, gobuster") — only tools they explicitly excluded, never a guess (empty string if none mentioned)
+"""
+
+# v3 conversational-confirmation flow: the operator refines a proposal across
+# several chat turns instead of editing a form ("also test the admin account",
+# "actually skip ffuf too") — this prompt updates the SAME schema in place
+# rather than re-extracting from scratch, so an earlier turn's detail is never
+# silently dropped just because a later message didn't repeat it.
+_INTENT_REFINE_PROMPT = """You already extracted this penetration-test request from the operator's earlier messages, as JSON:
+
+{previous_json}
+
+The operator just added:
+\"\"\"
+{message}
+\"\"\"
+
+Update the JSON to reflect what they just said, applied ON TOP of what you already had —
+keep every field the new message does NOT speak to EXACTLY as it was. Only change or add
+to a field the message clearly addresses (e.g. "also skip ffuf" ADDS to the existing
+skip_tools rather than replacing it; "the password is actually X" updates just that one
+credential, leaving any others alone). Return ONLY a JSON object with exactly the same
+keys as above, in the same formats: target, in_scope, out_of_scope, credentials, goal,
+skip_tools.
 """
 
 
@@ -586,51 +611,9 @@ def _parse_credential_shorthand(text: str) -> dict[str, str] | None:
     return {"username": match.group(1), "password": match.group(2), "role": "user"}
 
 
-@app.post("/api/parse-intent")
-def parse_intent(payload: dict[str, Any]) -> JSONResponse:
-    """Best-effort free-text → ``{target, in_scope, credentials, goal}`` proposal.
-
-    Never executes anything — this only proposes fields for the operator to
-    review/edit in the chat UI before a scan is actually started via
-    ``POST /api/scan``. An unconfigured provider or a flaky/malformed LLM
-    reply degrades to an unextracted proposal (``extracted: false``, plus a
-    ``reason`` code the frontend maps to a specific message), never a hard
-    error the chat flow can't recover from.
-    """
-    message = str(payload.get("message", "") or "").strip()
-    if not message:
-        return JSONResponse({"error": "message required"}, status_code=400)
-
-    def _empty(reason: str) -> dict[str, Any]:
-        return {
-            "target": "",
-            "in_scope": "",
-            "out_of_scope": "",
-            "credentials": [],
-            "goal": message,
-            "skip_tools": "",
-            "extracted": False,
-            "reason": reason,
-        }
-
-    llm_provider, named_overrides, err = _resolve_llm_provider(payload, require_explicit=False)
-    if err is not None:
-        return err
-    try:
-        client = _build_llm_client(llm_provider, named_overrides)
-    except Exception:  # noqa: BLE001 — no usable provider → unextracted proposal
-        return JSONResponse(_empty("no_provider"))
-    try:
-        result = client.propose_json(_INTENT_PROMPT.format(message=message), max_tokens=600)
-    except Exception as exc:  # noqa: BLE001 — a flaky/malformed LLM reply must not break the chat flow
-        from reachagent.llm.client import is_model_output_error
-
-        reason = "malformed_reply" if is_model_output_error(exc) else "provider_error"
-        return JSONResponse(_empty(reason))
-    finally:
-        client.close()
+def _normalize_credentials(raw_credentials: object) -> list[dict[str, str]]:
+    """Shared by both the first-extraction and refine-in-place paths."""
     credentials: list[dict[str, str]] = []
-    raw_credentials = result.get("credentials")
     candidate_rows: list[object]
     if isinstance(raw_credentials, list):
         candidate_rows = raw_credentials
@@ -660,6 +643,74 @@ def parse_intent(payload: dict[str, Any]) -> JSONResponse:
                     "role": role,
                 }
             )
+    return credentials
+
+
+@app.post("/api/parse-intent")
+def parse_intent(payload: dict[str, Any]) -> JSONResponse:
+    """Best-effort free-text → ``{target, in_scope, credentials, goal, skip_tools}`` proposal.
+
+    Never executes anything — this only proposes fields the operator reviews in the
+    chat before a scan is actually started via ``POST /api/scan``. An unconfigured
+    provider or a flaky/malformed LLM reply degrades to an unextracted proposal
+    (``extracted: false``, plus a ``reason`` code the frontend maps to a specific
+    message), never a hard error the chat flow can't recover from.
+
+    An optional ``previous`` object (the same shape this endpoint returns) switches
+    this into REFINE mode (v3 conversational-confirmation flow): the operator's
+    message is applied on top of the already-understood proposal instead of
+    re-extracting from a blank slate, so "also skip ffuf" or "the password is
+    actually X" doesn't silently drop everything gathered in earlier turns. On any
+    failure in refine mode, the degraded proposal falls back to ``previous`` rather
+    than an empty one — a flaky reply on turn 3 must not erase turns 1-2.
+    """
+    message = str(payload.get("message", "") or "").strip()
+    if not message:
+        return JSONResponse({"error": "message required"}, status_code=400)
+    previous = payload.get("previous")
+    base: dict[str, Any] = previous if isinstance(previous, dict) else {}
+    is_refine = bool(base)
+
+    def _empty(reason: str) -> dict[str, Any]:
+        return {
+            "target": str(base.get("target", "") or ""),
+            "in_scope": str(base.get("in_scope", "") or ""),
+            "out_of_scope": str(base.get("out_of_scope", "") or ""),
+            "credentials": _normalize_credentials(base.get("credentials")),
+            "goal": str(base.get("goal", "") or message),
+            "skip_tools": str(base.get("skip_tools", "") or ""),
+            "extracted": False,
+            "reason": reason,
+        }
+
+    llm_provider, named_overrides, err = _resolve_llm_provider(payload, require_explicit=False)
+    if err is not None:
+        return err
+    try:
+        client = _build_llm_client(llm_provider, named_overrides)
+    except Exception:  # noqa: BLE001 — no usable provider → unextracted proposal
+        return JSONResponse(_empty("no_provider"))
+    try:
+        if is_refine:
+            previous_json = json.dumps(
+                {
+                    key: base.get(key, "" if key != "credentials" else [])
+                    for key in _INTENT_SCHEMA_KEYS
+                },
+                sort_keys=True,
+            )
+            prompt = _INTENT_REFINE_PROMPT.format(previous_json=previous_json, message=message)
+        else:
+            prompt = _INTENT_PROMPT.format(message=message)
+        result = client.propose_json(prompt, max_tokens=600)
+    except Exception as exc:  # noqa: BLE001 — a flaky/malformed LLM reply must not break the chat flow
+        from reachagent.llm.client import is_model_output_error
+
+        reason = "malformed_reply" if is_model_output_error(exc) else "provider_error"
+        return JSONResponse(_empty(reason))
+    finally:
+        client.close()
+    credentials = _normalize_credentials(result.get("credentials"))
     return JSONResponse(
         {
             "target": str(result.get("target", "") or "").strip(),

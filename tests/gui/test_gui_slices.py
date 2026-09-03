@@ -475,6 +475,127 @@ def test_parse_intent_defaults_skip_tools_to_empty_string_when_unmentioned(
     assert response.json()["skip_tools"] == ""
 
 
+def test_parse_intent_refine_mode_merges_a_new_message_onto_the_previous_proposal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """v3 conversational-confirmation flow: a follow-up chat message updates the
+    SAME proposal in place rather than re-extracting from scratch, so earlier
+    turns' detail (here, the credential from turn 1) survives turn 2 even though
+    turn 2's own reply doesn't repeat it."""
+    _stub_named_provider(monkeypatch)
+    captured_prompts: list[str] = []
+
+    class _FakeClient:
+        def propose_json(self, prompt: str, *, max_tokens: int = 600) -> dict[str, object]:
+            captured_prompts.append(prompt)
+            return {
+                "target": "https://demo.example",
+                "in_scope": "",
+                "out_of_scope": "",
+                "credentials": [{"username": "admin", "password": "pw1", "role": "user"}],
+                "goal": "test the API",
+                "skip_tools": "nmap, gobuster",
+            }
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(gui_app, "_build_llm_client", lambda *_a, **_k: _FakeClient())
+    previous = {
+        "target": "https://demo.example",
+        "in_scope": "",
+        "out_of_scope": "",
+        "credentials": [{"username": "admin", "password": "pw1", "role": "user"}],
+        "goal": "test the API",
+        "skip_tools": "nmap",
+    }
+    response = TestClient(app).post(
+        "/api/parse-intent",
+        json={
+            "message": "also skip gobuster",
+            "previous": previous,
+            "llm_provider": "named:unit-provider",
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["skip_tools"] == "nmap, gobuster"
+    assert body["credentials"] == [{"username": "admin", "password": "pw1", "role": "user"}]
+    # The refine prompt must actually embed the prior proposal, not just the new message.
+    assert '"skip_tools": "nmap"' in captured_prompts[0]
+    assert "also skip gobuster" in captured_prompts[0]
+
+
+def test_parse_intent_refine_mode_falls_back_to_previous_on_provider_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A flaky reply on a LATER turn must not erase what earlier turns already
+    established — degrade back to the prior proposal, never an empty one."""
+    _stub_named_provider(monkeypatch)
+
+    class _BrokenClient:
+        def propose_json(self, prompt: str, *, max_tokens: int = 600) -> dict[str, object]:
+            raise RuntimeError("provider down")
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(gui_app, "_build_llm_client", lambda *_a, **_k: _BrokenClient())
+    previous = {
+        "target": "https://demo.example",
+        "in_scope": "",
+        "out_of_scope": "",
+        "credentials": [{"username": "admin", "password": "pw1", "role": "user"}],
+        "goal": "test the API",
+        "skip_tools": "nmap",
+    }
+    response = TestClient(app).post(
+        "/api/parse-intent",
+        json={
+            "message": "also skip gobuster",
+            "previous": previous,
+            "llm_provider": "named:unit-provider",
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["extracted"] is False
+    assert body["target"] == "https://demo.example"
+    assert body["credentials"] == [{"username": "admin", "password": "pw1", "role": "user"}]
+    assert body["skip_tools"] == "nmap"
+
+
+def test_parse_intent_no_previous_field_is_byte_for_byte_the_original_extraction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _stub_named_provider(monkeypatch)
+    captured_prompts: list[str] = []
+
+    class _FakeClient:
+        def propose_json(self, prompt: str, *, max_tokens: int = 600) -> dict[str, object]:
+            captured_prompts.append(prompt)
+            return {
+                "target": "https://demo.example",
+                "in_scope": "",
+                "out_of_scope": "",
+                "credentials": [],
+                "goal": "",
+                "skip_tools": "",
+            }
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(gui_app, "_build_llm_client", lambda *_a, **_k: _FakeClient())
+    response = TestClient(app).post(
+        "/api/parse-intent",
+        json={"message": "test demo.example", "llm_provider": "named:unit-provider"},
+    )
+    assert response.status_code == 200
+    # The plain first-extraction prompt, not the refine-in-place one.
+    assert "already extracted" not in captured_prompts[0]
+
+
 def test_parse_intent_defaults_out_of_scope_to_empty_string_when_unmentioned(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
