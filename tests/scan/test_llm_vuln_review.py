@@ -82,6 +82,23 @@ def test_review_drops_a_lead_whose_confirmation_does_not_hold_up() -> None:
     assert len(fake.confirm_prompts) == 1  # confirmation was genuinely attempted
 
 
+def test_review_drops_a_confirmed_allowed_or_denied_verdict_too() -> None:
+    """write_finding gates on is_violation specifically, not "confirmed" in
+    general — confirmed_allowed/confirmed_denied are confirmed FACTS about an
+    edge (per CLAUDE.md), never findings. Both must be dropped here exactly
+    like inconclusive is, not just the one status this module happens to name
+    in its own log message."""
+    for status in ("confirmed_allowed", "confirmed_denied"):
+        g = _graph_with_surface()
+        fake = _FakeClient(
+            {"leads": [{"vuln_class": "bola", "endpoint": "/a", "reason": "r"}]},
+            confirm_status=status,
+        )
+        written = run_llm_vulnerability_review(graph=g, client=fake)
+        assert written == 0, f"status={status} must not become a Finding"
+        assert g.findings() == []
+
+
 def test_review_emits_one_event_per_confirmed_finding_not_a_silent_batch() -> None:
     """Operator feedback: leads only ever became visible via the next full-graph
     poll, reading as everything showing up at once. Each written finding must now
@@ -173,14 +190,17 @@ def test_review_caps_at_max_items() -> None:
     assert written == 12  # _MAX_ITEMS cap, not 20
 
 
-def test_review_invalid_severity_defaults_to_info() -> None:
+def test_review_invalid_severity_defaults_to_informational() -> None:
+    """The prompt-facing word is "info" (short, natural for the model to produce),
+    but the Finding's own severity vocabulary spells it "informational" — the
+    same word report/professional.py's informational-section filter keys on."""
     g = _graph_with_surface()
     fake = _FakeClient(
         {"leads": [{"vuln_class": "xss_reflected", "endpoint": "/e", "severity": "apocalyptic"}]}
     )
     run_llm_vulnerability_review(graph=g, client=fake)
     _fid, finding = g.findings()[0]
-    assert finding.severity == "info"
+    assert finding.severity == "informational"
 
 
 def test_review_prompt_excludes_already_confirmed_from_repetition() -> None:

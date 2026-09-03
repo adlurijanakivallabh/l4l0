@@ -64,10 +64,10 @@ from reachagent.tools.candidate import Candidate, ResponseSignal
 
 # Aggressive mode (Build Order v2 W4, opt-in, default off): when set, the signal gate is
 # bypassed so a signal-gated tool (nuclei/sqlmap/dalfox) fires even without a prior class
-# signal in the graph — "try much harder" like the reference tools. Every emitted candidate
-# still passes the oracle reconfirm (or lands in the Suspected tier), and every OTHER gate
-# (scope, binary presence, memory, read-only) is untouched. Read via the same contextvar/env
-# flag mechanism the tuning flags use, so the GUI can turn it on per-scan.
+# signal in the graph — "try much harder". Every emitted candidate still passes the
+# oracle reconfirm (or is dropped), and every OTHER gate (scope, binary presence, memory,
+# read-only) is untouched. Read via the same contextvar/env flag mechanism the tuning
+# flags use, so the GUI can turn it on per-scan.
 _AGGRESSIVE_FLAG = "REACHAGENT_AGGRESSIVE"
 
 _LIVE_TIMEOUT = 300.0
@@ -550,7 +550,7 @@ class SignalGatedToolRunner:
         # Signal gate before any spawn — the §9 precondition, even on the live path.
         # Aggressive mode (opt-in) bypasses THIS gate only: the tool fires broadly even with
         # no prior class signal. Every emitted candidate still passes the oracle reconfirm
-        # (or → Suspected tier), and scope/binary/memory/read-only gates below are untouched.
+        # (or is dropped), and scope/binary/memory/read-only gates below are untouched.
         # Read directly from the (scan-scoped) env — the same mechanism the surface/signal/
         # transport tuning flags use — not flag_enabled, whose contextvar branch shadows env
         # with a fixed whitelist during an active scan.

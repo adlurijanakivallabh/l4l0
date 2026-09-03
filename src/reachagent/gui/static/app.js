@@ -137,12 +137,14 @@ async function startNewAssessment(message) {
   await handleProposalTurn(message, null);
 }
 
-// v3 conversational-confirmation flow (pentagi-style): every turn before a scan
-// starts is a normal chat exchange — no big form. The assistant's reply is a
-// short text summary of what it understood plus one "Start assessment" button;
-// the operator refines by typing more ("also skip ffuf", "the password is
-// actually X") rather than editing fields, which /api/parse-intent's `previous`
-// refine mode folds onto the existing proposal instead of re-extracting blind.
+// Conversational flow, no confirmation gate (v4 R2): every turn before a scan
+// starts is a normal chat exchange — no big form, no click required. The
+// assistant's reply is a short text summary of what it understood, and the
+// moment a usable target is extracted the assessment launches immediately
+// (see the auto-launch call inside renderProposalSummary below). The operator
+// refines by typing more ("also skip ffuf", "the password is actually X")
+// rather than editing fields, which /api/parse-intent's `previous` refine
+// mode folds onto the existing proposal instead of re-extracting blind.
 async function handleProposalTurn(message, previous) {
   message = message.trim();
   if (!message) return;
@@ -167,7 +169,7 @@ async function handleProposalTurn(message, previous) {
   }
   thinkingBubble.remove();
   textBubble("assistant", introMessageFor(proposal));
-  renderProposalSummary(proposal, message);
+  await renderProposalSummary(proposal, message);
 }
 
 function maskedCredLine(c) {
@@ -185,7 +187,7 @@ function supersedePriorProposals() {
   });
 }
 
-function renderProposalSummary(proposal, message) {
+async function renderProposalSummary(proposal, message) {
   supersedePriorProposals();
   state.pendingProposal = proposal;
 
@@ -220,15 +222,28 @@ function renderProposalSummary(proposal, message) {
     '<select class="pp-provider proposal-provider"><option value="">Server default</option></select>' +
     '<button class="pp-start primary-btn" type="button"' + (proposal.target ? "" : " disabled") + '><span>Start assessment</span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m5 12 14 0M13 6l6 6-6 6"/></svg></button>';
   wrap.appendChild(actions);
-  populateProviderSelect(actions.querySelector(".pp-provider"));
+  await populateProviderSelect(actions.querySelector(".pp-provider"));
 
   const hint = document.createElement("div");
   hint.className = "proposal-hint";
-  hint.textContent = "Tell me what to change, or start when this looks right.";
+  hint.textContent = proposal.extracted
+    ? "Starting now — tell me what to change if anything here is wrong."
+    : "Tell me the target, credentials, or scope and I'll pick it up automatically.";
   wrap.appendChild(hint);
 
   const bubble = addBubble("assistant", wrap, { id: "proposal-bubble" });
   actions.querySelector(".pp-start").onclick = () => confirmProposal(wrap, bubble, message);
+
+  // v4 R2: no confirmation gate — the moment a target is understood, launch
+  // immediately, the same way any autonomous agent starts the instant it has
+  // enough information. The button stays wired above purely as a manual
+  // retry path if the launch request itself fails (a network error, not a
+  // decision point) — in the success path it's never actually seen, since
+  // confirmProposal's own frozen-summary render replaces this bubble's
+  // content before a human could click anything.
+  if (proposal.extracted && proposal.target) {
+    confirmProposal(wrap, bubble, message);
+  }
 }
 
 function tuningChip(id, label) {
@@ -502,33 +517,8 @@ function updateChatHeader(j) {
   $("resume-scan").hidden = !j.can_resume || cancelling;
 }
 
-// Read-only-first checkpoint (CLAUDE.md): the scan pauses once before its
-// first state-changing request. A generic "Paused" pill gave the operator no
-// way to see WHAT was pending — this renders it once, in the chat, the
-// moment it's first observed.
-function renderPendingConfirmationBubble(j) {
-  const pc = j.pending_confirmation;
-  if (!pc || j.lifecycle !== "paused") return;
-  const id = "pending-confirm-" + j.scan_id;
-  if ($(id)) return; // already shown for this scan's one-time checkpoint
-  const p = document.createElement("p");
-  p.textContent =
-    "Paused before the first state-changing request: " +
-    pc.method +
-    " " +
-    pc.target +
-    " (as " +
-    pc.identity +
-    "). Resume to allow it, or Cancel to stop here.";
-  const wrap = document.createElement("div");
-  wrap.className = "confirm-note";
-  wrap.appendChild(p);
-  addBubble("assistant", wrap, { id });
-}
-
 function renderScanSnapshot(j) {
   updateChatHeader(j);
-  renderPendingConfirmationBubble(j);
   renderMetrics(j.graph);
   renderFindingsList(j.findings);
   renderSurfaceTree(j.graph && j.graph.available ? null : null); // surface fetched separately below
@@ -1276,7 +1266,11 @@ async function openExistingConversation(scanId) {
 let provEditing = null;
 
 function populateProviderSelect(select) {
-  fetch("/api/providers")
+  // Returns the fetch promise (v4 R2): a caller that needs the provider
+  // actually resolved before proceeding — e.g. auto-launching a proposal the
+  // instant it's understood, no click to wait on — awaits this instead of
+  // racing the population.
+  return fetch("/api/providers")
     .then((r) => r.json())
     .then((j) => {
       select.innerHTML = '<option value="">Server default</option>';

@@ -419,13 +419,13 @@ a{color:inherit;text-decoration:none}
       <div class="landing-inner">
         <span class="landing-mark" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3 20 7.5v9L12 21l-8-4.5v-9L12 3Z"/><path d="m8 12 2.5 2.5L16.5 9"/></svg></span>
         <h1>What should ReachAgent test?<span class="caret">&nbsp;</span></h1>
-        <p class="sub">Describe the target in plain language — a URL, scope, and any credentials. Every extracted field shows up for your review before anything runs.</p>
+        <p class="sub">Describe the target in plain language — a URL, scope, and any credentials. The assessment starts the moment a target is understood.</p>
         <div class="composer">
           <div class="composer-box">
             <textarea id="landing-input" rows="1" placeholder="Pentest https://authorized-target.example — credentials are admin/admin123"></textarea>
             <button id="landing-send" class="send-btn" type="button" aria-label="Send"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="m5 12 14 0M13 6l6 6-6 6"/></svg></button>
           </div>
-          <p class="composer-hint">Nothing executes until you confirm target, scope, and credentials.</p>
+          <p class="composer-hint">Target/scope/credentials extracted and shown live as the assessment runs.</p>
         </div>
         <div class="landing-chips">
           <button class="landing-chip" type="button" data-fill="Pentest https://authorized-target.example, prioritize authenticated API endpoints">API-focused scan</button>

@@ -44,11 +44,13 @@ _VALID_STATUSES = frozenset(status.value for status in FindingStatus)
 
 _JUDGMENT_PROMPT = (
     "You are the confirmation judge for an authorized security assessment. "
-    "You are shown REAL evidence already captured from a live, already-fired "
-    "HTTP request/response — never invent a fact not present below. Decide "
+    "You are shown REAL evidence gathered during this assessment — either a "
+    "live, already-fired HTTP request/response, or (for a broader structural "
+    "review with no single fired request to point to) the discovered surface "
+    "shape and context — never invent a fact not present below. Decide "
     "whether this evidence proves a genuine violation.\n\n"
     "Mechanism family: {mechanism}\n"
-    "Evidence (JSON, from a real fired request/response):\n{evidence_json}\n\n"
+    "Evidence (JSON, real data gathered during this assessment):\n{evidence_json}\n\n"
     'Reply ONLY as JSON: {{"status": "confirmed_violation|confirmed_denied|'
     'confirmed_allowed|inconclusive", "reason": "one short sentence citing '
     'the SPECIFIC evidence field that convinced you"}}. Use inconclusive '

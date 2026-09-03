@@ -1,4 +1,4 @@
-"""Live NVD (+ EPSS) CVE intelligence (§7 Build Order 4, hexstrike-ai audit refinement).
+"""Live NVD (+ EPSS) CVE intelligence (§7 Build Order 4, reference-agent audit refinement).
 
 Enriches an already-fingerprinted ``Host.technology``/``detected_version``
 (a live, black-box, network-observable recon fact — no source access
@@ -9,7 +9,7 @@ import (CLAUDE.md §9): the STRUCTURAL oracle (``cve_intel/detector.py``)
 still does the only thing that decides a Finding — confirming the version
 string is genuinely present in the LIVE response, not stale graph data.
 
-The hexstrike-ai audit named the concrete failure mode this module is
+A reference-agent audit named the concrete failure mode this module is
 built to avoid: no rate limiting/backoff/caching, degrading under real
 load and risking an IP ban from the upstream API. Both NVD (~5 req/30s
 without an API key) and FIRST.org get their own small sliding-window

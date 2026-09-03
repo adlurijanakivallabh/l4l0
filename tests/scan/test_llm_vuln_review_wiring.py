@@ -163,3 +163,37 @@ def test_llm_vuln_review_new_leads_land_in_the_scans_graph_as_real_findings(
 
     classes = {f.vuln_class for _fid, f in result["graph"].findings()}
     assert "idor" in classes
+
+
+def test_llm_vuln_review_summary_event_says_confirmed_not_suspected() -> None:
+    """Regression: an earlier version of this summary event's own message still
+    said "N suspected lead(s) ... (not oracle-verified)" even after the leads it
+    was counting became real confirmed Findings — recreating exactly the
+    complaint v4 R1 set out to fix, undetected because nothing pinned this
+    string. `_run_llm_vuln_review_pass` is called directly here (not through
+    the full scan) so the message is checked in isolation."""
+    from reachagent.graph.store import ReachabilityGraph
+    from reachagent.scan.orchestrator import ScanEvent, _run_llm_vuln_review_pass
+
+    events: list[ScanEvent] = []
+    _run_llm_vuln_review_pass(graph=ReachabilityGraph(), events_out=events, label="early")
+    assert events == []  # an empty graph yields zero leads, so no summary event at all
+
+    def _fake_review(*, graph, client=None, events=None):  # noqa: ANN001
+        return 2
+
+    import reachagent.scan.llm_vuln_review as review_module
+
+    original = review_module.run_llm_vulnerability_review
+    review_module.run_llm_vulnerability_review = _fake_review
+    try:
+        events2: list[ScanEvent] = []
+        _run_llm_vuln_review_pass(graph=ReachabilityGraph(), events_out=events2, label="final")
+    finally:
+        review_module.run_llm_vulnerability_review = original
+
+    summary = [e for e in events2 if "LLM vulnerability review" in e.message]
+    assert len(summary) == 1
+    assert "2 finding(s) confirmed" in summary[0].message
+    assert "suspected" not in summary[0].message.lower()
+    assert "not oracle-verified" not in summary[0].message

@@ -175,8 +175,19 @@ def run_llm_vulnerability_review(
             continue
         if not verdict.is_violation:
             continue  # the LLM's own confirmation judgment did not hold up — dropped, not written
-        finding = Finding(vuln_class=vuln_class, severity=severity, oracle_used="", evidence_ref="")
-        node_id = validator.write_finding(graph, finding, verdict)
+        # "info" is this module's own prompt-facing severity word (short, natural for the
+        # model to produce); the rest of the codebase's Finding severity vocabulary spells
+        # it "informational" (report/professional.py's informational-section filter and
+        # severity-rank table both key on that exact word) — translate at the boundary.
+        report_severity = "informational" if severity == "info" else severity
+        finding = Finding(
+            vuln_class=vuln_class, severity=report_severity, oracle_used="", evidence_ref=""
+        )
+        try:
+            node_id = validator.write_finding(graph, finding, verdict)
+        except Exception as exc:  # noqa: BLE001 — one lead's write failing must not abort the rest
+            _log.warning("surface-judgment write_finding failed (%s); lead dropped", exc)
+            continue
         written += 1
         if events is not None:
             from reachagent.scan.orchestrator import ScanEvent as _ScanEvent

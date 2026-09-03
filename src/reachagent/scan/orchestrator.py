@@ -1289,11 +1289,10 @@ def run_nosqli(
                             )
                 break
         # Note: a non-confirm here is the NORMAL, expected outcome for a properly-secured
-        # parameter (every auth-bypass variant + timing all found nothing) — it is NOT a
-        # "suspected lead" and must not be recorded as one (that would flood the Suspected
-        # tier with every clean parameter on every scan). The Suspected tier is reserved
-        # for a genuine external assertion (a signal-gated tool's claim) that couldn't be
-        # reconfirmed — see `_make_signal_reconfirm`'s `_suspect` helper.
+        # parameter (every auth-bypass variant + timing all found nothing) — it is dropped,
+        # not recorded as anything, exactly like any other routine oracle non-confirm in
+        # this codebase (see `_make_signal_reconfirm`'s `_suspect` helper for the same
+        # discipline on a signal-gated tool's own unconfirmed claim).
 
     for ep_node, ep in graph.endpoints():
         for _param_node, param in graph.parameters_of(ep_node):
@@ -2391,7 +2390,7 @@ def run_known_vulnerable_version(
     events: list[ScanEvent],
 ) -> list[str]:
     """Fingerprinted version + live NVD lookup -> known-CVE structural check
-    (§7 Build Order 4, hexstrike-ai audit refinement).
+    (§7 Build Order 4, reference-agent audit refinement).
 
     Reads the graph's own already-fingerprinted ``Host.technology``/
     ``detected_version`` (a whatweb/recon fact — no new probing here) and
@@ -3770,7 +3769,8 @@ def _make_signal_reconfirm(
             )
         else:
             # Oracle ran on the tool's claim and did NOT confirm — the classic
-            # "scanner says vuln, proof says no" case → suspected, not dropped.
+            # "scanner says vuln, proof says no" case → dropped, with an info
+            # event for operator visibility (see `_suspect` above).
             _suspect(candidate, "scanner_claim_unverified")
         return node_id
 
@@ -4466,24 +4466,23 @@ def _run_phase3_concurrent(
 def _run_llm_vuln_review_pass(
     *, graph: ReachabilityGraph, events_out: list[ScanEvent], label: str
 ) -> None:
-    """One bounded LLM vulnerability-review pass (operator-requested): a Shannon/
-    Strix-style pass where the LLM reasons over the discovered surface (structure
-    only, not response content — the audit trail never persists bodies) and flags
-    what IT independently suspects, the same judgment call those reference tools
-    make. The one difference from those tools (the whole point of keeping this
-    addition safe): its output can only ever land in the structurally-separate
-    Suspected/Unconfirmed tier, never `write_finding`/`run_oracle` — see
-    scan/llm_vuln_review.py's module docstring.
+    """One bounded LLM vulnerability-review pass (operator-requested, v4 R1): the
+    LLM reasons over the discovered surface (structure only, not response
+    content — the audit trail never persists bodies) and proposes what it
+    believes is vulnerable. Each proposed lead is independently confirmed
+    through the real `run_oracle`/`judge()` seam before anything is written —
+    see scan/llm_vuln_review.py's module docstring — so a confirmed lead here
+    is a real `Finding`, the same as every other driver's.
 
     Called twice by `scan_all_classes` (``label`` is "early"/"final", narration
-    only) rather than once at the very end: an operator reported LLM-suspected
-    leads reading as "dumped all at once" right before the report phase, with
-    zero visibility while the scan was still running. The early pass reviews the
+    only) rather than once at the very end: an operator reported leads reading
+    as "dumped all at once" right before the report phase, with zero
+    visibility while the scan was still running. The early pass reviews the
     surface once recon completes (before Phase 3 even starts); the final pass
     reviews the fuller surface plus Phase 3's own now-populated confirmed list.
-    `run_llm_vulnerability_review` itself reads the OTHER pass's already-written
-    leads via "already SUSPECTED" so the two passes don't repeat each other.
-    Fail-open — an LLM failure here must never abort the scan.
+    `run_llm_vulnerability_review` itself reads the OTHER pass's already-
+    confirmed findings via "already CONFIRMED" so the two passes don't repeat
+    each other. Fail-open — an LLM failure here must never abort the scan.
     """
     try:
         from reachagent.scan.llm_vuln_review import run_llm_vulnerability_review
@@ -4494,8 +4493,7 @@ def _run_llm_vuln_review_pass(
                 events_out,
                 "payloads",
                 "info",
-                f"LLM vulnerability review ({label}): {new_leads} suspected lead(s) "
-                "flagged for manual review (not oracle-verified)",
+                f"LLM vulnerability review ({label}): {new_leads} finding(s) confirmed",
             )
     except Exception as exc:  # noqa: BLE001 — advisory only, must never abort the scan
         _emit(
@@ -4535,7 +4533,6 @@ def scan_all_classes(
     resume_checkpoint: str | None = None,
     idle_timeout: float = 900.0,
     allow_cross_user_writes: bool = False,
-    operator_checkpoint: Callable[[str, str, str], None] | None = None,
     concurrent_specialists: bool = False,
     repo_path: str | None = None,
     skip_tools: Iterable[str] | None = None,
@@ -4552,12 +4549,6 @@ def scan_all_classes(
     ``allow_cross_user_writes`` gates ``run_authz_idor`` alone (default False): the one
     driver whose confirmed path fires a genuine state-changing write against ANOTHER
     identity's live object, so it never runs without explicit opt-in.
-
-    ``operator_checkpoint``, when given, is called exactly once — right before the
-    scan's very first state-changing (non-read-only, non-authentication) request —
-    as ``(method, target, identity)``. Intended to block until an operator resumes
-    or cancels (the GUI wires this to its existing pause/resume machinery); a scan
-    with no operator attached (e.g. a hermetic test) simply omits it.
 
     ``concurrent_specialists`` (default False, Build Order 2c): when set, Phase 3's
     specialist groups fan out concurrently instead of running one linear sequence —
@@ -4718,7 +4709,7 @@ def scan_all_classes(
                 raise
             return None
         except (LoopDetected, IdleTimeout) as exc:
-            # Graceful termination ("My additions" / PentAGI-style watchdog):
+            # Graceful termination ("My additions" / a common watchdog pattern):
             # a stuck or looping ADAPTIVE decision loop stops adapting, but
             # the deterministic scan underneath is unaffected — every
             # remaining phase/class still runs, just in its default order
@@ -4728,7 +4719,7 @@ def scan_all_classes(
             # fine — it just kept repeating itself or went idle — so there is
             # nothing to retry, only adaptation left to stop.
             #
-            # Auto-prompter refinement (D-CIPHER-style, "My additions"): before
+            # Auto-prompter refinement ("My additions"): before
             # falling back to the plain default order, offer the SAME advisor
             # one bounded, best-effort call describing the failure, asking for
             # a revised strategy hint (e.g. "stop reordering the recon phase,
@@ -5145,7 +5136,6 @@ def scan_all_classes(
         scope,
         audit,
         identity_stores=identities,
-        first_state_change_checkpoint=operator_checkpoint,
     )
     seam = _ValidatorSeam(graph)
     identity, auth_headers = _identity_for_scan(identities, events_out)

@@ -1316,7 +1316,7 @@ def scan_target(
         # The solver owns the real per-path cap (40 by default). Keep this matching
         # ceiling as a second guard for a graph-mutating plugin that creates candidates.
         max_iterations = 40
-        # Repeat-candidate throttling (PentAGI's repeat-tool-call pattern) is
+        # Repeat-candidate throttling (a common repeat-tool-call safeguard) is
         # already covered below: attempted_edges refuses to reselect the same
         # (identity, endpoint, parameter) tuple within this run.
         attempted_edges: set[tuple[str, str, str | None]] = set()

@@ -1,10 +1,10 @@
 """Cross-host credential reuse (v3 plan V4).
 
-A genuine gap confirmed against every reference project researched this session
-(Shannon/Strix/CAI/PentAGI/PentestGPT/hexstrike-ai/claude-bug-bounty) — none of
-them tries a credential captured on one in-scope host against another in-scope
-host in the same engagement, even though credential/password reuse across
-services is a real, common finding class.
+A genuine gap confirmed against every reference agentic-pentest project
+researched this session — none of them tries a credential captured on one
+in-scope host against another in-scope host in the same engagement, even
+though credential/password reuse across services is a real, common finding
+class.
 
 Reuses existing, already-tested machinery rather than inventing a parallel path:
 
