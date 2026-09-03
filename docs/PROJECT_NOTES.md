@@ -810,3 +810,19 @@ verify).
 phase3/scan/report directories): 714 passed, 3 pre-existing infra-gated skips. CLAUDE.md
 gained a one-line clarification that a corroboration probe is a driver-owned closure over
 the already-scoped firer, never a firer living inside the oracle/judgment layer itself.
+
+**Second slice, same day: DIFFERENTIAL/PROBE_UNAUTHORIZED (BOLA/IDOR)** — the highest-value
+next target per the research's own table, given how central authorization findings are to
+this project's positioning. `bola/idor_detector.py`'s `IdorProber` gained the same optional
+`fire_second_probe` pattern as `open_redirect`: when a THIRD identity is configured (beyond
+the owner and first non-owner), a confirmed cross-user write is corroborated against that
+third identity's own write against the same object before being trusted — ruling out the
+first non-owner session having its own unrelated delegated/shared access rather than a
+systemic flaw. Deliberately conservative given this driver's own docstring calls it "the
+single most invasive action this project ever takes": the second write fires lazily, only if
+the primary already looks like a violation, and no new opt-in flag was added — this is a
+strictly-improving refinement within the existing `allow_cross_user_writes` gate, not a new
+invasive capability. 13 new tests (8 detector-level, 1 orchestrator wiring test that
+deliberately doesn't hardcode which non-owner identity ends up "first" vs. "corroborating",
+since `auth_ok` is a set with no guaranteed iteration order), git-stash-verified. Full sweep
+(phase2/scan/confirmation): 134 passed.
