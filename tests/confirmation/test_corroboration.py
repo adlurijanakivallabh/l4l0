@@ -2,9 +2,16 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import pytest
 
-from reachagent.confirmation.corroboration import corroborate
+from reachagent.confirmation.corroboration import corroborate, corroborate_with_variant
+
+
+@dataclass(frozen=True)
+class _FakeVerdict:
+    is_violation: bool
 
 
 def test_stops_early_once_required_agreements_reached() -> None:
@@ -94,3 +101,41 @@ def test_default_max_attempts_is_a_small_explicit_cap() -> None:
 
     corroborate(never_agree, required_agreements=1)
     assert calls["n"] <= 3
+
+
+# --- corroborate_with_variant (v3 V3): vary-and-confirm, not repeat-and-vote --
+
+
+def test_primary_not_confirmed_never_fires_the_second_probe() -> None:
+    calls = {"n": 0}
+
+    def second() -> _FakeVerdict:
+        calls["n"] += 1
+        return _FakeVerdict(is_violation=True)
+
+    primary = _FakeVerdict(is_violation=False)
+    result = corroborate_with_variant(primary, second)
+    assert result.corroborated is False
+    assert result.secondary_verdict is None
+    assert calls["n"] == 0  # no wasted probe confirming a negative
+
+
+def test_primary_and_variant_both_confirm() -> None:
+    primary = _FakeVerdict(is_violation=True)
+    secondary = _FakeVerdict(is_violation=True)
+    result = corroborate_with_variant(primary, lambda: secondary)
+    assert result.corroborated is True
+    assert result.primary_verdict is primary
+    assert result.secondary_verdict is secondary
+
+
+def test_variant_contradicting_the_primary_fails_closed() -> None:
+    """A confirmed primary whose corroborating (different-technique) probe
+    does NOT also confirm must fail closed, the same posture judge() already
+    uses at every other seam — never fall back to trusting the uncorroborated
+    primary alone."""
+    primary = _FakeVerdict(is_violation=True)
+    secondary = _FakeVerdict(is_violation=False)
+    result = corroborate_with_variant(primary, lambda: secondary)
+    assert result.corroborated is False
+    assert result.secondary_verdict is secondary  # still surfaced for evidence/audit

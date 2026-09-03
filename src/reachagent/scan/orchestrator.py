@@ -1788,23 +1788,54 @@ def run_open_redirect(
                 location=str(response.headers.get("location", "")),
             )
 
+        # Technique-diversity corroboration (v3 V3): a second, DIFFERENT
+        # redirect-shaped parameter on the SAME endpoint, only when one
+        # exists — rules out one parameter's own quirk rather than a
+        # systemic unsanitized-redirect issue. Endpoints with only one
+        # redirect-shaped parameter stay single-probe (no second candidate
+        # exists to corroborate against — an honest, disclosed limit, not a
+        # fabricated one).
+        fire_second_probe = None
+        second_param_name = ""
+        if len(redirect_params) > 1:
+            second_param_name = redirect_params[1].name
+            second_label = f"open_redirect {ep.path}?{second_param_name}"
+            second_probe_url = f"{base_url.rstrip('/')}{ep.path}?{second_param_name}={target}"
+
+            def _fire_second_probe(
+                _url: str = second_probe_url, _label: str = second_label
+            ) -> RedirectProbe:
+                response = _fire_readonly(
+                    firer, identity, "GET", _url, events=events, label=_label, headers=auth_headers
+                )
+                if response is None:
+                    return RedirectProbe()
+                return RedirectProbe(
+                    status=response.status_code,
+                    location=str(response.headers.get("location", "")),
+                )
+
+            fire_second_probe = _fire_second_probe
+
         prober = OpenRedirectProber(
-            fire_probe=_fire_probe, probe_target=target, oracle_runner=seam.run
+            fire_probe=_fire_probe,
+            probe_target=target,
+            oracle_runner=seam.run,
+            fire_second_probe=fire_second_probe,
+            second_param_name=second_param_name,
         )
         result = detect_open_redirect(prober, evidence_ref=f"orchestrator/open_redirect{ep.path}")
         if result.confirmed and seam.last is not None:
-            nid = seam.write(
-                "open_redirect", seam.last, severity="medium", metadata={"param": param_name}
-            )
+            metadata = {"param": param_name}
+            if result.corroborated:
+                metadata["corroborated_param"] = second_param_name
+            nid = seam.write("open_redirect", seam.last, severity="medium", metadata=metadata)
             if nid:
                 found.append(nid)
-                _emit(
-                    events,
-                    "payloads",
-                    "finding",
-                    f"open redirect — {param_name} echoed into Location",
-                    path=ep.path,
-                )
+                message = f"open redirect — {param_name} echoed into Location"
+                if result.corroborated:
+                    message += f" (corroborated via {second_param_name})"
+                _emit(events, "payloads", "finding", message, path=ep.path)
 
     if not found:
         _emit(events, "payloads", "not-applicable", "open_redirect: no redirect param confirmed")

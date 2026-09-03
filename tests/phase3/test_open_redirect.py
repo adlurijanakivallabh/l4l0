@@ -66,3 +66,75 @@ def test_detector_partial_prefix_match_still_confirms() -> None:
         evidence_ref="or/suffix",
     )
     assert result.confirmed is True
+
+
+# === Technique-diversity corroboration (v3 V3) ===============================
+
+
+class _SequencedRunner:
+    """Returns a different fixed verdict on each successive call — needed to
+    test corroboration, where the primary and second-probe calls must be
+    judged independently."""
+
+    def __init__(self, verdicts: list) -> None:
+        self._verdicts = list(verdicts)
+
+    def __call__(self, mechanism, evidence):  # noqa: ANN001
+        return fixed_oracle_runner(self._verdicts.pop(0))(mechanism, evidence)
+
+
+def test_no_second_probe_configured_is_byte_for_byte_unchanged() -> None:
+    """Omitting fire_second_probe (the default) must behave exactly as before
+    this feature existed — a single-probe confirm, no corroboration field set."""
+    result = detect_open_redirect(
+        _prober(status=302, location=_ATTACKER_URL, verdict=CONFIRMS), evidence_ref="or/single"
+    )
+    assert result.confirmed is True
+    assert result.corroborated is False
+
+
+def test_second_probe_also_confirming_corroborates() -> None:
+    runner = _SequencedRunner([CONFIRMS, CONFIRMS])
+    prober = OpenRedirectProber(
+        fire_probe=lambda: RedirectProbe(status=302, location=_ATTACKER_URL),
+        fire_second_probe=lambda: RedirectProbe(status=302, location=_ATTACKER_URL),
+        probe_target=_ATTACKER_URL,
+        oracle_runner=runner,
+    )
+    result = detect_open_redirect(prober, evidence_ref="or/corroborated")
+    assert result.confirmed is True
+    assert result.corroborated is True
+
+
+def test_second_probe_not_reflecting_fails_closed_not_the_uncorroborated_primary() -> None:
+    """A confirmed first probe whose second, different parameter does NOT also
+    reflect the attacker URL must NOT confirm — never fall back to trusting
+    the uncorroborated single probe."""
+    runner = _SequencedRunner([CONFIRMS, INCONCLUSIVE])
+    prober = OpenRedirectProber(
+        fire_probe=lambda: RedirectProbe(status=302, location=_ATTACKER_URL),
+        fire_second_probe=lambda: RedirectProbe(status=302, location="/login"),
+        probe_target=_ATTACKER_URL,
+        oracle_runner=runner,
+    )
+    result = detect_open_redirect(prober, evidence_ref="or/contradicted")
+    assert result.confirmed is False
+    assert result.corroborated is False
+
+
+def test_second_probe_never_fired_when_primary_does_not_confirm() -> None:
+    calls = {"n": 0}
+
+    def _second() -> RedirectProbe:
+        calls["n"] += 1
+        return RedirectProbe(status=302, location=_ATTACKER_URL)
+
+    prober = OpenRedirectProber(
+        fire_probe=lambda: RedirectProbe(status=200, location=""),
+        fire_second_probe=_second,
+        probe_target=_ATTACKER_URL,
+        oracle_runner=fixed_oracle_runner(INCONCLUSIVE),
+    )
+    result = detect_open_redirect(prober, evidence_ref="or/no-primary")
+    assert result.confirmed is False
+    assert calls["n"] == 0  # no wasted probe confirming a negative

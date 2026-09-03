@@ -116,6 +116,35 @@ def test_post_endpoints_are_never_probed() -> None:
     assert seen == []
 
 
+def test_two_redirect_params_wire_corroboration_through(monkeypatch) -> None:  # noqa: ANN001
+    """v3 V3 wiring test: when an endpoint has TWO redirect-shaped params, the
+    second one is threaded through as the corroborating probe and the written
+    finding's metadata records which param corroborated. The corroboration
+    DECISION logic itself (contradicted second probe -> fails closed) is
+    already covered at the detector level in tests/phase3/test_open_redirect.py
+    — this only proves the orchestrator wires the second param through at all."""
+    import reachagent.oracles.llm_judgment as _llm_judgment
+
+    monkeypatch.setattr(
+        _llm_judgment, "build_openai_compatible_client", lambda: FixedJudgmentClient(CONFIRMS.value)
+    )
+
+    graph = ReachabilityGraph()
+    ep = graph.add_endpoint(Endpoint(method="GET", path="/login"))
+    graph.add_parameter(ep, Parameter(name="next", location="query"))
+    graph.add_parameter(ep, Parameter(name="returnUrl", location="query"))
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        target = request.url.params.get("next") or request.url.params.get("returnUrl") or ""
+        return httpx.Response(302, headers={"Location": target})
+
+    findings = _run(handler, graph=graph)
+    assert findings
+    _fid, finding = findings[0]
+    assert finding.vuln_class == "open_redirect"
+    assert finding.metadata.get("corroborated_param") == "returnUrl"
+
+
 def test_recognizes_multiple_redirect_param_name_variants(monkeypatch) -> None:  # noqa: ANN001
     """Same LLM-judgment pinning as above — verdict is now beyond fixture control."""
     import reachagent.oracles.llm_judgment as _llm_judgment
