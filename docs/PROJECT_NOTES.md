@@ -1031,4 +1031,11 @@ param → `scan_all_classes` passthrough → GUI intent extraction + confirmatio
 `/api/scan` parsing. Also fixed `_INTENT_PROMPT`'s "goal" field to stop force-compressing a rich
 objective to one sentence, the original V1 complaint. Disclosed limit: recon tools only, not
 signal-gated tools (different dispatch path). All five git-stash-verified; item 4's full-suite
-sweep (1765 passed) and item 5's (835 passed) given how many files each touched.
+sweep (1765 passed) and item 5's (835 passed) given how many files each touched. (6) **Full CVSS
+v3.1 vector string** — new `report/cvss.py` implements the official FIRST.org base-score formula
+(deterministic, not a heuristic), verified against two independently hand-derived, widely-
+published reference vectors (the canonical 9.8 vector, Log4Shell's published 10.0) before
+building anything on it. `professional.py`'s `_CVSS_VECTOR` table gives each class a defensible
+typical vector (same honesty discipline as `_WSTG`/`_CWE`); the score is always derived from it,
+never independently chosen. GUI CVSS badge shows the vector as a tooltip. 18 new tests,
+git-stash-verified, verified live via Playwright. Full sweep green (426 passed).

@@ -1,6 +1,22 @@
 # ReachAgent — Web/API Exploitation Agent
 ### Final Project Plan (July 2026)
 
+**Status: Locked — v3.14 (next-phase item 6 shipped: full CVSS v3.1 vector string).** New
+`report/cvss.py` implements the official FIRST.org CVSS v3.1 base-score formula (deterministic,
+not a heuristic) — verified against two independently hand-derived, widely-published reference
+vectors (the canonical "everything maximal" 9.8 vector, and Log4Shell's own published 10.0,
+CVE-2021-44228) before building anything on top of it, giving real confidence in the
+implementation rather than a memorized number. `report/professional.py` gained a
+`_CVSS_VECTOR` table (same honest-fallback discipline as the existing `_WSTG`/`_CWE` tables —
+a defensible TYPICAL vector per class, explicitly disclosed as the same real-world
+simplification every automated scanner makes) — `vuln_class_context`'s `"cvss"` score is now
+always DERIVED from its own vector, structurally unable to drift out of sync with it
+(`renderer.py`'s severity-keyed `_SEVERITY_SCORE` is kept unchanged, only for SARIF's own
+field). GUI's CVSS badge shows the full vector as a hover tooltip. 18 new tests,
+git-stash-verified, verified live via Playwright. Full sweep green (426 passed). Next up: the
+largest remaining punch-list item — Steps-to-Reproduce + PoC report sections, needing real
+request-sequence data threaded from the corroboration pass into the finding record.
+
 **Status: Locked — v3.13 (next-phase item 5 shipped: skip_tools intake).** The audit had
 flagged this as "unverified feasibility"; checked the actual `scan_target` dispatch loop first
 — unlike `skip_phases` (recon runs unconditionally before `AdaptiveControlState` is ever
