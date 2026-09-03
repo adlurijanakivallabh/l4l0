@@ -10,6 +10,7 @@ from reachagent.scan.orchestrator import (
     _SPECIALIST_OF_CLASS,
     ALL_CLASSES,
     ScanEvent,
+    _class_priority_signals,
     rank_vuln_classes,
     scan_all_classes,
 )
@@ -447,3 +448,20 @@ def test_scan_emits_specialist_handoff_events(tmp_path) -> None:  # noqa: ANN001
     assert specialist_events, "at least one specialist hand-off event must be emitted"
     # Hand-offs must be visibly distinct personas, not one giant undifferentiated block.
     assert len({e.details["specialist"] for e in specialist_events}) > 1
+
+
+def test_operator_goal_signal_is_not_over_truncated() -> None:
+    """v3 V1: a rich, multi-sentence operator objective (a real ROE clause,
+    not just a one-line goal) must survive into the class-priority signal
+    dict largely intact — the old 500-char cap silently dropped detail from
+    the operator's own instructions before an LLM ever saw them."""
+    rich_prompt = (
+        "Focus on the admin API. Do not touch the billing subsystem under any "
+        "circumstances — it is a production dependency shared with other teams. "
+        "Pay special attention to authorization boundaries between the mechanic "
+        "role and the owner role, since a prior audit found a BOLA there. "
+    ) * 4  # well past the old 500-char cap, comfortably under the new one
+    assert len(rich_prompt) > 500
+    signals = _class_priority_signals(ReachabilityGraph(), rich_prompt)
+    assert signals["operator_goal"] == rich_prompt[:2000]
+    assert len(signals["operator_goal"]) > 500

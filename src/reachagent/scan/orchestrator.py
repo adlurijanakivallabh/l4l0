@@ -195,7 +195,7 @@ def _class_priority_signals(
     if graph.sessions():
         signals["auth_surface"] = "yes"
     if operator_prompt:
-        signals["operator_goal"] = operator_prompt[:500]
+        signals["operator_goal"] = operator_prompt[:2000]
     return signals
 
 
@@ -4936,7 +4936,7 @@ def scan_all_classes(
             "recon",
             "step",
             "operator objective supplied to the proposal phases",
-            objective=operator_prompt[:500],
+            objective=operator_prompt[:2000],
         )
     _emit(
         events_out,

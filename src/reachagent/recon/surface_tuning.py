@@ -173,7 +173,7 @@ class OpenAISurfaceClient:
             if s.insertion_points
         )
         surface_text = "\n".join(lines)
-        goal = operator_prompt[:500] if operator_prompt else "general vulnerability coverage"
+        goal = operator_prompt[:2000] if operator_prompt else "general vulnerability coverage"
         prompt = (
             "You are an authorized-security-assessment surface analyst."
             " Rank which endpoints are MOST worth testing first."

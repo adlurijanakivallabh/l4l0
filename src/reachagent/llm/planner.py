@@ -476,7 +476,7 @@ def planning_prompt(
         "target_type": context.target_type,
         "in_scope": list(context.in_scope),
         "graph_facts": _bounded_facts(context.graph_facts),
-        "operator_goal": context.operator_prompt[:500],
+        "operator_goal": context.operator_prompt[:2000],
         "max_request_budget": context.max_request_budget,
         "max_tool_budget": context.max_tool_budget,
     }
@@ -561,7 +561,7 @@ def recon_selection_prompt(
         "select one or more concrete next tools and explain the evidence gap.\n"
         f"Target: {context.target[:500]}\n"
         f"Target type: {context.target_type}\n"
-        f"Operator goal: {context.operator_prompt[:500]}\n"
+        f"Operator goal: {context.operator_prompt[:2000]}\n"
         f"Completed tools: {json.dumps(list(completed_tools))}\n"
         f"Available tools: {json.dumps(list(available_tools))}\n"
         f"Current state: {json.dumps(state_json, sort_keys=True)}\n"

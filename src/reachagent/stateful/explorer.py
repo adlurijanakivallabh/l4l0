@@ -481,7 +481,7 @@ def build_stateful_prompt(
     }
     context = {
         "target": target[:500],
-        "operator_goal": operator_prompt[:500],
+        "operator_goal": operator_prompt[:2000],
         "max_steps": min(max_steps, MAX_SEQUENCE_STEPS),
         "endpoints": endpoints[:200],
     }

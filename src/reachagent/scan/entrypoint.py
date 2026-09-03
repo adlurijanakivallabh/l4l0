@@ -245,7 +245,7 @@ def _live_vuln_classes_for(
             "path": getattr(ep, "path", "/")[:120],
         }
         if operator_prompt:
-            signals["operator_goal"] = operator_prompt[:500]
+            signals["operator_goal"] = operator_prompt[:2000]
         if param is not None:
             signals["param_name"] = param.name[:80]
             signals["param_location"] = param.location

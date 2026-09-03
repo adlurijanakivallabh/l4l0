@@ -373,7 +373,7 @@ class DefaultLoopAdvisor:
         client = build_openai_compatible_client()
         if client is None:
             raise ModelControlError("no LLM provider configured for adaptive control")
-        goal = operator_prompt[:400] if operator_prompt else "general coverage"
+        goal = operator_prompt[:2000] if operator_prompt else "general coverage"
         prompt = (
             "You are the proposal-only control loop for an authorized security assessment. "
             f"Phase {completed_phase} just completed. Bounded state: {phase_summary}. "

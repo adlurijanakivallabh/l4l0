@@ -413,7 +413,7 @@ def _collect_target_signals(
     """Lightweight target signals for profile picker — headers + body hint (ponytail: stdlib)."""  # noqa: E501
     signals: dict[str, str] = {"target": target}
     if operator_prompt:
-        signals["operator_goal"] = operator_prompt[:500]
+        signals["operator_goal"] = operator_prompt[:2000]
     hint = os.environ.get("REACHAGENT_GOBUSTER_TECH_HINT") or os.environ.get("REACHAGENT_TECH_HINT")
     if hint:
         signals["tech"] = hint

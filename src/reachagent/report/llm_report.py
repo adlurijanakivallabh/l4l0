@@ -124,7 +124,7 @@ def generate_narrative(
             tuner = OpenAIReportClient(client=compatible)
         context: dict[str, object] = {"findings": findings_ctx, "count": len(findings_ctx)}
         if operator_prompt:
-            context["operator_goal"] = operator_prompt[:500]
+            context["operator_goal"] = operator_prompt[:2000]
         raw = tuner.propose(context)
         narrative = _validate_narrative(raw, allowed_ids)
     except Exception as exc:  # noqa: BLE001 — LLM must never crash reporting

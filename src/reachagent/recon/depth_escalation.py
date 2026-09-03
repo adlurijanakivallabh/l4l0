@@ -100,7 +100,7 @@ class OpenAIDepthEscalationClient:
         client = build_openai_compatible_client(tier="grunt")
         if client is None:
             raise RuntimeError("no LLM provider configured")
-        goal = operator_prompt[:500] if operator_prompt else "general coverage"
+        goal = operator_prompt[:2000] if operator_prompt else "general coverage"
         prompt = (
             "You are deciding whether an nmap follow-up pass is worth running against"
             " an authorized assessment target, given what a quick first pass already"
