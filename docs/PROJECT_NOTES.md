@@ -857,3 +857,32 @@ invasive capability. 13 new tests (8 detector-level, 1 orchestrator wiring test 
 deliberately doesn't hardcode which non-owner identity ends up "first" vs. "corroborating",
 since `auth_ok` is a set with no guaranteed iteration order), git-stash-verified. Full sweep
 (phase2/scan/confirmation): 134 passed.
+
+## v3: V3 8th slice — RATE_LIMIT_ABSENT corroboration, opt-in (2026-09-02)
+
+Operator instruction: "push into RATE_LIMIT_ABSENT next, scoped carefully with the opt-in
+gate." Same `corroborate_with_variant` shape as every other slice — `rate_limit/detector.py`'s
+`RateLimitProber` gains an optional `fire_second_attempt`; a confirmed first bounded burst (6
+wrong-credential attempts) is corroborated against a second, independent burst after a real
+30s cooldown (`_COOLDOWN_S`, monkeypatchable for tests) — but this is the ONE slice in the
+sweep that does NOT corroborate unconditionally once wired.
+
+**The real difference**: doubling live wrong-credential attempts against a real login endpoint
+carries a genuine self-inflicted lockout/DoS risk against the scan's own traffic, unlike every
+other slice's read-only or idempotent-write re-probe. `scan/orchestrator.py::run_rate_limit_absence`
+gates the second burst behind a new `REACHAGENT_RATE_LIMIT_CORROBORATION=1` flag (GUI checkbox
+"Rate-limit corroboration", off by default — every other opt-in tuning flag in this codebase
+gets one, so this does too). A second safety check runs even with the flag on: if the fixed
+probe username (`"ra-probe-user"`) collides with any real seeded identity's own login username,
+corroboration is silently skipped rather than firing wrong-password attempts at what might be a
+real account.
+
+12 new tests across 3 files (detector-level sequenced-verdict corroboration incl. "second burst
+never fires when the primary doesn't confirm" and "flag off is byte-for-byte unchanged",
+orchestrator-level wiring incl. the collision-safety check, GUI env-override wiring), all
+git-stash-verified. Full local suite green: 684 passed, 3 skipped (Docker-gated, expected).
+
+Remaining v3 V3 candidates unchanged from the prior pause note: DEFAULT_CREDENTIALS/
+CLOUD_BUCKET_EXPOSURE (same opt-in-decision care as this slice), DOM XSS (real browser
+lifecycle per probe), `_reconfirm_sqli`/BUSINESS_RULE (shared generic-dispatch-loop
+architecture needs restructuring first).

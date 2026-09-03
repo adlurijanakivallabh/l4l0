@@ -1,6 +1,22 @@
 # ReachAgent — Web/API Exploitation Agent
 ### Final Project Plan (July 2026)
 
+**Status: Locked — v3.5 (V3 8th slice: RATE_LIMIT_ABSENT corroboration, opt-in).** Changes
+from v3.4: resumed the corroboration sweep on the operator's explicit instruction
+("scoped carefully with the opt-in gate"). `rate_limit/detector.py`'s `RateLimitProber` gains
+an optional `fire_second_attempt` — the same `corroborate_with_variant` shape as every prior
+slice, a confirmed first bounded burst corroborated against a second, independent burst after
+a real 30s cooldown — but this is the only slice in the sweep gated behind a NEW opt-in flag
+(`REACHAGENT_RATE_LIMIT_CORROBORATION`, GUI checkbox, off by default) rather than firing
+unconditionally once wired: doubling live wrong-credential attempts against a real auth
+endpoint is a genuine self-inflicted lockout/DoS risk against the scan's own traffic, unlike
+every other slice's read-only or idempotent-write re-probe. A second safety check runs even
+when the flag is on: corroboration is skipped if the fixed probe username collides with a real
+seeded identity's own login username. 12 new tests, git-stash-verified; full suite green (684
+passed, 3 Docker-gated skips). Remaining sweep candidates (DEFAULT_CREDENTIALS/
+CLOUD_BUCKET_EXPOSURE, DOM XSS, `_reconfirm_sqli`/BUSINESS_RULE) unchanged, still deferred with
+the same reasoning as v3.4.
+
 **Status: Locked — v3.4 (V3 corroboration sweep: 7 slices shipped, paused with an honest
 accounting of what's left).** Changes from v3.3: shipped 6 more technique-diversity
 corroboration slices beyond the open_redirect first slice — BOLA/IDOR (a third identity's
