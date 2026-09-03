@@ -107,6 +107,49 @@ def test_kid_injection_token_accepted_confirms_a_finding(monkeypatch) -> None:  
     assert "kid-injection" in metadata
 
 
+def test_two_variants_accepted_corroborates(monkeypatch) -> None:  # noqa: ANN001
+    """v3 V3: when the FIRST confirmed variant (none-alg) is followed by
+    another that ALSO gets accepted, the finding corroborates and records
+    both technique names."""
+    monkeypatch.setattr(_ValidatorSeam, "run", _real_evidence_run)
+
+    from reachagent.payloads.payload_resolver import resolve
+
+    none_alg_token = resolve("jwt_forgery/none-alg")
+    hs256_token = resolve("jwt_forgery/hs256-key-confusion")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        auth = request.headers.get("authorization", "")
+        accepted = (f"Bearer {_VALID_TOKEN}", f"Bearer {none_alg_token}", f"Bearer {hs256_token}")
+        return httpx.Response(200 if auth in accepted else 401, text="{}")
+
+    findings = _run(handler)
+    metadata = {f.metadata.get("forged") for _fid, f in findings}
+    assert "jwt_forgery" in {f.vuln_class for _fid, f in findings}
+    assert "none-alg+hs256-key-confusion" in metadata
+
+
+def test_first_variant_accepted_but_second_refused_fails_closed(monkeypatch) -> None:  # noqa: ANN001
+    """A confirmed first variant whose corroborating (different-technique)
+    probe is refused must NOT confirm — never fall back to trusting the
+    uncorroborated single accept."""
+    monkeypatch.setattr(_ValidatorSeam, "run", _real_evidence_run)
+
+    from reachagent.payloads.payload_resolver import resolve
+
+    none_alg_token = resolve("jwt_forgery/none-alg")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        auth = request.headers.get("authorization", "")
+        # Only the valid token and none-alg are accepted — every other forged
+        # variant (including the corroborating hs256-key-confusion probe) is
+        # correctly refused.
+        accepted = (f"Bearer {_VALID_TOKEN}", f"Bearer {none_alg_token}")
+        return httpx.Response(200 if auth in accepted else 401, text="{}")
+
+    assert _run(handler) == []
+
+
 def test_no_valid_baseline_token_never_fires() -> None:
     seen: list[str] = []
 

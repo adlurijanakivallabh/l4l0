@@ -33,6 +33,7 @@ import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
 import httpx
@@ -756,6 +757,7 @@ def run_jwt_forgery(
     kid-injection)
     from the tagged library. A forged token accepted (2xx) is the violation.
     """
+    from reachagent.confirmation.corroboration import corroborate_with_variant
     from reachagent.oracles.structural import StructuralCheckType, StructuralEvidence
     from reachagent.payloads.payload_resolver import _TEMPLATES
 
@@ -791,7 +793,7 @@ def run_jwt_forgery(
         )
         if baseline is None:
             continue
-        for ref, name in _FORGED:
+        for index, (ref, name) in enumerate(_FORGED):
             forged = _TEMPLATES.get(ref)
             if not forged:
                 continue
@@ -815,16 +817,67 @@ def run_jwt_forgery(
                     evidence_ref=f"orchestrator/jwt_forgery/{name}{path}",
                 ),
             )
-            if verdict.is_violation:
+            if not verdict.is_violation:
+                continue
+            # Technique-diversity corroboration (v3 V3): when another forgery
+            # technique remains, it must ALSO be accepted before trusting a
+            # single hit — rules out a one-off accept (a proxy/cache oddity
+            # on this one token) rather than a genuinely broken validator.
+            # No new session/state/risk: one more read-only GET at the same,
+            # already-scoped URL.
+            forged_label = name
+            confirmed = True
+            remaining = [(r, n) for r, n in _FORGED[index + 1 :] if _TEMPLATES.get(r)]
+            if remaining:
+                ref2, name2 = remaining[0]
+
+                def _second_attempt(
+                    _ref2: str = ref2,
+                    _name2: str = name2,
+                    _url: str = url,
+                    _label: str = label,
+                    _baseline_status: int = baseline.status_code,
+                    _path: str = path,
+                ) -> object:
+                    probe2 = _fire_readonly(
+                        firer,
+                        identity,
+                        "GET",
+                        _url,
+                        events=events,
+                        label=f"{_label}/{_name2}/corroborate",
+                        headers={**auth_headers, "Authorization": f"Bearer {_TEMPLATES[_ref2]}"},
+                    )
+                    if probe2 is None:
+                        return SimpleNamespace(is_violation=False)
+                    return seam.run(
+                        OracleMechanism.STRUCTURAL,
+                        StructuralEvidence(
+                            check_type=StructuralCheckType.JWT_FORGERY,
+                            baseline_status=_baseline_status,
+                            probe_status=probe2.status_code,
+                            evidence_ref=f"orchestrator/jwt_forgery/{_name2}{_path}",
+                        ),
+                    )
+
+                result = corroborate_with_variant(verdict, _second_attempt)
+                confirmed = result.corroborated
+                if confirmed:
+                    forged_label = f"{name}+{name2}"
+            if confirmed and seam.last is not None:
                 nid = seam.write(
-                    "jwt_forgery", seam.last, severity="high", metadata={"forged": name}
+                    "jwt_forgery", seam.last, severity="high", metadata={"forged": forged_label}
                 )
                 if nid:
                     found.append(nid)
                     _emit(
-                        events, "payloads", "finding", f"jwt forgery accepted ({name})", path=path
+                        events,
+                        "payloads",
+                        "finding",
+                        f"jwt forgery accepted ({forged_label})",
+                        path=path,
                     )
-                break
+            break
         # Not recorded as Suspected: every variant rejected is the expected outcome for
         # correctly-implemented JWT validation, not a lead — see the note in run_nosqli.
     return found
