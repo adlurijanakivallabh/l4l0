@@ -1,6 +1,23 @@
 # ReachAgent — Web/API Exploitation Agent
 ### Final Project Plan (July 2026)
 
+**Status: Locked — v3.9 (V3 12th slice: `_reconfirm_sqli` corroboration through the shared
+`reconfirm_candidate()` — the architectural concern was real but narrower than assessed).**
+Changes from v3.8: `reconfirm_candidate()` (shared by 5 vuln classes) gained one optional
+`second_attempt` parameter, called via the existing `corroborate_with_variant` only once the
+primary confirms; corroboration metadata is stamped by mutating the returned `Finding` rather
+than changing `finding_factory`'s own call signature, so the other 4 classes needed zero
+changes. `_reconfirm_sqli` now returns `(evidence, second_attempt)`, injecting a double-quote
+probe (vs. the primary's single quote) at the same parameter — the VARY shape, since an
+unsanitized SQL concatenation doesn't discriminate between quote styles the way a keyword
+blocklist discriminates between operators. A real test-authoring bug was caught and fixed
+along the way: an early test's fake oracle client checked for a signature string that's always
+present in every `DifferentialEvidence`'s own config fields regardless of actual probe
+content — caught by the "fails closed" test failing, fixed with a synthetic marker. 3 new
+tests, git-stash-verified. **This closes 12 of the v3 V3 sweep's candidates** — only
+BUSINESS_RULE's 4 templates remain, needing rule-type-specific logic inside a fully-generic
+dispatch loop, left for a dedicated look.
+
 **Status: Locked — v3.8 (V3 11th and final tractable slice: DEFAULT_CREDENTIALS
 inverted-polarity corroboration — sweep closed).** Changes from v3.7: built the
 previously-deferred inverted-polarity design once the sweep ran out of clean pattern-matched

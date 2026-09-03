@@ -41,12 +41,14 @@ import re
 import shutil
 import subprocess  # noqa: S404 — argument-array only, shell=False, never a shell string
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from pathlib import Path
 from typing import ClassVar
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
+from reachagent.confirmation.corroboration import corroborate_with_variant
 from reachagent.execution.audit import AuditLog
 from reachagent.execution.scope import OutOfScopeError, ScopeGuard
 from reachagent.graph.store import ReachabilityGraph
@@ -672,6 +674,7 @@ def reconfirm_candidate(
     write_finding: object,
     graph: ReachabilityGraph,
     finding_factory: object,
+    second_attempt: Callable[[], object] | None = None,
 ) -> str | None:
     """Independently re-confirm a tool-sourced ``candidate`` via ``run_oracle`` (§9, §13).
 
@@ -687,6 +690,20 @@ def reconfirm_candidate(
     free of any confirmation path. ``finding_factory(candidate, verdict)`` builds the
     ``Finding`` the Validator commits. Returns the finding node id, or ``None`` when
     the oracle did not independently confirm.
+
+    ``second_attempt`` (v3 V3, optional technique-diversity corroboration): a
+    zero-arg callable that fires a genuinely different probe of the same
+    hypothesis, builds its own evidence, and returns an ``OracleVerdict``-shaped
+    result — called ONLY once the primary verdict already confirms (via
+    ``corroborate_with_variant``), never wasting a probe corroborating a
+    negative. A contradicted corroboration fails closed (``None``, no finding),
+    never falling back to the uncorroborated primary. Optional and additive:
+    when omitted (the default — every class but ``sqli`` today), behavior is
+    byte-for-byte unchanged from before this was added. When a corroboration
+    DOES succeed, ``finding.metadata["corroborated"] = "1"`` is stamped onto
+    the finding the factory built, mutated in place rather than threaded
+    through ``finding_factory``'s own call signature — keeping every existing
+    ``finding_factory`` implementation (including in tests) unchanged.
     """
     if not isinstance(candidate, Candidate):
         raise TypeError("reconfirm_candidate requires a Candidate")
@@ -704,7 +721,15 @@ def reconfirm_candidate(
     if not verdict.is_violation or verdict.status.value != "confirmed_violation":
         # The tool claimed it; ReachAgent's own oracle did not confirm it → dropped.
         return None
+    corroborated = False
+    if second_attempt is not None:
+        result = corroborate_with_variant(verdict, second_attempt)
+        if not result.corroborated:
+            return None
+        corroborated = True
     finding = finding_factory(candidate, verdict)  # type: ignore[operator]
+    if corroborated:
+        finding.metadata = {**finding.metadata, "corroborated": "1"}  # type: ignore[attr-defined]
     return write_finding(graph, finding, verdict)  # type: ignore[operator, no-any-return]
 
 

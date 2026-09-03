@@ -3559,6 +3559,24 @@ def _reconfirm_sqli(
     events: list[ScanEvent],
     ctx: Any,
 ) -> object | None:
+    """Build DIFFERENTIAL/DATABASE_ERROR evidence for a signal-gated sqli claim.
+
+    Technique-diversity corroboration (v3 V3): also returns a lazy
+    ``second_attempt`` closure (fired only if the primary evidence goes on to
+    confirm) that injects a DIFFERENT syntax-breaking value (a double quote
+    rather than the primary's single quote) at the same parameter — ruling
+    out a coincidental single-payload trigger (the target happens to 500 on
+    THIS exact malformed input for an unrelated reason) rather than a
+    genuinely unsanitized concatenation. This is the VARY shape (like
+    JWT_FORGERY's forgery techniques — different concrete inputs testing the
+    SAME shared flaw), not the AUTH_BYPASS trap (independent filter-bypass
+    techniques, where a second technique failing says nothing about the
+    first) — a real SQL-injection flaw doesn't discriminate between quote
+    styles the way a keyword blocklist discriminates between operators.
+    Returns ``(evidence, second_attempt)`` — the caller (``_reconfirm``, the
+    only production caller) normalizes a bare-evidence return (every other
+    class here) and a tuple return (this class only) identically.
+    """
     from reachagent.oracles.differential import (
         DiffAxis,
         DifferentialEvidence,
@@ -3593,7 +3611,7 @@ def _reconfirm_sqli(
         )
     except Exception:  # noqa: BLE001 — a refused probe is not a violation
         return None
-    return DifferentialEvidence(
+    evidence = DifferentialEvidence(
         axis=DiffAxis.CROSS_CONDITION,
         expectation=DiffExpectation.DATABASE_ERROR,
         baseline=Observation("baseline", baseline.status_code, ""),
@@ -3601,6 +3619,36 @@ def _reconfirm_sqli(
         error_signatures=_SQL_ERROR_SIGNATURES,
         evidence_ref=f"signal-reconfirm/sqli{ep.path}",
     )
+
+    def _second_attempt() -> object:
+        from reachagent.tools import validator
+
+        try:
+            probe2 = _fire_with_value(
+                ctx,
+                identity,
+                ep.method,
+                url,
+                param.location,
+                param.name,
+                '1"',
+                state_changing=mutating,
+            )
+        except Exception:  # noqa: BLE001 — a refused corroborating probe fails closed
+            return SimpleNamespace(is_violation=False)
+        evidence2 = DifferentialEvidence(
+            axis=DiffAxis.CROSS_CONDITION,
+            expectation=DiffExpectation.DATABASE_ERROR,
+            baseline=Observation("baseline", baseline.status_code, ""),
+            probe=Observation(
+                "probe", probe2.status_code, probe2.body.decode("utf-8", errors="replace")
+            ),
+            error_signatures=_SQL_ERROR_SIGNATURES,
+            evidence_ref=f"signal-reconfirm/sqli{ep.path}/corroborate",
+        )
+        return validator.run_oracle(OracleMechanism.DIFFERENTIAL, evidence2)
+
+    return (evidence, _second_attempt)
 
 
 def _reconfirm_information_exposure(
@@ -3636,7 +3684,13 @@ def _reconfirm_information_exposure(
     )
 
 
-_RECONFIRM_BUILDERS: dict[tuple[str, OracleMechanism], Callable[..., object | None]] = {
+# A builder returns bare evidence, or — v3 V3, sqli only — (evidence,
+# second_attempt) to additionally corroborate before writing; see
+# _make_signal_reconfirm's own `_reconfirm` closure for the normalization.
+_RECONFIRM_BUILDERS: dict[
+    tuple[str, OracleMechanism],
+    Callable[..., object | tuple[object, Callable[[], object]] | None],
+] = {
     ("jwt_forgery", OracleMechanism.STRUCTURAL): _reconfirm_jwt_forgery,
     ("xss_reflected", OracleMechanism.EXECUTION_CONFIRMATION): _reconfirm_xss_reflected,
     ("command_injection", OracleMechanism.OOB_CALLBACK): _reconfirm_command_injection,
@@ -3710,7 +3764,7 @@ def _make_signal_reconfirm(
             _suspect(candidate, "no_oracle_for_class")
             return None
         try:
-            evidence = builder(
+            built = builder(
                 candidate,
                 graph=graph,
                 firer=firer,
@@ -3729,9 +3783,14 @@ def _make_signal_reconfirm(
             )
             _suspect(candidate, "reconfirm_probe_failed")
             return None
-        if evidence is None:
+        if built is None:
             _suspect(candidate, "reconfirm_probe_unavailable")
             return None
+        # v3 V3: a builder may additionally return a corroborating
+        # second-probe closure alongside its evidence (today, only
+        # _reconfirm_sqli does) — every other class's plain-evidence return
+        # is normalized identically, completely untouched.
+        evidence, second_attempt = built if isinstance(built, tuple) else (built, None)
         node_id = reconfirm_candidate(
             candidate,
             evidence,
@@ -3739,6 +3798,7 @@ def _make_signal_reconfirm(
             write_finding=validator.write_finding,
             graph=graph,
             finding_factory=_finding_factory,
+            second_attempt=second_attempt,
         )
         if node_id:
             _emit(

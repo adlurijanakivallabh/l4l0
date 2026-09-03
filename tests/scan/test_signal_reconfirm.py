@@ -234,6 +234,85 @@ def test_sqli_confirms_on_error_signature(monkeypatch) -> None:  # noqa: ANN001
     assert "sqli" in classes
 
 
+_TEST_SQL_ERROR_MARKER = "reachagent-test-sql-error-marker"
+
+
+class _SqlErrorAwareClient:
+    """v3 V3: judges on whether the probe response actually carried the test's
+    own distinctive error marker — needed so the primary probe (single quote)
+    and the corroborating probe (double quote) can genuinely diverge in a
+    test, instead of a flat client confirming both alike. Deliberately NOT a
+    real _SQL_ERROR_SIGNATURES string: that whole tuple is itself embedded in
+    every DifferentialEvidence's own JSON dump (it's a config field on the
+    evidence, not response content), so checking for one of ITS entries would
+    always be true regardless of what the probe actually returned."""
+
+    def propose_json(self, prompt: str, *, max_tokens: int = 500) -> dict[str, object]:
+        status = CONFIRMS.value if _TEST_SQL_ERROR_MARKER in prompt else "inconclusive"
+        return {"status": status, "reason": "content-aware-test-verdict"}
+
+
+def test_sqli_corroboration_confirms_when_the_second_technique_also_errors(monkeypatch) -> None:  # noqa: ANN001
+    monkeypatch.setattr(
+        _llm_judgment, "build_openai_compatible_client", lambda **kw: _SqlErrorAwareClient()
+    )
+    graph = _graph()
+    ep = graph.add_endpoint(Endpoint(method="GET", path="/products"))
+    param = graph.add_parameter(ep, Parameter(name="id", location="query"))
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        value = request.url.params.get("id", "")
+        if "'" in value or '"' in value:
+            return httpx.Response(500, text=_TEST_SQL_ERROR_MARKER)
+        return httpx.Response(200, text="ok")
+
+    reconfirm = _reconfirm(graph, handler)
+    candidate = Candidate(
+        identity="sqlmap",
+        endpoint_node=ep,
+        param_node=param,
+        vuln_class="sqli",
+        suggested_oracle=OracleMechanism.DIFFERENTIAL,
+        payload_ref=None,
+        signal=_SIGNAL,
+    )
+    node_id = reconfirm(candidate)
+    assert node_id is not None
+    findings = dict(graph.findings())
+    assert findings[node_id].metadata.get("corroborated") == "1"
+
+
+def test_sqli_corroboration_fails_closed_when_the_second_technique_is_clean(monkeypatch) -> None:  # noqa: ANN001
+    """A single-quote probe that errors but a double-quote probe that does
+    NOT is exactly the "coincidental single-payload trigger" this
+    corroboration exists to rule out — must not be confirmed."""
+    monkeypatch.setattr(
+        _llm_judgment, "build_openai_compatible_client", lambda **kw: _SqlErrorAwareClient()
+    )
+    graph = _graph()
+    ep = graph.add_endpoint(Endpoint(method="GET", path="/products"))
+    param = graph.add_parameter(ep, Parameter(name="id", location="query"))
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        value = request.url.params.get("id", "")
+        if "'" in value:  # only the single-quote probe errors
+            return httpx.Response(500, text=_TEST_SQL_ERROR_MARKER)
+        return httpx.Response(200, text="ok")
+
+    reconfirm = _reconfirm(graph, handler)
+    candidate = Candidate(
+        identity="sqlmap",
+        endpoint_node=ep,
+        param_node=param,
+        vuln_class="sqli",
+        suggested_oracle=OracleMechanism.DIFFERENTIAL,
+        payload_ref=None,
+        signal=_SIGNAL,
+    )
+    assert reconfirm(candidate) is None
+    assert graph.findings() == []
+
+
 def test_sqli_no_finding_when_clean() -> None:
     graph = _graph()
     ep = graph.add_endpoint(Endpoint(method="GET", path="/products"))
@@ -254,6 +333,36 @@ def test_sqli_no_finding_when_clean() -> None:
     )
     assert reconfirm(candidate) is None
     assert graph.findings() == []
+
+
+def test_sqli_corroborating_probe_never_fires_when_the_primary_does_not_confirm(
+    monkeypatch,  # noqa: ANN001
+) -> None:
+    monkeypatch.setattr(
+        _llm_judgment, "build_openai_compatible_client", lambda **kw: _SqlErrorAwareClient()
+    )
+    graph = _graph()
+    ep = graph.add_endpoint(Endpoint(method="GET", path="/products"))
+    param = graph.add_parameter(ep, Parameter(name="id", location="query"))
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.url.params.get("id", ""))
+        return httpx.Response(200, text="ok")  # never errors — the primary never confirms
+
+    reconfirm = _reconfirm(graph, handler)
+    candidate = Candidate(
+        identity="sqlmap",
+        endpoint_node=ep,
+        param_node=param,
+        vuln_class="sqli",
+        suggested_oracle=OracleMechanism.DIFFERENTIAL,
+        payload_ref=None,
+        signal=_SIGNAL,
+    )
+    assert reconfirm(candidate) is None
+    # baseline ("1") + primary probe ("1'") only — no corroborating "1\"" fire.
+    assert seen == ["1", "1'"]
 
 
 class _FakeCollaborator:

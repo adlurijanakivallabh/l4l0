@@ -959,7 +959,26 @@ RATE_LIMIT_ABSENT's doubled full burst, and the same "one more probe on an alrea
 positive" shape every other default-on slice already uses. 14 new tests (6 for the new
 primitive, 5 detector-level, 3 orchestrator-level), all git-stash-verified.
 
-**This closes the v3 V3 corroboration sweep as far as it honestly goes** — 11 slices shipped.
-What remains (`_reconfirm_sqli`/DATABASE_ERROR, BUSINESS_RULE's 4 templates) both need real
-architectural restructuring of a shared, generic dispatch/evidence-building loop used by
-multiple vuln classes — a dedicated future session's work, not a continuation of this sweep.
+**Update, same day, operator instruction "continue with next phases": `_reconfirm_sqli`
+shipped too.** The architectural concern (a shared `reconfirm_candidate()` used by 5 vuln
+classes) was real but narrower than first assessed — reading the actual function found a
+small, additive fix: `reconfirm_candidate()` gained one optional `second_attempt` parameter
+(called via the existing `corroborate_with_variant` only once the primary confirms), and
+corroboration metadata is stamped by mutating the `Finding` the caller's `finding_factory`
+already built rather than changing that factory's own call signature — so the other 4 classes
+(jwt_forgery, xss_reflected, command_injection, information_exposure) needed zero changes.
+`_reconfirm_sqli` now returns `(evidence, second_attempt)` instead of bare evidence; the
+closure injects a double-quote probe (vs. the primary's single quote) at the same parameter —
+the VARY shape (like JWT_FORGERY), not the AUTH_BYPASS trap, since an unsanitized SQL
+concatenation doesn't discriminate between quote styles. A real test-authoring bug was caught
+and fixed along the way (not a production bug): the first version of the corroboration test's
+fake oracle client checked for a real `_SQL_ERROR_SIGNATURES` string that's ALWAYS present in
+every `DifferentialEvidence`'s own JSON dump (it's a config field, not response content),
+making the fake client confirm unconditionally — caught by the "fails closed" test failing,
+fixed with a synthetic marker instead. 3 new tests, git-stash-verified against the real
+production reconfirm path end to end.
+
+**This closes 12 of the v3 V3 sweep's candidates.** What remains — BUSINESS_RULE's 4
+templates — genuinely needs rule-type-specific logic inside an otherwise-fully-generic
+dispatch loop, a materially different (more special-case-heavy) shape than the
+`reconfirm_candidate` change just shipped. Left for a dedicated look.
