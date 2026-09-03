@@ -1023,5 +1023,12 @@ swap `<input>` for `<textarea>`; `ScopeGuard.from_raw` now splits on commas OR n
 taller box's natural one-per-line input actually parses. Verified live via Playwright. (4) **Stop
 over-truncating the operator's objective** — a full grep found 13 sites (not just the one the
 audit flagged) sharing an identical `operator_prompt[:500]` cap; bumped all uniformly to 2000
-characters. All four git-stash-verified; item 4's full-suite sweep (1765 passed) given how many
-files it touched.
+characters. (5) **skip_tools intake** — the audit had flagged this as "unverified feasibility";
+checked the actual dispatch loop first and found `initial_names`/`candidate_names` (unlike
+`skip_phases`) IS the very first point any recon tool name is considered, so filtering both at
+that point is safe with no "already ran before the check" hole. Wired end to end: `scan_target`
+param → `scan_all_classes` passthrough → GUI intent extraction + confirmation-card field +
+`/api/scan` parsing. Also fixed `_INTENT_PROMPT`'s "goal" field to stop force-compressing a rich
+objective to one sentence, the original V1 complaint. Disclosed limit: recon tools only, not
+signal-gated tools (different dispatch path). All five git-stash-verified; item 4's full-suite
+sweep (1765 passed) and item 5's (835 passed) given how many files each touched.

@@ -1,6 +1,24 @@
 # ReachAgent — Web/API Exploitation Agent
 ### Final Project Plan (July 2026)
 
+**Status: Locked — v3.13 (next-phase item 5 shipped: skip_tools intake).** The audit had
+flagged this as "unverified feasibility"; checked the actual `scan_target` dispatch loop first
+— unlike `skip_phases` (recon runs unconditionally before `AdaptiveControlState` is ever
+consulted), `initial_names`/`candidate_names` IS the very first point any recon tool name is
+considered, so filtering an operator's skip list at that point is safe and additive, with no
+"already ran before the check" hole, and it also blocks the adaptive per-step LLM selector from
+re-introducing a skipped tool. Wired end to end: `scan_target(skip_tools=...)` →
+`scan_all_classes` passthrough → GUI `_INTENT_PROMPT` extraction → confirmation-card field →
+`/api/scan` parsing. While touching the intent prompt, also fixed "goal" extraction to stop
+force-compressing a rich objective to one sentence — the original V1 complaint. Disclosed scope
+limit: recon-tool dispatch only, not signal-gated tools (a different dispatch path). 10 new
+tests, git-stash-verified; verified live via Playwright. Full sweep green (835 passed).
+Reassessed `EngagementRules` as a formal dataclass and deprioritized it — the actual capability
+gap it was meant to close (scope narrowing, role fidelity, notes, skip_tools) is now closed via
+flat fields matching every other GUI payload convention, so the wrapper object would be a pure
+internal refactor with no behavioral delta. Next up: CVSS vector string, Steps-to-Reproduce +
+PoC report sections.
+
 **Status: Locked — v3.12 (next-phase items 3-4 shipped: confirmation-card scope textarea,
 stop over-truncating the operator's objective).** Item 3: `gui/static/app.js`'s
 `cc-scope`/`cc-outscope` swap `<input>` for `<textarea>` (matching `cc-goal`'s existing
