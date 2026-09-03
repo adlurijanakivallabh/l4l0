@@ -811,6 +811,37 @@ phase3/scan/report directories): 714 passed, 3 pre-existing infra-gated skips. C
 gained a one-line clarification that a corroboration probe is a driver-owned closure over
 the already-scoped firer, never a firer living inside the oracle/judgment layer itself.
 
+**Further slices, same day**: JWT_FORGERY (A1-loop, next-technique-must-also-confirm —
+research-confirmed safe since all 4 forgery techniques are symptoms of one shared validator
+flaw), CORS_MISCONFIG (second attacker origin), FILE_UPLOAD_BYPASS (second disguise
+extension), WEB_CACHE_POISONING (third delayed re-read, with a monkeypatchable delay constant
+so the test suite stays fast), and Stored XSS (second independent identity's read — flagged
+"near-mandatory" since it's what actually distinguishes genuinely-stored from
+reflected-in-a-confirmation-page). All git-stash-verified, all detector-level
+`corroborate_with_variant`, no shared-layer changes.
+
+**A real design mistake found and reverted before it ever reached a commit**: attempted the
+SAME "next variant must also confirm" pattern on `run_nosqli`'s bypass-operator loop
+(AUTH_BYPASS) — the existing regression test for a WAF that correctly blocks `$ne` but is
+blind to `$gt` caught it immediately, since requiring a SECOND operator to also succeed turns
+a realistic single-technique bypass into an unrealistic two-technique bar, suppressing the
+true positive. JWT forgery techniques are different symptoms of ONE shared flaw; nosqli/ldap
+operator variants are INDEPENDENT probes of a keyword blocklist — the analogy didn't hold.
+Reverted in full via `git checkout` before committing.
+
+**Two items deliberately skipped/deferred with reasoning, not silently dropped**:
+PROBE_AUTHORIZED (graphql) — its own test shows the correct verdict for a public field is
+`CONFIRMED_ALLOWED`, not a violation, so this branch essentially never writes a Finding;
+corroborating it has no real security value. `_reconfirm_sqli` (DATABASE_ERROR) — it only
+builds evidence; judgment happens in a shared `reconfirm_candidate()` used by 5 different
+vuln classes, a materially bigger/riskier change than every driver-calls-`seam.run`-directly
+slice shipped so far — deferred for a dedicated session, not rushed.
+
+**Operator instruction, same day**: eval-target Docker containers (VAmPI/crAPI/Juice Shop/
+DVWA) are on-demand only — bring up only what a live task needs, tear down right after. Found
+all three running idle mid-session with nothing in the (hermetic) work using them; stopped
+them.
+
 **Second slice, same day: DIFFERENTIAL/PROBE_UNAUTHORIZED (BOLA/IDOR)** — the highest-value
 next target per the research's own table, given how central authorization findings are to
 this project's positioning. `bola/idor_detector.py`'s `IdorProber` gained the same optional
