@@ -159,6 +159,16 @@ class ScopeGuard:
             return False
         return any(rule.matches(parsed) for rule in self._rules)
 
+    def allowed_hosts(self) -> list[str]:
+        """Concrete (non-wildcard) allowed hostnames, for callers that need a
+        resolvable host list rather than URL-shaped matching — e.g. the
+        sandbox's own network-egress allowlist (v4 R4), which resolves each
+        host to an IP and firewalls the container to just those. Wildcard
+        entries (``*.example.com``) are skipped: there is no fixed IP set to
+        resolve them to, so they cannot back an egress allowlist this way.
+        """
+        return [rule.host for rule in self._rules if not rule.host.startswith("*.")]
+
     def enforce(self, url: str | httpx.URL) -> None:
         """Raise :class:`OutOfScopeError` if the URL is not allowlisted (§10)."""
         if not self.is_in_scope(url):
