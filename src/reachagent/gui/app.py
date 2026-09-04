@@ -1304,6 +1304,8 @@ async def _run_scan_body(
                 concurrent_specialists=concurrent_specialists,
                 repo_path=repo_path,
                 skip_tools=skip_tools,
+                sandbox_enabled=True,
+                scan_id=scan_id,
             )
 
         loop = asyncio.get_running_loop()

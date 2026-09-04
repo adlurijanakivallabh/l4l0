@@ -989,6 +989,46 @@ def test_concurrent_specialists_flag_reaches_scan_all_classes(monkeypatch) -> No
     assert captured.get("concurrent_specialists") is True
 
 
+def test_sandbox_enabled_and_scan_id_reach_scan_all_classes(monkeypatch) -> None:  # noqa: ANN001
+    """v4 R3 slice 2: the GUI (the one production entrypoint) always opts
+    every real scan into sandbox investigation, and threads its own scan_id
+    through so the sandbox container name ties back to it."""
+    import asyncio
+    import sys
+
+    app_module = sys.modules["reachagent.gui.app"]
+
+    captured: dict = {}
+
+    def fake_scan_all_classes(**kwargs):  # noqa: ANN001, ANN003
+        captured.update(kwargs)
+        raise RuntimeError("stop-here-test-only")
+
+    monkeypatch.setattr(app_module, "scan_all_classes", fake_scan_all_classes)
+
+    scan_id = "sandbox-wiring-slice"
+    _scans[scan_id] = {"status": "queued", "events": [], "control": None}
+    try:
+        asyncio.run(
+            app_module._run_scan_body(
+                scan_id,
+                "https://target.test",
+                "target.test",
+                None,
+                True,
+                20,
+                None,
+                None,
+                None,
+            )
+        )
+    finally:
+        _scans.pop(scan_id, None)
+
+    assert captured.get("sandbox_enabled") is True
+    assert captured.get("scan_id") == scan_id
+
+
 def test_opt_str_treats_whitespace_only_as_none() -> None:
     """Adversarial review: _opt_str("   ") used to survive as "" (truthy
     check ran before stripping) -- a real gap for any caller that then does

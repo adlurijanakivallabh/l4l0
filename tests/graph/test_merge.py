@@ -177,3 +177,79 @@ def test_empty_source_graph_merges_nothing() -> None:
 
     assert new_ids == []
     assert len(target.findings()) == 1
+
+
+# --- v4 R3b: finding deduplication was investigated (dynamic re-hunt agents
+# can rediscover the same underlying issue) and NOT added as a coarse
+# fingerprint -- see graph/merge.py's own module docstring. Verified directly
+# that no driver's evidence_ref embeds an identity/session component, so two
+# agents reconfirming the IDENTICAL issue already produce the IDENTICAL
+# evidence_ref/finding id, caught by the pre-existing exact-id check above.
+# These tests are regression guards against re-adding an overly-coarse
+# fingerprint that would collapse genuinely different findings. ---
+
+
+def test_same_evidence_ref_from_a_different_agent_is_deduped_by_exact_id() -> None:
+    """The real dedup mechanism for a re-hunt agent reconfirming the same
+    issue: identical evidence_ref -> identical finding id -> already-present
+    check above, no fingerprint needed."""
+    source = ReachabilityGraph()
+    target = ReachabilityGraph()
+    target.add_finding(_finding("sqli", "orchestrator/sqli /api/users/1"))
+    source.add_finding(_finding("sqli", "orchestrator/sqli /api/users/1"))
+
+    new_ids = merge_new_findings(source, target)
+
+    assert new_ids == []
+    assert len(target.findings()) == 1
+
+
+def test_different_evidence_on_the_same_endpoint_is_not_deduped() -> None:
+    """A coarser fingerprint (vuln_class + endpoint path alone) would wrongly
+    collapse this -- e.g. a PUT-IDOR and a DELETE-IDOR on the same endpoint
+    are different findings and must both survive."""
+    source = ReachabilityGraph()
+    target = ReachabilityGraph()
+    target.add_finding(_finding("idor", "orchestrator/idor PUT /api/users/1"))
+    source.add_finding(_finding("idor", "orchestrator/idor DELETE /api/users/1"))
+
+    new_ids = merge_new_findings(source, target)
+
+    assert len(new_ids) == 1
+    assert len(target.findings()) == 2
+
+
+def test_different_endpoint_same_class_is_not_deduped() -> None:
+    source = ReachabilityGraph()
+    target = ReachabilityGraph()
+    target.add_finding(_finding("sqli", "orchestrator/sqli /api/users/1"))
+    source.add_finding(_finding("sqli", "orchestrator/sqli /api/orders/2"))
+
+    new_ids = merge_new_findings(source, target)
+
+    assert len(new_ids) == 1
+    assert len(target.findings()) == 2
+
+
+def test_same_endpoint_different_class_is_not_deduped() -> None:
+    source = ReachabilityGraph()
+    target = ReachabilityGraph()
+    target.add_finding(_finding("sqli", "orchestrator/sqli /api/users/1"))
+    source.add_finding(_finding("bola", "orchestrator/bola /api/users/1"))
+
+    new_ids = merge_new_findings(source, target)
+
+    assert len(new_ids) == 1
+    assert len(target.findings()) == 2
+
+
+def test_different_opaque_refs_are_not_deduped() -> None:
+    source = ReachabilityGraph()
+    target = ReachabilityGraph()
+    target.add_finding(_finding("clickjacking", "opaque-ref-1"))
+    source.add_finding(_finding("clickjacking", "opaque-ref-2"))
+
+    new_ids = merge_new_findings(source, target)
+
+    assert len(new_ids) == 1
+    assert len(target.findings()) == 2

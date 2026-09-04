@@ -28,11 +28,17 @@ import httpx
 import pytest
 
 from reachagent.execution import RequestFirer, ScopeGuard
-from reachagent.graph.nodes import Endpoint, Parameter, SinkType
+from reachagent.graph.nodes import Endpoint, Finding, FindingStatus, Parameter, SinkType
 from reachagent.graph.store import ReachabilityGraph, finding_id
 from reachagent.identity.store import IdentityStore
 from reachagent.scan import orchestrator as _orchestrator
-from reachagent.scan.orchestrator import _run_attack_path_chain, _ValidatorSeam, run_nosqli
+from reachagent.scan.chaining import DerivedIdentityLead
+from reachagent.scan.orchestrator import (
+    _run_attack_path_chain,
+    _run_attack_path_chains_concurrent,
+    _ValidatorSeam,
+    run_nosqli,
+)
 
 _BASE = "http://t.test"
 _ADMIN_TOKEN = "admin-tok-xyz"
@@ -294,6 +300,134 @@ def test_attack_path_chain_browser_recon_failure_does_not_abort_the_rehunt(
     admin_finding_id = finding_id("nosqli", "orchestrator/nosqli /admin/secret user:ne-null")
     assert admin_finding_id in new_ids
     assert any("attack-path chain browser recon failed" in e.message for e in events)
+
+
+def test_concurrent_chaining_spawns_one_agent_per_lead_and_merges_all(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """v4 R3b: genuine dynamic agent spawning — TWO leads get TWO concurrent
+    re-hunt agents (not just the first, the old behavior), each merged back
+    into the parent graph."""
+    graph, identities, firer, seam, lead = _lead_from_first_pass(monkeypatch)
+    # A second, distinct lead sharing the same real captured session material
+    # (this test's own fixture only produces one genuine bypass point) --
+    # what's under test is the concurrent-spawn/merge machinery itself, not
+    # re-deriving a second realistic bypass scenario already covered above.
+    second_finding_id = graph.add_finding(
+        Finding(
+            vuln_class="nosqli",
+            severity="high",
+            oracle_used="differential",
+            evidence_ref="ref-2",
+            status=FindingStatus.CONFIRMED_VIOLATION,
+        )
+    )
+    second_lead = DerivedIdentityLead(
+        finding_id=second_finding_id,
+        vuln_class=lead.vuln_class,
+        role_hint="second-admin",
+        captured=lead.captured,
+    )
+
+    events: list = []
+    control_state = types.SimpleNamespace(touch=lambda: None)
+    _run_attack_path_chains_concurrent(
+        leads=[lead, second_lead],
+        graph=graph,
+        firer=firer,
+        base_url=_BASE,
+        auth_headers={},
+        identities=identities,
+        transport=None,
+        library=None,
+        allow_cross_user_writes=False,
+        events=events,
+        cancel_check=None,
+        check_cancel=lambda _c: None,
+        control_state=control_state,
+    )
+
+    # Two genuinely distinct synthetic identities were spawned (one per lead)
+    # -- both agents genuinely ran, not just the first.
+    derived_names = [n for n in identities.names() if n.startswith("derived-")]
+    assert len(derived_names) == 2
+    admin_finding_id = finding_id("nosqli", "orchestrator/nosqli /admin/secret user:ne-null")
+    assert admin_finding_id in dict(graph.findings())
+    # The re-hunt-agent completion events for BOTH agents landed in the
+    # parent's own event list -- not lost in an isolated child.
+    assert sum(1 for e in events if e.message.startswith("re-hunt agent (")) == 2
+    # Both leads re-hunt the SAME underlying admin/secret nosqli via the same
+    # captured material (this test's own simplification -- see comment
+    # above), producing the IDENTICAL evidence_ref and thus the IDENTICAL
+    # deterministic finding id -- exactly ONE agent's confirmation becomes
+    # the genuinely new finding (an enables edge from its own lead); the
+    # OTHER agent's identical re-confirmation is caught by
+    # merge_new_findings's pre-existing exact-id check (graph/merge.py),
+    # not a new mechanism. WHICH of the two wins is a genuine race (both run
+    # truly concurrently; whichever's merge lands first keeps its edge) --
+    # assert exactly one, not a specific one, so this test isn't flaky on
+    # completion order.
+    enabling_leads = {
+        fid for fid, _ in graph.enables_edges() if fid in {lead.finding_id, second_finding_id}
+    }
+    assert len(enabling_leads) == 1
+
+
+def test_concurrent_chaining_one_agent_crashing_does_not_abort_the_other(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    graph, identities, firer, seam, lead = _lead_from_first_pass(monkeypatch)
+
+    second_finding_id = graph.add_finding(
+        Finding(
+            vuln_class="nosqli",
+            severity="high",
+            oracle_used="differential",
+            evidence_ref="ref-2",
+            status=FindingStatus.CONFIRMED_VIOLATION,
+        )
+    )
+    second_lead = DerivedIdentityLead(
+        finding_id=second_finding_id,
+        vuln_class=lead.vuln_class,
+        role_hint="crash-me",
+        captured=lead.captured,
+    )
+
+    from reachagent.scan import chaining as _chaining
+
+    real_spawn = _chaining.spawn_derived_identity
+
+    def spawn_or_crash(identities, firer, graph, *, role_hint, captured):  # noqa: ANN001
+        if role_hint == "crash-me":
+            raise RuntimeError("simulated spawn crash")
+        return real_spawn(identities, firer, graph, role_hint=role_hint, captured=captured)
+
+    monkeypatch.setattr("reachagent.scan.chaining.spawn_derived_identity", spawn_or_crash)
+
+    events: list = []
+    control_state = types.SimpleNamespace(touch=lambda: None)
+    _run_attack_path_chains_concurrent(
+        leads=[lead, second_lead],
+        graph=graph,
+        firer=firer,
+        base_url=_BASE,
+        auth_headers={},
+        identities=identities,
+        transport=None,
+        library=None,
+        allow_cross_user_writes=False,
+        events=events,
+        cancel_check=None,
+        check_cancel=lambda _c: None,
+        control_state=control_state,
+    )
+
+    # The crashing agent's failure is visible...
+    assert any("crashed" in e.message for e in events)
+    # ...but the healthy sibling's own confirmed finding still made it through.
+    admin_finding_id = finding_id("nosqli", "orchestrator/nosqli /admin/secret user:ne-null")
+    assert admin_finding_id in dict(graph.findings())
 
 
 def test_chaining_is_a_no_op_when_no_lead_captured_real_session_material(

@@ -52,6 +52,7 @@ from reachagent.tools import validator
 if TYPE_CHECKING:
     from reachagent.identity.store import IdentityStore
     from reachagent.llm.planner import PlannerClient
+    from reachagent.sandbox.agent_shell import AgentSandbox
     from reachagent.scan.agentic_loop import LoopAdvisorClient
 
 _log = logging.getLogger(__name__)
@@ -312,6 +313,12 @@ _AUTH_PATH_HINTS = ("auth", "login", "jwt", "token", "session", "signin", "user"
 # no longer sourced from an upfront LLM-committed plan's tool_budget (that
 # rigid plan schema is gone) — a fixed, generous default instead.
 _DEFAULT_RECON_TOOL_BUDGET = 16
+# v4 R3 slice 2: total sandbox commands (R4) the whole Phase-3 dispatch may
+# run across all classes/specialists combined — sliced per track by
+# _run_phase3_concurrent for the tunnel-vision guard. Modest by design: the
+# structured drivers own coverage; sandbox investigation is additive depth,
+# not the primary mechanism.
+_SANDBOX_COMMAND_BUDGET = 20
 _CSRF_BODY_MARKERS = re.compile(r"csrf|authenticity_token|_token|csrfmiddleware", re.I)
 _TIMING_TRIALS = 10
 
@@ -4056,6 +4063,9 @@ def _dispatch_classes(
     check_cancel: Callable[[object | None], None],
     touch: Callable[[], None],
     label: str = "",
+    sandbox: AgentSandbox | None = None,
+    target: str = "",
+    sandbox_budget: int = 0,
 ) -> None:
     """Continuous re-rank-then-dispatch loop (Build Order 2), scoped to
     exactly ``classes`` and one (graph, drivers) pair. Shared by the
@@ -4076,12 +4086,23 @@ def _dispatch_classes(
     one class is consumed from ``remaining`` per iteration, so this cannot
     loop or stall the way an open-ended tool-selection loop could — no
     loop-guard needed.
+
+    ``sandbox``/``target``/``sandbox_budget`` (v4 R3 slice 2): after each
+    class's structured driver runs, one bounded LLM call may propose a
+    genuinely free-form sandbox command (R4) for deeper investigation —
+    additive on top of the driver, never a replacement for it. Bounded by
+    ``sandbox_budget`` (a plain local int, decremented once per class
+    regardless of outcome — never shared across concurrently-running
+    ``_dispatch_classes`` calls, each gets its own pre-sliced budget, so no
+    lock is needed here the way ``touch`` needs one).
     """
     from reachagent.scan.agentic_loop import ControlError
+    from reachagent.scan.sandbox_investigation import run_sandbox_investigation
 
     remaining = list(classes)
     current_specialist: str | None = None
     prefix = f"[{label}] " if label else ""
+    remaining_sandbox_budget = sandbox_budget
     while remaining:
         check_cancel(cancel_check)
         ranked_order, rank_reason = rank_vuln_classes(
@@ -4109,6 +4130,7 @@ def _dispatch_classes(
                 f"{prefix}{_SPECIALIST_LABELS.get(specialist, specialist)} — starting",
                 specialist=specialist,
             )
+        before_findings = {fid for fid, _ in graph.findings()}
         try:
             drivers[class_name]()
         except ControlError:
@@ -4125,6 +4147,27 @@ def _dispatch_classes(
                 "error",
                 f"{prefix}{class_name}: driver failed ({exc}) — continuing with remaining classes",
             )
+        driver_confirmed = any(fid not in before_findings for fid, _ in graph.findings())
+        if sandbox is not None and remaining_sandbox_budget > 0 and not driver_confirmed:
+            remaining_sandbox_budget -= 1
+            try:
+                if run_sandbox_investigation(
+                    vuln_class=class_name,
+                    graph=graph,
+                    sandbox=sandbox,
+                    target=target,
+                    prior_outcome="structured detector found no signal",
+                    events=events,
+                ):
+                    _emit(
+                        events,
+                        "payloads",
+                        "info",
+                        f"{prefix}{class_name}: sandbox investigation confirmed a finding",
+                    )
+            except Exception as exc:  # noqa: BLE001 — sandbox investigation is additive;
+                # a failure here must never cost the rest of the class list its chance to run.
+                _log.warning("sandbox investigation for %r failed: %s", class_name, exc)
         touch()
 
 
@@ -4144,6 +4187,7 @@ def _run_attack_path_chain(
     cancel_check: object | None,
     check_cancel: Callable[[object | None], None],
     control_state: Any,
+    touch: Callable[[], None] | None = None,
 ) -> list[str]:
     """Spawn ``lead``'s derived identity, run browser recon under it (v2 Phase 6 Stage
     C — surfaces any admin-only rendered link/form the new privilege unlocks), then
@@ -4237,13 +4281,135 @@ def _run_attack_path_chain(
         operator_prompt=None,
         cancel_check=cancel_check,
         check_cancel=check_cancel,
-        touch=control_state.touch,
+        touch=touch or control_state.touch,
         label=f"chain:{new_identity}",
     )
     new_ids = [fid for fid, _ in graph.findings() if fid not in before]
     for new_id in new_ids:
         graph.add_enables(lead.finding_id, new_id)
     return new_ids
+
+
+def _run_attack_path_chains_concurrent(
+    *,
+    leads: list[Any],
+    graph: ReachabilityGraph,
+    firer: RequestFirer,
+    base_url: str,
+    auth_headers: Mapping[str, str],
+    identities: IdentityStore,
+    transport: httpx.BaseTransport | None,
+    library: Any,
+    allow_cross_user_writes: bool,
+    events: list[ScanEvent],
+    cancel_check: object | None,
+    check_cancel: Callable[[object | None], None],
+    control_state: Any,
+) -> None:
+    """v4 R3b: genuine dynamic agent spawning — one concurrent re-hunt agent
+    PER captured auth-bypass lead, not a fixed count and not just the first
+    (the old behavior: ``_run_attack_path_chain(lead=derived_identities[0],
+    ...)``, bounded to exactly one lead regardless of how many fired).
+    Reuses ``_run_attack_path_chain``'s own per-lead logic completely
+    unchanged — only its own single-lead call site is replaced.
+
+    Each agent gets its own deep-copied graph snapshot + ``_ValidatorSeam``,
+    exactly the Build Order 2c specialist pattern (``_run_phase3_concurrent``
+    above) — never a lock around graph mutation. ``firer``/``identities`` ARE
+    shared, live objects across these concurrent threads (unlike ``graph``),
+    but that is already safe: ``spawn_derived_identity`` (called inside
+    ``_run_attack_path_chain``) writes to both via ``IdentityStore.add``/
+    ``open_session`` and ``RequestFirer.register_identity`` — verified
+    directly, not assumed: ``identity/store.py``'s ``TokenStore``/
+    ``IdentityStore`` both guard every mutating method with their own
+    ``threading.RLock``, and ``firer.py`` has a dedicated
+    ``_identity_registration_lock`` for exactly this. Concurrent identity
+    spawning is already-adversarially-reviewed infrastructure this reuses,
+    not a new thread-safety surface this introduces.
+    """
+    if not leads:
+        return
+    from reachagent.graph.merge import merge_new_findings
+    from reachagent.scan.agentic_loop import ScanCancelled
+
+    touch_lock = threading.Lock()
+
+    def _safe_touch() -> None:
+        with touch_lock:
+            control_state.touch()
+
+    _emit(
+        events,
+        "payloads",
+        "info",
+        f"attack-path chaining: {len(leads)} confirmed auth-bypass lead(s) — "
+        "spawning one re-hunt agent per lead",
+    )
+
+    def _run_one(lead: Any) -> tuple[ReachabilityGraph, list[ScanEvent], str]:
+        """Never raises — whatever an agent found before stopping (cleanly,
+        cancelled, or crashed) is always returned for the parent to merge."""
+        child_events: list[ScanEvent] = []
+        child_graph = ReachabilityGraph()
+        try:
+            child_graph = copy.deepcopy(graph)
+            child_seam = _ValidatorSeam(child_graph)
+            _run_attack_path_chain(
+                lead=lead,
+                graph=child_graph,
+                seam=child_seam,
+                firer=firer,
+                base_url=base_url,
+                auth_headers=auth_headers,
+                identities=identities,
+                transport=transport,
+                library=library,
+                allow_cross_user_writes=allow_cross_user_writes,
+                events=child_events,
+                cancel_check=cancel_check,
+                check_cancel=check_cancel,
+                control_state=control_state,
+                touch=_safe_touch,
+            )
+            return child_graph, child_events, "done"
+        except ScanCancelled:
+            return child_graph, child_events, "cancelled"
+        except Exception as exc:  # noqa: BLE001 — one re-hunt agent crashing must
+            # never abort its siblings, exactly like a Phase-3 specialist crashing.
+            _emit(
+                child_events,
+                "payloads",
+                "error",
+                f"re-hunt agent for {lead.vuln_class} crashed: {type(exc).__name__}: {exc}",
+                error_category="chaining",
+            )
+            return child_graph, child_events, f"error:{type(exc).__name__}"
+
+    max_workers = min(_MAX_CONCURRENT_SPECIALISTS, len(leads))
+    saw_cancel = False
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
+        # See _run_phase3_concurrent's own comment: ThreadPoolExecutor.submit()
+        # does not propagate contextvars, so the LLM-tuning ContextVar must be
+        # captured and re-applied per submitted task explicitly.
+        futures = [pool.submit(contextvars.copy_context().run, _run_one, lead) for lead in leads]
+        for future in concurrent.futures.as_completed(futures):
+            child_graph, child_events, status = future.result()
+            new_ids = merge_new_findings(child_graph, graph)
+            # Relay via .append() (never .extend()) -- see _run_phase3_concurrent's
+            # own comment: the GUI's event buffer overrides only .append() with
+            # bounds/heartbeat logic.
+            for event in child_events:
+                events.append(event)
+            if status == "cancelled":
+                saw_cancel = True
+            _emit(
+                events,
+                "payloads",
+                "info",
+                f"re-hunt agent ({status}): {len(new_ids)} new finding(s) merged",
+            )
+    if saw_cancel:
+        raise ScanCancelled()
 
 
 def _run_phase3_concurrent(
@@ -4263,6 +4429,8 @@ def _run_phase3_concurrent(
     cancel_check: object | None,
     check_cancel: Callable[[object | None], None],
     control_state: Any,
+    sandbox: AgentSandbox | None = None,
+    sandbox_budget: int = 0,
 ) -> None:
     """Build Order 2c: run Phase 3's specialist groups concurrently.
 
@@ -4317,6 +4485,16 @@ def _run_phase3_concurrent(
         if specialist != "auth":
             other_by_specialist.setdefault(specialist, []).append(class_name)
 
+    # Tunnel-vision guard (v4 R3 slice 2): the sandbox budget is sliced
+    # evenly across every track (auth + each concurrent specialist group)
+    # BEFORE any of them run, so one interesting lead's sandbox use can
+    # never starve the others — each track decrements only its own local
+    # slice, never a value shared across threads.
+    num_tracks = (1 if auth_classes else 0) + len(other_by_specialist)
+    per_track_sandbox_budget = (
+        max(1, sandbox_budget // num_tracks) if sandbox_budget > 0 and num_tracks > 0 else 0
+    )
+
     parent_drivers = _build_phase3_drivers(
         graph=graph,
         seam=seam,
@@ -4347,6 +4525,9 @@ def _run_phase3_concurrent(
             cancel_check=cancel_check,
             check_cancel=check_cancel,
             touch=control_state.touch,
+            sandbox=sandbox,
+            target=base_url,
+            sandbox_budget=per_track_sandbox_budget,
         )
 
     if not other_by_specialist:
@@ -4403,6 +4584,9 @@ def _run_phase3_concurrent(
                 check_cancel=check_cancel,
                 touch=_safe_touch,
                 label=specialist,
+                sandbox=sandbox,
+                target=base_url,
+                sandbox_budget=per_track_sandbox_budget,
             )
             return specialist, child_graph, child_events, "done"
         except ScanCancelled:
@@ -4532,6 +4716,8 @@ def scan_all_classes(
     concurrent_specialists: bool = False,
     repo_path: str | None = None,
     skip_tools: Iterable[str] | None = None,
+    sandbox_enabled: bool = False,
+    scan_id: str | None = None,
 ) -> dict[str, Any]:
     """Run the validated multi-phase LLM-driven loop over ALL attack classes.
 
@@ -4583,6 +4769,18 @@ def scan_all_classes(
     signal as an additional hint — order-only, exactly like every other
     tuning signal already there; it never gates or substitutes for oracle
     confirmation of anything.
+
+    ``sandbox_enabled`` (default False, v4 R3 slice 2): explicit opt-in for
+    real sandbox investigation (R4) during Phase 3 — an additive, best-effort
+    LLM decision per class to run a genuinely free-form command in a
+    disposable per-scan Docker container when the structured driver alone
+    finds nothing, never a replacement for it. Explicit rather than an
+    implicit "try Docker because it's installed" probe, so every hermetic
+    test call to this function stays subprocess-free by default; the GUI
+    (the one production entrypoint) passes True for every real scan.
+    Fails open to no sandbox at all (Docker/image unavailable) without
+    aborting the scan. ``scan_id`` names the sandbox container
+    (``reachagent-sandbox-<scan_id>``) — a fresh one is generated if omitted.
     """
     from reachagent.scan.agentic_loop import (
         AdaptiveControlLoop,
@@ -5171,84 +5369,128 @@ def scan_all_classes(
     # regardless; only sequencing is LLM-influenced.
     _emit(events_out, "payloads", "info", "phase 3: structural + authz + advanced classes")
 
-    if concurrent_specialists:
-        # Build Order 2c: specialist groups fan out concurrently (auth first
-        # and sequentially, then the rest concurrently) — see
-        # _run_phase3_concurrent for the full design rationale.
-        _run_phase3_concurrent(
-            graph=graph,
-            seam=seam,
-            firer=firer,
-            base_url=base_url,
-            identity=identity,
-            auth_headers=auth_headers,
-            identities=identities,
-            transport=transport,
-            library=lib,
-            allow_cross_user_writes=allow_cross_user_writes,
-            events=events_out,
-            operator_prompt=operator_prompt,
-            cancel_check=cancel_check,
-            check_cancel=check_cancel,
-            control_state=control_state,
-        )
-    else:
-        # Default sequential path, byte-for-byte the same dispatch order and
-        # semantics as before Build Order 2c — _dispatch_classes is the same
-        # continuous re-rank-then-dispatch loop (Build Order 2) extracted so
-        # a specialist child can reuse it unchanged.
-        derived_identities: list[Any] = []
-        phase3_drivers = _build_phase3_drivers(
-            graph=graph,
-            seam=seam,
-            firer=firer,
-            base_url=base_url,
-            identity=identity,
-            auth_headers=auth_headers,
-            identities=identities,
-            transport=transport,
-            library=lib,
-            allow_cross_user_writes=allow_cross_user_writes,
-            events=events_out,
-            derived_identities=derived_identities,
-        )
-        _dispatch_classes(
-            _PHASE3_CLASS_ORDER,
-            graph=graph,
-            drivers=phase3_drivers,
-            events=events_out,
-            operator_prompt=operator_prompt,
-            cancel_check=cancel_check,
-            check_cancel=check_cancel,
-            touch=control_state.touch,
-        )
+    # Real sandbox investigation (v4 R3 slice 2) — best-effort, additive on top
+    # of the structured drivers, never a scan requirement. `sandbox_enabled`
+    # is an explicit opt-in (mirrors `concurrent_specialists`'s own pattern)
+    # rather than an implicit "try Docker because it happens to be installed"
+    # probe — every hermetic test call to this function must stay
+    # network/subprocess-free by default. The GUI (the one production
+    # entrypoint) passes `sandbox_enabled=True` for every real scan.
+    sandbox: AgentSandbox | None = None
+    if sandbox_enabled:
+        from reachagent.sandbox.agent_shell import AgentSandbox as _AgentSandbox
+        from reachagent.sandbox.agent_shell import SandboxUnavailableError
 
-        # Attack-path chaining (v2 W17): a confirmed nosqli/ldap auth-bypass that
-        # captured REAL session material spawns a fresh synthetic identity and
-        # re-hunts under it once — bounded to exactly one re-hunt pass per scan
-        # (never a chain-of-chains), and only the FIRST such lead (if several
-        # fired) is acted on. Disclosed limit: this re-tests the SAME
-        # already-discovered endpoint set under the new identity's privilege — it
-        # does not trigger new content discovery, so an admin-only route never
-        # crawled unauthenticated stays invisible. Sequential path only (see
-        # _build_phase3_drivers's docstring for why the concurrent path omits it).
-        if identities is not None and derived_identities:
-            _run_attack_path_chain(
-                lead=derived_identities[0],
+        try:
+            sandbox = _AgentSandbox(scan_id or uuid.uuid4().hex[:8], scope=scope)
+            sandbox.start()
+        except SandboxUnavailableError as exc:
+            _log.info("sandbox unavailable (%s); continuing without it", exc)
+            _emit(
+                events_out,
+                "payloads",
+                "info",
+                f"sandbox unavailable ({exc}) — continuing without it",
+            )
+            sandbox = None
+        else:
+            try:
+                _emit(events_out, "payloads", "info", "sandbox ready for deeper investigation")
+            except Exception:  # noqa: BLE001 — a started container must never leak because
+                # this narration event itself failed; tear down and continue without it.
+                _log.warning("sandbox startup narration failed; tearing down and continuing")
+                sandbox.stop()
+                sandbox = None
+
+    try:
+        if concurrent_specialists:
+            # Build Order 2c: specialist groups fan out concurrently (auth first
+            # and sequentially, then the rest concurrently) — see
+            # _run_phase3_concurrent for the full design rationale.
+            _run_phase3_concurrent(
                 graph=graph,
                 seam=seam,
                 firer=firer,
                 base_url=base_url,
+                identity=identity,
                 auth_headers=auth_headers,
                 identities=identities,
                 transport=transport,
                 library=lib,
                 allow_cross_user_writes=allow_cross_user_writes,
                 events=events_out,
+                operator_prompt=operator_prompt,
                 cancel_check=cancel_check,
                 check_cancel=check_cancel,
                 control_state=control_state,
+                sandbox=sandbox,
+                sandbox_budget=_SANDBOX_COMMAND_BUDGET,
             )
+        else:
+            # Default sequential path, byte-for-byte the same dispatch order and
+            # semantics as before Build Order 2c — _dispatch_classes is the same
+            # continuous re-rank-then-dispatch loop (Build Order 2) extracted so
+            # a specialist child can reuse it unchanged.
+            derived_identities: list[Any] = []
+            phase3_drivers = _build_phase3_drivers(
+                graph=graph,
+                seam=seam,
+                firer=firer,
+                base_url=base_url,
+                identity=identity,
+                auth_headers=auth_headers,
+                identities=identities,
+                transport=transport,
+                library=lib,
+                allow_cross_user_writes=allow_cross_user_writes,
+                events=events_out,
+                derived_identities=derived_identities,
+            )
+            _dispatch_classes(
+                _PHASE3_CLASS_ORDER,
+                graph=graph,
+                drivers=phase3_drivers,
+                events=events_out,
+                operator_prompt=operator_prompt,
+                cancel_check=cancel_check,
+                check_cancel=check_cancel,
+                touch=control_state.touch,
+                sandbox=sandbox,
+                target=base_url,
+                sandbox_budget=_SANDBOX_COMMAND_BUDGET,
+            )
+
+            # Attack-path chaining (v2 W17, v4 R3b): a confirmed nosqli/ldap
+            # auth-bypass that captured REAL session material spawns a fresh
+            # synthetic identity and re-hunts under it — one concurrent agent
+            # PER captured lead now (v4 R3b), never a chain-of-chains (each
+            # agent's own re-hunt is bounded to exactly one pass, no further
+            # chaining from what IT finds). Disclosed limit unchanged: this
+            # re-tests the SAME already-discovered endpoint set under each new
+            # identity's privilege — it does not trigger new content
+            # discovery, so an admin-only route never crawled unauthenticated
+            # stays invisible. Sequential Phase-3 path only (see
+            # _build_phase3_drivers's docstring for why the concurrent
+            # specialist path doesn't capture derived_identities at all).
+            if identities is not None and derived_identities:
+                _run_attack_path_chains_concurrent(
+                    leads=derived_identities,
+                    graph=graph,
+                    firer=firer,
+                    base_url=base_url,
+                    auth_headers=auth_headers,
+                    identities=identities,
+                    transport=transport,
+                    library=lib,
+                    allow_cross_user_writes=allow_cross_user_writes,
+                    events=events_out,
+                    cancel_check=cancel_check,
+                    check_cancel=check_cancel,
+                    control_state=control_state,
+                )
+    finally:
+        if sandbox is not None:
+            sandbox.stop()
 
     # Cross-host credential reuse (v3 V4): a credential captured from ANY
     # confirmed finding's evidence this scan tries, once, against every OTHER
