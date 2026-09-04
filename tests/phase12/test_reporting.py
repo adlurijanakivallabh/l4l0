@@ -101,6 +101,31 @@ def test_evidence_index_and_sarif_are_grounded_and_deterministic() -> None:
     assert "evidence/bola/1" in markdown
 
 
+def test_audit_join_matches_a_real_fired_request_not_just_record_oracle_result() -> None:
+    # RequestFirer.fire() -> AuditLog.record() never embeds evidence_ref into
+    # its outcome label -- the join must match via AuditEntry.target instead.
+    graph = ReachabilityGraph()
+    audit = AuditLog()
+    graph.add_finding(
+        Finding(
+            vuln_class="sqli",
+            severity="high",
+            oracle_used="differential",
+            evidence_ref="orchestrator/sqli /api/orders/7",
+            status=FindingStatus.CONFIRMED_VIOLATION,
+        )
+    )
+    # A real fired-request audit row, the RequestFirer.fire() shape -- outcome
+    # is just a status label, no evidence_ref anywhere in it.
+    audit.record("user_a", "GET", "target.test/api/orders/7", "fired:200")
+
+    index = build_evidence_index(graph, audit, context={"run_id": "run-1"})
+    assert index["findings"][0]["audit"], (
+        "expected the fired-request audit row to join via its target path"
+    )
+    assert index["findings"][0]["audit"][0]["outcome"] == "fired:200"
+
+
 def test_report_sanitizer_removes_secret_shapes() -> None:
     source = (
         "Authorization: Bearer bearer-secret-value\n"

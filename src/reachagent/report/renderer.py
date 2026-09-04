@@ -16,6 +16,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from reachagent.graph.merge import extract_endpoint_path
 from reachagent.graph.nodes import FindingStatus
 from reachagent.graph.store import ReachabilityGraph
 
@@ -367,8 +368,15 @@ def _finding_record(
                             handles[str(nested_key)] = _safe_text(nested_value, 256)
     record["evidence_handles"] = dict(sorted(handles.items()))
     record["chains"] = _chain_records(graph, finding_id)
+    # `outcome` is a short status label ("fired:200"), never evidence_ref, so
+    # the old `ref in row["outcome"]` join matched nothing for a real fired
+    # request -- match by endpoint path (AuditEntry.target) first, falling
+    # back to the outcome check for record_oracle_result()'s ref-embedding.
     ref = str(record["evidence_ref"])
-    record["audit"] = [row for row in audit_rows if ref and ref in row["outcome"]][:20]
+    path = extract_endpoint_path(ref, str(record.get("vuln_class", "")))
+    by_path = [row for row in audit_rows if path and path in row["target"]]
+    by_outcome = [row for row in audit_rows if ref and ref in row["outcome"]]
+    record["audit"] = (by_path or by_outcome)[:20]
     timing = {
         str(key): value
         for key, value in (metadata.items() if isinstance(metadata, Mapping) else ())
