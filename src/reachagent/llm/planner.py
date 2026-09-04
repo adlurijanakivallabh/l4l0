@@ -1,8 +1,15 @@
-"""Validated, proposal-only scan planning for the GUI path.
+"""Validated, proposal-only tool catalog + adaptive recon selection.
 
-The planner turns one model JSON response into an immutable plan made entirely
-from ReachAgent-owned names.  It deliberately has no execution imports: a
-caller must translate the accepted tool names into the existing scoped runners.
+Turns one model JSON response into a validated, allowlisted choice made
+entirely from ReachAgent-owned names. It deliberately has no execution
+imports: a caller must translate the accepted tool names into the existing
+scoped runners.
+
+v4 R3 removed the upfront, whole-scan `plan_execution`/`validate_execution_plan`
+rigid 5-phase schema (dead weight once the adaptive, per-step recon-selection
+loop below became the unconditional default — see `scan/orchestrator.py`).
+`build_tool_catalog`/`select_recon_tools`/`validate_recon_selection` are the
+part that's actually used now.
 """
 
 from __future__ import annotations
@@ -54,21 +61,11 @@ from reachagent.recon.tools import (
     X8Runner,
 )
 
-PHASE_ORDER = (
-    "recon",
-    "surface",
-    "insertion-points",
-    "payloads",
-    "verification",
-    "chains",
-    "report",
-)
 TARGET_TYPES = frozenset({"domain", "url", "ip", "cidr", "host_port"})
-REQUIRED_PHASES = frozenset({"recon", "surface", "insertion-points", "payloads", "report"})
 
 
 class PlannerClient(Protocol):
-    """The small model boundary needed by :func:`plan_execution`."""
+    """The small model boundary needed by :func:`select_recon_tools`."""
 
     def propose_json(self, prompt: str, *, max_tokens: int = 512) -> dict[str, object]: ...
 
@@ -125,34 +122,6 @@ class PlanningContext:
             raise ValueError(f"unknown target type: {self.target_type!r}")
         if self.max_request_budget < 1 or self.max_tool_budget < 1:
             raise ValueError("planner budgets must be positive")
-
-
-@dataclass(frozen=True)
-class PlanPhase:
-    """One ordered, allowlist-only part of a scan plan.
-
-    ``profile``/``vuln_classes``/``payload_refs`` were removed (§9 W2): the
-    upfront plan never drove real targeting with them — real recon-profile,
-    vuln-class, and payload-ref decisions each come from a separate, later,
-    more-granular live-reasoning call (``profile_decision``,
-    ``propose_vuln_targets``, ``propose_payload_choice``) that the upfront
-    pick was silently overridden by every time. Asking the model to produce
-    fields nothing downstream consumed was pure prompt/response ceremony.
-    """
-
-    name: str
-    rationale: str
-    tools: tuple[str, ...] = ()
-
-
-@dataclass(frozen=True)
-class ExecutionPlan:
-    """Immutable validated plan; execution remains outside this module."""
-
-    rationale: str
-    request_budget: int
-    tool_budget: int
-    phases: tuple[PlanPhase, ...]
 
 
 def _entry(
@@ -443,71 +412,6 @@ def build_tool_catalog() -> tuple[ToolCatalogEntry, ...]:
     return tuple(enriched)
 
 
-def _bounded_facts(facts: Mapping[str, str]) -> dict[str, str]:
-    """Keep graph context useful without creating an unbounded prompt."""
-
-    return {
-        str(key)[:80]: str(value)[:240]
-        for key, value in sorted(facts.items(), key=lambda pair: str(pair[0]))[:50]
-    }
-
-
-def planning_prompt(
-    context: PlanningContext, catalog: Sequence[ToolCatalogEntry] | None = None
-) -> str:
-    """Build the JSON-only prompt; the catalog exposes names, never command lines."""
-
-    entries = tuple(catalog or build_tool_catalog())
-    catalog_json = [
-        {
-            "name": entry.name,
-            "phase": entry.phase,
-            "target_types": sorted(entry.target_types),
-            "description": entry.description,
-            "signal_gated": entry.signal_gated,
-            "capabilities": list(entry.capabilities),
-            "produces": list(entry.produces),
-            "passive": entry.passive,
-            "estimated_cost": entry.estimated_cost,
-        }
-        for entry in entries
-    ]
-    context_json = {
-        "target": context.target[:500],
-        "target_type": context.target_type,
-        "in_scope": list(context.in_scope),
-        "graph_facts": _bounded_facts(context.graph_facts),
-        "operator_goal": context.operator_prompt[:2000],
-        "max_request_budget": context.max_request_budget,
-        "max_tool_budget": context.max_tool_budget,
-    }
-    schema = {
-        "rationale": "short plan rationale",
-        "request_budget": "positive integer <= max_request_budget",
-        "tool_budget": "positive integer <= max_tool_budget",
-        "phases": [
-            {
-                "name": "one allowed phase",
-                "rationale": "short phase rationale",
-                "tools": ["catalog names only"],
-            }
-        ],
-    }
-    return (
-        "You are a constrained ReachAgent planner for an AUTHORIZED lab assessment. "
-        "Choose only catalog tool names. Never include a command, "
-        "URL, request body, headers, state-changing option, or a finding. "
-        "Signal-gated tools remain conditional on graph evidence. "
-        "Keep phases in the supplied order and do not repeat a tool. "
-        "Recon profile, vulnerability-class, and payload-ref choices are made by "
-        "separate, later, more granular reasoning calls — do not include them here.\n"
-        f"Allowed phases: {json.dumps(PHASE_ORDER)}\n"
-        f"Catalog: {json.dumps(catalog_json, sort_keys=True)}\n"
-        f"Context: {json.dumps(context_json, sort_keys=True)}\n"
-        f"Response schema: {json.dumps(schema, sort_keys=True)}"
-    )
-
-
 @dataclass(frozen=True)
 class ReconSelection:
     """One bounded, allowlist-validated recon continuation decision."""
@@ -727,144 +631,3 @@ def _reject_unknown_keys(raw: Mapping[str, object], allowed: frozenset[str], lab
         raise PlanValidationError(f"{label} contains unsupported fields: {', '.join(unexpected)}")
 
 
-def validate_execution_plan(
-    raw: Mapping[str, object],
-    context: PlanningContext,
-    *,
-    catalog: Sequence[ToolCatalogEntry] | None = None,
-) -> ExecutionPlan:
-    """Validate model JSON without executing anything or falling back silently."""
-
-    _reject_unknown_keys(
-        raw,
-        frozenset({"rationale", "request_budget", "tool_budget", "phases"}),
-        "plan",
-    )
-    rationale = _required_string(raw.get("rationale"), "plan rationale")
-    request_budget = _positive_int(
-        raw.get("request_budget"), "request_budget", context.max_request_budget
-    )
-    tool_budget = _positive_int(raw.get("tool_budget"), "tool_budget", context.max_tool_budget)
-    phases_raw = raw.get("phases")
-    if not isinstance(phases_raw, list) or not phases_raw:
-        raise PlanValidationError("phases must be a non-empty list")
-
-    catalog_by_name = {entry.name: entry for entry in (catalog or build_tool_catalog())}
-    phases: list[PlanPhase] = []
-    used_tools: set[str] = set()
-    last_phase = -1
-
-    for index, value in enumerate(phases_raw):
-        phase_raw = _mapping(value, f"phases[{index}]")
-        _reject_unknown_keys(
-            phase_raw,
-            frozenset({"name", "rationale", "tools"}),
-            f"phases[{index}]",
-        )
-        name = _string(phase_raw.get("name"), f"phases[{index}].name")
-        if name not in PHASE_ORDER:
-            raise PlanValidationError(f"unknown phase: {name!r}")
-        phase_position = PHASE_ORDER.index(name)
-        if phase_position <= last_phase:
-            raise PlanValidationError("phases must be unique and follow the allowed order")
-        last_phase = phase_position
-        phase_rationale = _required_string(phase_raw.get("rationale"), f"phases[{index}].rationale")
-        tools = _string_list(phase_raw.get("tools"), f"phases[{index}].tools")
-        if name == "recon" and not tools:
-            raise PlanValidationError("recon phase must select at least one catalog tool")
-        for tool_name in tools:
-            entry = catalog_by_name.get(tool_name)
-            if entry is None:
-                raise PlanValidationError(f"unknown tool: {tool_name!r}")
-            if entry.phase != name and not (name == "surface" and entry.phase == "recon"):
-                raise PlanValidationError(f"tool {tool_name!r} is not valid in phase {name!r}")
-            if context.target_type not in entry.target_types:
-                raise PlanValidationError(
-                    f"tool {tool_name!r} is not compatible with {context.target_type!r}"
-                )
-            if tool_name in used_tools:
-                raise PlanValidationError(f"tool {tool_name!r} is selected more than once")
-            used_tools.add(tool_name)
-
-        phases.append(
-            PlanPhase(
-                name=name,
-                rationale=phase_rationale,
-                tools=tools,
-            )
-        )
-
-    selected_phases = {phase.name for phase in phases}
-    missing_phases = sorted(REQUIRED_PHASES - selected_phases)
-    if missing_phases:
-        raise PlanValidationError(f"plan is missing required phases: {', '.join(missing_phases)}")
-    if len(used_tools) > tool_budget:
-        raise PlanValidationError("selected tools exceed tool_budget")
-    return ExecutionPlan(
-        rationale=rationale,
-        request_budget=request_budget,
-        tool_budget=tool_budget,
-        phases=tuple(phases),
-    )
-
-
-def plan_execution(
-    context: PlanningContext,
-    client: PlannerClient,
-    *,
-    catalog: Sequence[ToolCatalogEntry] | None = None,
-) -> ExecutionPlan:
-    """Plan with a validation-fixer loop.
-
-    First attempt uses the plain planning prompt. On validation failure, the
-    validator's error and the rejected JSON go back to the model with a fixer
-    instruction maximal-correction discipline: minimal correction, same intent, schema-conformant
-    output only. Provider
-    and network failures still propagate immediately - only validation errors
-    are fixable.
-    """
-    entries = tuple(catalog or build_tool_catalog())
-    prompt = planning_prompt(context, entries)
-    raw: dict[str, object] | None = None
-    for attempt in range(2):
-        try:
-            raw = client.propose_json(prompt, max_tokens=4096)
-            break
-        except Exception as exc:  # noqa: BLE001 — retry only an empty model response
-            if not is_model_output_error(exc) or attempt == 1:
-                raise
-    if raw is None:
-        raise RuntimeError("planner returned no proposal")
-    tool_phases = {entry.name: entry.phase for entry in entries}
-    last_error: PlanValidationError | None = None
-    for _attempt in range(3):
-        try:
-            return validate_execution_plan(raw, context, catalog=entries)
-        except PlanValidationError as exc:
-            last_error = exc
-            missing_phase_hint = ""
-            if "missing required phases" in str(exc):
-                missing_phase_hint = (
-                    "\nEvery one of these phases MUST appear, in this relative order: "
-                    f"{', '.join(sorted(REQUIRED_PHASES, key=PHASE_ORDER.index))}. Add "
-                    "any missing one as its own object with 'name'/'rationale' set — "
-                    "'tools': [] is fine unless the phase is 'recon' (which needs at "
-                    "least one catalog tool).\n"
-                )
-            fix_prompt = (
-                "Your previous plan JSON was rejected by strict validation.\n"
-                f"VALIDATION ERROR: {exc}\n"
-                f"{missing_phase_hint}\n"
-                f"YOUR PREVIOUS (REJECTED) JSON:\n{json.dumps(raw)[:4000]}\n\n"
-                "Each tool's REQUIRED phase, from the catalog (a tool may ONLY appear "
-                f"under its own phase, or under 'surface' if its phase is 'recon'): "
-                f"{json.dumps(tool_phases, sort_keys=True)}\n\n"
-                "Fix it with MINIMAL changes preserving your original intent: move each "
-                "rejected tool into its required phase above, or drop it. Same rules as "
-                "before: only catalog tool names, only allowlisted phase/class/profile/"
-                "payload values. Return ONE corrected JSON object only."
-            )
-            raw = client.propose_json(fix_prompt, max_tokens=4096)
-    if last_error is not None:
-        raise last_error
-    raise PlanValidationError("planning failed without a validator error")

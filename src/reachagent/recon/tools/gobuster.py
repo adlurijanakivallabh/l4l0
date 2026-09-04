@@ -148,44 +148,56 @@ class GobusterRunner(ReconToolRunner):
                 profile.status_codes,
                 *profile.flags,
             ]
-        # Live-reasoning tuning — default OFF so nothing existing breaks.
-        # When REACHAGENT_GOBUSTER_LIVE_TUNING=1, Claude proposes a choice
-        # FROM the allowlist (wordlist/flags/status) given target signals;
-        # proposal is validated twice (inside live_tuning + here) before use.
-        from reachagent.llm.runtime import flag_enabled, llm_required
+        # Live-reasoning tuning: Claude proposes a choice FROM the allowlist
+        # (wordlist/flags/status) given target signals; proposal is validated
+        # twice (inside live_tuning + here) before use. No flag gate — the
+        # only real gate is whether a provider is configured. Checked BEFORE
+        # _collect_signals (a live HTTP probe against the target) rather than
+        # after, so a scan with no provider configured never fires that
+        # probe for nothing.
+        from reachagent.llm.client import build_openai_compatible_client
+        from reachagent.llm.runtime import llm_required
 
-        if flag_enabled("REACHAGENT_GOBUSTER_LIVE_TUNING") or flag_enabled(
-            "REACHAGENT_RECON_LIVE_TUNING"
-        ):
-            try:
-                from reachagent.recon.live_tuning import RECON_ALLOWLIST, propose_recon_tuning
+        try:
+            if build_openai_compatible_client(tier="grunt") is None:
+                raise RuntimeError("no LLM provider configured for recon tuning")
+            from reachagent.recon.live_tuning import (
+                NO_LIVE_TUNING_CHOICE,
+                RECON_ALLOWLIST,
+                propose_recon_tuning,
+            )
 
-                signals = _collect_signals(target)
-                choice = propose_recon_tuning(signals)
-                # Defense in depth: second allowlist check even after propose validates.
-                allowed_wl = set(RECON_ALLOWLIST["wordlists"])
-                allowed_flags = {tuple(p) for p in RECON_ALLOWLIST["flag_presets"]}
-                allowed_codes = set(RECON_ALLOWLIST["status_codes"])
-                if (
-                    choice.wordlist_path in allowed_wl
-                    and choice.flags in allowed_flags
-                    and choice.filter_codes in allowed_codes
-                ):
-                    argv: list[str] = [
-                        "gobuster",
-                        "dir",
-                        "-q",
-                        "-u",
-                        target,
-                        "-w",
-                        choice.wordlist_path,
-                    ]
-                    argv += list(choice.flags)
-                    return argv
-            except Exception as exc:  # noqa: BLE001 — live tuning fallback
-                if llm_required():
-                    raise
-                _log.debug("gobuster live tuning fallback: %s", exc)
+            signals = _collect_signals(target)
+            choice = propose_recon_tuning(signals)
+            # A no-provider/failed-validation fallback (NO_LIVE_TUNING_CHOICE) is
+            # not a genuine live choice — fall through to the operator's own
+            # REACHAGENT_GOBUSTER_WORDLIST/THREADS/TIMEOUT env config below rather
+            # than silently overriding it with a generic default.
+            # Defense in depth: second allowlist check even after propose validates.
+            allowed_wl = set(RECON_ALLOWLIST["wordlists"])
+            allowed_flags = {tuple(p) for p in RECON_ALLOWLIST["flag_presets"]}
+            allowed_codes = set(RECON_ALLOWLIST["status_codes"])
+            if (
+                choice != NO_LIVE_TUNING_CHOICE
+                and choice.wordlist_path in allowed_wl
+                and choice.flags in allowed_flags
+                and choice.filter_codes in allowed_codes
+            ):
+                argv: list[str] = [
+                    "gobuster",
+                    "dir",
+                    "-q",
+                    "-u",
+                    target,
+                    "-w",
+                    choice.wordlist_path,
+                ]
+                argv += list(choice.flags)
+                return argv
+        except Exception as exc:  # noqa: BLE001 — live tuning fallback
+            if llm_required():
+                raise
+            _log.debug("gobuster live tuning fallback: %s", exc)
         wordlist = preferred_wordlist("REACHAGENT_GOBUSTER_WORDLIST")
         argv = ["gobuster", "dir", "-q", "-u", target, "-w", wordlist]
         # ponytail: env-only tuning, no config file until env count >12

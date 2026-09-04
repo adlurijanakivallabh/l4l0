@@ -1,12 +1,11 @@
 """Agentic-loop reassessment layer - hermetic tests (no network).
 
-Covers: flag gating, decision validation, phase summaries, skip semantics,
-bounded reassessments, and that a failing LLM never stalls the scan.
+Covers: decision validation, phase summaries, skip semantics, bounded
+reassessments, and that a failing LLM never stalls the scan. No flag gating
+to cover (v4 R3 removed it) — a configured client is used unconditionally.
 """
 
 from __future__ import annotations
-
-import pytest
 
 from reachagent.graph.nodes import Endpoint, Host, Parameter, SinkType
 from reachagent.graph.store import ReachabilityGraph
@@ -91,15 +90,9 @@ class TestPhaseSummaries:
 
 
 class TestReassessAfterPhase:
-    def test_off_by_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delenv("REACHAGENT_AGENTIC_LOOP", raising=False)
-        assert (
-            reassess_after_phase(_graph(), "recon", ("endpoints",), client=FakeAdvisor("skip"))
-            is None
-        )
-
-    def test_skip_decision_passes(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("REACHAGENT_AGENTIC_LOOP", "1")
+    def test_engaged_by_default_no_flag_needed(self) -> None:
+        """v4 R3: no REACHAGENT_AGENTIC_LOOP gate — a configured client is used
+        unconditionally, not only when an env flag also happens to be set."""
         d = reassess_after_phase(
             _graph(),
             "endpoints",
@@ -108,22 +101,18 @@ class TestReassessAfterPhase:
         )
         assert d is not None and d.action == "skip"
 
-    def test_non_revisitable_phase_refused(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("REACHAGENT_AGENTIC_LOOP", "1")
+    def test_non_revisitable_phase_refused(self) -> None:
         # "plan" is fixed — never reassessed.
         assert (
             reassess_after_phase(_graph(), "plan", ("recon",), client=FakeAdvisor("skip")) is None
         )
 
-    def test_no_remaining_phases_returns_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("REACHAGENT_AGENTIC_LOOP", "1")
+    def test_no_remaining_phases_returns_none(self) -> None:
         assert (
             reassess_after_phase(_graph(), "payloads", (), client=FakeAdvisor("continue")) is None
         )
 
-    def test_failing_advisor_returns_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("REACHAGENT_AGENTIC_LOOP", "1")
-
+    def test_failing_advisor_returns_none(self) -> None:
         class Broken:
             def advise(self, *a: object) -> dict[str, object]:
                 raise RuntimeError("LLM down")

@@ -2,6 +2,8 @@
 
 Same propose/validate/fail-open pattern as recon.live_tuning /
 recon.payload_tuning, mirrored here (see tests/recon/test_recon_profile.py).
+No flag gate (v4 R3 removed it) — attempted on every call, fails open with
+no provider configured.
 """
 
 from __future__ import annotations
@@ -19,16 +21,13 @@ def _fake_client(returning: dict[str, object]) -> Mock:
     return m  # type: ignore[no-any-return]
 
 
-def test_disabled_by_default_fails_open() -> None:
-    with pytest.MonkeyPatch.context() as mp:
-        mp.delenv("REACHAGENT_GUARDIAN_ADVISOR", raising=False)
-        decision = advise_on_action("fire_request", "example.com", "POST")
+def test_no_provider_configured_fails_open() -> None:
+    decision = advise_on_action("fire_request", "example.com", "POST")
     assert decision.allow is True
 
 
 def test_flag_on_valid_deny_is_honored() -> None:
-    with pytest.MonkeyPatch.context() as mp:
-        mp.setenv("REACHAGENT_GUARDIAN_ADVISOR", "1")
+    with pytest.MonkeyPatch.context():
         client = _fake_client({"allow": False, "reason": "looks destructive"})
         decision = advise_on_action("fire_request", "example.com", "DELETE", client=client)
     assert decision.allow is False
@@ -36,24 +35,21 @@ def test_flag_on_valid_deny_is_honored() -> None:
 
 
 def test_flag_on_valid_allow_is_honored() -> None:
-    with pytest.MonkeyPatch.context() as mp:
-        mp.setenv("REACHAGENT_GUARDIAN_ADVISOR", "1")
+    with pytest.MonkeyPatch.context():
         client = _fake_client({"allow": True, "reason": "ordinary test traffic"})
         decision = advise_on_action("fire_request", "example.com", "POST", client=client)
     assert decision.allow is True
 
 
 def test_malformed_response_fails_open(caplog: pytest.LogCaptureFixture) -> None:
-    with pytest.MonkeyPatch.context() as mp:
-        mp.setenv("REACHAGENT_GUARDIAN_ADVISOR", "1")
+    with pytest.MonkeyPatch.context():
         client = _fake_client({"allow": "not-a-bool"})
         decision = advise_on_action("fire_request", "example.com", "POST", client=client)
     assert decision.allow is True
 
 
 def test_unsupported_field_fails_open() -> None:
-    with pytest.MonkeyPatch.context() as mp:
-        mp.setenv("REACHAGENT_GUARDIAN_ADVISOR", "1")
+    with pytest.MonkeyPatch.context():
         client = _fake_client({"allow": True, "reason": "ok", "evil_extra": "x"})
         decision = advise_on_action("fire_request", "example.com", "POST", client=client)
     assert decision.allow is True
@@ -62,15 +58,13 @@ def test_unsupported_field_fails_open() -> None:
 def test_client_error_fails_open() -> None:
     boom = Mock()
     boom.propose.side_effect = RuntimeError("provider unavailable")
-    with pytest.MonkeyPatch.context() as mp:
-        mp.setenv("REACHAGENT_GUARDIAN_ADVISOR", "1")
+    with pytest.MonkeyPatch.context():
         decision = advise_on_action("fire_request", "example.com", "POST", client=boom)
     assert decision.allow is True
 
 
 def test_reason_is_truncated() -> None:
-    with pytest.MonkeyPatch.context() as mp:
-        mp.setenv("REACHAGENT_GUARDIAN_ADVISOR", "1")
+    with pytest.MonkeyPatch.context():
         client = _fake_client({"allow": True, "reason": "x" * 1000})
         decision = advise_on_action("fire_request", "example.com", "POST", client=client)
     assert len(decision.reason) <= 300

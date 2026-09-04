@@ -22,7 +22,6 @@ invocation.
 from __future__ import annotations
 
 import logging
-import os
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -145,14 +144,11 @@ def propose_wordlist_escalation(
 ) -> WordlistChoice | None:
     """Decide whether a content-discovery tool's next pass should use a bigger list.
 
-    Flag-gated (``REACHAGENT_WORDLIST_DEPTH_TUNING``): off by default, matching
-    every other opt-in recon-tuning layer's shape. Returns ``None`` when
-    disabled, nothing usable was discovered, or the choice (after the floor is
-    applied) asks for nothing beyond the floor — the caller then skips the
-    second pass entirely rather than re-running it for no reason.
+    No flag gate. Returns ``None`` when no provider is configured, nothing
+    usable was discovered, or the choice (after the floor is applied) asks
+    for nothing beyond the floor — the caller then skips the second pass
+    entirely rather than re-running it for no reason.
     """
-    if not os.environ.get("REACHAGENT_WORDLIST_DEPTH_TUNING"):
-        return None
     try:
         lines = [
             f"[host {host.address} tech={host.technology or 'unknown'}]"

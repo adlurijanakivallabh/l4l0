@@ -1,4 +1,6 @@
-"""Hermetic: profile picker flag-gated — OFF zero regression, ON smart for 5 runners."""
+"""Hermetic: profile picker, no flag gate (v4 R3) — zero regression with no
+provider configured, smart for 5 runners when one is available.
+"""
 
 from __future__ import annotations
 
@@ -42,7 +44,9 @@ def test_flag_off_zero_regression_all_runners() -> None:
 
 def test_flag_on_gobuster_uses_profile_wordlist() -> None:
     profile = RECON_PROFILES["api_target"]
-    with patch.dict(os.environ, {"REACHAGENT_RECON_PROFILE": "1"}, clear=False):
+    with patch(
+        "reachagent.recon.live_tuning.build_openai_compatible_client", return_value=object()
+    ):
         with patch("reachagent.recon.live_tuning.propose_recon_profile", return_value=profile):
             r = _runner(GobusterRunner)
             argv = r.command("http://example.com/api")
@@ -52,7 +56,9 @@ def test_flag_on_gobuster_uses_profile_wordlist() -> None:
 
 def test_flag_on_ffuf_uses_profile_status_codes() -> None:
     profile = RECON_PROFILES["cms_target"]
-    with patch.dict(os.environ, {"REACHAGENT_RECON_PROFILE": "1"}, clear=False):
+    with patch(
+        "reachagent.recon.live_tuning.build_openai_compatible_client", return_value=object()
+    ):
         with patch("reachagent.recon.live_tuning.propose_recon_profile", return_value=profile):
             r = _runner(FfufRunner)
             argv = r.command("http://example.com")
@@ -62,7 +68,9 @@ def test_flag_on_ffuf_uses_profile_status_codes() -> None:
 
 def test_flag_on_feroxbuster_uses_profile() -> None:
     profile = RECON_PROFILES["aggressive_recon"]
-    with patch.dict(os.environ, {"REACHAGENT_RECON_PROFILE": "1"}, clear=False):
+    with patch(
+        "reachagent.recon.live_tuning.build_openai_compatible_client", return_value=object()
+    ):
         with patch("reachagent.recon.live_tuning.propose_recon_profile", return_value=profile):
             r = _runner(FeroxbusterRunner)
             argv = r.command("http://example.com")
@@ -72,7 +80,9 @@ def test_flag_on_feroxbuster_uses_profile() -> None:
 
 def test_flag_on_dirb_uses_profile_wordlist() -> None:
     profile = RECON_PROFILES["quiet_recon"]
-    with patch.dict(os.environ, {"REACHAGENT_RECON_PROFILE": "1"}, clear=False):
+    with patch(
+        "reachagent.recon.live_tuning.build_openai_compatible_client", return_value=object()
+    ):
         with patch("reachagent.recon.live_tuning.propose_recon_profile", return_value=profile):
             r = _runner(DirbRunner)
             argv = r.command("http://example.com")
@@ -81,7 +91,9 @@ def test_flag_on_dirb_uses_profile_wordlist() -> None:
 
 def test_flag_on_x8_honors_flags_not_wordlist() -> None:
     profile = RECON_PROFILES["api_target"]
-    with patch.dict(os.environ, {"REACHAGENT_RECON_PROFILE": "1"}, clear=False):
+    with patch(
+        "reachagent.recon.live_tuning.build_openai_compatible_client", return_value=object()
+    ):
         with patch("reachagent.recon.live_tuning.propose_recon_profile", return_value=profile):
             r = _runner(X8Runner)
             argv = r.command("http://example.com")
@@ -93,7 +105,9 @@ def test_flag_on_x8_honors_flags_not_wordlist() -> None:
 
 def test_flag_on_via_recon_profile_spa() -> None:
     profile = RECON_PROFILES["spa_target"]
-    with patch.dict(os.environ, {"REACHAGENT_RECON_PROFILE": "1"}, clear=False):
+    with patch(
+        "reachagent.recon.live_tuning.build_openai_compatible_client", return_value=object()
+    ):
         with patch("reachagent.recon.live_tuning.propose_recon_profile", return_value=profile):
             r = _runner(GobusterRunner)
             argv = r.command("http://example.com")
@@ -101,7 +115,9 @@ def test_flag_on_via_recon_profile_spa() -> None:
 
 
 def test_flag_on_proposer_error_fallback_original() -> None:
-    with patch.dict(os.environ, {"REACHAGENT_RECON_PROFILE": "1"}, clear=False):
+    with patch(
+        "reachagent.recon.live_tuning.build_openai_compatible_client", return_value=object()
+    ):
         with patch(
             "reachagent.recon.live_tuning.propose_recon_profile", side_effect=RuntimeError("boom")
         ):
@@ -131,7 +147,9 @@ def test_flag_on_gobuster_prefers_graph_technology_over_ad_hoc_probe() -> None:
         seen_signals.update(signals)
         return RECON_PROFILES["cms_target"]
 
-    with patch.dict(os.environ, {"REACHAGENT_RECON_PROFILE": "1"}, clear=False):
+    with patch(
+        "reachagent.recon.live_tuning.build_openai_compatible_client", return_value=object()
+    ):
         with patch("reachagent.recon.live_tuning.propose_recon_profile", side_effect=_capture):
             r = _runner(GobusterRunner, graph=graph)
             argv = r.command("http://example.com")
@@ -157,7 +175,9 @@ def test_flag_on_falls_back_to_ad_hoc_probe_when_no_matching_host_in_graph() -> 
         seen_signals.update(signals)
         return RECON_PROFILES["static_site"]
 
-    with patch.dict(os.environ, {"REACHAGENT_RECON_PROFILE": "1"}, clear=False):
+    with patch(
+        "reachagent.recon.live_tuning.build_openai_compatible_client", return_value=object()
+    ):
         with patch("reachagent.recon.live_tuning.propose_recon_profile", side_effect=_capture):
             r = _runner(GobusterRunner, graph=graph)
             r.command("http://example.com")
@@ -172,7 +192,9 @@ def test_profile_outside_allowlist_filtered_even_if_validated_bypass_attempt() -
         status_codes="200,204,301,302,307",
         tools=("gobuster",),
     )
-    with patch.dict(os.environ, {"REACHAGENT_RECON_PROFILE": "1"}, clear=False):
+    with patch(
+        "reachagent.recon.live_tuning.build_openai_compatible_client", return_value=object()
+    ):
         with patch("reachagent.recon.live_tuning.propose_recon_profile", return_value=evil):
             r = _runner(GobusterRunner)
             argv = r.command("http://example.com")

@@ -13,7 +13,6 @@ called by this module.
 from __future__ import annotations
 
 import logging
-import os
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -120,11 +119,9 @@ def propose_signal_tools(
 ) -> SignalToolChoice | None:
     """Rank which signal-gated tools to invoke based on the discovered surface.
 
-    Flag-gated (REACHAGENT_SIGNAL_TUNING): off by default. Returns None when
-    disabled or validation yields nothing usable; caller falls back to default.
+    No flag gate. Returns None when no provider is configured or validation
+    yields nothing usable; caller falls back to default.
     """
-    if not os.environ.get("REACHAGENT_SIGNAL_TUNING"):
-        return None
     try:
         lines = []
         for _ep_id, ep in graph.endpoints():  # type: ignore[attr-defined]

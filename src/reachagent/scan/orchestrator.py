@@ -57,10 +57,9 @@ if TYPE_CHECKING:
 _log = logging.getLogger(__name__)
 
 # The "Phase 3: structural + authz + advanced classes" dispatch order (below,
-# in scan_all_classes) — unlike the generic sink-matched classes (which get
-# real per-candidate LLM class targeting via scan_target()'s nested
-# REACHAGENT_VULN_TUNING call), these ~20 drivers run in one fixed, hardcoded
-# sequence with zero LLM input. This is the default/fallback order.
+# in scan_all_classes) — the default/fallback order when rank_vuln_classes
+# has no provider to reorder it with (a real provider still reorders this
+# for the actual dispatch, order-only, every class still runs).
 _PHASE3_CLASS_ORDER: tuple[str, ...] = (
     "default_credentials",
     "rate_limit_absence",
@@ -210,18 +209,11 @@ def rank_vuln_classes(
 
     Order only — every class in ``class_names`` still runs; the LLM can never
     remove one (any name it omits or hallucinates past is appended back in
-    its original relative order). Flag-gated on ``REACHAGENT_VULN_TUNING``
-    (already enabled for every GUI scan via ``llm.runtime.override``, so this
-    activates with zero new configuration). Falls back to the original order
-    on any failure or invalid response — this is a strategy convenience, not
-    something a scan should ever abort over.
+    its original relative order). No flag gate — attempted whenever a
+    provider is configured. Falls back to the original order on any failure,
+    no configured provider, or invalid response — this is a strategy
+    convenience, not something a scan should ever abort over.
     """
-    from reachagent.llm.runtime import flag_enabled
-
-    if not flag_enabled("REACHAGENT_VULN_TUNING"):
-        return class_names, (
-            "class-priority tuning disabled (REACHAGENT_VULN_TUNING unset) — default order"
-        )
     try:
         from reachagent.llm.client import build_openai_compatible_client
 
@@ -316,6 +308,10 @@ _UPLOAD_PATHS = (
     "/profile/image/file",
 )
 _AUTH_PATH_HINTS = ("auth", "login", "jwt", "token", "session", "signin", "user", "api/user")
+# v4 R3: the adaptive recon selector's own tool-count ceiling, now that it is
+# no longer sourced from an upfront LLM-committed plan's tool_budget (that
+# rigid plan schema is gone) — a fixed, generous default instead.
+_DEFAULT_RECON_TOOL_BUDGET = 16
 _CSRF_BODY_MARKERS = re.compile(r"csrf|authenticity_token|_token|csrfmiddleware", re.I)
 _TIMING_TRIALS = 10
 
@@ -4546,6 +4542,14 @@ def scan_all_classes(
     ``graph``/``audit`` may be injected so the caller holds live references to the state
     the scan is writing (the GUI streams them while the scan runs).
 
+    ``require_llm`` (v4 R3, repurposed — no longer gates whether LLM-driven decisions
+    are attempted at all; every adaptive decision point in this function and the
+    modules it calls is unconditional now, degrading gracefully to a deterministic
+    default whenever no provider is configured). What it still controls: ``strict``
+    mode for the coarse phase-reassessment loop (``AdaptiveControlLoop``) — whether a
+    model failure there aborts the scan (True) or is logged and the scan continues in
+    deterministic default order (False, the default).
+
     ``allow_cross_user_writes`` gates ``run_authz_idor`` alone (default False): the one
     driver whose confirmed path fires a genuine state-changing write against ANOTHER
     identity's live object, so it never runs without explicit opt-in.
@@ -4758,83 +4762,72 @@ def scan_all_classes(
 
     events_out = events if events is not None else []
     check_cancel(cancel_check)
-    execution_plan = None
-    planned_recon_tools: tuple[str, ...] | None = None
     planned_signal_tools: tuple[str, ...] = ()
     recon_selector = None
-    recon_candidates: tuple[str, ...] | None = None
-    plan_client = None
-    own_plan_client = False
     scan_budget = max_attempts
-    if require_llm:
-        # The GUI path has one model-controlled plan boundary. Validation is
-        # strict and provider errors propagate; deterministic drivers still own
-        # all request/oracle/finding capabilities after this proposal.
-        from reachagent.llm.planner import (
-            PlanningContext,
-            build_planner_client,
-            build_tool_catalog,
-            plan_execution,
-            select_recon_tools,
-        )
 
-        target_type = detect_target_type(base_url)
-        context = PlanningContext(
-            target=base_url,
-            target_type=target_type,
-            in_scope=tuple(part.strip() for part in in_scope.split(",") if part.strip()),
-            graph_facts={"phase": "recon", "target": base_url},
-            operator_prompt=operator_prompt or "",
-            max_request_budget=max(1, max_attempts),
-            max_tool_budget=16,
-        )
-        own_plan_client = planner_client is None
-        plan_client = planner_client or build_planner_client()
+    # Adaptive recon tool selection (v4 R3): no pre-committed plan schema, no
+    # flag gate. `select_recon_tools`'s existing per-step propose→validate
+    # loop (already used below via `recon_selector`) decides which recon
+    # tools to add after the deterministic seed list runs, whenever a real
+    # LLM provider is configured — `build_planner_client()` returns None
+    # gracefully otherwise, and `recon_tools=None` below then makes
+    # `scan_target` use its own unchanged deterministic default seed, the
+    # same as if no client were ever wired.
+    from reachagent.llm.planner import (
+        PlanningContext,
+        ReconSelection,
+        build_planner_client,
+        build_tool_catalog,
+        select_recon_tools,
+    )
+
+    target_type = detect_target_type(base_url)
+    context = PlanningContext(
+        target=base_url,
+        target_type=target_type,
+        in_scope=tuple(part.strip() for part in in_scope.split(",") if part.strip()),
+        graph_facts={"phase": "recon", "target": base_url},
+        operator_prompt=operator_prompt or "",
+        max_request_budget=max(1, max_attempts),
+        max_tool_budget=_DEFAULT_RECON_TOOL_BUDGET,
+    )
+    own_plan_client = planner_client is None
+    if planner_client is not None:
+        plan_client = planner_client
+    else:
         try:
-            execution_plan = plan_execution(context, plan_client)
-        except Exception:
-            if own_plan_client and hasattr(plan_client, "close"):
-                plan_client.close()
-            raise
-        catalog_by_name = {entry.name: entry for entry in build_tool_catalog()}
-        recon_names: list[str] = []
-        signal_names: list[str] = []
-        for phase in execution_plan.phases:
-            for tool_name in phase.tools:
-                entry = catalog_by_name[tool_name]
-                if entry.signal_gated:
-                    signal_names.append(tool_name)
-                elif entry.phase == "recon":
-                    # Insertion-point adapters are deliberately not executed
-                    # during cold-start recon; they run after the surface exists.
-                    recon_names.append(tool_name)
-        planned_recon_tools = tuple(dict.fromkeys(recon_names))
-        planned_signal_tools = tuple(dict.fromkeys(signal_names))
-        recon_candidates = tuple(
-            entry.name
-            for entry in catalog_by_name.values()
-            if entry.phase == "recon" and target_type in entry.target_types
-        )
+            plan_client = build_planner_client()
+        except RuntimeError:
+            # build_planner_client() raises rather than returning None (unlike
+            # every grunt-tier tuning client) — its own contract, kept as-is
+            # for callers that explicitly opt into planning and want a loud
+            # failure. Here the call is now unconditional, so "no provider
+            # configured" must degrade the same way it does everywhere else:
+            # no adaptive recon selector, deterministic default tool list.
+            plan_client = None
+    recon_candidates = tuple(
+        entry.name
+        for entry in build_tool_catalog()
+        if entry.phase == "recon" and target_type in entry.target_types
+    )
+
+    if plan_client is not None:
 
         def _select_recon(
             state: dict[str, str],
             available: tuple[str, ...],
             completed: tuple[str, ...],
         ) -> object:
-            if plan_client is None:
-                raise RuntimeError("adaptive recon planner client is unavailable")
-            remaining_budget = execution_plan.tool_budget - len(completed)
+            remaining_budget = _DEFAULT_RECON_TOOL_BUDGET - len(completed)
             if remaining_budget <= 0:
-                from reachagent.llm.planner import ReconSelection
-
                 return ReconSelection((), "recon tool budget exhausted", True)
             # The enforced limit IS remaining_budget (validate_recon_selection's
-            # `max_tools`), not the plan's full tool_budget — the prompt must show
-            # the same number the validator enforces. Building the context with the
-            # full static budget here (while the validator checked the remaining
-            # one) is exactly the divergence that made a correct, budget-aware
-            # selection get rejected with "recon selection exceeds the remaining
-            # tool budget": the model was never told the real, shrinking limit.
+            # `max_tools`) — the prompt must show the same number the validator
+            # enforces, not the full static budget, or a correct, budget-aware
+            # selection gets rejected with "recon selection exceeds the
+            # remaining tool budget" because the model was never told the
+            # real, shrinking limit.
             max_tools = min(remaining_budget, len(available))
             adaptive_context = PlanningContext(
                 target=context.target,
@@ -4855,33 +4848,6 @@ def scan_all_classes(
             )
 
         recon_selector = _select_recon
-        scan_budget = min(max_attempts, execution_plan.request_budget)
-        _emit(
-            events_out,
-            "plan",
-            "plan",
-            "LLM execution plan accepted",
-            rationale=execution_plan.rationale,
-            request_budget=execution_plan.request_budget,
-            tool_budget=execution_plan.tool_budget,
-            phases=[
-                {
-                    "name": phase.name,
-                    "rationale": phase.rationale,
-                    "tools": list(phase.tools),
-                }
-                for phase in execution_plan.phases
-            ],
-        )
-        for phase in execution_plan.phases:
-            _emit(
-                events_out,
-                phase.name,
-                "plan",
-                f"LLM planned {phase.name} phase",
-                rationale=phase.rationale,
-                tools=list(phase.tools),
-            )
     _emit(events_out, "recon", "info", "phase 1: recon and technology discovery", target=base_url)
     # The recon-profile decision is real data the GUI shows first: which profile the LLM
     # picked for this target and why (or the safe-default reason when LLM is off/failed).
@@ -4918,7 +4884,7 @@ def scan_all_classes(
             surface_path=surface_path,
             identities=identities,
             operator_prompt=operator_prompt,
-            recon_tools=planned_recon_tools,
+            recon_tools=None,
             recon_candidates=recon_candidates,
             skip_tools=skip_tools,
             recon_selector=recon_selector,
@@ -4988,24 +4954,24 @@ def scan_all_classes(
 
     # Application-domain inference (v2 W18): one bounded LLM call classifies WHAT the app is
     # (hospital/ecommerce/banking/...) from the observed surface, stored as a host-level
-    # advisory fact that steers Phase-3 class priority (order-only, never a gate). Only when
-    # LLM is active; fails open to no profile. Set on every host so the signal is stable.
-    if require_llm:
-        from reachagent.scan.app_domain import classify_app_domain
+    # advisory fact that steers Phase-3 class priority (order-only, never a gate). No flag
+    # gate; fails open to no profile when no provider is configured. Set on every host so
+    # the signal is stable.
+    from reachagent.scan.app_domain import classify_app_domain
 
-        app_domain = classify_app_domain(graph)
-        if app_domain:
-            from dataclasses import replace as _dc_replace
+    app_domain = classify_app_domain(graph)
+    if app_domain:
+        from dataclasses import replace as _dc_replace
 
-            for _host_node, host in graph.hosts():
-                graph.add_host(_dc_replace(host, app_domain=app_domain))  # merge-enrich, order-only
-            _emit(
-                events_out,
-                "endpoints",
-                "assistant-note",
-                f"This looks like a {app_domain}; I'll prioritize the vuln classes that matter "
-                f"most for that kind of app.",
-            )
+        for _host_node, host in graph.hosts():
+            graph.add_host(_dc_replace(host, app_domain=app_domain))  # merge-enrich, order-only
+        _emit(
+            events_out,
+            "endpoints",
+            "assistant-note",
+            f"This looks like a {app_domain}; I'll prioritize the vuln classes that matter "
+            f"most for that kind of app.",
+        )
 
     # LLM-driven surface prioritization (flag-gated, ordering only): after
     # recon completes, send the discovered surface to the LLM and get back a
@@ -5195,15 +5161,14 @@ def scan_all_classes(
     # LLM-driven vulnerability review, early pass — the surface is fully mapped
     # (recon + browser recon done) but Phase 3 hasn't started, so these leads become
     # visible live well before any confirmed finding does, rather than only ever
-    # appearing in one silent batch right before the report phase.
-    if require_llm:
-        _run_llm_vuln_review_pass(graph=graph, events_out=events_out, label="early")
+    # appearing in one silent batch right before the report phase. No flag gate —
+    # fails open to zero leads when no provider is configured (see docstring).
+    _run_llm_vuln_review_pass(graph=graph, events_out=events_out, label="early")
 
     # Phase 3 — the classes the sink loop does not drive. Dispatch order is
-    # LLM-ranked (rank_vuln_classes, above) when REACHAGENT_VULN_TUNING is
-    # enabled — already the case for every GUI scan — falling back to the
-    # order below otherwise. Every class still runs regardless; only
-    # sequencing is LLM-influenced.
+    # LLM-ranked (rank_vuln_classes, above) whenever a provider is configured,
+    # falling back to the order below otherwise. Every class still runs
+    # regardless; only sequencing is LLM-influenced.
     _emit(events_out, "payloads", "info", "phase 3: structural + authz + advanced classes")
 
     if concurrent_specialists:
@@ -5312,9 +5277,8 @@ def scan_all_classes(
     # LLM-driven vulnerability review, final pass — see _run_llm_vuln_review_pass's
     # own docstring for the full design (operator-requested; two bounded passes, not
     # one, so leads appear live across the scan instead of dumped in a single batch
-    # at the end).
-    if require_llm:
-        _run_llm_vuln_review_pass(graph=graph, events_out=events_out, label="final")
+    # at the end). No flag gate — fails open to zero leads when no provider configured.
+    _run_llm_vuln_review_pass(graph=graph, events_out=events_out, label="final")
 
     driven_classes = {
         *_GENERIC_CLASSES,

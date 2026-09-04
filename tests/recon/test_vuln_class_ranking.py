@@ -1,13 +1,15 @@
 """Ranked vuln-class targeting per insertion point - hermetic tests.
 
 Covers: ranked-list return from _live_vuln_classes_for, sink-compatibility
-filtering, fallback to default when flag off, and the multi-class iteration
-in the payload chain loop.
+filtering, the empty-tuple contract with no provider configured (no flag
+gate — v4 R3 removed it, but the no-provider case is checked before ever
+reaching propose_vuln_targets's own broader safe-default fallback), and the
+multi-class iteration in the payload chain loop.
 """
 
 from __future__ import annotations
 
-import pytest
+from unittest.mock import patch
 
 from reachagent.execution.scope import ScopeGuard
 from reachagent.graph.nodes import Endpoint, Host, Parameter, SinkType
@@ -41,24 +43,23 @@ def _selection(graph: ReachabilityGraph, path: str, param_name: str | None = Non
     return _Sel()
 
 
-def test_ranked_list_off_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Returns empty tuple when REACHAGENT_VULN_TUNING is unset."""
+def test_ranked_list_empty_with_no_provider_configured() -> None:
+    """v4 R3: no flag gate, but no-provider still returns the empty tuple —
+    checked BEFORE propose_vuln_targets's own internal safe-default fallback
+    (7 classes), which is for a genuine provider-call failure, not "no LLM at
+    all". Trying 7 classes per candidate by default (rather than the usual
+    single sink-matched class) was measured to multiply payload-chain
+    attempts ~7x with no provider configured — a real perf regression."""
     from reachagent.scan.entrypoint import _live_vuln_classes_for
 
-    monkeypatch.delenv("REACHAGENT_VULN_TUNING", raising=False)
-    monkeypatch.delenv("REACHAGENT_RECON_LIVE_TUNING", raising=False)
     g = _graph()
     sel = _selection(g, "/search", "q")
     assert _live_vuln_classes_for(sel, g, _BASE_URL) == ()
 
 
-def test_ranked_list_returns_multiple_compatible(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_ranked_list_returns_multiple_compatible() -> None:
     """When the LLM returns classes, only the sink-compatible ones survive."""
     from reachagent.scan.entrypoint import _live_vuln_classes_for
-
-    monkeypatch.setenv("REACHAGENT_VULN_TUNING", "1")
 
     class FakeClient:
         def propose(self, signals: dict, allowlist: tuple) -> dict:
@@ -82,21 +83,19 @@ def test_ranked_list_returns_multiple_compatible(
         vuln_classes=("sqli", "nosqli", "xss_reflected")
     )
     try:
-        result = _live_vuln_classes_for(_Sel(), g, _BASE_URL)
+        with patch("reachagent.llm.client.build_openai_compatible_client", return_value=object()):
+            result = _live_vuln_classes_for(_Sel(), g, _BASE_URL)
     finally:
         vt.propose_vuln_targets = original
     assert result == ("sqli",)
     assert "xss_reflected" not in result  # sink mismatch filtered out
 
 
-def test_ranked_list_preserves_llm_order(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_ranked_list_preserves_llm_order() -> None:
     """The LLM's priority order is preserved among compatible classes."""
     from reachagent.recon import vuln_tuning as vt
     from reachagent.scan.entrypoint import _live_vuln_classes_for
 
-    monkeypatch.setenv("REACHAGENT_VULN_TUNING", "1")
     g = _graph()
     ep_id = g.add_endpoint(Endpoint(method="POST", path="/login"))
     pn = g.add_parameter(ep_id, Parameter(name="user", location="body"))
@@ -111,19 +110,17 @@ def test_ranked_list_preserves_llm_order(
         vuln_classes=("xss_reflected", "sqli")  # xss first but wrong sink
     )
     try:
-        result = _live_vuln_classes_for(_Sel(), g, _BASE_URL)
+        with patch("reachagent.llm.client.build_openai_compatible_client", return_value=object()):
+            result = _live_vuln_classes_for(_Sel(), g, _BASE_URL)
     finally:
         vt.propose_vuln_targets = original
     assert result == ("sqli",)  # only the sink-compatible class survives
 
 
-def test_ranked_list_no_param_returns_empty(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_ranked_list_no_param_returns_empty() -> None:
     """A candidate with no parameter returns empty (no sink to match)."""
     from reachagent.scan.entrypoint import _live_vuln_classes_for
 
-    monkeypatch.setenv("REACHAGENT_VULN_TUNING", "1")
     g = _graph()
     ep_id = g.add_endpoint(Endpoint(method="GET", path="/admin"))
 
@@ -137,14 +134,11 @@ def test_ranked_list_no_param_returns_empty(
     assert isinstance(result, tuple)
 
 
-def test_ranked_list_with_nosql_sink(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_ranked_list_with_nosql_sink() -> None:
     """A NOSQL-sink param gets nosqli first, sqli second (both compatible)."""
     from reachagent.recon import vuln_tuning as vt
     from reachagent.scan.entrypoint import _live_vuln_classes_for
 
-    monkeypatch.setenv("REACHAGENT_VULN_TUNING", "1")
     g = _graph()
     ep_id = g.add_endpoint(Endpoint(method="POST", path="/api/find"))
     pn = g.add_parameter(ep_id, Parameter(name="filter", location="body"))
@@ -159,7 +153,8 @@ def test_ranked_list_with_nosql_sink(
         vuln_classes=("nosqli", "sqli", "xss_reflected")
     )
     try:
-        result = _live_vuln_classes_for(_Sel(), g, _BASE_URL)
+        with patch("reachagent.llm.client.build_openai_compatible_client", return_value=object()):
+            result = _live_vuln_classes_for(_Sel(), g, _BASE_URL)
     finally:
         vt.propose_vuln_targets = original
     # Only nosqli matches the NOSQL sink; sqli maps to SQL (different sink).

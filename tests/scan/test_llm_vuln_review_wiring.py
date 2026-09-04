@@ -4,8 +4,9 @@ run_llm_vulnerability_review itself is fully covered by
 tests/scan/test_llm_vuln_review.py; this file only proves the orchestrator wiring:
 called TWICE with the scan's own graph (an "early" pass before Phase 3, a "final"
 pass after — operator feedback: leads should surface live across the scan, not in
-one batch at the end), only when an LLM is actually configured (require_llm=True),
-and a failure never aborts the scan.
+one batch at the end), unconditionally now (v4 R3 removed the require_llm gate —
+it fails open to zero leads with no provider configured rather than never
+running at all), and a failure never aborts the scan.
 """
 
 from __future__ import annotations
@@ -84,7 +85,13 @@ def test_llm_vuln_review_is_called_twice_with_the_scans_own_graph_when_llm_requi
     assert all(call["graph"] is result["graph"] for call in calls)
 
 
-def test_llm_vuln_review_is_not_called_when_llm_is_not_required(monkeypatch) -> None:  # noqa: ANN001
+def test_llm_vuln_review_is_called_twice_even_without_require_llm(monkeypatch) -> None:  # noqa: ANN001
+    """v4 R3: no require_llm gate — the review pass is unconditional now (it
+    fails open to zero leads with no provider configured; see
+    tests/scan/test_llm_vuln_review.py for that no-provider coverage). This
+    was the literal fix for "all llm findings must be confirmed but still
+    im seeing unconfirmed also" — the review pass must actually run by
+    default, not only when an operator remembers to opt in."""
     from reachagent.payloads import PayloadLibrary
 
     calls: list[dict] = []
@@ -95,14 +102,15 @@ def test_llm_vuln_review_is_not_called_when_llm_is_not_required(monkeypatch) -> 
 
     monkeypatch.setattr("reachagent.scan.llm_vuln_review.run_llm_vulnerability_review", fake_review)
 
-    scan_all_classes(
+    result = scan_all_classes(
         base_url=_BASE,
         in_scope="safe.example",
         transport=httpx.MockTransport(_clean_handler),
         library=PayloadLibrary.from_file(),
     )
 
-    assert calls == []
+    assert len(calls) == 2
+    assert all(call["graph"] is result["graph"] for call in calls)
 
 
 def test_llm_vuln_review_failure_never_aborts_the_scan(monkeypatch) -> None:  # noqa: ANN001

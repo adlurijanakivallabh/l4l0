@@ -14,7 +14,6 @@ no request fired by this module.
 from __future__ import annotations
 
 import logging
-import os
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -242,12 +241,10 @@ def propose_surface_priority(
 ) -> SurfacePriorityResult | None:
     """Rank discovered endpoints by attack value; None on any failure.
 
-    Flag-gated (REACHAGENT_SURFACE_TUNING): off by default, never crashes
-    the scan. Returns None when disabled or validation yields nothing usable;
-    the caller falls back to the default Coordinator ordering.
+    No flag gate; never crashes the scan. Returns None when no provider is
+    configured or validation yields nothing usable; the caller falls back
+    to the default Coordinator ordering.
     """
-    if not os.environ.get("REACHAGENT_SURFACE_TUNING"):
-        return None
     try:
         summaries = build_endpoint_summaries(graph)
         if not summaries:

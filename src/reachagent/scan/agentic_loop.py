@@ -414,10 +414,6 @@ def reassess_after_phase(
     snapshot: PhaseSnapshot | None = None,
 ) -> PhaseDecision | None:
     """Ask the model for a bounded proposal; target failures never become findings."""
-    from reachagent.llm.runtime import llm_required
-
-    if not os.environ.get("REACHAGENT_AGENTIC_LOOP") and not llm_required() and not strict:
-        return None
     if not remaining_phases or completed_phase not in REVISITABLE_PHASES:
         return None
     try:
@@ -440,6 +436,8 @@ def reassess_after_phase(
             raise ModelControlError(f"adaptive target phase is not remaining: {target!r}")
         return decision
     except Exception as exc:  # noqa: BLE001 - optional loop never stalls a non-strict scan
+        from reachagent.llm.runtime import llm_required
+
         if strict or llm_required():
             if isinstance(exc, ModelControlError):
                 raise

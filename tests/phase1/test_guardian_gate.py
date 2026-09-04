@@ -24,23 +24,12 @@ def _firer(handler: object) -> RequestFirer:
     return RequestFirer(client, ScopeGuard.from_hosts(["target.test"]))
 
 
-def test_flag_off_state_changing_fire_never_calls_the_llm_client(monkeypatch) -> None:  # noqa: ANN001
-    # Real (unpatched) advise_on_action — proves the flag check itself, not
-    # a mocked-away decision, is what keeps a normal scan from ever touching
-    # an LLM provider for this gate when the operator hasn't opted in.
-    monkeypatch.delenv("REACHAGENT_GUARDIAN_ADVISOR", raising=False)
-    client_calls: list[str] = []
-
-    class _SpyClient:
-        def propose(self, action: dict[str, str]) -> dict[str, object]:
-            client_calls.append("called")
-            return {"allow": False, "reason": "should never be reached"}
-
-    monkeypatch.setattr(
-        _advisor_module,
-        "OpenAIGuardianClient",
-        lambda **_kw: _SpyClient(),  # noqa: ARG005
-    )
+def test_no_provider_state_changing_fire_fails_open_without_blocking(monkeypatch) -> None:  # noqa: ANN001
+    """v4 R3: no REACHAGENT_GUARDIAN_ADVISOR gate — the advisor is genuinely
+    consulted on every state-changing fire now, not just when opted in. With
+    no provider configured, advise_on_action's own no-client fallback fails
+    open, so the fire still proceeds normally."""
+    monkeypatch.delenv("REACHAGENT_LLM_PROVIDER", raising=False)
 
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, text="ok")
@@ -49,7 +38,6 @@ def test_flag_off_state_changing_fire_never_calls_the_llm_client(monkeypatch) ->
     firer.fire("anon", "GET", "http://target.test/submit", state_changing=False)
     result = firer.fire("anon", "POST", "http://target.test/submit", state_changing=True)
     assert result.status_code == 200
-    assert client_calls == []
 
 
 def test_read_only_get_never_consults_the_advisor(monkeypatch) -> None:  # noqa: ANN001

@@ -21,7 +21,6 @@ oracle called, no fire against the target beyond nmap's own two invocations.
 from __future__ import annotations
 
 import logging
-import os
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -139,14 +138,11 @@ def propose_depth_escalation(
 ) -> DepthChoice | None:
     """Decide whether nmap's next pass on this target should go deeper.
 
-    Flag-gated (``REACHAGENT_RECON_DEPTH_TUNING``): off by default, matching
-    every other opt-in recon-tuning layer's shape. Returns ``None`` when
-    disabled, nothing usable was discovered, or the choice (after the floor
-    is applied) asks for nothing beyond the floor — the caller then skips the
-    second nmap pass entirely rather than re-running it for no reason.
+    No flag gate. Returns ``None`` when no provider is configured, nothing
+    usable was discovered, or the choice (after the floor is applied) asks
+    for nothing beyond the floor — the caller then skips the second nmap
+    pass entirely rather than re-running it for no reason.
     """
-    if not os.environ.get("REACHAGENT_RECON_DEPTH_TUNING"):
-        return None
     try:
         lines = [
             f"[host {host.address} tech={host.technology or 'unknown'}]"

@@ -1,12 +1,10 @@
 """Signal-tool selection layer - LLM reasoning about which tools to invoke.
 
-Hermetic (no network). Covers: flag gating, allowlist validation, unknown
-tool dropping, empty-graph, and the orchestrator wiring.
+Hermetic (no network). Covers: allowlist validation, unknown tool dropping,
+empty-graph, and the orchestrator wiring. No flag gate (v4 R3 removed it).
 """
 
 from __future__ import annotations
-
-import pytest
 
 from reachagent.execution.scope import ScopeGuard
 from reachagent.graph.nodes import Endpoint, Host, Parameter, SinkType
@@ -47,15 +45,16 @@ class FakeTuner:
         return {"selected_tools": self._tools, "rationale": self._rationale}
 
 
-def test_off_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Returns None when REACHAGENT_SIGNAL_TUNING is unset."""
-    monkeypatch.delenv("REACHAGENT_SIGNAL_TUNING", raising=False)
-    assert propose_signal_tools(_graph(), client=FakeTuner(["sqlmap"])) is None
+def test_no_flag_needed_client_used_directly() -> None:
+    """v4 R3: no REACHAGENT_SIGNAL_TUNING gate — a configured client is used
+    unconditionally, not only when an env flag also happens to be set."""
+    result = propose_signal_tools(_graph(), client=FakeTuner(["sqlmap"]))
+    assert result is not None
+    assert result.selected_tools == ("sqlmap",)
 
 
-def test_valid_selection(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_valid_selection() -> None:
     """A valid selection passes and carries the rationale."""
-    monkeypatch.setenv("REACHAGENT_SIGNAL_TUNING", "1")
     tuner = FakeTuner(["sqlmap", "nikto"], rationale="sql sink found")
     result = propose_signal_tools(_graph(), client=tuner)
     assert result is not None
@@ -63,31 +62,27 @@ def test_valid_selection(monkeypatch: pytest.MonkeyPatch) -> None:
     assert result.rationale == "sql sink found"
 
 
-def test_drops_unknown_tools(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_drops_unknown_tools() -> None:
     """Invented tool names are dropped; only allowlisted ones survive."""
-    monkeypatch.setenv("REACHAGENT_SIGNAL_TUNING", "1")
     tuner = FakeTuner(["sqlmap", "invented-tool", "nikto"])
     result = propose_signal_tools(_graph(), client=tuner)
     assert result is not None
     assert result.selected_tools == ("sqlmap", "nikto")
 
 
-def test_empty_graph_returns_none(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_empty_graph_returns_none() -> None:
     """An empty graph returns None without calling the LLM."""
-    monkeypatch.setenv("REACHAGENT_SIGNAL_TUNING", "1")
     assert propose_signal_tools(ReachabilityGraph(), client=FakeTuner([])) is None
 
 
-def test_all_invalid_returns_none(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_all_invalid_returns_none() -> None:
     """All-invalid selections return None (caller falls back)."""
-    monkeypatch.setenv("REACHAGENT_SIGNAL_TUNING", "1")
     tuner = FakeTuner(["made-up-1", "made-up-2"])
     assert propose_signal_tools(_graph(), client=tuner) is None
 
 
-def test_client_error_returns_none(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_client_error_returns_none() -> None:
     """An LLM error is caught; never crashes the scan."""
-    monkeypatch.setenv("REACHAGENT_SIGNAL_TUNING", "1")
 
     class Broken:
         def propose(self, *a: object) -> dict[str, object]:

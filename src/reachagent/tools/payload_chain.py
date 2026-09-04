@@ -389,25 +389,20 @@ def _maybe_reorder_payloads(
     prior_attempts: tuple[PayloadAttemptContext, ...] = (),
     payload_context: Mapping[str, object] | None = None,
 ) -> list[Mapping[str, object]]:
-    """Proposal-only prune — flag-gated, dynamic-allowlist-validated.
+    """Proposal-only prune — dynamic-allowlist-validated, no flag gate.
 
-    When REACHAGENT_PAYLOAD_TUNING=1 or REACHAGENT_RECON_LIVE_TUNING=1, asks
-    propose_payload_choice which existing bucket refs are actually worth
-    trying for this endpoint shape. A genuine, non-empty choice REPLACES the
-    bucket with just those picks (+ any generated mutations) — a few sharp
-    shots, not the LLM's picks-first-then-everything-anyway. Dynamic
-    allowlist is the exact bucket set; any failure (flag off, no provider,
+    Asks propose_payload_choice which existing bucket refs are actually
+    worth trying for this endpoint shape. A genuine, non-empty choice
+    REPLACES the bucket with just those picks (+ any generated mutations) —
+    a few sharp shots, not the LLM's picks-first-then-everything-anyway.
+    Dynamic allowlist is the exact bucket set; any failure (no provider,
     malformed/empty response, non-bucket ref) falls back to the full,
     untouched original list — coverage is never silently lost, only skipped
     when a live choice was actually made. Never invents a ref; the caller's
     max_attempts still applies on top of whatever list comes back.
     """
-    from reachagent.llm.runtime import flag_enabled, llm_required
+    from reachagent.llm.runtime import llm_required
 
-    if not flag_enabled("REACHAGENT_PAYLOAD_TUNING") and not flag_enabled(
-        "REACHAGENT_RECON_LIVE_TUNING"
-    ):
-        return entries
     try:
         from reachagent.recon.payload_tuning import propose_payload_choice
 
@@ -627,9 +622,8 @@ def run_payload_chain(
         _record_failure(audit_failure, failure)
         return PayloadChainResult(attempted=0, confirmed=False, failure=failure)
 
-    # Live payload-choice — proposal-only, flag OFF by default. When
-    # REACHAGENT_PAYLOAD_TUNING=1 or REACHAGENT_RECON_LIVE_TUNING=1, ranks
-    # which existing bucket payload_ref to try first for this endpoint shape.
+    # Live payload-choice — proposal-only, no flag gate. Ranks which
+    # existing bucket payload_ref to try first for this endpoint shape.
     # Dynamic allowlist is the exact bucket set — no invented string.
     prior_context = tuple(prior_attempts)
     entries = _maybe_reorder_payloads(
@@ -775,20 +769,15 @@ def run_payload_chain(
                     detail=str(status or "inconclusive")[:120],
                 )
             )
-            from reachagent.llm.runtime import flag_enabled
-
-            if flag_enabled("REACHAGENT_PAYLOAD_TUNING") or flag_enabled(
-                "REACHAGENT_RECON_LIVE_TUNING"
-            ):
-                remaining = _maybe_reorder_payloads(
-                    entries[position + 1 :],
-                    vuln_class,
-                    sink_type,
-                    slot_kit,
-                    prior_attempts=tuple(attempt_contexts),
-                    payload_context=payload_context,
-                )
-                entries = entries[: position + 1] + remaining
+            remaining = _maybe_reorder_payloads(
+                entries[position + 1 :],
+                vuln_class,
+                sink_type,
+                slot_kit,
+                prior_attempts=tuple(attempt_contexts),
+                payload_context=payload_context,
+            )
+            entries = entries[: position + 1] + remaining
             position += 1
             continue
         verdict_ref = verdict.get("verdict_ref")

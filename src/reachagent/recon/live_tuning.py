@@ -234,11 +234,20 @@ def _validate_choice(raw: dict[str, str]) -> ReconTuningChoice | None:
 
 
 def _safe_default() -> ReconTuningChoice:
-    return ReconTuningChoice(
-        wordlist_path=_SAFE_DEFAULT_WORDLIST,
-        flags=_SAFE_DEFAULT_FLAGS,
-        filter_codes=_SAFE_DEFAULT_STATUS,
-    )
+    return NO_LIVE_TUNING_CHOICE
+
+
+# A caller (e.g. GobusterRunner.command) that wants to know whether a genuine
+# live choice was made, vs. propose_recon_tuning falling back to this generic
+# default (no provider configured, or validation failed), compares against
+# this — since a genuine no-provider fallback must not silently override an
+# operator's own explicit REACHAGENT_GOBUSTER_WORDLIST/etc. env config, which
+# is a floor propose_recon_tuning itself has no visibility into.
+NO_LIVE_TUNING_CHOICE = ReconTuningChoice(
+    wordlist_path=_SAFE_DEFAULT_WORDLIST,
+    flags=_SAFE_DEFAULT_FLAGS,
+    filter_codes=_SAFE_DEFAULT_STATUS,
+)
 
 
 def propose_recon_tuning(
@@ -471,16 +480,22 @@ def profile_decision(
     supplied, lets the signal collector prefer an already-fingerprinted
     ``Host.technology`` (e.g. from whatweb, which typically runs earlier in the
     recon order) over the cruder ad-hoc HTTP probe below.
-    """
-    from reachagent.llm.runtime import flag_enabled
 
-    if not flag_enabled("REACHAGENT_RECON_PROFILE"):
-        return {
-            "profile": "default",
-            "reason": "LLM recon profile disabled (REACHAGENT_RECON_PROFILE unset) — "
-            "default wordlist",
-            "signals": "",
-        }
+    No flag gate (v4 R3) — but ``propose_recon_profile`` itself, by its own
+    pinned contract (see its docstring / tests), ALWAYS returns a real,
+    usable profile, even with no provider configured — it has no "nothing to
+    offer" signal for its own caller. So the no-provider check has to live
+    here instead: skip calling it at all when no client was given and none
+    can be built, rather than let its always-a-profile fallback masquerade
+    as a genuine live pick.
+    """
+    if client is None:
+        if build_openai_compatible_client(tier="grunt") is None:
+            return {
+                "profile": "default",
+                "reason": "no LLM provider configured — default wordlist",
+                "signals": "",
+            }
     try:
         signals = _collect_target_signals(target, operator_prompt, graph=graph)
         profile = propose_recon_profile(signals, client=client)

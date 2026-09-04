@@ -103,14 +103,10 @@ def advise_on_action(
 ) -> GuardianDecision:
     """Ask the isolated guardian advisor about one proposed action.
 
-    Fails open (allow=True) on a disabled flag, no configured provider, a
-    malformed response, or any exception — this is a conservative add-on
-    check, never the load-bearing gate.
+    No flag gate — attempted on every call. Fails open (allow=True) on no
+    configured provider, a malformed response, or any exception — this is a
+    conservative add-on check, never the load-bearing gate.
     """
-    from reachagent.llm.runtime import flag_enabled
-
-    if not flag_enabled("REACHAGENT_GUARDIAN_ADVISOR"):
-        return GuardianDecision(allow=True, reason="guardian advisor disabled")
     try:
         advisor = client or OpenAIGuardianClient()
         raw = advisor.propose({"tool": tool, "host": host, "method": method})

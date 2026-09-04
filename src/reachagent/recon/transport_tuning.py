@@ -17,7 +17,6 @@ whether a response constitutes a finding. No oracle logic in this module.
 from __future__ import annotations
 
 import logging
-import os
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -120,11 +119,9 @@ def propose_transport(
 ) -> TransportChoice:
     """Select a transport for one insertion point; defaults to http on failure.
 
-    Flag-gated (REACHAGENT_TRANSPORT_TUNING). Never crashes the scan; always
-    returns a valid TransportChoice.
+    No flag gate. Never crashes the scan; always returns a valid
+    TransportChoice.
     """
-    if not os.environ.get("REACHAGENT_TRANSPORT_TUNING"):
-        return TransportChoice(transport=_DEFAULT_TRANSPORT, rationale="flag off")
     try:
         signals = build_transport_signals(graph, endpoint_node)
         tuner = client if client is not None else OpenAITransportClient()

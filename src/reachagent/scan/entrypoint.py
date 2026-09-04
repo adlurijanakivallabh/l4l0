@@ -219,24 +219,30 @@ def _live_vuln_classes_for(
     base_url: str,
     operator_prompt: str | None = None,
 ) -> tuple[str, ...]:
-    """Ranked vuln-class targeting — flag-gated, double-validated.
+    """Ranked vuln-class targeting — double-validated, no flag gate.
 
-    Reads Endpoint/Parameter/Host shape from the graph, calls live proposer
-    when enabled, validates every returned class against VULN_CLASS_ALLOWLIST
-    again, then returns ALL sink-compatible classes in the LLM's priority order.
-    The caller iterates this list when earlier classes fail. Returns an empty
-    tuple when flag OFF (the caller falls back to the default single-class
-    sink-matched heuristic).
+    Reads Endpoint/Parameter/Host shape from the graph, calls the live
+    proposer, validates every returned class against VULN_CLASS_ALLOWLIST
+    again, then returns ALL sink-compatible classes in the LLM's priority
+    order. The caller iterates this list when earlier classes fail. Returns
+    an empty tuple on any failure or when no provider is configured (the
+    caller falls back to the default single-class sink-matched heuristic).
     """
-    from reachagent.llm.runtime import flag_enabled, llm_required
+    from reachagent.llm.runtime import llm_required
 
-    if not flag_enabled("REACHAGENT_VULN_TUNING") and not flag_enabled(
-        "REACHAGENT_RECON_LIVE_TUNING"
-    ):
-        return ()
     try:
+        from reachagent.llm.client import build_openai_compatible_client
         from reachagent.recon.vuln_tuning import VULN_CLASS_ALLOWLIST, propose_vuln_targets
 
+        # Checked BEFORE calling propose_vuln_targets: its own "no provider"
+        # fallback is the same _SAFE_DEFAULT_CLASSES (7 classes) it uses for a
+        # genuine-provider-but-this-call-failed case — trying all 7 for every
+        # candidate with no sink inferred, on every scan with no LLM at all,
+        # is a real, measured performance regression (a live-eval run found
+        # payload-chain attempts multiplying ~7x). No provider at all should
+        # stay the original empty-tuple "nothing to offer" contract.
+        if build_openai_compatible_client(tier="grunt") is None:
+            return ()
         ep = graph.endpoint(getattr(selection, "endpoint_node", ""))
         param_node = getattr(selection, "parameter_node", None)
         param = graph.parameter(param_node) if param_node else None

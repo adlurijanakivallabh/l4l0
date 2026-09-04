@@ -1,8 +1,8 @@
 """Transport selection + MCP browser/proxy firing - hermetic tests.
 
-Covers: transport selection (flag gating, allowlist, fallback), the new MCP
-tools being registered, and the AST boundary proof extending to the two
-new firing mechanisms.
+Covers: transport selection (allowlist, fallback; no flag gate — v4 R3
+removed it), the new MCP tools being registered, and the AST boundary proof
+extending to the two new firing mechanisms.
 """
 
 from __future__ import annotations
@@ -57,22 +57,19 @@ class TestValidateTransport:
 
 
 class TestProposeTransport:
-    def test_off_by_default(self) -> None:
+    def test_no_client_falls_back_to_http(self) -> None:
         g = _graph()
         ep_id = g.add_endpoint(Endpoint(method="GET", path="/"))
         r = propose_transport(g, ep_id)
         assert r.transport == "http"
-        assert r.rationale == "flag off"
 
     def test_browser_selected(self) -> None:
-        import os
-
-        os.environ["REACHAGENT_TRANSPORT_TUNING"] = "1"
+        """v4 R3: no REACHAGENT_TRANSPORT_TUNING gate needed — a configured
+        client is used unconditionally."""
         g = _graph()
         ep_id = g.add_endpoint(Endpoint(method="POST", path="/login"))
         r = propose_transport(g, ep_id, client=FakeTuner("browser", "CSRF form"))
         assert r.transport == "browser"
-        del os.environ["REACHAGENT_TRANSPORT_TUNING"]
 
 
 class TestBuildTransportSignals:

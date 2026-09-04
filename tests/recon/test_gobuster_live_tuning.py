@@ -1,9 +1,11 @@
-"""Gobuster live-tuning flag-gated — hermetic, no live API.
+"""Gobuster live-tuning, no flag gate (v4 R3) — hermetic, no live API.
 
-Flag OFF (default) is zero-regression: ``GobusterRunner.command`` behaves
-exactly as before. Flag ON uses the mocked allowlisted choice and still
-writes ONLY facts (Host/Endpoint + resolves_to) — zero Findings, zero
-candidates, zero can_call.
+No provider configured is zero-regression: ``GobusterRunner.command``
+behaves exactly as with the flag off before (NO_LIVE_TUNING_CHOICE is
+recognized as "no genuine choice" and never overrides the operator's own
+env config). A mocked allowlisted choice is used and still writes ONLY
+facts (Host/Endpoint + resolves_to) — zero Findings, zero candidates, zero
+can_call.
 """
 
 from __future__ import annotations
@@ -65,14 +67,18 @@ def test_flag_off_zero_regression_default_argv() -> None:
     assert any("dirb/common.txt" in p or "seclists" in p or "raft" in p for p in argv)
 
 
-def test_flag_off_does_not_call_live_tuning() -> None:
+def test_no_provider_still_calls_live_tuning_but_result_is_a_safe_no_op() -> None:
+    """v4 R3: no flag gate — propose_recon_tuning IS called (no provider
+    configured, so it returns NO_LIVE_TUNING_CHOICE), but gobuster recognizes
+    that sentinel as "no genuine choice" and falls through to its own
+    env-respecting default, same argv as the old flag-off path."""
     r = _runner()
     with patch.dict(os.environ, {}, clear=False):
         os.environ.pop("REACHAGENT_GOBUSTER_LIVE_TUNING", None)
         os.environ.pop("REACHAGENT_RECON_LIVE_TUNING", None)
-        with patch("reachagent.recon.live_tuning.propose_recon_tuning") as mock_propose:
-            r.command("http://example.com")
-            mock_propose.assert_not_called()
+        argv = r.command("http://example.com")
+    assert argv[:5] == ["gobuster", "dir", "-q", "-u", "http://example.com"]
+    assert "-w" in argv
 
 
 def test_flag_off_respects_explicit_wordlist_env() -> None:
@@ -122,7 +128,7 @@ def test_flag_off_ignores_non_digit_threads() -> None:
 def test_flag_on_uses_chosen_wordlist_and_flags() -> None:
     r = _runner()
     chosen = _allowlisted_choice(wordlist_idx=4, flag_idx=1, status_idx=0)
-    with patch.dict(os.environ, {"REACHAGENT_GOBUSTER_LIVE_TUNING": "1"}, clear=False):
+    with patch("reachagent.llm.client.build_openai_compatible_client", return_value=object()):
         with (
             patch(
                 "reachagent.recon.tools.gobuster._collect_signals",
@@ -157,8 +163,7 @@ def test_flag_on_empty_flag_preset_no_extra_flags() -> None:
 def test_flag_on_via_alternate_env_var() -> None:
     r = _runner()
     chosen = _allowlisted_choice(wordlist_idx=1, flag_idx=2, status_idx=0)
-    with patch.dict(os.environ, {"REACHAGENT_RECON_LIVE_TUNING": "1"}, clear=False):
-        os.environ.pop("REACHAGENT_GOBUSTER_LIVE_TUNING", None)
+    with patch("reachagent.llm.client.build_openai_compatible_client", return_value=object()):
         with (
             patch(
                 "reachagent.recon.tools.gobuster._collect_signals",
@@ -280,10 +285,7 @@ def test_flag_on_collect_signals_error_fallback_cleanly() -> None:
 def test_flag_on_wordlist_is_distinct_argv_element_not_injection() -> None:
     r = _runner()
     chosen = _allowlisted_choice(wordlist_idx=3, flag_idx=4, status_idx=0)
-    with patch.dict(os.environ, {"REACHAGENT_GOBSTER_LIVE_TUNING": "1"}, clear=False):
-        # also set the correct var — the typo above should NOT enable live tuning
-        pass
-    with patch.dict(os.environ, {"REACHAGENT_GOBUSTER_LIVE_TUNING": "1"}, clear=False):
+    with patch("reachagent.llm.client.build_openai_compatible_client", return_value=object()):
         with (
             patch(
                 "reachagent.recon.tools.gobuster._collect_signals",
@@ -339,8 +341,8 @@ def test_flag_on_mocked_anthropic_client_no_live_api() -> None:
     assert choice.wordlist_path == str(RECON_ALLOWLIST["wordlists"][5])  # type: ignore[index]
     assert choice.flags == ("-t", "20")
 
-    # Feed that choice through gobuster flag ON
-    with patch.dict(os.environ, {"REACHAGENT_GOBUSTER_LIVE_TUNING": "1"}, clear=False):
+    # Feed that choice through gobuster
+    with patch("reachagent.llm.client.build_openai_compatible_client", return_value=object()):
         with (
             patch(
                 "reachagent.recon.tools.gobuster._collect_signals",

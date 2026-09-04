@@ -72,10 +72,7 @@ def test_snapshot_is_bounded_and_redacts_identity_material() -> None:
     assert snapshot.deltas == {}
 
 
-def test_control_decision_changes_next_action_and_resumes(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setenv("REACHAGENT_AGENTIC_LOOP", "1")
+def test_control_decision_changes_next_action_and_resumes(tmp_path: Path) -> None:
     path = tmp_path / "control.json"
     advisor = _Advisor(
         {
@@ -112,10 +109,7 @@ class _FakeSteeringControl:
         return hints
 
 
-def test_mid_scan_steering_hint_reaches_the_next_advisor_call(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setenv("REACHAGENT_AGENTIC_LOOP", "1")
+def test_mid_scan_steering_hint_reaches_the_next_advisor_call(tmp_path: Path) -> None:
     advisor = _Advisor({"action": "continue", "rationale": "", "hint": "", "target_phase": None})
     state = AdaptiveControlState(checkpoint_path=str(tmp_path / "control.json"))
     control_token = _FakeSteeringControl(["focus on the admin login flow"])
@@ -127,10 +121,7 @@ def test_mid_scan_steering_hint_reaches_the_next_advisor_call(
     assert "Operator note" not in advisor.last_operator_prompt
 
 
-def test_no_pending_hints_leaves_operator_prompt_unchanged(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setenv("REACHAGENT_AGENTIC_LOOP", "1")
+def test_no_pending_hints_leaves_operator_prompt_unchanged(tmp_path: Path) -> None:
     advisor = _Advisor({"action": "continue", "rationale": "", "hint": "", "target_phase": None})
     state = AdaptiveControlState(checkpoint_path=str(tmp_path / "control.json"))
     loop = AdaptiveControlLoop(
@@ -162,10 +153,7 @@ def test_cancellation_and_idle_timeout_fail_closed() -> None:
         state.check()
 
 
-def test_malicious_model_fields_cannot_enter_control_decision(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("REACHAGENT_AGENTIC_LOOP", "1")
+def test_malicious_model_fields_cannot_enter_control_decision() -> None:
     advisor = _Advisor(
         {
             "action": "continue",

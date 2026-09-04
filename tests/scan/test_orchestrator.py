@@ -207,10 +207,13 @@ class _FakeRankClient:
         return self._response
 
 
-def test_rank_vuln_classes_disabled_by_default_returns_original_order() -> None:
+def test_rank_vuln_classes_no_provider_returns_original_order() -> None:
+    """v4 R3: no flag gate — with no provider configured, falls back to the
+    original order (same outcome as the old flag-off path, different
+    mechanism: an unavailable-provider failure, not a disabled flag)."""
     order, reason = rank_vuln_classes(_CLASSES, ReachabilityGraph())
     assert order == _CLASSES
-    assert "disabled" in reason
+    assert "unavailable" in reason
 
 
 def test_phase3_dispatch_re_ranks_after_every_class_not_just_once(tmp_path, monkeypatch) -> None:  # noqa: ANN001
