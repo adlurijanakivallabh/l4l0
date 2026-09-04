@@ -163,6 +163,7 @@ def run_sandbox_investigation(
     prior_outcome: str = "no signal",
     client: object | None = None,
     events: list[ScanEvent] | None = None,
+    label: str = "",
 ) -> int:
     """Propose one sandbox command for ``vuln_class``, run it, judge the output.
 
@@ -189,6 +190,25 @@ def run_sandbox_investigation(
             return 0
         result = sandbox.run_command(proposal.command, timeout=_COMMAND_TIMEOUT_S)
         output = result.output.strip()
+        if events is not None:
+            from reachagent.scan.orchestrator import ScanEvent as _ScanEvent
+
+            prefix = f"[{label}] " if label else ""
+            events.append(
+                _ScanEvent(
+                    phase="payloads",
+                    kind="info",
+                    message=f"{prefix}sandbox: $ {proposal.command[:200]}",
+                    details={
+                        "vuln_class": vuln_class,
+                        "command": proposal.command,
+                        "output": output[:_MAX_OUTPUT_IN_EVIDENCE],
+                        "exit_code": result.exit_code,
+                        "timed_out": result.timed_out,
+                        "label": label,
+                    },
+                )
+            )
         if not output:
             return 0
         surface_context = (
@@ -226,12 +246,21 @@ def run_sandbox_investigation(
     if events is not None:
         from reachagent.scan.orchestrator import ScanEvent as _ScanEvent
 
+        prefix = f"[{label}] " if label else ""
         events.append(
             _ScanEvent(
                 phase="payloads",
                 kind="finding",
-                message=f"sandbox investigation confirmed: {vuln_class} ({proposal.command[:80]})",
-                details={"vuln_class": vuln_class, "finding": node_id, "command": proposal.command},
+                message=(
+                    f"{prefix}sandbox investigation confirmed: "
+                    f"{vuln_class} ({proposal.command[:80]})"
+                ),
+                details={
+                    "vuln_class": vuln_class,
+                    "finding": node_id,
+                    "command": proposal.command,
+                    "label": label,
+                },
             )
         )
     return 1

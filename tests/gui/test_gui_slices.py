@@ -31,6 +31,75 @@ def test_surface_slice_contains_host_service_endpoint_parameter_tree() -> None:
         _scans.pop(scan_id, None)
 
 
+def test_agents_endpoint_groups_events_by_label_prefix_and_details() -> None:
+    from reachagent.scan.orchestrator import ScanEvent
+
+    scan_id = "agents-slice"
+    _scans[scan_id] = {
+        "status": "running",
+        "events": [
+            ScanEvent(phase="payloads", kind="info", message="[auth] next: sqli — ranked first"),
+            ScanEvent(
+                phase="payloads",
+                kind="finding",
+                message="[auth] confirmed sqli",
+            ),
+            ScanEvent(
+                phase="payloads",
+                kind="info",
+                message="sandbox: $ nmap target.test",
+                details={"label": "auth", "command": "nmap target.test", "output": "22/tcp"},
+            ),
+            ScanEvent(phase="payloads", kind="info", message="no label here, excluded"),
+        ],
+    }
+    try:
+        payload = TestClient(app).get(f"/api/scan/{scan_id}/agents").json()
+        assert len(payload["agents"]) == 1
+        agent = payload["agents"][0]
+        assert agent["label"] == "auth"
+        assert agent["event_count"] == 3
+        assert agent["findings"] == 1
+        assert agent["status"] == "running"  # freshly-constructed events are "now"
+    finally:
+        _scans.pop(scan_id, None)
+
+
+def test_agents_endpoint_marks_a_stale_lane_done() -> None:
+    from reachagent.scan.orchestrator import ScanEvent
+
+    scan_id = "agents-slice-stale"
+    stale = ScanEvent(phase="payloads", kind="info", message="[auth] done")
+    stale.timestamp = "2020-01-01T00:00:00+00:00"
+    _scans[scan_id] = {"status": "running", "events": [stale]}
+    try:
+        payload = TestClient(app).get(f"/api/scan/{scan_id}/agents").json()
+        assert payload["agents"][0]["status"] == "done"
+    finally:
+        _scans.pop(scan_id, None)
+
+
+def test_agents_endpoint_never_shows_running_once_the_scan_is_terminal() -> None:
+    """A lane's own last event can land moments before the whole scan
+    finishes -- the scan's own lifecycle must override the per-lane recency
+    heuristic, or that lane reads "running" forever once polling stops."""
+    from reachagent.scan.orchestrator import ScanEvent
+
+    scan_id = "agents-slice-terminal"
+    fresh = ScanEvent(phase="payloads", kind="info", message="[auth] done")
+    _scans[scan_id] = {"status": "completed", "events": [fresh]}
+    try:
+        payload = TestClient(app).get(f"/api/scan/{scan_id}/agents").json()
+        assert payload["agents"][0]["status"] == "done"
+    finally:
+        _scans.pop(scan_id, None)
+
+
+def test_agents_endpoint_404_for_missing_scan() -> None:
+    response = TestClient(app).get("/api/scan/does-not-exist/agents")
+    assert response.status_code == 404
+
+
 def test_audit_slice_bounds_limit() -> None:
     scan_id = "audit-slice"
     _scans[scan_id] = {"audit": None}

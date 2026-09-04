@@ -167,6 +167,50 @@ def test_dispatch_classes_label_prefixes_its_narration_events() -> None:
     assert any(e.message.startswith("[auth]") for e in events)
 
 
+def test_dispatch_classes_derives_a_label_from_the_specialist_when_none_is_given() -> None:
+    """v4 R3c: the sequential/default path (no explicit `label=`) must still
+    give the GUI's Agents lane view real per-specialist attribution --
+    derived from the CURRENT specialist group rather than a fixed override."""
+    events: list = []
+    _dispatch_classes(
+        ("default_credentials",),  # _SPECIALIST_OF_CLASS -> "auth"
+        graph=ReachabilityGraph(),
+        drivers={"default_credentials": lambda: None},
+        events=events,
+        operator_prompt=None,
+        cancel_check=None,
+        check_cancel=lambda _c: None,
+        touch=lambda: None,
+    )
+    assert any(e.message.startswith("[auth]") for e in events)
+
+
+def test_dispatch_classes_retroactively_labels_events_the_driver_itself_emits() -> None:
+    """None of the ~30 individual driver functions know about lanes/labels --
+    a driver's own event (crucially, including its `kind="finding"` event)
+    must still land in the right Agents lane, tagged after the fact rather
+    than by threading `label` through every driver."""
+    from reachagent.scan.orchestrator import ScanEvent
+
+    events: list = []
+
+    def _driver_emits_its_own_finding_event() -> None:
+        events.append(ScanEvent(phase="payloads", kind="finding", message="confirmed sqli"))
+
+    _dispatch_classes(
+        ("sqli_blind",),  # _SPECIALIST_OF_CLASS -> "injection"
+        graph=ReachabilityGraph(),
+        drivers={"sqli_blind": _driver_emits_its_own_finding_event},
+        events=events,
+        operator_prompt=None,
+        cancel_check=None,
+        check_cancel=lambda _c: None,
+        touch=lambda: None,
+    )
+    finding_event = next(e for e in events if e.kind == "finding")
+    assert finding_event.details["label"] == "injection"
+
+
 # === _run_phase3_concurrent — scheduling/merge/crash-isolation/cancellation =
 
 

@@ -22,10 +22,12 @@ const state = {
   eventsAfter: 0,
   fastTimer: null,
   slowTimer: null,
+  agentsTimer: null,
   fastInFlight: false,
   slowInFlight: false,
+  agentsInFlight: false,
   sidebarTimer: null,
-  activeTab: "terminal",
+  activeTab: "agents",
   workPaneHidden: false,
   splitRatio: 0.46,
   reportReady: false,
@@ -34,8 +36,10 @@ const state = {
 function resetPollState() {
   clearTimeout(state.fastTimer);
   clearTimeout(state.slowTimer);
+  clearTimeout(state.agentsTimer);
   state.fastTimer = null;
   state.slowTimer = null;
+  state.agentsTimer = null;
   state.eventsAfter = 0;
 }
 
@@ -440,6 +444,7 @@ function beginLiveTracking() {
   updateChatHeader({ lifecycle: "queued", target: "" });
   pollEvents();
   pollScanSnapshot();
+  pollAgents();
 }
 
 async function pollEvents() {
@@ -486,6 +491,66 @@ async function pollScanSnapshot() {
   } finally {
     state.slowInFlight = false;
   }
+}
+
+async function pollAgents() {
+  if (!state.scanId || state.agentsInFlight) return;
+  state.agentsInFlight = true;
+  try {
+    const r = await fetch("/api/scan/" + state.scanId + "/agents", { cache: "no-store" });
+    if (r.ok) {
+      const j = await r.json();
+      renderAgents(j.agents || []);
+      if (!TERMINAL_STATES.has(j.lifecycle)) state.agentsTimer = setTimeout(pollAgents, 2000);
+    } else {
+      state.agentsTimer = setTimeout(pollAgents, 3000);
+    }
+  } catch (_e) {
+    state.agentsTimer = setTimeout(pollAgents, 3000);
+  } finally {
+    state.agentsInFlight = false;
+  }
+}
+
+// One lane per concurrent Phase-3 specialist / R3b re-hunt agent (v4 R3c) --
+// a read-only rendering of /api/scan/{id}/agents, which itself is a
+// read-side aggregation over the same event stream the Terminal tab shows.
+function renderAgents(agents) {
+  const list = $("agents-list");
+  const runningCount = agents.filter((a) => a.status === "running").length;
+  const countEl = $("tab-agents-count");
+  countEl.hidden = runningCount === 0;
+  countEl.textContent = String(runningCount);
+  if (!agents.length) {
+    list.innerHTML = '<div class="empty">One lane per concurrent specialist/re-hunt agent appears here once the assessment starts dispatching Phase 3.</div>';
+    return;
+  }
+  list.innerHTML = "";
+  agents.forEach((agent) => {
+    const card = document.createElement("div");
+    card.className = "agent-card";
+    const head = document.createElement("div");
+    head.className = "agent-card-head";
+    const title = document.createElement("span");
+    title.className = "agent-card-label";
+    title.textContent = agent.label;
+    const status = document.createElement("span");
+    status.className = "agent-card-status " + agent.status;
+    status.textContent = agent.status === "running" ? "running" : "done";
+    const findings = document.createElement("span");
+    findings.className = "agent-card-findings";
+    findings.hidden = !agent.findings;
+    findings.textContent = agent.findings + " confirmed";
+    head.append(title, status, findings);
+    const action = document.createElement("div");
+    action.className = "agent-card-action";
+    action.textContent = agent.current_action || "";
+    const feed = document.createElement("div");
+    feed.className = "agent-card-feed";
+    (agent.recent_events || []).forEach((e) => feed.appendChild(terminalRow(e)));
+    card.append(head, action, feed);
+    list.appendChild(card);
+  });
 }
 
 function onScanFinished(j) {
@@ -596,6 +661,7 @@ function appendTerminalRows(events) {
     else terminalEvents.push(e);
   });
   if (!terminalEvents.length) return;
+  appendSandboxRows(terminalEvents);
   const feed = $("term-feed");
   // The scrollable element is the .work-body ancestor (#tab-terminal), not
   // #term-feed itself — #term-feed has no overflow/height of its own, so
@@ -612,6 +678,20 @@ function appendTerminalRows(events) {
 // Shown inline, always — the operator watches these run live, like a shell.
 // Everything else in `details` stays behind the click-to-expand JSON panel.
 const _INLINE_DETAIL_KEYS = new Set(["command", "output"]);
+
+// Sandbox tab (v4 R4/R3c): every event carrying a raw sandbox command/output
+// (see scan/sandbox_investigation.py) is also mirrored into its own feed, so
+// the operator can watch just the agent's own shell activity without the
+// noise of every other scan event. Reuses the same terminalRow() renderer
+// and the same events the Terminal tab already receives -- no new poll.
+function appendSandboxRows(events) {
+  const sandboxEvents = events.filter((e) => e.details && e.details.command);
+  if (!sandboxEvents.length) return;
+  const feed = $("sandbox-feed");
+  const placeholder = feed.querySelector(".term-empty");
+  if (placeholder) placeholder.remove();
+  sandboxEvents.forEach((e) => feed.appendChild(terminalRow(e)));
+}
 
 function formatEventTime(iso) {
   if (!iso) return "";
@@ -692,7 +772,7 @@ document.querySelectorAll(".work-tab").forEach((tab) => {
     tab.classList.add("active");
     const target = tab.dataset.tab;
     state.activeTab = target;
-    ["terminal", "findings", "surface", "report", "audit"].forEach((name) => {
+    ["agents", "terminal", "findings", "surface", "report", "audit", "sandbox"].forEach((name) => {
       $("tab-" + name).hidden = name !== target;
     });
   });

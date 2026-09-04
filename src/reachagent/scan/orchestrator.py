@@ -4101,7 +4101,6 @@ def _dispatch_classes(
 
     remaining = list(classes)
     current_specialist: str | None = None
-    prefix = f"[{label}] " if label else ""
     remaining_sandbox_budget = sandbox_budget
     while remaining:
         check_cancel(cancel_check)
@@ -4113,6 +4112,16 @@ def _dispatch_classes(
         # exactly `remaining`, reordered — so the tail is already the next
         # remaining set with no further filtering needed.
         remaining = list(ranked_order[1:])
+        specialist = _SPECIALIST_OF_CLASS.get(class_name, "general")
+        # v4 R3c: an explicit `label` (a concurrent specialist thread, a
+        # chain re-hunt agent) always wins; the sequential/default path
+        # passes no label at all, so it derives one from the CURRENT
+        # specialist group instead — giving the GUI's Agents lane view real
+        # per-specialist attribution even outside concurrent mode, with no
+        # second dispatch loop needed.
+        effective_label = label or specialist
+        prefix = f"[{effective_label}] " if effective_label else ""
+        before_event_count = len(events)
         _emit(
             events,
             "payloads",
@@ -4120,7 +4129,6 @@ def _dispatch_classes(
             f"{prefix}next: {class_name} — {rank_reason}",
             remaining=len(remaining),
         )
-        specialist = _SPECIALIST_OF_CLASS.get(class_name, "general")
         if specialist != current_specialist:
             current_specialist = specialist
             _emit(
@@ -4158,6 +4166,7 @@ def _dispatch_classes(
                     target=target,
                     prior_outcome="structured detector found no signal",
                     events=events,
+                    label=effective_label,
                 ):
                     _emit(
                         events,
@@ -4168,6 +4177,14 @@ def _dispatch_classes(
             except Exception as exc:  # noqa: BLE001 — sandbox investigation is additive;
                 # a failure here must never cost the rest of the class list its chance to run.
                 _log.warning("sandbox investigation for %r failed: %s", class_name, exc)
+        # v4 R3c: a class's own driver (one of ~30 functions, none of which
+        # know about lanes/labels) emits its own events directly -- including
+        # its `kind="finding"` event. Rather than threading `label` through
+        # every driver, retroactively stamp every event THIS iteration
+        # produced with the current lane -- one attribution point, not 30.
+        if effective_label:
+            for produced in events[before_event_count:]:
+                produced.details.setdefault("label", effective_label)
         touch()
 
 

@@ -356,6 +356,81 @@ def get_events(scan_id: str, after: int = 0, limit: int = 300) -> JSONResponse:
     )
 
 
+# Mirrors app.js's own TERMINAL_STATES exactly -- a scan in one of these
+# lifecycles is never coming back to "running".
+_TERMINAL_LIFECYCLES = frozenset({"completed", "failed", "blocked", "cancelled"})
+_LANE_LABEL_RE = re.compile(r"^\[([^\]]+)\]")
+# ponytail: no explicit per-lane completion signal exists in the event stream
+# today (a lane's own "done" message is emitted by its parent, unlabeled) --
+# a lane is inferred "running" while its most recent event is this recent,
+# "done" once activity goes quiet. Upgrade path: emit an explicit
+# lane-complete event carrying the same label if this heuristic misfires.
+_LANE_IDLE_S = 20.0
+
+
+def _lane_label(event: ScanEvent) -> str | None:
+    details = event.details if isinstance(event.details, dict) else {}
+    label = details.get("label")
+    if label:
+        return str(label)
+    match = _LANE_LABEL_RE.match(event.message)
+    return match.group(1) if match else None
+
+
+@app.get("/api/scan/{scan_id}/agents")
+def get_agents(scan_id: str) -> JSONResponse:
+    """Group scan events into per-agent/specialist lanes (v4 R3c) -- the
+    concurrent Phase-3 specialists and R3b's dynamically-spawned re-hunt
+    agents each tag their own events with a ``[label]`` prefix already;
+    this endpoint is purely a read-side aggregation over the existing
+    event stream, no new tracking state."""
+    from datetime import UTC, datetime
+
+    with _scan_lock:
+        data = _scans.get(scan_id)
+    if data is None:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    lifecycle = _lifecycle(data.get("status", "queued"))
+    scan_is_live = lifecycle not in _TERMINAL_LIFECYCLES
+    lanes: dict[str, list[ScanEvent]] = {}
+    for event in data.get("events", []):
+        label = _lane_label(event)
+        if label:
+            lanes.setdefault(label, []).append(event)
+    now = datetime.now(UTC)
+    agents = []
+    for label, lane_events in sorted(lanes.items()):
+        recent = lane_events[-10:]
+        is_running = False
+        # A lane whose last event landed just before the WHOLE scan finished
+        # would otherwise read "running" forever once polling stops on a
+        # terminal lifecycle -- the scan's own status is authoritative here,
+        # the recency heuristic only decides "running" among LIVE lanes.
+        if scan_is_live:
+            try:
+                last_ts = datetime.fromisoformat(lane_events[-1].timestamp)
+                is_running = (now - last_ts).total_seconds() < _LANE_IDLE_S
+            except (ValueError, TypeError):
+                pass
+        agents.append(
+            {
+                "label": label,
+                "status": "running" if is_running else "done",
+                "current_action": _public_text(recent[-1].message, 800),
+                "findings": sum(1 for e in lane_events if e.kind == "finding"),
+                "event_count": len(lane_events),
+                "recent_events": [_event_dict(e) for e in recent],
+            }
+        )
+    return JSONResponse(
+        {
+            "scan_id": scan_id,
+            "agents": agents,
+            "lifecycle": lifecycle,
+        }
+    )
+
+
 _NO_CACHE = {"Cache-Control": "no-store"}
 
 

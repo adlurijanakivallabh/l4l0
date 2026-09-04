@@ -180,6 +180,66 @@ def test_investigation_drops_a_lead_that_does_not_confirm() -> None:
     assert len(list(g.findings())) == 0
 
 
+def test_investigation_emits_a_raw_command_output_event_even_when_not_confirmed() -> None:
+    """v4 R3c: the Sandbox tab needs the raw command/output regardless of
+    verdict -- not just the "confirmed" event, which only fires on a hit."""
+    g = _graph()
+    fake = _FakeClient(
+        {"propose": True, "command": "nmap -sV target.test", "rationale": "fingerprint services"},
+        confirm_status="inconclusive",
+    )
+    sandbox = _FakeSandbox(SandboxResult(command="nmap ...", exit_code=0, output="22/tcp open ssh"))
+    events: list = []
+    run_sandbox_investigation(
+        vuln_class="ssrf",
+        graph=g,
+        sandbox=sandbox,
+        target="http://target.test",
+        client=fake,
+        events=events,
+        label="auth",
+    )
+    assert len(events) == 1
+    event = events[0]
+    assert event.message.startswith("[auth] sandbox: $ ")
+    assert event.details["command"] == "nmap -sV target.test"
+    assert event.details["output"] == "22/tcp open ssh"
+    assert event.details["label"] == "auth"
+
+
+def test_investigation_confirmed_event_also_carries_the_label() -> None:
+    g = _graph()
+    fake = _FakeClient(
+        {
+            "propose": True,
+            "command": "sqlmap -u http://target.test/api/users?id=1 --batch",
+            "rationale": "test the id parameter for blind sqli",
+        }
+    )
+    sandbox = _FakeSandbox(
+        SandboxResult(
+            command="sqlmap ...",
+            exit_code=0,
+            output="[CRITICAL] the back-end DBMS is MySQL, parameter 'id' is vulnerable",
+        )
+    )
+    events: list = []
+    run_sandbox_investigation(
+        vuln_class="sqli",
+        graph=g,
+        sandbox=sandbox,
+        target="http://target.test",
+        client=fake,
+        events=events,
+        label="injection",
+    )
+    # one raw command/output event, one confirmed-finding event
+    assert len(events) == 2
+    confirmed = events[1]
+    assert confirmed.message.startswith("[injection] sandbox investigation confirmed:")
+    assert confirmed.details["label"] == "injection"
+
+
 def test_investigation_declined_never_runs_a_command() -> None:
     g = _graph()
     fake = _FakeClient({"propose": False, "command": "", "rationale": "nothing to add"})
