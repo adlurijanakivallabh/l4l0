@@ -688,9 +688,24 @@ function appendSandboxRows(events) {
   const sandboxEvents = events.filter((e) => e.details && e.details.command);
   if (!sandboxEvents.length) return;
   const feed = $("sandbox-feed");
-  const placeholder = feed.querySelector(".term-empty");
+  const placeholder = feed.querySelector(".shell-empty");
   if (placeholder) placeholder.remove();
-  sandboxEvents.forEach((e) => feed.appendChild(terminalRow(e)));
+  sandboxEvents.forEach((e) => {
+    const line = document.createElement("div");
+    line.className = "shell-line";
+    const cmd = document.createElement("div");
+    cmd.className = "shell-cmd";
+    cmd.textContent = e.details.command;
+    line.appendChild(cmd);
+    if (e.details.output) {
+      const out = document.createElement("span");
+      out.className = "shell-output";
+      out.textContent = e.details.output;
+      line.appendChild(out);
+    }
+    feed.appendChild(line);
+  });
+  feed.scrollTop = feed.scrollHeight;
 }
 
 function formatEventTime(iso) {

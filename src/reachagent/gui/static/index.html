@@ -249,12 +249,13 @@ a{color:inherit;text-decoration:none}
 .term-row.kind-finding .t-dot{background:var(--green);box-shadow:0 0 6px var(--green)}
 .term-row.kind-error{border-left-color:var(--red)}
 .term-row.kind-error .t-dot{background:var(--red)}
-.term-row.kind-not-applicable .t-dot{background:var(--line-hi)}
+.term-row.kind-not-applicable{border-left-color:var(--amber)}
+.term-row.kind-not-applicable .t-dot{background:var(--amber)}
 .term-row.kind-info .t-dot{background:var(--line-hi)}
 .term-row .t-msg{min-width:0;color:var(--text);line-height:1.55;overflow-wrap:anywhere}
 .term-row.kind-finding .t-msg{color:var(--green);font-weight:650}
 .term-row.kind-error .t-msg{color:var(--red)}
-.term-row.kind-not-applicable .t-msg{color:var(--dim)}
+.term-row.kind-not-applicable .t-msg{color:var(--amber)}
 .term-detail{grid-column:3;margin-top:5px;padding:8px 10px;border:1px solid var(--line);border-radius:7px;background:var(--field);color:var(--muted);font:10px/1.6 var(--font-mono);white-space:pre-wrap;overflow-wrap:anywhere}
 .term-detail[hidden]{display:none}
 .t-cmd{margin-top:4px;padding:6px 9px;border:1px solid var(--line);border-left:2px solid var(--signal-dim);border-radius:5px;background:var(--field);color:var(--signal);font:11px var(--font-mono);overflow-wrap:anywhere}
@@ -262,6 +263,21 @@ a{color:inherit;text-decoration:none}
 .t-output{margin:4px 0 0;padding:7px 9px;border:1px solid var(--line);border-radius:5px;background:#000;color:#c8d0e0;font:10.5px/1.55 var(--font-mono);white-space:pre-wrap;overflow-wrap:anywhere;max-height:220px;overflow-y:auto}
 [data-theme=light] .t-output{background:#12131a;color:#dfe4f0}
 .term-more{margin-top:4px;color:var(--dim);font:9.5px var(--font-mono);cursor:pointer;text-decoration:underline;text-underline-offset:2px}
+
+/* Sandbox tab (v4 R4/R3c/R6): a raw shell transcript -- black ground,
+   continuous monospace scrollback, no card/chrome styling -- reads like
+   `cat`-ing a real terminal session, not a GUI-designed component. No
+   xterm.js: this is a static append-only scrollback of already-captured
+   text, not a live PTY, so a terminal-emulator library buys nothing a
+   plain monospace block can't already give. */
+.shell-body{height:100%;overflow-y:auto;padding:14px 16px;background:#0b0c10;font:12.5px/1.65 var(--font-mono);color:#d7dce6;white-space:pre-wrap;overflow-wrap:anywhere;border-radius:10px}
+.shell-empty{color:#6b6d7a}
+.shell-line{margin:0 0 16px}
+.shell-line:last-child{margin-bottom:0}
+.shell-cmd{color:#5fe08a;font-weight:600}
+.shell-cmd:before{content:"$ "}
+.shell-output{color:#c8d0e0;display:block;margin-top:3px}
+#tab-sandbox{display:flex;overflow:hidden}
 .term-empty{padding:22px 16px 26px;color:var(--dim);font-size:11.5px;text-align:center;border:1px dashed var(--line);border-radius:var(--radius-sm)}
 .term-empty .mechanism-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:6px;margin-top:16px;text-align:left}
 .mechanism-chip{display:flex;align-items:center;gap:7px;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--field);color:var(--muted);font-size:10px}
@@ -535,7 +551,7 @@ a{color:inherit;text-decoration:none}
             <div id="audit-list"><div class="empty">Waiting for an assessment.</div></div>
           </div>
           <div id="tab-sandbox" class="work-body" hidden>
-            <div id="sandbox-feed" class="term-feed"><div class="term-empty">Commands the agent runs in its disposable sandbox (R4) will appear here.</div></div>
+            <div id="sandbox-feed" class="shell-body"><div class="shell-empty">Commands the agent runs in its disposable sandbox (R4) will appear here.</div></div>
           </div>
         </section>
       </div>
