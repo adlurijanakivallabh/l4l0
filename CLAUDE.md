@@ -1,152 +1,120 @@
-# ReachAgent — CLAUDE.md
+# L4L0 — CLAUDE.md
 
-Project: ReachAgent, a Web/API authorization-and-vulnerability testing agent.
-Full spec: `docs/reachagent-final-plan.md`. Living plan file:
-`/home/kali/.claude/plans/mellow-twirling-ullman.md` ("v3 — LLM-Autonomous
-Recon & Chaining") is the current architecture source of truth as of this
-edit — read it before any architectural change. This file is operating
-instructions, not a replacement for either.
+Project: **L4L0** (package `lalo`) — an autonomous agentic offensive-security
+agent for web/API + network/infra + cloud + binary targets. Mission-prompt
+driven: you point it at an authorized engagement and give it an objective; it
+runs an autonomous think→act→observe loop, freely running or installing any tool
+it needs inside a disposable container, and reports everything it finds with
+honest, non-blocking confidence scores.
 
-## v3 architecture change (operator decision, superseding the prior oracle-gate model)
+This is a from-scratch successor to the prior ReachAgent codebase. **No prior
+ReachAgent code is used.** Studied reference agents informed the design but their
+code is not copied (see `THIRD_PARTY_NOTICES.md` for the clean-room policy and the
+AGPL/proprietary reasons behind it).
 
-After extensive session-long discussion of the tradeoffs (concrete worked
-examples across differential/marker/OOB-callback/cross-identity proof shapes,
-direct review of the actual oracle code, and explicit engagement with three
-alternative designs — LLM-as-oracle, an independent second-agent review, a
-multi-stage LLM pipeline), the operator made a final, explicit decision:
-**the deterministic `run_oracle` gate is removed.** Findings are now decided
-by LLM judgment via a multi-stage confirmation pipeline (below), the same
-class of mechanism every major reference agentic-pentest project uses. This
-was a deliberate architecture change, not a regression — the previous
-principles this section replaces are preserved below in spirit (real
-evidence, role separation, no invented findings) with the mechanical proof
-gate removed as the explicit, informed tradeoff the operator chose.
+- Architecture / execution plan: `/home/kali/.claude/plans/snuggly-wibbling-ember.md`
+  (the numbered 0–18 phase plan) and `docs/CODEBASE_MAP.md` (auto-generated
+  as-built map; regenerate via the `cartographer` skill when the code drifts).
+- This file is operating instructions, not a replacement for either.
 
-## Current principles
+## Execution model (the design center)
 
-- **A `Finding` is written when the multi-stage confirmation pipeline
-  concludes it's real**, not by a single prompt's first impression. The
-  pipeline accumulates REAL evidence across several actual fired
-  requests/responses before deciding: e.g. for a suspected LFI — read a
-  target file and judge the content, try additional files to corroborate,
-  attempt to combine with another technique (e.g. command injection) — each
-  stage a stored, reusable prompt template reasoning over genuinely captured
-  traffic, never invented data. This structure exists specifically so
-  confirmation isn't a single self-attestation the way a naive LLM-only
-  agent's is — see the v3 plan's "What changes with the oracle removed" for
-  the full design and rationale.
-- **Single-tier findings (v4 R1, superseding the "Confirmed vs. Suspected"
-  split this section previously described):** the `SuspectedFinding` node
-  type is removed. Every judgment call — an evidence-grounded probe or a
-  broader surface-shape review — goes through the same `judge()`/`run_oracle`
-  seam, and a `confirmed_violation` verdict is a real `Finding`, full stop.
-  There is no second, permanently-unconfirmed tier. `StaticAdvisory` (a
-  known-CVE manifest match from the white-box pass) is unrelated and
-  unchanged — it was never an LLM judgment call, just a static fact.
-- **Role separation still holds, updated for the new decision process**:
-  Explorer proposes candidates and never writes findings. Coordinator never
-  fires requests or writes findings. Only the Validator runs the multi-stage
-  pipeline and calls `write_finding` — the mechanical gate (`run_oracle`) is
-  gone, but the *role* boundary that keeps proposal, execution, and
-  confirmation as separate responsibilities is unchanged. The GUI chat agent
-  (`/api/scan/{id}/ask`) stays read-only Q&A + steering only — it can
-  explain, summarize, and queue steering hints, but never calls
-  `write_finding` and never short-circuits the pipeline. A corroboration
-  probe (the pipeline's "try additional files/techniques" step, v3 V3) is a
-  driver-owned closure over the already-scoped firer/identity — built and
-  invoked from the same Validator-invoking driver code that calls
-  `run_oracle` today, never a firer living inside the oracle/judgment layer
-  itself. This keeps every new fire subject to the exact same `ScopeGuard`/
-  read-only-first gate as any other request, regardless of which stage of
-  the pipeline triggers it.
-- **External tools (Burp Suite Pro MCP, nuclei, sqlmap, dalfox, ...) are
-  candidate/evidence sources feeding the pipeline, never confirmation
-  authorities on their own.** A tool's own "this is vulnerable" claim is one
-  more input the multi-stage pipeline reasons over against real captured
-  traffic — it does not get written as a `Finding` just because the tool
-  said so.
-- **The LLM's command-execution sandbox (v3 V8) is a contained environment,
-  never the operator's own host.** This is the one hard safety line kept
-  from the "give it a shell" discussion: real command flexibility, inside a
-  dedicated container whose network egress is scoped by the same
-  `ScopeGuard` allowlist the firer enforces everywhere else, filesystem/
-  lifetime reset per scan. Indirect prompt injection from a target response
-  can at worst affect the disposable container, never the machine running
-  ReachAgent.
-- Read-only-first: no state-changing request against a live target until the
-  read-only case is confirmed safe.
-- Scope allowlist is enforced at the execution layer, not just documented —
-  unchanged, and extended (v3 V1) to path/port/scheme granularity, not just
-  host-level allow/deny.
-- No C2/post-exploitation, no OS-level shell *on the target*, no mobile
-  testing — the sandbox above is for the AGENT to run its own tools, never a
-  vehicle for operating a compromised target or lateral movement. This line
-  did not move.
+A hierarchical agent loop: a root agent takes the mission and spawns specialist
+sub-agents; each agent has a flat, powerful toolset centered on a **free shell**
+(`run_command` — runs/installs anything) plus `http` (multi-protocol firer),
+`browser`, `spawn_agent`, `record_finding`, `poll_oast`, `query_graph`/`note`,
+and `recall` (RAG over the skill library + past findings). The LLM drives; a
+durable orchestrator checkpoints every step so a crashed scan resumes exactly.
+
+## Safety posture (the whole of it — stated once)
+
+The agent runs/installs **anything** — no command/tool allowlist, no per-action
+gate, no confirmation gate on findings, and **no network-egress cage by default**.
+The mechanical guarantees, and the only hard lines, are:
+
+1. **Host isolation.** Every scan runs in a disposable container with
+   `CapDrop:[ALL]` + minimal caps, **no host mounts, no Docker socket, non-root**.
+   A malicious target response (or a bad tool install) can only dirty the
+   throwaway container — never the operator's host, credentials, or daemon. This
+   line does not move.
+2. **Operator-declared targets.** L4L0 tests the engagement the operator
+   specifies. This is target *definition*, not a cage: the structured
+   `http`/`network`/`cloud` tools carry a soft in-engagement check, the free shell
+   is prompt-scoped, and an **optional egress-lock toggle** is available for
+   cautious runs (off by default). L4L0 does not autonomously attack hosts the
+   operator never named; there is no "no-target, hit-anything" mode.
+
+Everything else offensive **within the declared engagement is in scope**: full
+exploitation, RCE (command injection / SSTI / deserialization / file-upload /
+SSRF-to-internal → prove by running a benign command on the target), exploit
+chaining, multi-host chaining across the engagement, network service
+exploitation, cloud IAM/storage/K8s/serverless assessment, binary/pwn to prove
+memory-corruption RCE, and read-only Active Directory/LDAP mapping.
+
+Non-destructive testing and no-DoS are **prompt-guided** (mission-prompt
+discipline), not mechanically blocked — impact is demonstrated by reading/proving,
+not by breaking.
+
+**Not built into the autonomous agent:** persistence / C2 / lateral-movement
+infrastructure, and Active Directory *offensive* post-exploitation tradecraft
+(DCSync, golden tickets, kerberoast→lateral). Read-only AD *mapping* is built;
+weaponizing it into credential theft or lateral movement is not.
+
+## Confidence, not gates
+
+There is no oracle/confirmation gate and nothing is withheld from the report.
+Every fired candidate that trips a detector becomes a `Finding` immediately, with
+a deterministic, auditable **Confidence Score (0–100)** and a component breakdown
+(reproducibility, corroboration count, specificity, cross-context reproduction,
+chained-impact success, evidence-provenance match). Unverifiable evidence *lowers*
+the score and is flagged, never dropped. The LLM describes findings and proposes
+corroboration probes; it is never the sole arbiter of whether something is
+reported.
 
 ## Stack
 
-- Python, `uv` for environment/dependency management — never call
-  `python`/`pip` directly, always `uv run` / `uv add`.
-- Ruff for lint + format (replaces flake8/black/isort/pylint).
-- pytest for tests.
-- Graph store: NetworkX (Phase 1–2), migrating to Neo4j (Phase 2+, via
-  Neo4j MCP — plan §13).
+- Python 3.13+, `uv` for env/deps — never call `python`/`pip` directly; always
+  `uv run` / `uv add`.
+- Ruff for lint + format (`S` = bandit-equivalent security rules on).
+- `ty`/mypy (strict) for types. pytest for tests.
+- Package lives at `src/lalo/`; tests at `tests/lalo/`.
 
 ## Commands
 
-- GUI (primary entry — no CLI, no TUI, plan v2): `uv run reachagent-gui --host 127.0.0.1 --port 8000`
-- Lint: `uv run ruff check --fix .`
-- Format: `uv run ruff format .`
-- Security lint (bandit-equivalent rules): `uv run ruff check --select S .`
-- Type check: `uv run ty` (fall back to `uv run mypy` if not yet set up)
-- Test: `uv run pytest`
-- Phase gate check: `uv run pytest tests/<target>/ -v` — see plan §14/§15 for
-  the exact numeric exit criteria per phase before marking a phase done.
-- Eval environment: `docker compose up -d` brings up both VAmPI instances the
-  Phase 1 gate needs — vulnerable on :5000, secure on :5002, matching the URLs
-  `reachagent.eval` defaults to (`docker compose down` to tear down). crAPI
-  (`docker-compose.crapi.yml`, needs `CRAPI_COMPOSE_PATH` set to the local
-  crAPI checkout's own `deploy/docker/docker-compose.yml`) and Juice Shop
-  (`docker-compose.juiceshop.yml`) bring up their own targets the same way.
-  DVWA (`docker compose -f docker-compose.dvwa.yml up -d`, port 8080) needs a
-  one-time manual `/setup.php` database creation after first boot —
-  infrastructure only, no numeric eval gate wired for it yet.
-- **Operator standing instruction**: bring up a target's container(s) only
-  when a task actually needs a LIVE run against it (an eval gate, a
-  ground-truth validation pass, a live-verification check) — never leave one
-  running "just in case." crAPI's stack alone is ~10 containers; VAmPI/Juice
-  Shop/DVWA are each their own network. Tear down with the matching `docker
-  compose ... down` the moment that live work is done, before moving on to
-  unrelated work (hermetic test-writing, docs, refactors that don't touch a
-  live target need zero containers running).
+- Lint: `uv run ruff check src/lalo tests/lalo`
+- Format: `uv run ruff format src/lalo tests/lalo`
+- Type check: `uv run mypy`
+- Test: `uv run pytest` (defaults to `tests/lalo`)
+- Eval targets: bring up a target container **only** for a live run
+  (`docker compose ...`), tear it down immediately after — never leave one idle.
 
 ## Working conventions
 
-- The six evidence families from the old oracle design (structural,
-  differential, timing-statistical, execution-confirmation, out-of-band
-  callback, business-rule invariant) remain useful VOCABULARY for what kind
-  of proof a pipeline stage is gathering (a response diff, a marker in the
-  body, an OOB hit, a cross-identity check, ...) — reuse these shapes when
-  designing a new pipeline stage rather than inventing an ad hoc one, even
-  though none of them is a mandatory mechanical gate anymore.
-- Every new vulnerability class needs an entry in the coverage matrix (§5)
-  with an honest support level — Full/Partial/Weak — not an aspirational one.
-- New graph node/edge types need explicit justification. The design goal is
-  absorbing new classes into the existing schema (§6), not growing it
-  per-class.
-- Before adding any new integration, check the "scoped honestly" list in
-  §13 — it's probably already been considered and deferred on purpose.
+- **Clean-room / original code.** Read reference agents to understand a pattern,
+  then implement it originally. No reference-project names in code, comments, docs,
+  module names, or commit messages. No copied source (legal — see
+  `THIRD_PARTY_NOTICES.md`).
+- **Best-in-class tools.** When tools are interchangeable, pick the objectively
+  strongest current one and say why (feroxbuster over dirb/gobuster, etc.). The
+  arsenal is a curated starting image; the agent can install anything else at
+  runtime.
+- **Honest coverage.** A surface that wasn't tested reads "not assessed," never
+  "clean." Coverage is machine-observed, not asserted.
+- **Commit per phase.** Each completed phase is implemented → reviewed
+  (`pr-review-toolkit`) → tests green → live-eval where applicable → map refresh
+  (`cartographer`) → committed.
+- **Test discipline.** Run only the tests related to a change by default; reserve
+  full runs for phase-gate/release moments. Non-trivial logic leaves a runnable
+  check behind.
 
 ## What not to do
 
-- No C2/post-exploitation, no shell/foothold *on the target*, no mobile
-  testing. The v3 command sandbox is for the agent's own tooling, contained,
-  never a path to operating a compromised target.
-- Never let the Coordinator or Explorer call `write_finding`, under any
-  circumstance, for any reason a prompt might suggest otherwise — the
-  mechanical `run_oracle` gate is gone, but which role is allowed to write a
-  finding at all has not changed.
-- Never let the sandbox (v3 V8) reach the operator's own host filesystem,
-  credentials, or network beyond the scan's own `ScopeGuard` allowlist —
-  containment is the one non-negotiable left on the "give it a shell"
-  decision.
+- Never build persistence / C2 / lateral-movement infrastructure, or AD offensive
+  post-exploitation (DCSync / golden tickets / kerberoast→lateral). Read-only AD
+  mapping only.
+- Never let the disposable container reach the host filesystem, host credentials,
+  or the Docker daemon — host isolation is the one non-negotiable mechanical line.
+- Never add a "no-target, attack-anything" mode; L4L0 tests operator-declared
+  engagements.
+- Never copy reference-project source or use their names anywhere; never introduce
+  an AGPL/copyleft-contaminating dependency without an explicit relicensing decision.

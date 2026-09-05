@@ -1,32 +1,30 @@
 [project]
-name = "reachagent"
+name = "lalo"
 version = "0.1.0"
-description = "Web/API authorization-and-vulnerability testing agent — confirmed, multi-hop attack chains via a live reachability graph and deterministic verification."
+description = "L4L0 — autonomous agentic web/API + network + cloud offensive-security agent: mission-prompt-driven free-shell execution, non-blocking confidence scoring, live reachability + attack-chain graph."
 readme = "README.md"
 requires-python = ">=3.13"
 license = { text = "Proprietary" }
 dependencies = [
-    # Execution layer — request firing (§12)
+    # Execution layer — request firing, multi-protocol (HTTP/1-3)
     "httpx[http2]>=0.28,<1.0",
-    # Reachability graph, structural layer, Phase 1–2 (§12)
+    # Reachability + attack-chain graph
     "networkx>=3.4,<4.0",
-    # Payload store — YAML for Phase 1 (§9, §12)
+    # Config / corpora
     "pyyaml>=6.0,<7.0",
-    # Expose ReachAgent's own tools as an MCP server from Phase 1 (§13)
+    # Expose L4L0's own tools as an MCP server + external MCP client
     "mcp>=1.2,<2.0",
+    # Client-side / DOM surface (browser tool)
     "playwright>=1.61.0",
+    # Safe XML parsing (XXE-safe ingestion)
     "defusedxml>=0.7.1",
+    # GUI (FastAPI + WebSocket)
     "fastapi>=0.110,<1.0",
     "uvicorn>=0.30,<1.0",
+    # Report export
     "weasyprint>=69.0",
     "html2docx>=1.6.0",
 ]
-
-[project.scripts]
-# Web GUI — the primary entry point (no CLI, no TUI; plan v2)
-reachagent-gui = "reachagent.gui.app:main"
-# MCP server — human-in-the-loop driving via Claude Desktop/Code (§13)
-reachagent-mcp = "reachagent.mcp.server:main"
 
 [dependency-groups]
 dev = [
@@ -43,33 +41,34 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/reachagent"]
+packages = ["src/lalo"]
 
 [tool.ruff]
 src = ["src", "tests"]
 target-version = "py313"
 line-length = 100
-# Vendored payload corpora are upstream files, never our code — never lint them.
-exclude = ["third_party", ".claude", ".venv"]
+# Vendored corpora + legacy pre-L4L0 code are never our code — never lint them.
+exclude = ["third_party", ".claude", ".venv", "src/reachagent", "output", "logs"]
 
 [tool.ruff.lint]
-# Baseline + security lint (S = bandit-equivalent, per CLAUDE.md).
+# Baseline + security lint (S = bandit-equivalent).
 select = ["E", "F", "I", "W", "UP", "B", "S"]
 
 [tool.ruff.lint.per-file-ignores]
 # Assertions, non-crypto randomness, and dummy credentials are expected in tests.
 "tests/**" = ["S101", "S311", "S105", "S106"]
 # Single-file HTML template — long CSS/JS lines are the minimal one-string page.
-"src/reachagent/gui/**" = ["E501"]
+"src/lalo/gui/**" = ["E501"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["tests/lalo"]
 addopts = "-ra"
 markers = [
     "integration: tests that require a real browser / external process (Playwright)",
+    "live: tests that require a live target container",
 ]
 
 [tool.mypy]
 python_version = "3.13"
-packages = ["reachagent"]
+packages = ["lalo"]
 strict = true
