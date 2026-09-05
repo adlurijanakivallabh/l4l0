@@ -33,14 +33,19 @@ The operator was informed of this after the fact, reviewed the actual
 resulting code directly, and retroactively approved keeping it; that approval
 is real, the originally-claimed prior one was not. Recorded here rather than
 silently rewritten, matching this project's own citation-accuracy discipline.)
-A concrete :class:`~lalo.recon.runner.ReconRunner` (nmap, via
+Two more gaps this docstring originally described as out of scope are also
+now closed, both built afterward in direct response to today's own live
+end-to-end run against a local target, not as part of this module's
+original pass: a concrete :class:`~lalo.recon.runner.ReconRunner` (nmap, via
 :mod:`lalo.recon.scan`, wired into the ``recon`` tool's own ``scan_ports``
-action) closes the gap this docstring originally described as out of scope —
-built afterward, in direct response to today's own live end-to-end run
-against a local target, not as part of this module's original pass. A
-browser-automation tool remains out of scope: the free shell (``run_command``)
-already covers ad-hoc external tool use, and building one would be a new
-subsystem, not wiring.
+action), and a real, scope-checked browser-automation tool
+(:mod:`lalo.browser`, ``build_browser_tool``) — CLAUDE.md's last named,
+previously never-built flat-toolset entry. One :class:`~lalo.browser.session.BrowserSession`
+is shared across the whole scan (root and every spawned descendant), never
+one per agent: :mod:`lalo.agent.spawn`'s own synchronous spawn model means
+only one agent is ever calling tools at any moment, so there is no
+concurrent access to isolate a browser session against, and starting a real
+Chromium instance per agent would be pure waste for that reason.
 
 **Review timing** (a deliberate, simple choice, not a hidden requirement):
 CLAUDE.md's two non-blocking confidence layers run over every finding once
@@ -62,6 +67,8 @@ from typing import TYPE_CHECKING
 from .agent.loop import AgentConfig, AgentLoop, AgentResult
 from .agent.spawn import AgentCoordinator, build_spawn_tools, isolate_for_child, merge_finding_nodes
 from .agent.tools import Tool, ToolRegistry
+from .browser.session import BrowserSession
+from .browser.tool import build_browser_tool
 from .core.config import load_settings
 from .core.errors import ConfigError, ContainerError
 from .core.model_router import ModelRouter
@@ -189,7 +196,18 @@ class ScanRunner:
             oast = OASTServer()
             oast.start()
             try:
-                return self._run_inside(router, scope, engagement, container, oast)
+                # Lazily-started (BrowserSession never actually launches
+                # Chromium until a mission calls "browser" for the first
+                # time) - created eagerly here anyway so its cleanup lives
+                # alongside the container/OAST server's, in the same
+                # try/finally shape, rather than needing a third nesting
+                # level inside _run_inside for a resource _run_inside itself
+                # doesn't otherwise need to know how to tear down.
+                browser = BrowserSession(scope)
+                try:
+                    return self._run_inside(router, scope, engagement, container, oast, browser)
+                finally:
+                    browser.close()
             finally:
                 oast.stop()
         finally:
@@ -202,6 +220,7 @@ class ScanRunner:
         engagement: Engagement,
         container: RuntimeContainer,
         oast: OASTServer,
+        browser: BrowserSession,
     ) -> ScanOutcome:
         graph = ReachabilityGraph()
         skills = load_skills()
@@ -246,6 +265,7 @@ class ScanRunner:
                 build_note_tool(agent_graph),
                 build_recon_tool(firer, agent_graph, scope, container=container),
                 build_jwt_tool(),
+                build_browser_tool(browser),
             ]
             if identities.ids():
                 tools.append(

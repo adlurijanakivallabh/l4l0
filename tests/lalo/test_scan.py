@@ -1,16 +1,23 @@
 """Tests for the end-to-end scan integration pass.
 
-Hermetic throughout: a real ModelRouter wraps a scripted fake Provider (the
-project's own established pattern, reused from test_findings_review.py)
-rather than calling a live LLM, and the runtime container is monkeypatched
-to a lightweight fake so no real Docker daemon is required - only
-docker_available()'s own guard clause is exercised for real logic, never a
-real `docker` subprocess.
+Hermetic throughout, with one deliberate exception: a real ModelRouter wraps
+a scripted fake Provider (the project's own established pattern, reused from
+test_findings_review.py) rather than calling a live LLM, and the runtime
+container is monkeypatched to a lightweight fake so no real Docker daemon is
+required - only docker_available()'s own guard clause is exercised for real
+logic, never a real `docker` subprocess. The one exception is
+test_scan_runner_dispatches_a_real_browser_tool_call (@pytest.mark.live): a
+genuine headless Chromium session against a real local HTTP server, proving
+the browser tool is actually wired into ScanRunner's registry and not just
+present in a fake-provider script nothing ever really dispatches.
 """
 
 from __future__ import annotations
 
+import http.server
 import json
+import threading
+from collections.abc import Iterator
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -245,3 +252,62 @@ def test_merge_finding_nodes_skips_an_id_absent_from_the_child() -> None:
     child = ReachabilityGraph()
     merge_finding_nodes(parent, child, ["finding-never-filed"])
     assert not parent.has_node("finding-never-filed")
+
+
+# --- browser tool wiring: one genuine end-to-end exception to the fake-only rule
+
+
+class _Handler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler's own naming convention
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html")
+        self.end_headers()
+        self.wfile.write(b"<html><body><p>a real page for a real browser</p></body></html>")
+
+    def log_message(self, format: str, *args: object) -> None:  # noqa: A002 - stdlib signature
+        pass
+
+
+@pytest.fixture
+def local_page_server() -> Iterator[str]:
+    server = http.server.HTTPServer(("127.0.0.1", 0), _Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        yield f"http://127.0.0.1:{server.server_port}/"
+    finally:
+        server.shutdown()
+
+
+@pytest.mark.live
+def test_scan_runner_dispatches_a_real_browser_tool_call(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, local_page_server: str
+) -> None:
+    monkeypatch.setattr(scan_module, "docker_available", lambda: True)
+    monkeypatch.setattr(scan_module, "RuntimeContainer", _FakeContainer)
+
+    def respond(call_index: int, prompt: str) -> str:
+        if "FINDING TO REVIEW" in prompt:
+            return '{"verdict": "confirmed", "proof_level": "L1", "reasoning": "n/a"}'
+        if call_index == 0:
+            return json.dumps(
+                {"tool": "browser", "args": {"action": "navigate", "url": local_page_server}}
+            )
+        return json.dumps({"tool": "finish", "args": {"summary": "used the real browser"}})
+
+    router = ModelRouter(
+        providers={"fake": _ScriptedProvider(respond)},
+        routes={"reasoning": ("fake",), "review": ("fake",)},
+        default_route=("fake",),
+    )
+    monkeypatch.setattr(scan_module, "build_router", lambda _settings: router)
+
+    config = ScanConfig(
+        mission="check the page", target_specs=["127.0.0.1"], run_dir=tmp_path / "run"
+    )
+    outcome = ScanRunner(config, env={"ANTHROPIC_API_KEY": "sk-test"}).run()
+
+    assert outcome.status is RunStatus.COMPLETED
+    assert outcome.result.summary == "used the real browser"
+    transcript = outcome.result.transcript
+    browser_call = next(entry for entry in transcript if entry["tool"] == "browser")
+    assert "a real page for a real browser" in browser_call["observation"]
