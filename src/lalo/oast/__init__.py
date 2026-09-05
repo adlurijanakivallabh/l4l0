@@ -13,5 +13,6 @@ issued its token. No dependency on any public collaborator service.
 """
 
 from .server import Interaction, OASTServer
+from .tool import build_oast_tools
 
-__all__ = ["Interaction", "OASTServer"]
+__all__ = ["Interaction", "OASTServer", "build_oast_tools"]

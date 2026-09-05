@@ -12,6 +12,7 @@ from .firer import FireResult, HttpFirer
 from .rawsock import RawResult, tcp_send_recv
 from .scope import Decision, ScopeDecision, ScopeGuard
 from .target import Engagement, TargetRule
+from .tool import build_http_tool
 
 __all__ = [
     "Decision",
@@ -22,5 +23,6 @@ __all__ = [
     "ScopeDecision",
     "ScopeGuard",
     "TargetRule",
+    "build_http_tool",
     "tcp_send_recv",
 ]
