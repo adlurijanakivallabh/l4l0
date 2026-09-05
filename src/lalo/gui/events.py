@@ -9,7 +9,7 @@ in a "what changed since cursor C" query, not just brand-new events), and a
 bounded ring buffer that evicts the oldest event (and its cursor bookkeeping)
 once a cap is hit so a long-running scan's memory stays flat. Renamed
 generically and adapted from that reference's TUI-event-projection use case
-to this project's own categorized status/log/agent/finding events.
+to this project's own categorized status/log/agent/finding/chain events.
 
 A different reference's own generic pub/sub (``graph/subscriptions/
 controller.go``'s ``Channel[T]``, read in full) was checked specifically
@@ -26,10 +26,11 @@ already fully solved elsewhere.
 from __future__ import annotations
 
 import itertools
+from collections import deque
 from dataclasses import dataclass
 from typing import Any, Literal
 
-EventCategory = Literal["status", "log", "agent", "finding", "steering"]
+EventCategory = Literal["status", "log", "agent", "finding", "steering", "chain"]
 
 MAX_EVENTS = 10_000
 
@@ -47,7 +48,11 @@ class EventLog:
 
     def __init__(self, *, max_events: int = MAX_EVENTS) -> None:
         self._max_events = max_events
-        self._events: list[Event] = []
+        # deque, not list: eviction below is popleft() (O(1)) rather than
+        # list.pop(0) (O(n), shifting every remaining element) - the latter
+        # would make every append cost O(max_events) once a long-running
+        # scan's log is at capacity, purely from bookkeeping.
+        self._events: deque[Event] = deque()
         self._by_id: dict[str, Event] = {}
         self._change_cursor: dict[str, int] = {}
         self._cursor = 0
@@ -59,7 +64,7 @@ class EventLog:
         self._by_id[event.id] = event
         self._mark_changed(event)
         if len(self._events) > self._max_events:
-            evicted = self._events.pop(0)
+            evicted = self._events.popleft()
             self._by_id.pop(evicted.id, None)
             self._change_cursor.pop(evicted.id, None)
         return event

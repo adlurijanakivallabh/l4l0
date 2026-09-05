@@ -15,6 +15,17 @@ def test_append_returns_an_event_with_an_id_and_category() -> None:
     assert event.id
 
 
+def test_chain_is_a_real_category_the_frontend_can_render() -> None:
+    """A closed EventCategory that omitted "chain" made the SPA's Attack
+    Chains UI unreachable - no correctly-typed caller could ever populate
+    it. This is the backend half of that fix: chain is a real category."""
+    log = EventLog()
+    event = log.append("chain", {"node_ids": ["a", "b", "c"]})
+    assert event.category == "chain"
+    _cursor, events = log.snapshot()
+    assert events[0].payload == {"node_ids": ["a", "b", "c"]}
+
+
 def test_snapshot_returns_every_live_event_and_the_current_cursor() -> None:
     log = EventLog()
     log.append("log", {"text": "a"})

@@ -94,11 +94,14 @@
           steerLogEl.appendChild(div);
         }
         break;
+      case "chain":
+        chains.set(event.id, event.payload);
+        renderChains();
+        break;
       default:
-        if (event.payload && event.payload.node_ids) {
-          chains.set(event.id, event.payload);
-          renderChains();
-        }
+      // EventCategory (events.py) is a closed set - an unrecognized
+      // category here means a client/server version mismatch, not a
+      // condition to silently render something for.
     }
   }
 
@@ -124,7 +127,24 @@
       }
     });
 
-    socket.addEventListener("close", () => {
+    socket.addEventListener("close", (ev) => {
+      if (ev.code === 4401) {
+        // The token in this page's own URL is invalid - the server has no
+        // way to hand this page a new one, and retrying with the same
+        // token can never succeed. Stop, rather than showing
+        // "reconnecting..." forever with no way to recover short of
+        // knowing to reload.
+        statusEl.textContent = "session invalid - reload the page for a new link";
+        statusEl.className = "disconnected";
+        return;
+      }
+      if (ev.code === 4400) {
+        // The cursor this client remembered is stale/out of range (e.g. the
+        // server's event log was reset) - the token may still be fine, but
+        // repeating the same cursor will only fail the same way forever.
+        // Fall back to a fresh full snapshot on the next attempt instead.
+        lastCursor = null;
+      }
       setStatus(false);
       setTimeout(connect, reconnectDelayMs);
       reconnectDelayMs = Math.min(reconnectDelayMs * 2, 10_000);
@@ -137,12 +157,24 @@
     ev.preventDefault();
     const text = steerInput.value.trim();
     if (!text) return;
-    steerInput.value = "";
-    await fetch(`/steer?token=${encodeURIComponent(token)}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text }),
-    });
+    try {
+      const response = await fetch(`/steer?token=${encodeURIComponent(token)}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text }),
+      });
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({}));
+        throw new Error(body.error || `request failed (${response.status})`);
+      }
+      // only cleared on confirmed delivery - the operator can otherwise
+      // still see and retry what they typed
+      steerInput.value = "";
+    } catch (err) {
+      const div = document.createElement("div");
+      div.textContent = `[not delivered: ${err.message}] ${text}`;
+      steerLogEl.appendChild(div);
+    }
   });
 
   connect();
