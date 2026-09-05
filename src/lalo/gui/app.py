@@ -32,6 +32,29 @@ will not notice a sub-second delay. If this ever needs true low-latency
 push, the upgrade path is an ``asyncio.Queue`` per connection that
 ``EventLog`` also notifies on ``append``/``update`` — not a rewrite of the
 cursor protocol itself.
+
+The same reference already cited above for its token model has directly
+relevant content on a third concern this phase's own search hints raise:
+client-side XSS from rendering untrusted content in the browser. Its own
+frontend (``interface/viewer/frontend/src/components/live/tool-renderers/``
+and ``vulnerability/``, confirmed via source, not just its comparison doc)
+uses React's ``dangerouslySetInnerHTML`` in several places to inject
+``highlight.js``-tokenized HTML for LLM-authored PoC scripts, code diffs,
+and vulnerability descriptions — reasoned as low-risk there specifically
+because ``highlight.js`` tokenizes its input as plain text rather than
+parsing it as HTML, so target-controlled content flowing through never
+executes as markup. :mod:`lalo.gui.static.app.js` (the companion frontend
+this module serves) makes a stricter, simpler choice than that reasoning
+requires: every dynamic value rendered into the page — agent status,
+finding titles, chain node ids, event payload text, steering log lines, all
+of it potentially target- or LLM-influenced — goes through ``textContent``,
+never ``innerHTML`` and never any HTML-templating equivalent, so there is
+no HTML-parsing step at all to reason about being safe. A plain DOM
+console with no code-fence/PoC rendering has no legitimate use for
+``innerHTML`` in the first place, so this is a narrower surface making a
+narrower, more conservative choice — not a rejection of the reference's own
+(correctly reasoned) approach to a harder problem it actually has and this
+module does not.
 """
 
 from __future__ import annotations
