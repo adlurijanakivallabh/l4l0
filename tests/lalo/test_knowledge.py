@@ -16,6 +16,34 @@ def test_skill_library_loads_builtins() -> None:
     assert lib.for_class("xss")
 
 
+def test_skill_library_covers_the_full_class_set() -> None:
+    lib = SkillLibrary()
+    names = {s.name for s in lib.all()}
+    expected = {
+        "sqli",
+        "xss",
+        "cmdi",
+        "ssrf",
+        "path_traversal",
+        "ssti",
+        "access_control",
+        "jwt",
+        "xxe",
+        "deserialization",
+        "request_smuggling",
+        "web_cache",
+        "graphql",
+        "business_logic",
+        "root_agent",
+        "counterevidence",
+    }
+    assert expected <= names
+    # Every vuln-class skill (not coordination) states a proof ladder discipline.
+    for skill in lib.all():
+        if skill.vuln_class != "coordination":
+            assert "proof ladder" in skill.body.lower(), skill.name
+
+
 def test_extra_root_overrides_builtin(tmp_path) -> None:
     override = tmp_path / "sqli.md"
     override.write_text("---\nname: sqli\nclass: sqli\nsummary: custom\n---\nOVERRIDDEN BODY")
