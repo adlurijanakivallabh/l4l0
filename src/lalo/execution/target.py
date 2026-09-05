@@ -85,7 +85,16 @@ class Engagement:
                 scheme = parts.scheme or None
                 host = parts.hostname or ""
                 port = parts.port
-            elif spec.count(":") == 1 and not spec.startswith("["):
+            elif spec.startswith("["):
+                # A bracketed IPv6 literal ("[::1]" or "[::1]:8080") with no
+                # scheme prefix — urlsplit needs a "//" authority marker to
+                # parse the brackets/port correctly rather than treating the
+                # whole spec as an opaque path, which is what silently
+                # produced a TargetRule that could never match anything here.
+                parts = urlsplit(f"//{spec}")
+                host = parts.hostname or ""
+                port = parts.port
+            elif spec.count(":") == 1:
                 host, _, port_str = spec.partition(":")
                 port = int(port_str) if port_str.isdigit() else None
             else:

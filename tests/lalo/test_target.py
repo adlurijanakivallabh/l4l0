@@ -36,6 +36,19 @@ def test_local_lab_targets_work_by_design() -> None:
     assert eng.in_engagement("10.0.5.20")
 
 
+def test_bracketed_ipv6_specs_without_a_scheme_prefix_parse_correctly() -> None:
+    # A bracketed IPv6 literal with no scheme (the form the docstring's own
+    # examples imply is supported for a bare host[:port] spec) used to fall
+    # through to a branch that kept the brackets/port as part of the literal
+    # `host` string, producing a rule that could never match a real request.
+    with_port = Engagement.from_specs(["[::1]:8080"])
+    assert with_port.in_engagement("::1", 8080)
+    assert not with_port.in_engagement("::1", 9090)
+
+    without_port = Engagement.from_specs(["[::1]"])
+    assert without_port.in_engagement("::1")
+
+
 def test_port_and_scheme_restrictions() -> None:
     eng = Engagement.from_specs(["api.example.com:8443"])
     assert eng.in_engagement("api.example.com", 8443)

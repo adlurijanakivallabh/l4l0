@@ -99,3 +99,23 @@ def test_pin_for_connect_returns_none_on_resolution_failure() -> None:
         engagement=Engagement.from_specs(["nowhere.invalid"]), resolver=lambda h: frozenset()
     )
     assert guard.pin_for_connect("nowhere.invalid") is None
+
+
+def test_port_restricted_rule_is_enforced_even_when_the_url_omits_an_explicit_port() -> None:
+    # An operator who scopes ONLY port 8443 must not be bypassed by a URL that
+    # simply omits the port -- that request still actually dials the scheme's
+    # default port (443 for https), which was never authorized.
+    guard = ScopeGuard(
+        engagement=Engagement.from_specs(["api.example.com:8443"]),
+        resolver=lambda h: frozenset({"93.184.216.34"}),
+    )
+    assert guard.check("https://api.example.com/admin").decision is Decision.SKIPPED
+    assert guard.check("https://api.example.com:8443/admin").decision is Decision.ALLOWED
+    assert guard.check("https://api.example.com:80/admin").decision is Decision.SKIPPED
+
+
+def test_malformed_port_is_denied_not_a_crash() -> None:
+    # urlsplit() parses the port lazily -- .port raises ValueError only when
+    # read, which used to escape check() uncaught instead of degrading like
+    # every other refusal path in this module.
+    assert _guard().check("http://app.example.com:notaport/x").decision is Decision.DENIED

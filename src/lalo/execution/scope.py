@@ -58,6 +58,12 @@ _METADATA_HOSTS: frozenset[str] = frozenset(
 # gopher://, ...) is never a legitimate target regardless of engagement.
 _ALLOWED_SCHEMES: frozenset[str] = frozenset({"http", "https"})
 
+# A URL with no explicit port relies on the scheme's well-known default; a
+# port-restricted engagement rule has to be checked against THAT port, not
+# against None (which TargetRule.matches() treats as "this rule doesn't
+# restrict by port at all" — the same sentinel, silently conflated).
+_DEFAULT_PORTS: dict[str, int] = {"http": 80, "https": 443}
+
 
 class Decision(StrEnum):
     ALLOWED = "allowed"
@@ -133,9 +139,17 @@ class ScopeGuard:
             # not scheme-restricted the way the HTTP firer is.
             if scheme != "tcp":
                 return ScopeDecision(Decision.DENIED, "scheme_not_allowed")
+        try:
+            explicit_port = parts.port  # lazily parsed; raises ValueError if non-numeric
+        except ValueError:
+            return ScopeDecision(Decision.DENIED, "malformed_port")
+        # A request with no explicit port dials the scheme's default (httpx's
+        # own behavior), so the scope check must use that, not None, or a
+        # port-restricted rule is silently bypassed by simply omitting the port.
+        effective_port = explicit_port if explicit_port is not None else _DEFAULT_PORTS.get(scheme)
         if self.deny_metadata and self._hits_metadata(host):
             return ScopeDecision(Decision.DENIED, "cloud_metadata_denied")
-        if self.engagement.in_engagement(host, parts.port, parts.scheme):
+        if self.engagement.in_engagement(host, effective_port, parts.scheme):
             return ScopeDecision(Decision.ALLOWED, "in_engagement")
         if self.egress_lock:
             return ScopeDecision(Decision.DENIED, "egress_lock_out_of_engagement")

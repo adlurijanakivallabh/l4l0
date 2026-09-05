@@ -47,9 +47,23 @@ class FireResult:
 
 @dataclass
 class _Breaker:
+    """A per-host circuit breaker with a real open -> half-open -> closed cycle.
+
+    Nothing reset ``is_open`` before this: once tripped, a host was refused
+    for the rest of the ``HttpFirer`` instance's lifetime regardless of
+    whether it recovered seconds later. ``should_probe`` allows exactly one
+    request through once ``reset_after_s`` has elapsed since the trip — a
+    success closes the breaker, a failure re-arms the cooldown.
+    """
+
     threshold: int = 5
+    reset_after_s: float = 30.0
     failures: int = 0
     is_open: bool = False
+    opened_at: float = 0.0
+
+    def should_probe(self) -> bool:
+        return (time.monotonic() - self.opened_at) >= self.reset_after_s
 
 
 def _pinned_url_and_host_header(url: str, pinned_ip: str) -> tuple[str, str]:
@@ -60,7 +74,16 @@ def _pinned_url_and_host_header(url: str, pinned_ip: str) -> tuple[str, str]:
     parts = urlsplit(url)
     original_host = parts.hostname or ""
     if original_host.lower() == pinned_ip.lower():
-        return url, parts.netloc  # already a literal IP; nothing to rewrite
+        # Already a literal IP -- still round-trip through urlunsplit rather
+        # than returning the raw url string verbatim: urlsplit/urlunsplit
+        # strips embedded control characters (CPython's own bpo-43882
+        # mitigation), which the FQDN branch below gets for free but a
+        # verbatim passthrough here would not, letting a target-influenced
+        # newline/CR reach httpx unchecked and raise an uncaught InvalidURL.
+        pinned = urlunsplit(
+            (parts.scheme, parts.netloc, parts.path or "/", parts.query, parts.fragment)
+        )
+        return pinned, parts.netloc
     ip_for_netloc = f"[{pinned_ip}]" if ":" in pinned_ip else pinned_ip
     netloc = f"{ip_for_netloc}:{parts.port}" if parts.port else ip_for_netloc
     pinned = urlunsplit((parts.scheme, netloc, parts.path or "/", parts.query, parts.fragment))
@@ -76,14 +99,19 @@ class HttpFirer:
         client: httpx.Client | None = None,
         *,
         breaker_threshold: int = 5,
+        breaker_reset_after_s: float = 30.0,
     ) -> None:
         self.scope = scope
         self._client = client or httpx.Client(http2=True, timeout=20.0, follow_redirects=False)
         self._breaker_threshold = breaker_threshold
+        self._breaker_reset_after_s = breaker_reset_after_s
         self._breakers: dict[str, _Breaker] = {}
 
     def _breaker(self, host: str) -> _Breaker:
-        return self._breakers.setdefault(host, _Breaker(threshold=self._breaker_threshold))
+        return self._breakers.setdefault(
+            host,
+            _Breaker(threshold=self._breaker_threshold, reset_after_s=self._breaker_reset_after_s),
+        )
 
     def fire(
         self,
@@ -101,7 +129,7 @@ class HttpFirer:
         parts = urlsplit(url)
         host = parts.hostname or ""
         breaker = self._breaker(host)
-        if breaker.is_open:
+        if breaker.is_open and not breaker.should_probe():
             return FireResult(method=method, url=url, fired=False, scope_reason="circuit_open")
 
         pinned_ip = self.scope.pin_for_connect(host)
@@ -126,10 +154,25 @@ class HttpFirer:
                 # Dial the pinned IP, but still validate TLS against the real name.
                 request.extensions["sni_hostname"] = parts.hostname
             resp = self._client.send(request)
+        except httpx.InvalidURL as exc:
+            # Raised by build_request() itself, before any network I/O --
+            # httpx.InvalidURL is NOT a subclass of httpx.HTTPError, so this
+            # needs its own clause or it propagates and crashes the caller. No
+            # bytes were ever sent, so fired=False (unlike the HTTPError branch
+            # below, where send() genuinely attempted the request).
+            return FireResult(
+                method=method,
+                url=url,
+                fired=False,
+                scope_reason=decision.reason,
+                error=type(exc).__name__,
+                elapsed_ms=(time.monotonic() - start) * 1000.0,
+            )
         except httpx.HTTPError as exc:
             breaker.failures += 1
             if breaker.failures >= breaker.threshold:
                 breaker.is_open = True
+                breaker.opened_at = time.monotonic()  # (re)arm the cooldown on every trip/re-trip
                 _log.warning("circuit opened for host %s after %d failures", host, breaker.failures)
             return FireResult(
                 method=method,
@@ -141,6 +184,7 @@ class HttpFirer:
             )
 
         breaker.failures = 0
+        breaker.is_open = False  # a successful request (incl. a half-open probe) closes it
         return FireResult(
             method=method,
             url=url,

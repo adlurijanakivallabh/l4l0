@@ -56,12 +56,21 @@ class DurableJournal:
         return self._entries.get(key)
 
     def record(self, key: str, result: Any) -> None:
-        self._entries[key] = result
+        # Serialize and durably write FIRST, update in-memory state only after
+        # that succeeds. Doing it in the other order (as this once did) means a
+        # serialization failure (e.g. a non-JSON-serializable result) or a
+        # transient disk error leaves _entries believing a step completed when
+        # nothing was ever persisted — has() would return True, a resumed
+        # process wouldn't see the key at all, and within the same process the
+        # step would never be retried. This ordering makes an unrecorded step
+        # look exactly like it never ran, which is the truth.
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        line = json.dumps({"key": key, "result": result}, sort_keys=True) + "\n"
         with self.path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps({"key": key, "result": result}, sort_keys=True) + "\n")
+            handle.write(line)
             handle.flush()
             os.fsync(handle.fileno())
+        self._entries[key] = result
 
     def run_once(self, key: str, fn: Callable[[], Any]) -> Any:
         """Execute ``fn`` once ever for ``key``; on resume return the cached result

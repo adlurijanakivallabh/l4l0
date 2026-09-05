@@ -44,6 +44,39 @@ def test_resume_after_crash_skips_completed_steps(tmp_path) -> None:
     assert calls["n"] == 0  # the side effect did NOT re-run
 
 
+def test_a_failed_durable_write_never_updates_in_memory_state(tmp_path) -> None:
+    # Before the fix, record() updated _entries BEFORE the durable write, so a
+    # serialization failure left has()==True with nothing ever on disk -- the
+    # step looked "done" in-process but a resumed process wouldn't see it at
+    # all, and it would never be retried either. An unrecorded step must look
+    # exactly like it never ran.
+    path = tmp_path / "j.jsonl"
+    journal = DurableJournal(path)
+    calls = {"n": 0}
+
+    def not_json_serializable() -> dict[str, object]:
+        calls["n"] += 1
+        return {"data": {1, 2}}  # a set -- json.dumps raises TypeError
+
+    with pytest.raises(TypeError):
+        journal.run_once("k", not_json_serializable)
+
+    assert journal.has("k") is False
+    # json.dumps() now runs before the file is ever opened, so a serialization
+    # failure doesn't even create an empty file.
+    assert path.exists() is False
+
+    # A retry within the same process actually re-runs the step (it was never
+    # recorded as done) rather than silently returning a stale cached value.
+    def now_serializable() -> dict[str, int]:
+        calls["n"] += 1
+        return {"data": 1}
+
+    assert journal.run_once("k", now_serializable) == {"data": 1}
+    assert calls["n"] == 2
+    assert journal.has("k") is True
+
+
 def test_torn_last_line_is_ignored(tmp_path) -> None:
     path = tmp_path / "j.jsonl"
     j = DurableJournal(path)

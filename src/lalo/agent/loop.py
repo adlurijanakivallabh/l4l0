@@ -29,6 +29,13 @@ project's reference-first mandate), not any single one:
   operational feedback" prompt contract) — enforced in prompts/ and
   confirmation/review.py, but the loop is what makes every tool result
   traceable to a real observation in the first place.
+- **A reserved final turn beyond max_steps**, dedicated purely to letting the
+  model transmit a summary rather than losing everything when the step
+  ceiling hits mid-investigation — adapted from a reference's per-task-kind
+  turn-budget design, whose own turn_budget field "counts task-work turns;
+  the runtime reserves one additional transport turn." This was read (Phase
+  5) but not actually adopted at the time; added retroactively after an
+  audit flagged the gap between what was read and what was built.
 """
 
 from __future__ import annotations
@@ -64,6 +71,13 @@ _NO_TOOL_CALL_NUDGE = (
     "Your reply did not contain a tool call. Every turn must be exactly one JSON "
     'object: {"tool": "<name>", "args": {...}}. If you believe the objective is '
     'already met, say so via {"tool": "finish", "args": {"summary": "..."}}.'
+)
+
+_FINAL_TURN_DIRECTIVE = (
+    "FINAL TURN: your step budget is exhausted and no further tool calls will run "
+    'after this one. Respond with {"tool": "finish", "args": {"summary": "..."}} '
+    "summarizing what you found, what you confirmed, and what remains open — a "
+    "partial result now is far more useful than nothing."
 )
 
 # Role-differentiated wrap-up directives, worded distinctly for a root agent
@@ -255,4 +269,22 @@ class AgentLoop:
                 if self.budget is not None:
                     self.budget.spend(1)
 
+        return self._final_turn(mission, transcript)
+
+    def _final_turn(self, mission: str, transcript: list[dict[str, object]]) -> AgentResult:
+        """One guaranteed extra turn beyond max_steps, reserved purely for the
+        model to transmit a summary — it may not call any other tool here. A
+        non-compliant response (no tool call, or anything but finish) just
+        falls back to the plain max_steps outcome rather than looping further."""
+        prompt = self._render_prompt(mission, transcript, _FINAL_TURN_DIRECTIVE)
+        response = self.router.complete(
+            self.config.role, CompletionRequest(prompt=prompt, system=self.system_prompt)
+        )
+        call = parse_tool_call(response.text)
+        if call is not None and call.name == "finish":
+            summary = str(call.args.get("summary", ""))
+            self._emit("finished", {"step": self.config.max_steps, "reserved_turn": True})
+            return AgentResult(
+                "max_steps_reserved_turn", self.config.max_steps, transcript, summary=summary
+            )
         return AgentResult("max_steps", self.config.max_steps, transcript)

@@ -77,6 +77,80 @@ def test_transport_errors_trip_the_circuit_breaker() -> None:
     assert blocked.scope_reason == "circuit_open"
 
 
+def test_literal_ip_target_with_embedded_control_characters_does_not_crash() -> None:
+    # httpx.InvalidURL is NOT a subclass of httpx.HTTPError, and the literal-IP
+    # branch of the URL-pinning helper used to return the raw url string
+    # verbatim (skipping the urlsplit/urlunsplit round-trip that strips
+    # control characters on the FQDN path) -- a target-influenced newline in a
+    # redirect Location header reaching a literal-IP target used to crash the
+    # whole firer with an uncaught InvalidURL instead of sanitizing the same
+    # way the FQDN path already does.
+    eng = Engagement.from_specs(["93.184.216.34"])
+    guard = ScopeGuard(engagement=eng, resolver=lambda h: frozenset({"93.184.216.34"}))
+    seen: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["path"] = request.url.path
+        return httpx.Response(200, content=b"ok")
+
+    firer = HttpFirer(guard, client=httpx.Client(transport=httpx.MockTransport(handler)))
+    result = firer.fire("GET", "http://93.184.216.34/path\nwith\nnewline")
+    assert result.fired is True  # sanitized, not refused -- matches the FQDN path's own behavior
+    assert result.status == 200
+    assert seen["path"] == "/pathwithnewline"  # control characters stripped, never crashed
+
+
+def test_httpx_invalid_url_from_build_request_degrades_to_a_fire_result() -> None:
+    # A non-printable character urlsplit/urlunsplit does NOT strip (unlike
+    # \t\r\n) but that httpx's own stricter validation still rejects -- this
+    # exercises the InvalidURL except clause itself, independent of the
+    # urlsplit/urlunsplit sanitization fix above.
+    def handler(request: httpx.Request) -> httpx.Response:  # pragma: no cover
+        raise AssertionError("must never reach the network with an invalid URL")
+
+    firer = HttpFirer(_scope(), client=httpx.Client(transport=httpx.MockTransport(handler)))
+    result = firer.fire("GET", "https://app.example.com/\x7f")
+    assert result.fired is False
+    assert result.error == "InvalidURL"
+
+
+def test_circuit_breaker_recovers_after_its_cooldown_elapses() -> None:
+    # Before the fix, is_open was never reset once tripped -- a host stayed
+    # refused for the rest of the process regardless of recovery.
+    attempts = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        attempts["n"] += 1
+        if attempts["n"] <= 2:
+            raise httpx.ConnectError("boom", request=request)
+        return httpx.Response(200, content=b"recovered")
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    firer = HttpFirer(_scope(), client=client, breaker_threshold=2, breaker_reset_after_s=0.0)
+
+    for _ in range(2):
+        assert firer.fire("GET", "https://app.example.com/").error == "ConnectError"
+
+    # Zero cooldown -> the very next call is allowed through as a probe.
+    probe = firer.fire("GET", "https://app.example.com/")
+    assert probe.fired is True
+    assert probe.status == 200
+    assert probe.body == b"recovered"
+
+
+def test_circuit_breaker_stays_open_before_its_cooldown_elapses() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("boom", request=request)
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    firer = HttpFirer(_scope(), client=client, breaker_threshold=2, breaker_reset_after_s=9999.0)
+    for _ in range(2):
+        firer.fire("GET", "https://app.example.com/")
+    blocked = firer.fire("GET", "https://app.example.com/")
+    assert blocked.fired is False
+    assert blocked.scope_reason == "circuit_open"
+
+
 def test_dns_resolution_failure_does_not_fire_blind() -> None:
     guard = ScopeGuard(
         engagement=Engagement.from_specs(["nowhere.invalid"]), resolver=lambda h: frozenset()

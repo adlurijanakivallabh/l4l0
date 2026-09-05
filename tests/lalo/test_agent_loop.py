@@ -159,6 +159,50 @@ def test_max_steps_ceiling_is_respected() -> None:
     assert len(result.transcript) == 2
 
 
+def test_max_steps_grants_one_reserved_final_turn_for_a_summary() -> None:
+    # Adapted from a reference's per-task-kind turn budget: the work-turn
+    # budget is separate from a guaranteed final turn reserved purely for
+    # transmitting a result, so an agent that ran out of steps mid-
+    # investigation doesn't lose everything it found.
+    tool, _ = _counting_tool("noop")
+    registry = ToolRegistry([tool])
+    router = _FakeRouter(
+        lambda i, _p: (
+            f'{{"tool": "noop", "args": {{"i": {i}}}}}'
+            if i < 2
+            else '{"tool": "finish", "args": {"summary": "found XSS, IDOR still open"}}'
+        )
+    )
+    loop = AgentLoop(
+        router,  # type: ignore[arg-type]
+        registry,
+        system_prompt="",
+        config=AgentConfig(max_steps=2),
+    )
+    result = loop.run("mission")
+    assert result.stop_reason == "max_steps_reserved_turn"
+    assert result.summary == "found XSS, IDOR still open"
+    assert result.steps == 2
+    assert router.calls == 3  # 2 work turns + 1 reserved turn
+
+
+def test_max_steps_final_turn_falls_back_cleanly_if_model_does_not_comply() -> None:
+    tool, _ = _counting_tool("noop")
+    registry = ToolRegistry([tool])
+    # Even on its reserved final turn, the model just keeps calling noop.
+    router = _FakeRouter(lambda i, _p: f'{{"tool": "noop", "args": {{"i": {i}}}}}')
+    loop = AgentLoop(
+        router,  # type: ignore[arg-type]
+        registry,
+        system_prompt="",
+        config=AgentConfig(max_steps=2),
+    )
+    result = loop.run("mission")
+    assert result.stop_reason == "max_steps"  # not "max_steps_reserved_turn"
+    assert result.summary == ""
+    assert router.calls == 3  # the reserved turn was still offered
+
+
 def test_event_callbacks_fire_for_tool_call_and_finish() -> None:
     tool, _ = _counting_tool("noop")
     registry = ToolRegistry([tool])
