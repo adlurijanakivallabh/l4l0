@@ -11,7 +11,14 @@ from urllib.parse import urlsplit
 
 from ..confirmation.diff import semantic_diff
 from ..models import Evidence, EvidenceKind
-from .signatures import ARITHMETIC, ID_OUTPUT, PASSWD_MARKER, SQL_ERRORS
+from .signatures import (
+    ARITHMETIC,
+    ID_OUTPUT,
+    METADATA_MARKERS,
+    NOSQL_ERRORS,
+    PASSWD_MARKER,
+    SQL_ERRORS,
+)
 
 
 def sqli_error(body: str, *, fire_ref: str | None = None) -> Evidence | None:
@@ -84,6 +91,35 @@ def path_traversal_read(body: str, *, fire_ref: str | None = None) -> Evidence |
             fire_ref=fire_ref,
             observed=match.group(0),
             metadata={"diff_magnitude": 0.9, "succeeded": True},
+        )
+    return None
+
+
+def nosqli_error(body: str, *, fire_ref: str | None = None) -> Evidence | None:
+    lowered = body.lower()
+    for fragment in NOSQL_ERRORS:
+        if fragment in lowered:
+            return Evidence(
+                kind=EvidenceKind.STRUCTURAL,
+                summary="NoSQL error/operator signature in response",
+                fire_ref=fire_ref,
+                observed=fragment,
+                metadata={"signature": fragment, "diff_magnitude": 0.6},
+            )
+    return None
+
+
+def ssrf_metadata(body: str, *, fire_ref: str | None = None) -> Evidence | None:
+    """In-band SSRF: the response contains cloud-metadata content (IMDS reached)."""
+    lowered = body.lower()
+    hits = [m for m in METADATA_MARKERS if m in lowered]
+    if hits:
+        return Evidence(
+            kind=EvidenceKind.EXECUTION,
+            summary="cloud-metadata content returned via SSRF",
+            fire_ref=fire_ref,
+            observed=hits[0],
+            metadata={"markers": hits, "diff_magnitude": 0.95, "succeeded": True},
         )
     return None
 

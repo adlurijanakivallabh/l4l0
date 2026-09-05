@@ -11,12 +11,14 @@ assessed", never "clean".
 from .ledger import CoverageLedger
 from .web import (
     cmdi_output,
+    nosqli_error,
     oob_interaction,
     open_redirect,
     path_traversal_read,
     sqli_boolean,
     sqli_error,
     sqli_time,
+    ssrf_metadata,
     ssti_eval,
     xss_reflection,
 )
@@ -24,12 +26,14 @@ from .web import (
 __all__ = [
     "CoverageLedger",
     "cmdi_output",
+    "nosqli_error",
     "oob_interaction",
     "open_redirect",
     "path_traversal_read",
     "sqli_boolean",
     "sqli_error",
     "sqli_time",
+    "ssrf_metadata",
     "ssti_eval",
     "xss_reflection",
 ]

@@ -5,12 +5,14 @@ from __future__ import annotations
 from lalo.detectors import (
     CoverageLedger,
     cmdi_output,
+    nosqli_error,
     oob_interaction,
     open_redirect,
     path_traversal_read,
     sqli_boolean,
     sqli_error,
     sqli_time,
+    ssrf_metadata,
     ssti_eval,
     xss_reflection,
 )
@@ -57,6 +59,14 @@ def test_open_redirect_and_oob() -> None:
     assert open_redirect("/dashboard", "//evil.example") is None
     assert oob_interaction([object()]) is not None
     assert oob_interaction([]) is None
+
+
+def test_nosqli_and_ssrf_metadata_detectors() -> None:
+    assert nosqli_error("... MongoError: unexpected token ...") is not None
+    assert nosqli_error("all good") is None
+    ssrf = ssrf_metadata("ami-id: ami-123\ninstance-id: i-456\niam/security-credentials/role")
+    assert ssrf is not None and ssrf.metadata.get("succeeded") is True
+    assert ssrf_metadata("normal page") is None
 
 
 def test_coverage_ledger_flags_unassessed() -> None:
