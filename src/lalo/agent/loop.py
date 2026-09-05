@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from ..core.logging import get_logger
 from ..core.model_router import CompletionRequest, ModelRouter
 from ..observability import Tracer, get_tracer
+from .monitor import LoopMonitor
 from .tools import ToolRegistry, parse_tool_call
 
 _log = get_logger("lalo.agent")
@@ -44,12 +45,14 @@ class AgentLoop:
         system_prompt: str,
         config: AgentConfig | None = None,
         tracer: Tracer | None = None,
+        monitor: LoopMonitor | None = None,
     ) -> None:
         self.router = router
         self.registry = registry
         self.system_prompt = system_prompt
         self.config = config or AgentConfig()
         self.tracer = tracer or get_tracer()
+        self.monitor = monitor
 
     def _render_prompt(self, mission: str, transcript: list[dict[str, object]]) -> str:
         parts = [
@@ -88,4 +91,8 @@ class AgentLoop:
                     {"tool": call.name, "args": call.args, "observation": observation}
                 )
                 self.tracer.counter("tool_calls")
+                if self.monitor is not None:
+                    note = self.monitor.observe(call.name, call.args)
+                    if note:
+                        transcript.append({"tool": "monitor", "args": {}, "observation": note})
         return AgentResult("max_steps", self.config.max_steps, transcript)

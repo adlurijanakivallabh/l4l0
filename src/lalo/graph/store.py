@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 from collections.abc import Iterator
 from typing import Any, cast
 
@@ -72,6 +73,10 @@ class ReachGraph:
     @property
     def graph(self) -> nx.DiGraph[str]:
         return self._g
+
+    def snapshot(self) -> ReachGraph:
+        """Return a deep, independent copy — a sub-agent works on this in isolation."""
+        return ReachGraph(copy.deepcopy(self._g))
 
     def _add_node(self, node_id: str, node_type: NodeType, **attrs: object) -> str:
         self._g.add_node(node_id, type=node_type.value, **attrs)
