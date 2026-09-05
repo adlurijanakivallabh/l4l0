@@ -1,6 +1,6 @@
 """The LLM adversarial review — CLAUDE.md's second, independent non-blocking layer.
 
-A reference SAST platform's real capella review/confirm/critic prompts
+A reference SAST platform's real review/confirm/critic prompt trio
 (``review.prompt.hbs``, ``confirm.prompt.hbs``, ``critic.prompt.hbs``, all
 read in full in Phase 12a) converge on one instruction worth adopting
 near-verbatim: "Assume every finding is a false positive by default...

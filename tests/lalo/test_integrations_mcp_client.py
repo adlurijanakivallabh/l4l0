@@ -46,6 +46,10 @@ def _test_server() -> FastMCP:
         raise RuntimeError(msg)
 
     @server.tool()
+    def big_output() -> str:
+        return "x" * 10_000
+
+    @server.tool()
     async def hangs_forever() -> str:
         await asyncio.sleep(60)
         return "should never get here"
@@ -183,6 +187,19 @@ def test_call_external_tool_real_round_trip_through_a_live_session() -> None:
     )
     assert result.ok is True
     assert result.observation == "echo: hello"
+
+
+def test_call_external_tool_truncates_an_oversized_response() -> None:
+    """A hostile or just chatty MCP server's response must not flow through
+    unbounded into the calling agent's context - matching the same cap
+    execution/tool.py already applies to HTTP response bodies."""
+    config = _config(allowed_tools={"big_output": "read"})
+    result = call_external_tool(
+        config, "big_output", {}, connector=_memory_connector, env={"TEST_MCP_TOKEN": "secret"}
+    )
+    assert result.ok is True
+    assert len(result.observation) < 10_000
+    assert result.observation.endswith("(truncated)")
 
 
 def test_call_external_tool_a_server_side_error_degrades_gracefully() -> None:

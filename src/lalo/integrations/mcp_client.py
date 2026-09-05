@@ -40,10 +40,28 @@ allowed" are not in tension as long as the two failure classes are never
 conflated, which is exactly where the two references above differ from
 each other in practice.
 
-The remaining three references were confirmed, via their own real source
-and each project's comparison doc, to describe MCP only as their *own*
-tool-exposure layer (an internal server), not as an external-MCP-consuming
-client — not applicable to this module's actual concern.
+A third reference platform has real, directly on-point content that was
+initially missed on a first grep pass restricted to its own internal
+tool-exposure layer: ``examples/proposals/mcp_client_integration.md``, a
+454-line, unimplemented design RFC for exactly this module's concern (a
+generic external MCP client, motivated by connecting Burp Suite Pro as a
+tool). Read in full and checked against this module's actual shipped
+behavior. Its explicit Security and Safety section separately names
+per-call timeouts, a maximum response size (with truncation logged, not
+silent), URL/SSRF validation on server endpoints, and treating MCP tool
+descriptions/results as untrusted text rather than instructions — the
+same discipline this project's own prompts already apply to target
+content. :data:`_MAX_RESULT_CHARS` (matching the same bound
+``execution/tool.py`` already uses for HTTP response bodies) and
+:data:`_DEFAULT_SESSION_TIMEOUT` close the first two directly. URL/SSRF
+validation on the connection's own endpoint and prompt-injection framing
+for tool descriptions/results are not addressed by this module and are
+worth a deliberate follow-up, not silently dropped requirements — noted
+here rather than left unstated. The remaining two references were
+confirmed, via their own real source and each project's comparison doc,
+to describe MCP only as their *own* tool-exposure layer (an internal
+server), not as an external-MCP-consuming client — not applicable to
+this module's actual concern.
 """
 
 from __future__ import annotations
@@ -172,9 +190,15 @@ async def _default_connector(
                 yield session
 
 
+_MAX_RESULT_CHARS = 4_000
+
+
 def _render_content(content: list[object]) -> str:
     parts = [block.text for block in content if isinstance(block, TextContent)]
-    return "\n".join(parts) if parts else "(no text content returned)"
+    text = "\n".join(parts) if parts else "(no text content returned)"
+    if len(text) > _MAX_RESULT_CHARS:
+        return text[:_MAX_RESULT_CHARS] + "\n... (truncated)"
+    return text
 
 
 def call_external_tool(

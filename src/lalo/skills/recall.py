@@ -5,10 +5,23 @@ A reference skill library resolves skills by bare name or ``category/name``
 name or keyword match still wins outright (matching that reference's own
 resolution order), with a token-overlap ranking as a fallback for a genuinely
 free-text query ("how do I test for blind injection") that doesn't name a
-skill directly. Deliberately dependency-free — no embedding model or vector
-store — for a library of a few dozen files, exact/keyword matching plus a
-cheap overlap score is the right-sized tool, not a scaled-down semantic
-search stack the library doesn't need yet.
+skill directly.
+
+A different reference platform was also checked for this concern (grepping
+all five comparison docs, not just the one already informing the file-format
+side of this package) and does have real, substantially more sophisticated
+prior art: a pgvector-backed embedding retrieval subsystem over its own
+long-term "memory"/knowledge-document store (guide/answer/code documents,
+described in its own docs as retrieval-augmented context, with a dedicated
+dev CLI to index/inspect/search it). Deliberately not adopted: that
+subsystem solves retrieval over an open-ended, growing knowledge base of
+documents nobody has fully read; this module's actual job is retrieval over
+a few dozen fixed, hand-curated skill files, where exact/keyword matching
+plus a cheap token-overlap score already gets the right file essentially
+every time a query names its topic at all. Embedding infrastructure sized
+for that reference's problem would be true over-engineering for this one —
+noted here as a checked and deliberately rejected alternative, not a missed
+option.
 """
 
 from __future__ import annotations
