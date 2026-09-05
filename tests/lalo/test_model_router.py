@@ -78,6 +78,18 @@ def test_no_chain_configured_raises() -> None:
         router.complete("reasoning", CompletionRequest(prompt="hi"))
 
 
+def test_role_explicitly_mapped_to_an_empty_chain_is_not_replaced_by_the_default() -> None:
+    # routes={"reasoning": ()} means "this role is disabled" -- it must not
+    # silently fall back to default_route just because an empty tuple is falsy.
+    a = _FakeProvider("a", text="from-default")
+    router = ModelRouter(providers={"a": a}, routes={"reasoning": ()}, default_route=("a",))
+    with pytest.raises(AllProvidersFailedError):
+        router.complete("reasoning", CompletionRequest(prompt="hi"))
+    assert a.calls == 0
+    # An unmentioned role still falls back to the default chain as normal.
+    assert router.complete("triage", CompletionRequest(prompt="hi")).provider == "a"
+
+
 def test_non_failover_exception_propagates() -> None:
     a = _FakeProvider("a", raises=ValueError("real bug"))
     router = _router(a, chain=("a",))

@@ -66,6 +66,26 @@ def test_pem_private_key_header() -> None:
     assert REDACTION_PLACEHOLDER in redact("-----BEGIN RSA PRIVATE KEY-----\nMIIE...")
 
 
+def test_redact_does_not_leak_a_suffix_when_one_secret_is_a_substring_of_another() -> None:
+    # Registering a secret that is itself a prefix of another registered secret
+    # must never cause the longer secret's own remainder to survive redaction --
+    # this is order-dependent on plain set iteration, so it must hold regardless
+    # of which one happens to be processed first.
+    r = SecretRedactor()
+    r.register_secret("abc123")
+    r.register_secret("abc123456")
+    out = r.redact("leaked abc123456 here")
+    assert "123456" not in out
+    assert "456" not in out
+    assert out == f"leaked {REDACTION_PLACEHOLDER} here"
+
+
+def test_safe_target_url_handles_a_non_numeric_port_without_crashing() -> None:
+    # urlsplit() parses the port lazily -- accessing .port on a malformed port
+    # raises ValueError only when read, not at urlsplit() time itself.
+    assert safe_target_url("http://evil.com:abc/path?x=1") == REDACTION_PLACEHOLDER
+
+
 def test_safe_target_url_strips_userinfo_and_sensitive_query() -> None:
     url = "https://user:hunter2@app.example.com:8443/login?token=abc123secret&next=/home"
     out = safe_target_url(url)

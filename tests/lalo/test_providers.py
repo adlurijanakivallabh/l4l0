@@ -78,6 +78,35 @@ def test_openai_compatible_success_and_content_filter() -> None:
         blocked.complete(CompletionRequest(prompt="x"))
 
 
+def test_openai_compatible_treats_explicit_null_content_as_empty_text() -> None:
+    # A tool-call finish is a normal response shape where "content" is present
+    # but explicitly null (not absent) -- CompletionResponse.text is typed str
+    # and must never come back as None for this common, legitimate shape.
+    def tool_call_finish(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "finish_reason": "tool_calls",
+                        "message": {"content": None, "tool_calls": [{"id": "1"}]},
+                    }
+                ]
+            },
+        )
+
+    provider = OpenAICompatibleProvider(
+        "gw",
+        "k",
+        model="m",
+        base_url="http://x",
+        client=httpx.Client(transport=httpx.MockTransport(tool_call_finish)),
+    )
+    response = provider.complete(CompletionRequest(prompt="x"))
+    assert response.text == ""
+    assert isinstance(response.text, str)
+
+
 def test_build_router_wires_configured_providers_and_registers_secrets() -> None:
     settings = load_settings({"ANTHROPIC_API_KEY": "sk-ant-super-secret-value-123456"})
     router = build_router(settings)

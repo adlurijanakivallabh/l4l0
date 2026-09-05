@@ -37,6 +37,15 @@ _KEEPALIVE = ("tail", "-f", "/dev/null")
 _FORBIDDEN_CAPS = frozenset({"SYS_ADMIN", "SYS_MODULE", "SYS_RAWIO", "SYS_BOOT"})
 
 
+def _normalize_cap(cap: str) -> str:
+    """Docker itself accepts a capability name case-insensitively and with an
+    optional ``CAP_`` prefix (``sys_admin`` and ``CAP_SYS_ADMIN`` both grant the
+    same real capability as ``SYS_ADMIN``) — normalize before comparing against
+    :data:`_FORBIDDEN_CAPS`, or a caller can trivially bypass the check by
+    varying case/prefix while Docker still grants the forbidden capability."""
+    return cap.strip().upper().removeprefix("CAP_")
+
+
 class ForbiddenCapabilityError(ContainerError):
     """A caller requested a capability that must never be granted to the sandbox."""
 
@@ -100,7 +109,8 @@ class RuntimeConfig:
     extra_run_args: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
-        forbidden = _FORBIDDEN_CAPS.intersection(self.cap_add)
+        normalized = {_normalize_cap(cap) for cap in self.cap_add}
+        forbidden = _FORBIDDEN_CAPS.intersection(normalized)
         if forbidden:
             raise ForbiddenCapabilityError(
                 f"refusing to grant forbidden capabilities to the sandbox: {sorted(forbidden)}"
@@ -162,8 +172,28 @@ class RuntimeContainer:
         args += [self.config.image, *_KEEPALIVE]
         return args
 
+    def _best_effort_remove(self) -> None:
+        """Try to remove a container that may or may not actually exist yet.
+
+        Used when a docker call timed out client-side: the daemon may have
+        finished creating/starting the container regardless, and leaving it
+        behind would contradict this module's "removal on exit" guarantee.
+        """
+        try:
+            self._run(["rm", "-f", self._name], timeout=30)
+        except subprocess.TimeoutExpired:
+            _log.warning("best-effort cleanup of %s also timed out; it may be orphaned", self._name)
+
     def start(self) -> None:
-        result = self._run(self._run_args())
+        try:
+            result = self._run(self._run_args())
+        except subprocess.TimeoutExpired as exc:
+            # The client-side call timed out, but the daemon may have created
+            # and started the container anyway — clean up before raising so
+            # __enter__ raising (which skips __exit__/stop() entirely, per
+            # Python's own context-manager protocol) can't leak it.
+            self._best_effort_remove()
+            raise ContainerError(f"container start timed out: {exc}") from exc
         if result.returncode != 0:
             raise ContainerError(f"container start failed: {result.stderr.strip()}")
         self._started = True
@@ -171,7 +201,13 @@ class RuntimeContainer:
         # intervening work) so a container that dies within milliseconds is
         # caught here, not silently reported as "started" — the failure mode a
         # reference project's own hardening notes specifically call out.
-        if not self._is_running():
+        try:
+            running = self._is_running()
+        except subprocess.TimeoutExpired as exc:
+            self._started = False
+            self._best_effort_remove()
+            raise ContainerError(f"liveness check timed out: {exc}") from exc
+        if not running:
             tail = self._logs_tail()
             self.stop()
             raise ContainerError(f"container exited immediately; logs: {tail}")
@@ -206,7 +242,13 @@ class RuntimeContainer:
 
     def stop(self) -> None:
         if self._started:
-            self._run(["rm", "-f", self._name], timeout=30)
+            try:
+                self._run(["rm", "-f", self._name], timeout=30)
+            except subprocess.TimeoutExpired:
+                _log.warning("removal of %s timed out; it may be orphaned", self._name)
+            # Either way, this wrapper no longer treats the container as usable —
+            # a timed-out removal leaves its actual state unknown, and retrying
+            # exec() against it would be worse than refusing further use.
             self._started = False
             _log.info("runtime container %s removed", self._name)
 

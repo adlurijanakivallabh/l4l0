@@ -3,13 +3,18 @@
 Design, informed by a reference CLI's config resolver (env-first, a declarative
 table mapping each credential to its candidate env vars, a human-readable
 credential hint per provider, and a `<provider>:<model>` single spec string for
-picking the active model) — generalized here into something none of the five
-reference projects does: every curated entry beyond the native Anthropic one is
-an instance of one generic OpenAI-compatible adapter kind (works for OpenAI
+picking the active model): every curated entry beyond the native Anthropic one
+is an instance of one generic OpenAI-compatible adapter kind (works for OpenAI
 itself, a local gateway, OpenRouter, Ollama, vLLM — anything speaking the
-OpenAI chat/completions schema), not a bespoke one-off class per name. A curated
-provider can also require MORE than one env var (mirrors the reference's
-region+token style multi-var providers) via ``extra_required_envs``.
+OpenAI chat/completions schema), not a bespoke one-off class per name. A second
+reference agent's own multi-provider layer achieves the same "no bespoke class
+per provider name" property, just via a third-party routing library instead of
+a hand-rolled HTTP adapter — this module's contribution is the curated table +
+multi-env-var + explicit-spec-override shape, not the generic-adapter idea in
+isolation. A curated provider can also require MORE than one env var (mirrors
+the first reference's region+token style multi-var providers) via
+``extra_required_envs`` — used here to make a provider's model id mandatory,
+not optional, for exactly the reason described on the ``custom`` spec below.
 """
 
 from __future__ import annotations
@@ -87,13 +92,18 @@ CURATED_PROVIDERS: tuple[ProviderSpec, ...] = (
     ),
     # Generic slot for anything not curated above (mirrors a "bring your own
     # provider" generic-credential path) — any OpenAI-compatible endpoint.
+    # LALO_CUSTOM_MODEL is required, not just an optional override: a reference
+    # CLI's own <provider>:<model> resolver treats the model id as a mandatory
+    # part of the credential contract for exactly this reason — an optional
+    # model with an empty-string default resolves "successfully" with model=""
+    # and fails every real request instead of failing the config check.
     ProviderSpec(
         id="custom",
         kind="openai_compatible",
         candidate_key_envs=("LALO_CUSTOM_API_KEY",),
-        credential_hint="LALO_CUSTOM_API_KEY + LALO_CUSTOM_BASE_URL",
+        credential_hint="LALO_CUSTOM_API_KEY + LALO_CUSTOM_BASE_URL + LALO_CUSTOM_MODEL",
         default_model="",
-        extra_required_envs=("LALO_CUSTOM_BASE_URL",),
+        extra_required_envs=("LALO_CUSTOM_BASE_URL", "LALO_CUSTOM_MODEL"),
         base_url_env="LALO_CUSTOM_BASE_URL",
         model_env="LALO_CUSTOM_MODEL",
     ),

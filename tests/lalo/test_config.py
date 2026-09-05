@@ -19,12 +19,26 @@ def test_resolves_only_configured_providers_in_preference_order() -> None:
     assert settings.get("gemini") is None
 
 
-def test_generic_custom_provider_needs_both_key_and_base_url() -> None:
+def test_generic_custom_provider_needs_key_base_url_and_model() -> None:
     only_key = load_settings({"LALO_CUSTOM_API_KEY": "k"})
-    assert only_key.get("custom") is None  # missing LALO_CUSTOM_BASE_URL
-    both = load_settings({"LALO_CUSTOM_API_KEY": "k", "LALO_CUSTOM_BASE_URL": "http://x"})
-    assert both.get("custom") is not None
-    assert both.get("custom").base_url == "http://x"  # type: ignore[union-attr]
+    assert only_key.get("custom") is None  # missing LALO_CUSTOM_BASE_URL and LALO_CUSTOM_MODEL
+    all_three = load_settings(
+        {
+            "LALO_CUSTOM_API_KEY": "k",
+            "LALO_CUSTOM_BASE_URL": "http://x",
+            "LALO_CUSTOM_MODEL": "some-model",
+        }
+    )
+    assert all_three.get("custom") is not None
+    assert all_three.get("custom").base_url == "http://x"  # type: ignore[union-attr]
+    assert all_three.get("custom").model == "some-model"  # type: ignore[union-attr]
+
+
+def test_generic_custom_provider_does_not_resolve_with_an_empty_model() -> None:
+    # A missing LALO_CUSTOM_MODEL must never silently resolve with model="" --
+    # that would pass every check yet fail every real completion request.
+    missing_model = load_settings({"LALO_CUSTOM_API_KEY": "k", "LALO_CUSTOM_BASE_URL": "http://x"})
+    assert missing_model.get("custom") is None
 
 
 def test_missing_credential_hints_lists_unconfigured_providers() -> None:

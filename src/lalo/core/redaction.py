@@ -157,7 +157,14 @@ class SecretRedactor:
         if not text:
             return text
         out = text
-        for secret in self._exact_secrets:
+        # Longest first: if one registered secret is a substring of another
+        # (e.g. a key and a truncated/rotated variant of it), redacting the
+        # shorter one first would consume part of the longer one's own match,
+        # leaking its remainder in plaintext. Set iteration order is otherwise
+        # unspecified, so this isn't just a tidiness choice — without it the
+        # leak is real but silently order-dependent (seen on most, not all,
+        # hash seeds).
+        for secret in sorted(self._exact_secrets, key=len, reverse=True):
             if secret in out:
                 out = out.replace(secret, REDACTION_PLACEHOLDER)
         for pattern in _TOKEN_PATTERNS:
@@ -192,10 +199,11 @@ def safe_target_url(url: str) -> str:
     """
     try:
         parts = urlsplit(url)
+        port = parts.port  # lazily parsed/validated; raises ValueError on a non-numeric port
     except ValueError:
         return REDACTION_PLACEHOLDER
     host = parts.hostname or ""
-    netloc = f"{host}:{parts.port}" if parts.port else host  # userinfo dropped
+    netloc = f"{host}:{port}" if port else host  # userinfo dropped
     query = urlencode(
         [
             (key, REDACTION_PLACEHOLDER if key.lower() in _SENSITIVE_KEYS else value)

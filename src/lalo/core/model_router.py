@@ -63,7 +63,12 @@ class ModelRouter:
     default_route: Sequence[str] = ()
 
     def chain_for(self, role: str) -> Sequence[str]:
-        return self.routes.get(role) or self.default_route
+        # `role not configured at all` and `role explicitly mapped to an empty
+        # chain` are different things — the latter means "this role is
+        # disabled," which `or self.default_route` would silently paper over
+        # (an empty tuple is falsy) by substituting the default chain instead.
+        chain = self.routes.get(role)
+        return chain if chain is not None else self.default_route
 
     def complete(self, role: str, request: CompletionRequest) -> CompletionResponse:
         chain = self.chain_for(role)

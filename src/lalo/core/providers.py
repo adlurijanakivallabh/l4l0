@@ -133,7 +133,13 @@ class OpenAICompatibleProvider:
         finish = choices[0].get("finish_reason") if choices else None
         if finish == "content_filter":
             raise ProviderRefusalError("content_filter", provider=self.name)
-        text = choices[0].get("message", {}).get("content", "") if choices else ""
+        # `.get("content", "")` only defaults when the key is absent; a tool-call
+        # finish (finish_reason="tool_calls") is a normal response shape where
+        # "content" is present but explicitly null, so the fallback has to be
+        # applied with `or`, not just a .get() default, to avoid returning None
+        # for a dataclass field typed str.
+        message = choices[0].get("message", {}) if choices else {}
+        text = message.get("content") or ""
         return CompletionResponse(text=text, provider=self.name, model=self.model)
 
 

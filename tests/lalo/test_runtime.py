@@ -27,6 +27,18 @@ def test_forbidden_capability_rejected_before_any_container_starts() -> None:
         RuntimeConfig(cap_add=("SYS_ADMIN",))
 
 
+def test_forbidden_capability_check_normalizes_case_and_cap_prefix() -> None:
+    # Docker itself grants a capability case-insensitively and with an optional
+    # CAP_ prefix -- sys_admin, Sys_Admin, and CAP_SYS_ADMIN all actually grant
+    # the identical real capability as SYS_ADMIN (verified against a live daemon:
+    # `docker run --cap-drop ALL --cap-add sys_admin` sets CapEff's SYS_ADMIN bit
+    # exactly like the fully-qualified spelling does), so the forbidden-cap check
+    # must normalize the same way or it is trivially bypassed by spelling alone.
+    for spelling in ("sys_admin", "Sys_Admin", "CAP_SYS_ADMIN", "cap_sys_admin"):
+        with pytest.raises(ForbiddenCapabilityError):
+            RuntimeConfig(cap_add=(spelling,))
+
+
 def test_lifecycle_start_exec_stop() -> None:
     container = RuntimeContainer(RuntimeConfig(image=_IMAGE))
     with container as c:
