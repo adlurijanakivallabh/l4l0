@@ -110,9 +110,11 @@ def _parse_verdict(text: str) -> ReviewVerdict:
             if verdict not in ("confirmed", "ruled_out", "open_proof_gap"):
                 verdict = "open_proof_gap"
             level_raw = obj.get("proof_level", 1)
-            proof_level = int(level_raw) if isinstance(level_raw, int | float | str) and str(
-                level_raw
-            ).strip().isdigit() else 1
+            proof_level = (
+                int(level_raw)
+                if isinstance(level_raw, int | float | str) and str(level_raw).strip().isdigit()
+                else 1
+            )
             return ReviewVerdict(
                 verdict=verdict,
                 proof_level=max(1, min(4, proof_level)),

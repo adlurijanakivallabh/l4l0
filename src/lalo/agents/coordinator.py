@@ -86,5 +86,6 @@ def rehunt_spec(
         f"(confidence {lead.confidence}). Escalate it: chain further, find related "
         f"instances, and demonstrate maximum in-scope impact."
     )
-    return SubAgentSpec(role=f"rehunt:{lead.vuln_class}", objective=objective,
-                        registry_factory=registry_factory)
+    return SubAgentSpec(
+        role=f"rehunt:{lead.vuln_class}", objective=objective, registry_factory=registry_factory
+    )

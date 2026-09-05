@@ -53,9 +53,7 @@ def to_sarif(findings: list[Finding]) -> dict[str, Any]:
             "ruleId": f.vuln_class,
             "level": _SARIF_LEVEL.get(f.severity.value, "warning"),
             "message": {"text": f"{f.title} (confidence {f.confidence})"},
-            "locations": [
-                {"physicalLocation": {"artifactLocation": {"uri": f.target}}}
-            ],
+            "locations": [{"physicalLocation": {"artifactLocation": {"uri": f.target}}}],
         }
         for f in findings
     ]

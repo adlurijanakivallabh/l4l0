@@ -23,9 +23,7 @@ def _finding() -> Finding:
         severity=Severity.HIGH,
         target="https://app.example.com/search",
         evidence=[
-            Evidence(
-                kind=EvidenceKind.STRUCTURAL, summary="payload reflected", observed="<script>"
-            )
+            Evidence(kind=EvidenceKind.STRUCTURAL, summary="payload reflected", observed="<script>")
         ],
     )
 

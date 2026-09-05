@@ -47,10 +47,27 @@ _TOKEN_PATTERNS: tuple[re.Pattern[str], ...] = (
 # Query/param/form keys whose *values* are redacted by name.
 _SENSITIVE_KEYS: frozenset[str] = frozenset(
     {
-        "password", "passwd", "pwd", "secret", "token", "access_token",
-        "refresh_token", "id_token", "api_key", "apikey", "key", "authorization",
-        "auth", "session", "sessionid", "sid", "code", "client_secret", "otp",
-        "signature", "sig",
+        "password",
+        "passwd",
+        "pwd",
+        "secret",
+        "token",
+        "access_token",
+        "refresh_token",
+        "id_token",
+        "api_key",
+        "apikey",
+        "key",
+        "authorization",
+        "auth",
+        "session",
+        "sessionid",
+        "sid",
+        "code",
+        "client_secret",
+        "otp",
+        "signature",
+        "sig",
     }
 )
 

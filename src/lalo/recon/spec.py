@@ -31,9 +31,7 @@ def _base_urls(spec: dict[str, object]) -> list[str]:
     return bases
 
 
-def ingest_openapi(
-    spec: dict[str, object], *, scope: ScopeGuard | None = None
-) -> list[ReconFact]:
+def ingest_openapi(spec: dict[str, object], *, scope: ScopeGuard | None = None) -> list[ReconFact]:
     """Return endpoint facts from an OpenAPI/Swagger spec, scope-validated."""
     bases = _base_urls(spec)
     paths = spec.get("paths")

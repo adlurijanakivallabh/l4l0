@@ -114,9 +114,7 @@ def _chained_impact(finding: Finding) -> float:
     return 0.0
 
 
-def _provenance(
-    finding: Finding, captures: Mapping[str, str] | None, flags: list[str]
-) -> float:
+def _provenance(finding: Finding, captures: Mapping[str, str] | None, flags: list[str]) -> float:
     observed = [e for e in finding.evidence if e.observed]
     if not observed:
         return 0.5  # nothing to verify -> neutral
@@ -131,9 +129,7 @@ def _provenance(
     return fraction
 
 
-def score_finding(
-    finding: Finding, *, captures: Mapping[str, str] | None = None
-) -> ScoreBreakdown:
+def score_finding(finding: Finding, *, captures: Mapping[str, str] | None = None) -> ScoreBreakdown:
     """Score a finding and write ``confidence`` + ``confidence_breakdown`` onto it."""
     breakdown = ConfidenceScorer().score(finding, captures=captures)
     finding.confidence = breakdown.total

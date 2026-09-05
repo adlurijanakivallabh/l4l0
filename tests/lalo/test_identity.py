@@ -22,11 +22,7 @@ from lalo.identity import (
 )
 
 # alg=HS256, {"sub":"user","role":"user"} — signature is a dummy for tests.
-_JWT = (
-    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"
-    ".eyJzdWIiOiJ1c2VyIiwicm9sZSI6InVzZXIifQ"
-    ".c2ln"
-)
+_JWT = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJ1c2VyIiwicm9sZSI6InVzZXIifQ.c2ln"
 
 
 def test_session_mirrors_onto_graph_by_construction() -> None:

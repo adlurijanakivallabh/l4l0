@@ -17,8 +17,6 @@ class MatrixCell:
     identity: str
 
 
-def build_role_matrix(
-    endpoints: Sequence[str], identities: Sequence[str]
-) -> list[MatrixCell]:
+def build_role_matrix(endpoints: Sequence[str], identities: Sequence[str]) -> list[MatrixCell]:
     """Return every (endpoint, identity) cell to exercise for access control."""
     return [MatrixCell(endpoint=e, identity=i) for e in endpoints for i in identities]

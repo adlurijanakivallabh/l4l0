@@ -52,9 +52,7 @@ class HttpFirer:
         breaker_threshold: int = 5,
     ) -> None:
         self.scope = scope
-        self._client = client or httpx.Client(
-            http2=True, timeout=20.0, follow_redirects=False
-        )
+        self._client = client or httpx.Client(http2=True, timeout=20.0, follow_redirects=False)
         self._breaker_threshold = breaker_threshold
         self._breakers: dict[str, _Breaker] = {}
 

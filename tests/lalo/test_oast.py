@@ -12,9 +12,9 @@ from lalo.oast import OASTServer
 
 def _dns_query(name: str) -> bytes:
     header = struct.pack(">HHHHHH", 0x1234, 0x0100, 1, 0, 0, 0)
-    qname = b"".join(
-        bytes([len(label)]) + label.encode("ascii") for label in name.split(".")
-    ) + b"\x00"
+    qname = (
+        b"".join(bytes([len(label)]) + label.encode("ascii") for label in name.split(".")) + b"\x00"
+    )
     return header + qname + struct.pack(">HH", 1, 1)  # type A, class IN
 
 

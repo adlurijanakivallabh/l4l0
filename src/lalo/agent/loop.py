@@ -65,9 +65,7 @@ class AgentLoop:
         if transcript:
             parts.append("\nHISTORY (most recent last):")
             for entry in transcript[-12:]:
-                parts.append(
-                    f'  called {entry["tool"]}({entry["args"]}) -> {entry["observation"]}'
-                )
+                parts.append(f"  called {entry['tool']}({entry['args']}) -> {entry['observation']}")
         parts.append("\nWhat is your next action? Reply with one JSON tool call.")
         return "\n".join(parts)
 

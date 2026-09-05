@@ -104,16 +104,12 @@ def _parse_nuclei(stdout: str) -> list[ReconFact]:
         if isinstance(template, str) and isinstance(matched, str):
             info = row.get("info") if isinstance(row.get("info"), dict) else {}
             severity = info.get("severity") if isinstance(info, dict) else None
-            facts.append(
-                ReconFact("fingerprint", f"{template}@{matched}", {"severity": severity})
-            )
+            facts.append(ReconFact("fingerprint", f"{template}@{matched}", {"severity": severity}))
     return facts
 
 
 DEFAULT_RUNNERS: list[ReconRunner] = [
-    ReconRunner(
-        "httpx", "httpx", lambda t: ["httpx", "-json", "-silent", "-u", t], _parse_httpx
-    ),
+    ReconRunner("httpx", "httpx", lambda t: ["httpx", "-json", "-silent", "-u", t], _parse_httpx),
     ReconRunner(
         "subfinder",
         "subfinder",
