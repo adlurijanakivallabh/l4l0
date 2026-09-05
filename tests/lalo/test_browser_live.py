@@ -76,7 +76,7 @@ def local_server_pair() -> Iterator[tuple[str, str]]:
         offsite.shutdown()
 
 
-@pytest.mark.live
+@pytest.mark.integration
 def test_a_real_chromium_session_navigates_and_reads_a_real_page(local_server: str) -> None:
     engagement = Engagement.from_specs(["127.0.0.1"])
     scope = ScopeGuard(engagement)
@@ -96,7 +96,7 @@ def test_a_real_chromium_session_navigates_and_reads_a_real_page(local_server: s
         session.close()
 
 
-@pytest.mark.live
+@pytest.mark.integration
 def test_a_real_click_that_navigates_off_engagement_is_reverted(
     local_server_pair: tuple[str, str],
 ) -> None:

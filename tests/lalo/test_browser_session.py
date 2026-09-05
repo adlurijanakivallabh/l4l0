@@ -1,6 +1,8 @@
 """Hermetic tests for BrowserSession: scope-gated navigation, real Chromium
 never started (a fake page object stands in). One real end-to-end test with a
-genuine headless Chromium session lives in test_browser_live.py (@pytest.mark.live)."""
+genuine headless Chromium session lives in test_browser_live.py
+(@pytest.mark.integration - this repo's existing marker for tests needing a
+real browser/external process)."""
 
 from __future__ import annotations
 

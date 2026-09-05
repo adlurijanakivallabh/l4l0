@@ -24,3 +24,15 @@ data/pattern_db.jsonl
 .playwright-cli/
 output/playwright/
 .playwright-mcp/
+
+# Local Claude Code tooling config — developer-machine settings, not project source
+.claude/
+
+# Scan-tool resume/state files (feroxbuster, etc.) accidentally left in a
+# working directory during live testing — never source, may reference a
+# live engagement's own scan state
+*.state
+
+# Vendored third-party corpora — not currently used by any shipped code;
+# see THIRD_PARTY_NOTICES.md before ever re-adding one
+/third_party/

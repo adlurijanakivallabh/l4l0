@@ -6,9 +6,12 @@ test_findings_review.py) rather than calling a live LLM, and the runtime
 container is monkeypatched to a lightweight fake so no real Docker daemon is
 required - only docker_available()'s own guard clause is exercised for real
 logic, never a real `docker` subprocess. The one exception is
-test_scan_runner_dispatches_a_real_browser_tool_call (@pytest.mark.live): a
-genuine headless Chromium session against a real local HTTP server, proving
-the browser tool is actually wired into ScanRunner's registry and not just
+test_scan_runner_dispatches_a_real_browser_tool_call (@pytest.mark.integration
+- this repo's own existing marker for "needs a real browser/external
+process," matching test_browser_live.py's own two tests, not @pytest.mark.live
+which is reserved for tests needing a live target container): a genuine
+headless Chromium session against a real local HTTP server, proving the
+browser tool is actually wired into ScanRunner's registry and not just
 present in a fake-provider script nothing ever really dispatches.
 """
 
@@ -278,7 +281,7 @@ def local_page_server() -> Iterator[str]:
         server.shutdown()
 
 
-@pytest.mark.live
+@pytest.mark.integration
 def test_scan_runner_dispatches_a_real_browser_tool_call(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, local_page_server: str
 ) -> None:

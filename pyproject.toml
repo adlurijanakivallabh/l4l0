@@ -4,7 +4,8 @@ version = "0.1.0"
 description = "L4L0 — autonomous agentic web/API + network + cloud offensive-security agent: mission-prompt-driven free-shell execution, non-blocking confidence scoring, live reachability + attack-chain graph."
 readme = "README.md"
 requires-python = ">=3.13"
-license = { text = "Proprietary" }
+license = "MIT"
+license-files = ["LICENSE"]
 dependencies = [
     # Execution layer — request firing, multi-protocol (HTTP/1-3)
     "httpx[http2]>=0.28,<1.0",
