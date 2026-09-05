@@ -7,15 +7,29 @@ provider- and service-agnostic and fully testable with fakes.
 """
 
 from .loop import AgentConfig, AgentLoop, AgentResult
+from .spawn import (
+    AgentCoordinator,
+    AgentNode,
+    AgentStatus,
+    Isolatable,
+    build_spawn_tools,
+    isolate_for_child,
+)
 from .tools import Tool, ToolCall, ToolRegistry, ToolResult, parse_tool_call
 
 __all__ = [
     "AgentConfig",
+    "AgentCoordinator",
     "AgentLoop",
+    "AgentNode",
     "AgentResult",
+    "AgentStatus",
+    "Isolatable",
     "Tool",
     "ToolCall",
     "ToolRegistry",
     "ToolResult",
+    "build_spawn_tools",
+    "isolate_for_child",
     "parse_tool_call",
 ]

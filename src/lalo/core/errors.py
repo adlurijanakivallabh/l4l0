@@ -81,3 +81,9 @@ class ContainerError(LaloError):
     """The disposable runtime container failed to start, exec, or was misused."""
 
     code = "container_error"
+
+
+class SpawnDepthExceededError(LaloError):
+    """A spawn_agent call would exceed the multi-agent tree's hard depth ceiling."""
+
+    code = "spawn_depth_exceeded"
