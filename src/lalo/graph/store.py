@@ -107,6 +107,10 @@ class ReachGraph:
         nid = f"service:{host}:{port}"
         return self._add_node(nid, NodeType.SERVICE, host=host, port=port, name=name)
 
+    def add_fingerprint(self, label: str, **metadata: object) -> str:
+        nid = f"fingerprint:{label}"
+        return self._add_node(nid, NodeType.FINGERPRINT, label=label, **metadata)
+
     def add_finding(self, finding: Finding) -> str:
         nid = f"finding:{finding.id}"
         self._add_node(nid, NodeType.FINDING, **_finding_to_attrs(finding))
