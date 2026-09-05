@@ -1,4 +1,0 @@
-api.target.test
-dev.target.test
-staging.target.test
-vpn.target.test

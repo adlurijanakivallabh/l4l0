@@ -1,4 +1,0 @@
-{"template-id":"CVE-2021-41773-apache-path-traversal","matched-at":"http://target.test/cgi-bin/../../../etc/passwd","info":{"name":"Apache 2.4.49 Path Traversal","severity":"critical","tags":["cve","lfi","traversal"]},"type":"http"}
-{"template-id":"wordpress-sqli-plugin","matched-at":"http://target.test/wp-content/plugins/x/ajax.php?id=1","info":{"name":"WordPress Plugin SQLi","severity":"high","tags":["wordpress","sqli"]},"type":"http"}
-{"template-id":"reflected-xss-generic","matched-at":"http://target.test/search?q=payload","info":{"name":"Reflected XSS","severity":"medium","tags":["xss"]},"type":"http"}
-{"template-id":"tech-detect-nginx","matched-at":"http://target.test/","info":{"name":"Nginx Detection","severity":"info","tags":["tech"]},"type":"http"}
