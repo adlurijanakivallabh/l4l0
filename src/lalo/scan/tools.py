@@ -6,19 +6,27 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import cast
 
+from ..agent.loop import AgentConfig, AgentLoop
 from ..agent.tools import FunctionTool, ToolRegistry, ToolResult
+from ..agents.coordinator import merge_findings
+from ..agents.registry import AgentRegistry
 from ..confirmation.review import adversarial_review, apply_review
 from ..confirmation.scoring import score_finding
 from ..core.model_router import ModelRouter
 from ..core.redaction import redact
 from ..execution.firer import HttpFirer
 from ..graph.store import ReachGraph
+from ..knowledge import KnowledgeStore, SkillLibrary
+from ..knowledge.store import recall as knowledge_recall
 from ..models import Evidence, EvidenceKind, Finding, Severity
+from ..prompts import SYSTEM_PROMPT
 from ..runtime.container import RuntimeContainer
 
 ToolFunc = Callable[[dict[str, object]], ToolResult]
 
 _MAX_OBS = 800
+_DEFAULT_MAX_SPAWN_DEPTH = 3
+_DEFAULT_CHILD_MAX_STEPS = 12
 
 
 @dataclass
@@ -31,6 +39,13 @@ class ScanContext:
     # When set, every recorded finding gets an independent adversarial review
     # (assume-false, disprove from captured evidence) before it lands.
     router: ModelRouter | None = None
+    # Multi-agent spawning: shared across the whole tree (parent + every child).
+    agent_registry: AgentRegistry | None = None
+    skill_library: SkillLibrary | None = None
+    knowledge_store: KnowledgeStore | None = None
+    agent_id: str | None = None  # this agent's own id in agent_registry (None = root)
+    depth: int = 0
+    max_depth: int = _DEFAULT_MAX_SPAWN_DEPTH
     _fire_seq: int = 0
 
 
@@ -150,6 +165,96 @@ def _note_tool(ctx: ScanContext) -> ToolFunc:
     return run
 
 
+def _recall_tool(ctx: ScanContext) -> ToolFunc:
+    def run(args: dict[str, object]) -> ToolResult:
+        query = str(args.get("query", ""))
+        if not query:
+            return ToolResult("recall requires a query", ok=False)
+        text = knowledge_recall(query, library=ctx.skill_library, store=ctx.knowledge_store, k=3)
+        return ToolResult(text)
+
+    return run
+
+
+def _child_context(ctx: ScanContext, agent_id: str) -> ScanContext:
+    """Build an isolated child context: own graph snapshot, shared everything else."""
+    return ScanContext(
+        graph=ctx.graph.snapshot(),
+        firer=ctx.firer,
+        container=ctx.container,
+        router=ctx.router,
+        agent_registry=ctx.agent_registry,
+        skill_library=ctx.skill_library,
+        knowledge_store=ctx.knowledge_store,
+        agent_id=agent_id,
+        depth=ctx.depth + 1,
+        max_depth=ctx.max_depth,
+    )
+
+
+def _spawn_agent_tool(ctx: ScanContext) -> ToolFunc:
+    # Reference-informed: an agent-callable spawn tool (not host-only), matching
+    # the reference "specialist gets 1-3 skills, parent merges its AUTHORITATIVE
+    # findings by id, never trusts the child's prose" pattern -- improved here by
+    # merging from a genuinely isolated deep-copied graph (the reference shares one
+    # global report store instead) and a hard depth ceiling against runaway
+    # recursive spawning (ponytail: fixed ceiling, raise via max_depth if needed).
+    def run(args: dict[str, object]) -> ToolResult:
+        if ctx.router is None or ctx.agent_registry is None:
+            return ToolResult("spawn_agent unavailable: no router/registry configured", ok=False)
+        if ctx.depth >= ctx.max_depth:
+            return ToolResult(
+                f"spawn_agent refused: max spawn depth {ctx.max_depth} reached", ok=False
+            )
+        name = str(args.get("name", "specialist"))
+        task = str(args.get("task", ""))
+        if not task:
+            return ToolResult("spawn_agent requires a task", ok=False)
+        raw_skills = args.get("skills")
+        skill_names = [str(s) for s in raw_skills] if isinstance(raw_skills, list) else []
+
+        node = ctx.agent_registry.register(name, task, parent_id=ctx.agent_id)
+        child_ctx = _child_context(ctx, node.agent_id)
+
+        skill_text = ""
+        if skill_names and ctx.skill_library is not None:
+            found = [ctx.skill_library.get(n) for n in skill_names]
+            skill_text = "\n\n".join(f"SKILL[{s.name}]:\n{s.text}" for s in found if s)
+        mission = f"{task}\n\n{skill_text}" if skill_text else task
+
+        registry = build_registry(child_ctx)
+        loop = AgentLoop(
+            ctx.router,
+            registry,
+            system_prompt=SYSTEM_PROMPT,
+            config=AgentConfig(max_steps=_DEFAULT_CHILD_MAX_STEPS),
+        )
+        try:
+            result = loop.run(mission)
+        except Exception as exc:  # noqa: BLE001 - a child crash never takes down the parent
+            ctx.agent_registry.complete(node.agent_id, "failed", [])
+            return ToolResult(f"child {name} ({node.agent_id}) crashed: {exc}", ok=False)
+
+        merged_ids = merge_findings(ctx.graph, child_ctx.graph)
+        ctx.agent_registry.complete(node.agent_id, "completed", merged_ids)
+        return ToolResult(
+            f"child {name} ({node.agent_id}) {result.stop_reason} after {result.steps} steps.\n"
+            f"Authoritative finding ids (use these, not the prose below): {merged_ids}\n"
+            f"Child's own summary (non-authoritative): {result.summary}"
+        )
+
+    return run
+
+
+def _view_agent_graph_tool(ctx: ScanContext) -> ToolFunc:
+    def run(args: dict[str, object]) -> ToolResult:
+        if ctx.agent_registry is None:
+            return ToolResult("no agents spawned yet")
+        return ToolResult(ctx.agent_registry.render_tree())
+
+    return run
+
+
 def build_registry(ctx: ScanContext) -> ToolRegistry:
     tools = [
         FunctionTool(
@@ -169,6 +274,13 @@ def build_registry(ctx: ScanContext) -> ToolRegistry:
             _record_tool(ctx),
         ),
         FunctionTool("note", "Save a short note. args: text", _note_tool(ctx)),
+        FunctionTool(
+            "recall",
+            "Retrieve the methodology skill and any past findings relevant to a "
+            "vuln class or question. args: query. Call this before testing a class "
+            "you haven't recalled yet.",
+            _recall_tool(ctx),
+        ),
     ]
     if ctx.container is not None:
         tools.append(
@@ -176,6 +288,25 @@ def build_registry(ctx: ScanContext) -> ToolRegistry:
                 "run_command",
                 "Run a shell command in the isolated sandbox (any tool). args: cmd",
                 _run_command_tool(ctx),
+            )
+        )
+    if ctx.router is not None and ctx.agent_registry is not None:
+        tools.append(
+            FunctionTool(
+                "spawn_agent",
+                "Spawn a specialist child agent for a focused subtask (e.g. one "
+                "vuln class). args: name, task, skills:[skill names]. Check "
+                "view_agent_graph first to avoid duplicating work. The child's "
+                "authoritative findings are merged back automatically.",
+                _spawn_agent_tool(ctx),
+            )
+        )
+        tools.append(
+            FunctionTool(
+                "view_agent_graph",
+                "See every spawned agent, its status, and its parent — check "
+                "before spawning to avoid duplicate work.",
+                _view_agent_graph_tool(ctx),
             )
         )
     return ToolRegistry(tools)
