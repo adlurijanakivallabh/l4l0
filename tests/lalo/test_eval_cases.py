@@ -70,3 +70,23 @@ def test_run_case_keeps_the_highest_confidence_for_a_repeated_class() -> None:
     case = BenchmarkCase(name="t", description="d", ground_truth_classes=frozenset({"xss"}))
     result = run_case(case, graph)
     assert result.confidence_by_class["xss"] > 0
+
+
+def test_benchmark_case_normalizes_ground_truth_classes_to_lowercase() -> None:
+    """run_case() already lowercases the found side - a ground truth entry
+    that isn't already lowercase must not cause a real match to be missed."""
+    case = BenchmarkCase(
+        name="t", description="d", ground_truth_classes=frozenset({"XSS", " Sql-Injection "})
+    )
+    assert case.ground_truth_classes == frozenset({"xss", "sql-injection"})
+
+
+def test_case_result_is_hashable_despite_its_dict_field() -> None:
+    """CaseResult is frozen but holds a plain dict (confidence_by_class),
+    which is unhashable - the default tuple-based __hash__ frozen=True would
+    otherwise generate must not be used, or hashing an instance raises."""
+    graph = ReachabilityGraph()
+    case = BenchmarkCase(name="t", description="d", ground_truth_classes=frozenset())
+    result = run_case(case, graph)
+    assert hash(result) is not None
+    assert result in {result}

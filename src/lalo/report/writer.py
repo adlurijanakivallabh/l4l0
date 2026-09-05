@@ -42,7 +42,12 @@ def write_report(
     Returns the written path for each format, keyed by ``"markdown"``,
     ``"json"``, and ``"sarif"``.
     """
-    records = apply_overrides(sort_findings(collect_findings(graph)), overrides or [])
+    # Overrides before sort, not after: sort_findings reads effective_severity
+    # (display_severity if set, else cvss_severity) - sorting first would rank
+    # every finding by its PRE-override severity, so an operator's "this is
+    # actually critical" correction would still be ordered under an
+    # unrelated higher-severity finding in the delivered report.
+    records = sort_findings(apply_overrides(collect_findings(graph), overrides or []))
     coverage = build_coverage_summary(skills, records)
 
     markdown = render_report_md(records, coverage, generated_at=generated_at)

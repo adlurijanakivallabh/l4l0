@@ -24,6 +24,16 @@ def test_dedup_key_treats_no_param_as_its_own_bucket() -> None:
     assert a == b
 
 
+def test_dedup_key_does_not_collide_across_a_shifted_delimiter_split() -> None:
+    """A plain "::"-joined key would make these two genuinely different
+    (vuln_class, target, param) triples collide onto the identical string,
+    since "host" + "::" + "p::q" and "host::p" + "::" + "q" both produce
+    "host::p::q" when naively concatenated with that delimiter."""
+    a = dedup_key("ssrf", "host", "p::q")
+    b = dedup_key("ssrf", "host::p", "q")
+    assert a != b
+
+
 def test_find_duplicate_returns_none_on_an_empty_graph() -> None:
     graph = ReachabilityGraph()
     assert find_duplicate(graph, "sql-injection::x::id") is None

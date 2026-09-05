@@ -36,23 +36,19 @@ _SEVERITY_TO_LEVEL: dict[str, str] = {
     "info": "note",
 }
 
-_SEVERITY_TO_SCORE: dict[str, str] = {
-    "critical": "9.5",
-    "high": "8.0",
-    "medium": "5.5",
-    "low": "3.0",
-    "info": "1.0",
-}
-
 
 def _rule_id(record: FindingRecord) -> str:
     return record.vuln_class.strip().lower() or "unknown"
 
 
 def _security_severity(record: FindingRecord) -> str:
-    if record.cvss_score:
-        return f"{record.cvss_score:.1f}"
-    return _SEVERITY_TO_SCORE.get(record.effective_severity, "5.0")
+    # Unlike the reference this idea is adapted from, cvss_score here is
+    # never optional: record_finding requires a cvss_breakdown for every
+    # finding, so it is always a real, meaningfully computed value - a
+    # genuine 0.0 (an all-"N"-impact breakdown) is a legitimate score, not
+    # an absence to fall back from. A truthy check here would silently
+    # discard that real score and report an arbitrary "1.0" instead.
+    return f"{record.cvss_score:.1f}"
 
 
 def _sarif_level(record: FindingRecord) -> str:

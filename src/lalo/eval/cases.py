@@ -42,9 +42,31 @@ class BenchmarkCase:
     description: str
     ground_truth_classes: frozenset[str]
 
+    def __post_init__(self) -> None:
+        # Normalized once, here, rather than relied on at every comparison
+        # site: run_case() already lowercases the FOUND side
+        # (record.vuln_class.strip().lower()), so a ground_truth_classes
+        # entry that isn't already lowercase (e.g. "XSS") would otherwise
+        # never match the same, genuinely-found class - silently reporting
+        # a real find as recall 0.0 purely from a casing mismatch.
+        object.__setattr__(
+            self,
+            "ground_truth_classes",
+            frozenset(c.strip().lower() for c in self.ground_truth_classes),
+        )
 
-@dataclass(frozen=True)
+
+@dataclass(frozen=True, eq=False)
 class CaseResult:
+    """``eq=False`` deliberately: ``confidence_by_class`` is a plain ``dict``,
+    which is unhashable — the tuple-based ``__hash__``/``__eq__`` pair
+    ``frozen=True`` would otherwise auto-generate raises ``TypeError`` the
+    moment anything hashes an instance (e.g. putting one in a ``set``).
+    ``eq=False`` leaves Python's default identity-based hash/eq in place
+    instead, which never crashes; nothing in this module needs value
+    equality between two ``CaseResult``s.
+    """
+
     case: BenchmarkCase
     found_classes: frozenset[str]
     confidence_by_class: dict[str, int]

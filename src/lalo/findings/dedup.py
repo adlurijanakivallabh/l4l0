@@ -15,12 +15,24 @@ finding-vs-finding comparison.
 
 from __future__ import annotations
 
+import json
+
 from ..graph.model import NodeKind, ReachabilityGraph
 
 
 def dedup_key(vuln_class: str, target: str, param: str | None) -> str:
+    """A canonical identity for (vuln_class, target, param).
+
+    JSON-encodes the triple rather than joining with a plain delimiter like
+    ``"::"``: a target legitimately containing that exact substring (a
+    bracketed IPv6 host like ``http://[::1]:8080/``) could otherwise collide
+    with a different (target, param) split at the same character position -
+    e.g. ``("ssrf", "host", "p::q")`` and ``("ssrf", "host::p", "q")`` both
+    joined to the identical string ``"ssrf::host::p::q"``. JSON's own string
+    escaping makes each distinct triple serialize to a distinct string.
+    """
     normalized_param = (param or "").strip().lower()
-    return f"{vuln_class.strip().lower()}::{target.strip().lower()}::{normalized_param}"
+    return json.dumps([vuln_class.strip().lower(), target.strip().lower(), normalized_param])
 
 
 def find_duplicate(graph: ReachabilityGraph, key: str) -> str | None:

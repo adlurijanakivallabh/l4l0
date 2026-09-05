@@ -23,6 +23,17 @@ _VALID_CVSS = {
     "availability": "N",
 }
 
+_LOW_CVSS = {
+    "attack_vector": "L",
+    "attack_complexity": "H",
+    "privileges_required": "H",
+    "user_interaction": "R",
+    "scope": "U",
+    "confidentiality": "L",
+    "integrity": "N",
+    "availability": "N",
+}
+
 _SKILLS = [
     Skill(
         name="sql-injection",
@@ -101,6 +112,56 @@ def test_write_report_applies_a_severity_override_in_the_rendered_output(tmp_pat
     assert "chains to RCE" in text
     # the underlying graph node itself is untouched by the override
     assert graph.node(finding_id)["cvss_severity"] != "critical"
+
+
+def test_write_report_resorts_by_the_overridden_severity_not_the_original(
+    tmp_path: Path,
+) -> None:
+    """A finding overridden UP to critical must sort ahead of an unrelated
+    genuinely-high finding - sorting before applying overrides would rank
+    every finding by its pre-override severity instead."""
+    graph = ReachabilityGraph()
+    registry = ToolRegistry([build_record_finding_tool(graph)])
+    registry.dispatch(
+        "record_finding",
+        {
+            "title": "low severity finding",
+            "description": "d",
+            "vuln_class": "xss",
+            "target": "https://x.example.com/low",
+            "evidence": ["e"],
+            "evidence_excerpt": "e",
+            "counterevidence": "none",
+            "severity_change_conditions": "x",
+            "cvss_breakdown": _LOW_CVSS,
+        },
+    )
+    low_id = graph.nodes_of_kind(NodeKind.FINDING)[0]
+    registry.dispatch(
+        "record_finding",
+        {
+            "title": "genuinely high severity finding",
+            "description": "d",
+            "vuln_class": "sql-injection",
+            "target": "https://x.example.com/high",
+            "evidence": ["e"],
+            "evidence_excerpt": "e",
+            "counterevidence": "none",
+            "severity_change_conditions": "x",
+            "cvss_breakdown": _VALID_CVSS,
+        },
+    )
+
+    paths = write_report(
+        tmp_path,
+        graph,
+        _SKILLS,
+        overrides=[SeverityOverride(low_id, "critical", "chains to RCE", "alice")],
+    )
+    doc = json.loads(paths["json"].read_text(encoding="utf-8"))
+    assert doc["findings"][0]["title"] == "low severity finding"
+    assert doc["findings"][0]["display_severity"] == "critical"
+    assert doc["findings"][1]["title"] == "genuinely high severity finding"
 
 
 def test_write_report_survives_a_leftover_crashed_temp_file(tmp_path: Path) -> None:

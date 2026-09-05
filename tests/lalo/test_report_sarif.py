@@ -102,3 +102,24 @@ def test_render_sarif_security_severity_uses_the_real_cvss_score() -> None:
     doc = render_sarif(_records(graph))
     result = doc["runs"][0]["results"][0]
     assert result["properties"]["security-severity"] == "7.5"
+
+
+def test_render_sarif_security_severity_preserves_a_real_zero_score() -> None:
+    """A genuine all-'N'-impact CVSS breakdown legitimately scores 0.0 - this
+    must not be confused with "no score supplied" and replaced by an
+    arbitrary fallback value."""
+    zero_impact_cvss = {
+        "attack_vector": "N",
+        "attack_complexity": "L",
+        "privileges_required": "N",
+        "user_interaction": "N",
+        "scope": "U",
+        "confidentiality": "N",
+        "integrity": "N",
+        "availability": "N",
+    }
+    graph = ReachabilityGraph()
+    _file(graph, cvss_breakdown=zero_impact_cvss)
+    doc = render_sarif(_records(graph))
+    result = doc["runs"][0]["results"][0]
+    assert result["properties"]["security-severity"] == "0.0"

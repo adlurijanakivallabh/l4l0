@@ -2,7 +2,10 @@
 
 Pure tool-interface wiring over the deterministic pieces built in this
 module: :func:`~lalo.findings.model.validate_finding_fields` gates only the
-call shape (never a truth judgment), :func:`~lalo.findings.grounding.is_grounded`
+call shape (never a truth judgment), a real
+:class:`~lalo.findings.model.Finding` is constructed from the validated
+fields so mypy can catch a future rename/type drift between what this tool
+writes and what the dataclass declares, :func:`~lalo.findings.grounding.is_grounded`
 checks the claimed excerpt against real captured evidence,
 :func:`~lalo.findings.cvss.compute_cvss` scores severity from the breakdown,
 and :func:`~lalo.findings.dedup.find_duplicate` merges repeat evidence into
@@ -28,7 +31,7 @@ from ..graph.model import EdgeKind, NodeKind, ReachabilityGraph
 from .cvss import compute_cvss
 from .dedup import dedup_key, find_duplicate
 from .grounding import is_grounded
-from .model import validate_finding_fields
+from .model import Finding, validate_finding_fields
 
 
 def _as_evidence_list(raw: object) -> list[str]:
@@ -97,25 +100,45 @@ def build_record_finding_tool(graph: ReachabilityGraph) -> FunctionTool:
                 ok=True,
             )
 
+        # A real, type-checked intermediate rather than a dict built from
+        # loose local variables: Finding is otherwise never constructed
+        # anywhere in the codebase, so mypy has nothing to catch a future
+        # rename/type drift between what this tool writes and what Finding
+        # itself declares. Everything Finding doesn't cover (the computed
+        # CVSS fields, evidence_grounded, dedup_key) is added alongside it.
+        finding = Finding(
+            title=redact(str(fields["title"])),
+            description=redact(str(fields["description"])),
+            vuln_class=vuln_class,
+            target=target,
+            evidence=[redact(e) for e in evidence],
+            evidence_excerpt=redact(excerpt),
+            counterevidence=redact(str(fields["counterevidence"])),
+            severity_change_conditions=redact(str(fields["severity_change_conditions"])),
+            cvss_breakdown=cvss_breakdown,
+            param=param,
+            reproduced=reproduced,
+            identities_confirmed=identities,
+        )
         finding_id = f"finding-{uuid.uuid4().hex[:12]}"
         attrs: dict[str, Any] = {
             "dedup_key": key,
-            "title": redact(str(fields["title"])),
-            "description": redact(str(fields["description"])),
-            "vuln_class": vuln_class,
-            "target": target,
-            "param": param,
-            "evidence": [redact(e) for e in evidence],
-            "evidence_excerpt": redact(excerpt),
+            "title": finding.title,
+            "description": finding.description,
+            "vuln_class": finding.vuln_class,
+            "target": finding.target,
+            "param": finding.param,
+            "evidence": finding.evidence,
+            "evidence_excerpt": finding.evidence_excerpt,
             "evidence_grounded": grounded,
-            "counterevidence": redact(str(fields["counterevidence"])),
-            "severity_change_conditions": redact(str(fields["severity_change_conditions"])),
-            "cvss_breakdown": cvss_breakdown,
+            "counterevidence": finding.counterevidence,
+            "severity_change_conditions": finding.severity_change_conditions,
+            "cvss_breakdown": finding.cvss_breakdown,
             "cvss_score": cvss.score,
             "cvss_severity": cvss.severity,
             "cvss_vector": cvss.vector,
-            "reproduced": reproduced,
-            "identities_confirmed": identities,
+            "reproduced": finding.reproduced,
+            "identities_confirmed": finding.identities_confirmed,
         }
         graph.add_node(finding_id, NodeKind.FINDING, **attrs)
         for i, blob in enumerate(evidence):
