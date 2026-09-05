@@ -87,3 +87,27 @@ class SpawnDepthExceededError(LaloError):
     """A spawn_agent call would exceed the multi-agent tree's hard depth ceiling."""
 
     code = "spawn_depth_exceeded"
+
+
+class LoginFailedError(LaloError):
+    """A login attempt for an identity did not produce a usable session."""
+
+    code = "login_failed"
+
+
+class SessionNotMirroredError(LaloError):
+    """A session id has no corresponding graph node, so it cannot be retrieved.
+
+    Enforces the invariant that no usable session exists without a visible
+    graph node — closing a starvation-bug class where a session created but
+    never mirrored onto the graph would be silently invisible to any later
+    coverage check that only walks the graph.
+    """
+
+    code = "session_not_mirrored"
+
+
+class JwtMalformedError(LaloError):
+    """A JWT string did not have the expected header.payload.signature shape."""
+
+    code = "jwt_malformed"
