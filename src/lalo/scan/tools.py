@@ -110,11 +110,20 @@ def _record_tool(ctx: ScanContext) -> ToolFunc:
 
 
 def _run_command_tool(ctx: ScanContext) -> ToolFunc:
+    # Intentional free shell (the core L4L0 execution model): the agent may run
+    # ANY command — no allowlist, no argv restriction — because that freedom never
+    # reaches the host. `exec` runs ONLY inside the disposable, host-isolated
+    # runtime container (no host mounts, no docker socket, cap-drop ALL,
+    # no-new-privileges; see runtime/container.py). There is deliberately no
+    # host-shell path: the tool is unavailable unless such a container exists, so a
+    # prompt-injected command from a target response can at worst dirty the
+    # throwaway container, never the operator's machine. See CLAUDE.md "Safety
+    # posture". This is the accepted, operator-chosen tradeoff, not an oversight.
     def run(args: dict[str, object]) -> ToolResult:
         if ctx.container is None:
             return ToolResult("run_command unavailable: no runtime container", ok=False)
         cmd = str(args.get("cmd", ""))
-        result = ctx.container.exec(cmd)
+        result = ctx.container.exec(cmd)  # contained: runs inside the isolated container only
         output = redact((result.stdout + result.stderr)[:_MAX_OBS])
         return ToolResult(f"exit={result.exit_code}\n{output}", ok=result.ok)
 
