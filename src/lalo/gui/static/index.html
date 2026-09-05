@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>L4L0</title>
+<link rel="stylesheet" href="/static/app.css" />
+</head>
+<body>
+<header>
+  <h1>L4L0</h1>
+  <span id="conn-status">connecting...</span>
+</header>
+
+<main>
+  <section id="agents">
+    <h2>Agents</h2>
+    <ul id="agent-list"></ul>
+  </section>
+
+  <section id="findings">
+    <h2>Findings</h2>
+    <ul id="finding-list"></ul>
+  </section>
+
+  <section id="chains">
+    <h2>Attack Chains</h2>
+    <ul id="chain-list"></ul>
+  </section>
+
+  <section id="output">
+    <h2>Output</h2>
+    <pre id="scrollback"></pre>
+  </section>
+
+  <section id="steer">
+    <h2>Steering (read-only Q&amp;A - cannot record findings or affect confirmation)</h2>
+    <div id="steer-log"></div>
+    <form id="steer-form">
+      <input id="steer-input" type="text" placeholder="Ask or suggest something..." autocomplete="off" />
+      <button type="submit">Send</button>
+    </form>
+  </section>
+</main>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

@@ -20,7 +20,7 @@ dependencies = [
     "defusedxml>=0.7.1",
     # GUI (FastAPI + WebSocket)
     "fastapi>=0.110,<1.0",
-    "uvicorn>=0.30,<1.0",
+    "uvicorn[standard]>=0.30,<1.0",  # [standard] pulls in websockets - plain uvicorn has no WS protocol impl
     # Report export
     "weasyprint>=69.0",
     "html2docx>=1.6.0",
@@ -62,7 +62,7 @@ select = ["E", "F", "I", "W", "UP", "B", "S"]
 
 [tool.ruff.lint.per-file-ignores]
 # Assertions, non-crypto randomness, and dummy credentials are expected in tests.
-"tests/**" = ["S101", "S311", "S105", "S106"]
+"tests/**" = ["S101", "S311", "S105", "S106", "S107"]
 # Single-file HTML template — long CSS/JS lines are the minimal one-string page.
 "src/lalo/gui/**" = ["E501"]
 

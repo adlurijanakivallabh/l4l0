@@ -1,0 +1,104 @@
+/* Deliberately undesigned: this is an operator's live scan console, not a
+   polished product. Plain monospace scrollback for raw tool output, no
+   cards/window chrome, per standing project convention. */
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 13px;
+  background: #111;
+  color: #ddd;
+}
+
+header {
+  display: flex;
+  align-items: baseline;
+  gap: 1em;
+  padding: 0.5em 1em;
+  border-bottom: 1px solid #333;
+}
+
+header h1 {
+  font-size: 1em;
+  margin: 0;
+}
+
+#conn-status {
+  color: #999;
+}
+
+#conn-status.connected { color: #6c6; }
+#conn-status.disconnected { color: #c66; }
+
+main {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1em;
+  padding: 1em;
+}
+
+section {
+  border: 1px solid #333;
+  padding: 0.5em;
+  overflow: auto;
+  max-height: 40vh;
+}
+
+section h2 {
+  font-size: 0.9em;
+  margin: 0 0 0.5em 0;
+  color: #999;
+}
+
+#output {
+  grid-column: span 2;
+}
+
+#scrollback {
+  white-space: pre-wrap;
+  word-break: break-all;
+  margin: 0;
+  max-height: 30vh;
+  overflow: auto;
+}
+
+ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+li {
+  padding: 0.2em 0;
+  border-bottom: 1px solid #222;
+}
+
+#steer {
+  grid-column: span 2;
+}
+
+#steer-form {
+  display: flex;
+  gap: 0.5em;
+  margin-top: 0.5em;
+}
+
+#steer-input {
+  flex: 1;
+  background: #000;
+  color: #ddd;
+  border: 1px solid #444;
+  padding: 0.3em;
+  font-family: inherit;
+}
+
+button {
+  font-family: inherit;
+  background: #222;
+  color: #ddd;
+  border: 1px solid #444;
+  padding: 0.3em 0.8em;
+  cursor: pointer;
+}
