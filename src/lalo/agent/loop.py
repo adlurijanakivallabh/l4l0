@@ -44,9 +44,10 @@ import json
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
+from ..core.errors import AllProvidersFailedError
 from ..core.logging import get_logger
-from ..core.model_router import CompletionRequest, ModelRouter
-from ..observability import Tracer, get_tracer
+from ..core.model_router import CompletionRequest, CompletionResponse, ModelRouter
+from ..observability import Tracer
 from ..orchestrator.budget import (
     Budget,
     BudgetBand,
@@ -116,6 +117,22 @@ class AgentConfig:
     # before the loop gives up.
     max_no_tool_call_retries: int = 2
 
+    def __post_init__(self) -> None:
+        # A reference agent's own turn-budget constructor validates a minimum
+        # boundary for exactly this reason ("must reserve at least one task
+        # turn and one result turn") — here, repeat_count is seeded at 1 for a
+        # brand-new signature, so repeat_soft_threshold < 2 would treat a
+        # tool's genuinely first-ever call as already repeated and never
+        # dispatch it at all.
+        if self.max_steps < 1:
+            raise ValueError("max_steps must be >= 1")
+        if self.repeat_soft_threshold < 2:
+            raise ValueError("repeat_soft_threshold must be >= 2")
+        if self.repeat_abort_threshold <= self.repeat_soft_threshold:
+            raise ValueError("repeat_abort_threshold must be > repeat_soft_threshold")
+        if self.max_no_tool_call_retries < 0:
+            raise ValueError("max_no_tool_call_retries must be >= 0")
+
 
 @dataclass
 class AgentResult:
@@ -146,7 +163,11 @@ class AgentLoop:
         self.registry = registry
         self.system_prompt = system_prompt
         self.config = config or AgentConfig()
-        self.tracer = tracer or get_tracer()
+        # A fresh Tracer per loop instance, never the process-wide default —
+        # that singleton's spans/counters only ever accumulate with no reset,
+        # so every AgentLoop that didn't pass its own tracer would otherwise
+        # silently share (and contaminate) one process-lifetime timeline.
+        self.tracer = tracer or Tracer()
         self.budget = budget
         self.on_event = on_event
         self.should_stop = should_stop
@@ -154,6 +175,21 @@ class AgentLoop:
     def _emit(self, event: str, payload: dict[str, object]) -> None:
         if self.on_event is not None:
             self.on_event(event, payload)
+
+    def _complete(self, prompt: str) -> CompletionResponse | None:
+        """Call the router; classify a total provider failure instead of
+        letting it crash the run uncaught. Mirrors a reference agent
+        executor's own result shape (a `retryable` classification returned to
+        an OUTER orchestrator) rather than retrying internally — ModelRouter
+        has already exhausted its own failover chain by the time
+        AllProvidersFailedError reaches here, so there is nothing left to
+        retry at this layer; a future orchestrator decides what to do next."""
+        try:
+            return self.router.complete(
+                self.config.role, CompletionRequest(prompt=prompt, system=self.system_prompt)
+            )
+        except AllProvidersFailedError:
+            return None
 
     def _render_prompt(
         self, mission: str, transcript: list[dict[str, object]], directive: str | None
@@ -214,16 +250,19 @@ class AgentLoop:
             with self.tracer.span("agent_step", step=step):
                 directive = self._budget_directive()
                 prompt = self._render_prompt(mission, transcript, directive)
-                response = self.router.complete(
-                    self.config.role, CompletionRequest(prompt=prompt, system=self.system_prompt)
-                )
+                response = self._complete(prompt)
+                if response is None:
+                    self._emit("provider_failed", {"step": step})
+                    return AgentResult("provider_failed", step, transcript)
                 call = parse_tool_call(response.text)
 
                 if call is None:
                     no_tool_call_retries += 1
                     if no_tool_call_retries > self.config.max_no_tool_call_retries:
                         _log.info("agent produced no tool call after retries; stopping")
-                        return AgentResult("no_tool_call", step, transcript, summary=response.text)
+                        return AgentResult(
+                            "no_tool_call", step + 1, transcript, summary=response.text
+                        )
                     transcript.append(
                         {"tool": "_nudge", "args": {}, "observation": _NO_TOOL_CALL_NUDGE}
                     )
@@ -233,7 +272,7 @@ class AgentLoop:
                 if call.name == "finish":
                     self._emit("finished", {"step": step})
                     return AgentResult(
-                        "finished", step, transcript, summary=str(call.args.get("summary", ""))
+                        "finished", step + 1, transcript, summary=str(call.args.get("summary", ""))
                     )
 
                 signature = _call_signature(call.name, call.args)
@@ -245,7 +284,7 @@ class AgentLoop:
 
                 if repeat_count >= self.config.repeat_abort_threshold:
                     self._emit("repeating_tool_call_aborted", {"tool": call.name})
-                    return AgentResult("repeating_tool_call_aborted", step, transcript)
+                    return AgentResult("repeating_tool_call_aborted", step + 1, transcript)
 
                 if repeat_count >= self.config.repeat_soft_threshold:
                     # Skip re-execution — do not repeat a side effect the model
@@ -277,9 +316,9 @@ class AgentLoop:
         non-compliant response (no tool call, or anything but finish) just
         falls back to the plain max_steps outcome rather than looping further."""
         prompt = self._render_prompt(mission, transcript, _FINAL_TURN_DIRECTIVE)
-        response = self.router.complete(
-            self.config.role, CompletionRequest(prompt=prompt, system=self.system_prompt)
-        )
+        response = self._complete(prompt)
+        if response is None:
+            return AgentResult("max_steps", self.config.max_steps, transcript)
         call = parse_tool_call(response.text)
         if call is not None and call.name == "finish":
             summary = str(call.args.get("summary", ""))

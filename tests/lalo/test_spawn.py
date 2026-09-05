@@ -132,3 +132,26 @@ def test_spawn_agent_tool_reports_depth_ceiling_as_a_failed_result_not_an_except
     result = registry.dispatch("spawn_agent", {"name": "child", "task": "subtask"})
     assert result.ok is False
     assert "depth" in result.observation
+
+
+def test_a_crashing_child_still_reaches_a_terminal_status_not_a_permanent_ghost() -> None:
+    # Before the fix, an exception from run_child() skipped record_result()
+    # entirely, leaving the child's AgentNode stuck at RUNNING forever --
+    # view_agent_graph would show a dead agent as "[running]" indefinitely.
+    coord = AgentCoordinator(max_depth=5)
+    root = coord.register_root("root", "mission")
+
+    def crashing_run_child(child_id: str, name: str, task: str) -> tuple[str, list[str], bool]:
+        raise RuntimeError("child agent loop crashed")
+
+    spawn_tool, _ = build_spawn_tools(coord, crashing_run_child, self_id=root)
+    registry = ToolRegistry([spawn_tool])
+
+    result = registry.dispatch("spawn_agent", {"name": "child", "task": "subtask"})
+    assert result.ok is False
+    assert "crashed" in result.observation
+
+    child_id = "agent-2"
+    assert coord.node(child_id).status is AgentStatus.FAILED
+    assert coord.node(child_id).status is not AgentStatus.RUNNING
+    assert "[failed]" in coord.render_tree()

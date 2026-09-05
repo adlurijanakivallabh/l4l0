@@ -16,6 +16,10 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Protocol, runtime_checkable
 
+from ..core.logging import get_logger
+
+_log = get_logger("lalo.agent.tools")
+
 _FENCED = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL)
 _DECODER = json.JSONDecoder()
 
@@ -97,28 +101,47 @@ def _to_call(obj: dict[str, object]) -> ToolCall:
     return ToolCall(name=str(obj["tool"]), args=args)
 
 
+def _warn_if_batched(count: int, where: str) -> None:
+    if count > 1:
+        _log.warning(
+            "model batched %d tool calls in one reply (%s); only the first is acted on",
+            count - 1,
+            where,
+        )
+
+
 def parse_tool_call(text: str) -> ToolCall | None:
     """Extract the FIRST ``{"tool": ..., "args": ...}`` call from model output.
 
     Handles a fenced block, an object amid prose, and a response that
     concatenates several JSON objects (some models emit a whole plan at once) —
     the first valid tool call is taken and the loop observes its result before
-    the next action, rather than acting blind on a pre-planned batch.
+    the next action, rather than acting blind on a pre-planned batch. Every
+    dropped call past the first is logged (not just silently discarded), so a
+    model that keeps batching stays observable instead of an invisible pattern
+    only noticeable from its downstream effects.
     """
-    for blob in _FENCED.findall(text):
-        obj = _try_load(blob)
-        if obj and "tool" in obj:
-            return _to_call(obj)
+    fenced = [obj for blob in _FENCED.findall(text) if (obj := _try_load(blob)) and "tool" in obj]
+    if fenced:
+        _warn_if_batched(len(fenced), "fenced blocks")
+        return _to_call(fenced[0])
+
+    found: list[dict[str, object]] = []
     idx = 0
     while True:
         start = text.find("{", idx)
         if start == -1:
-            return None
+            break
         try:
             obj, end = _DECODER.raw_decode(text, start)
         except (json.JSONDecodeError, ValueError):
             idx = start + 1
             continue
         if isinstance(obj, dict) and "tool" in obj:
-            return _to_call(obj)
+            found.append(obj)
         idx = max(end, start + 1)
+
+    if not found:
+        return None
+    _warn_if_batched(len(found), "inline JSON objects")
+    return _to_call(found[0])

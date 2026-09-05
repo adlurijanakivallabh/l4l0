@@ -128,8 +128,21 @@ def _dns_response(query: bytes, question_end: int, ip: str = "127.0.0.1") -> byt
 class OASTServer:
     """Runs the HTTP + DNS callback listeners on ephemeral (or fixed) ports."""
 
-    def __init__(self, host: str = "127.0.0.1", http_port: int = 0, dns_port: int = 0) -> None:
+    def __init__(
+        self,
+        host: str = "127.0.0.1",
+        http_port: int = 0,
+        dns_port: int = 0,
+        *,
+        advertise_host: str | None = None,
+    ) -> None:
         self.host = host
+        # The address DNS answers resolve callbacks to, distinct from the bind
+        # address: binding to a wildcard (0.0.0.0) is what actually makes the
+        # listener reachable from a real scanned target, but answering with
+        # 0.0.0.0 itself is not a usable destination for anything. Defaults to
+        # `host` unchanged for the common case (bound to a real/loopback IP).
+        self.advertise_host = advertise_host or host
         self._registry = _Registry()
         self._http = http.server.ThreadingHTTPServer(
             (host, http_port), _make_http_handler(self._registry)
@@ -140,9 +153,11 @@ class OASTServer:
         self.dns_port = self._dns_sock.getsockname()[1]
         self._threads: list[threading.Thread] = []
         self._running = False
+        self._started = False
 
     def start(self) -> None:
         self._running = True
+        self._started = True
         http_thread = threading.Thread(target=self._http.serve_forever, daemon=True)
         dns_thread = threading.Thread(target=self._dns_loop, daemon=True)
         http_thread.start()
@@ -163,13 +178,18 @@ class OASTServer:
                     Interaction(token=token, kind="dns", source=addr[0], detail=qname)
                 )
             try:
-                self._dns_sock.sendto(_dns_response(data, question_end, self.host), addr)
+                self._dns_sock.sendto(_dns_response(data, question_end, self.advertise_host), addr)
             except OSError:
                 pass
 
     def stop(self) -> None:
         self._running = False
-        self._http.shutdown()
+        if self._started:
+            # HTTPServer.shutdown() blocks on an internal Event that only gets
+            # set from inside serve_forever()'s own loop — calling it when
+            # that loop was never started (start() never called) deadlocks
+            # forever instead of returning.
+            self._http.shutdown()
         self._http.server_close()
         self._dns_sock.close()
 

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from unittest.mock import patch
+
 from lalo.agent.tools import FunctionTool, ToolRegistry, ToolResult, parse_tool_call
 
 
@@ -69,6 +71,33 @@ def test_parse_tool_call_batched_objects_returns_only_first() -> None:
     call = parse_tool_call(text)
     assert call is not None
     assert call.name == "first"
+
+
+def test_parse_tool_call_logs_when_a_batch_is_dropped() -> None:
+    # A dropped call must be observable, not just silently discarded -- a
+    # model that keeps batching would otherwise be invisible except via its
+    # downstream effects.
+    text = '{"tool": "first", "args": {}}{"tool": "second", "args": {}}'
+    with patch("lalo.agent.tools._log") as mock_log:
+        parse_tool_call(text)
+    mock_log.warning.assert_called_once()
+
+
+def test_parse_tool_call_does_not_log_for_a_single_call() -> None:
+    with patch("lalo.agent.tools._log") as mock_log:
+        parse_tool_call('{"tool": "solo", "args": {}}')
+    mock_log.warning.assert_not_called()
+
+
+def test_parse_tool_call_logs_when_a_fenced_batch_is_dropped() -> None:
+    text = (
+        '```json\n{"tool": "first", "args": {}}\n```\n```json\n{"tool": "second", "args": {}}\n```'
+    )
+    with patch("lalo.agent.tools._log") as mock_log:
+        call = parse_tool_call(text)
+    assert call is not None
+    assert call.name == "first"
+    mock_log.warning.assert_called_once()
 
 
 def test_parse_tool_call_no_json_returns_none() -> None:

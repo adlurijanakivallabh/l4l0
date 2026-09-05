@@ -207,7 +207,14 @@ def build_spawn_tools(
             child_id = coordinator.spawn(self_id, name, task)
         except SpawnDepthExceededError as exc:
             return ToolResult(observation=f"error: {exc}", ok=False)
-        summary, finding_ids, success = run_child(child_id, name, task)
+        try:
+            summary, finding_ids, success = run_child(child_id, name, task)
+        except Exception as exc:  # noqa: BLE001 - a crashed child must still reach a terminal
+            # status, or view_agent_graph shows it "[running]" forever: nothing
+            # in this module ever revisits a node once spawn() registers it.
+            error = f"child crashed: {type(exc).__name__}: {exc}"
+            coordinator.record_result(child_id, summary=error, finding_ids=[], success=False)
+            return ToolResult(observation=f"error running child {child_id}: {error}", ok=False)
         coordinator.record_result(
             child_id, summary=summary, finding_ids=finding_ids, success=success
         )

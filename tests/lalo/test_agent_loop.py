@@ -12,8 +12,11 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
+import pytest
+
 from lalo.agent.loop import AgentConfig, AgentLoop
 from lalo.agent.tools import FunctionTool, ToolRegistry, ToolResult
+from lalo.core.errors import AllProvidersFailedError
 from lalo.core.model_router import CompletionRequest, CompletionResponse
 from lalo.orchestrator.budget import Budget
 
@@ -30,6 +33,8 @@ class _FakeRouter:
         self.prompts.append(request.prompt)
         text = self._respond(self.calls, request.prompt)
         self.calls += 1
+        if isinstance(text, BaseException):
+            raise text
         return CompletionResponse(text=text, provider="fake", model="fake-model")
 
 
@@ -76,7 +81,7 @@ def test_no_tool_call_is_retried_before_giving_up() -> None:
     )
     result = loop.run("mission")
     assert result.stop_reason == "no_tool_call"
-    assert result.steps == 1  # gave up on the SECOND no-tool-call turn, not the first
+    assert result.steps == 2  # gave up on the SECOND no-tool-call turn -- 2 real turns taken
     assert router.calls == 2
 
 
@@ -218,3 +223,74 @@ def test_event_callbacks_fire_for_tool_call_and_finish() -> None:
     )
     loop.run("mission")
     assert events == ["tool_call", "tool_result", "finished"]
+
+
+def test_agent_config_rejects_a_repeat_soft_threshold_below_2() -> None:
+    # repeat_count is seeded at 1 for a brand-new signature -- a threshold of
+    # 1 (or 0) would treat a tool's genuinely first-ever call as already
+    # repeated and never dispatch it at all.
+    with pytest.raises(ValueError, match="repeat_soft_threshold"):
+        AgentConfig(repeat_soft_threshold=1)
+
+
+def test_agent_config_rejects_an_abort_threshold_not_above_the_soft_threshold() -> None:
+    with pytest.raises(ValueError, match="repeat_abort_threshold"):
+        AgentConfig(repeat_soft_threshold=3, repeat_abort_threshold=3)
+
+
+def test_agent_config_rejects_max_steps_below_1() -> None:
+    with pytest.raises(ValueError, match="max_steps"):
+        AgentConfig(max_steps=0)
+
+
+def test_agent_config_rejects_negative_no_tool_call_retries() -> None:
+    with pytest.raises(ValueError, match="max_no_tool_call_retries"):
+        AgentConfig(max_no_tool_call_retries=-1)
+
+
+def test_finished_steps_reports_real_turn_count_not_a_zero_based_index() -> None:
+    # A mission that finishes on its very first real turn took ONE turn, not
+    # zero -- .steps must not silently mean different things per stop_reason.
+    registry = ToolRegistry([])
+    router = _scripted(['{"tool": "finish", "args": {"summary": "done"}}'])
+    loop = AgentLoop(router, registry, system_prompt="")  # type: ignore[arg-type]
+    result = loop.run("mission")
+    assert result.stop_reason == "finished"
+    assert result.steps == 1
+
+
+def test_repeating_tool_call_aborted_steps_reports_real_turn_count() -> None:
+    tool, _ = _counting_tool("probe")
+    registry = ToolRegistry([tool])
+    router = _scripted(['{"tool": "probe", "args": {"x": 1}}'])
+    loop = AgentLoop(
+        router,  # type: ignore[arg-type]
+        registry,
+        system_prompt="",
+        config=AgentConfig(max_steps=10, repeat_soft_threshold=2, repeat_abort_threshold=3),
+    )
+    result = loop.run("mission")
+    assert result.stop_reason == "repeating_tool_call_aborted"
+    assert result.steps == 3  # 3 real turns happened before the abort
+
+
+def test_two_agent_loops_do_not_share_a_tracer_by_default() -> None:
+    tool, _ = _counting_tool("probe")
+    router1 = _scripted(['{"tool": "probe", "args": {}}', '{"tool": "finish", "args": {}}'])
+    router2 = _scripted(['{"tool": "probe", "args": {}}', '{"tool": "finish", "args": {}}'])
+    loop1 = AgentLoop(router1, ToolRegistry([tool]), system_prompt="")  # type: ignore[arg-type]
+    loop2 = AgentLoop(router2, ToolRegistry([tool]), system_prompt="")  # type: ignore[arg-type]
+    assert loop1.tracer is not loop2.tracer
+    loop1.run("m1")
+    loop2.run("m2")
+    assert loop1.tracer.counters.get("tool_calls") == 1
+    assert loop2.tracer.counters.get("tool_calls") == 1
+
+
+def test_provider_failure_returns_a_typed_stop_reason_not_a_crash() -> None:
+    registry = ToolRegistry([])
+    router = _scripted([AllProvidersFailedError("all down", role="reasoning", failures=[])])
+    loop = AgentLoop(router, registry, system_prompt="")  # type: ignore[arg-type]
+    result = loop.run("mission")
+    assert result.stop_reason == "provider_failed"
+    assert result.steps == 0
