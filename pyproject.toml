@@ -26,6 +26,10 @@ dependencies = [
     "html2docx>=1.6.0",
 ]
 
+[project.scripts]
+# Web GUI — the primary entry point (no CLI, no TUI).
+lalo-gui = "lalo.gui.app:main"
+
 [dependency-groups]
 dev = [
     "ruff>=0.8,<1.0",
