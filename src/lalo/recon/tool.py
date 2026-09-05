@@ -2,13 +2,16 @@
 library code, dispatch-by-``action`` (mirroring :mod:`lalo.integrations.mcp_client`'s
 dispatch-by-name shape rather than one tool per underlying function).
 
-Deliberately does NOT wrap :func:`~lalo.recon.runner.run_recon_chain`: that
-orchestrator runs concrete :class:`~lalo.recon.runner.ReconRunner`
-implementations (external-tool wrappers, e.g. an nmap/feroxbuster adapter), and
-no concrete runner is built anywhere in this codebase - wrapping an empty
-runner list would be a no-op tool. External tool invocation is exactly what
-the free shell (``run_command``) is for; a genuine ``ReconRunner`` adapter is a
-real future addition, not a gap this pass silently papers over.
+``scan_ports`` wraps :func:`~lalo.recon.runner.run_recon_chain` over one
+concrete :class:`~lalo.recon.scan.NmapServiceScanRunner` — that orchestrator
+existed since Phase 9 with nothing to run through it (no concrete
+:class:`~lalo.recon.runner.ReconRunner` was ever built); this closes that,
+one curated tool (nmap), not an attempt to wrap every external scanner a
+future mission might want. A ``container`` is optional precisely because that
+gap existed before this action did: a caller that doesn't pass one simply
+doesn't get ``scan_ports`` (checked at call time, not construction time, so
+the other three actions stay usable without a container in any test or
+future context that has no need for one).
 
 Every action ends at :func:`~lalo.recon.facts.merge_facts` - the same
 :class:`~lalo.execution.scope.ScopeGuard` the ``http`` tool itself uses - so a
@@ -22,8 +25,11 @@ from ..agent.tools import FunctionTool, ToolResult, str_arg
 from ..execution.firer import HttpFirer
 from ..execution.scope import ScopeGuard
 from ..graph.model import ReachabilityGraph
+from ..runtime.tool import CommandExecutor
 from .facts import FactKind, ReconFact, merge_facts
 from .js_mining import endpoint_urls_from_paths, find_sourcemap_url, mine_js_for_paths
+from .runner import run_recon_chain
+from .scan import NmapServiceScanRunner
 from .spec_ingest import fetch_openapi_facts, parse_graphql_introspection
 
 
@@ -39,7 +45,13 @@ def _report(
     return ToolResult(observation="\n".join(lines))
 
 
-def build_recon_tool(firer: HttpFirer, graph: ReachabilityGraph, scope: ScopeGuard) -> FunctionTool:
+def build_recon_tool(
+    firer: HttpFirer,
+    graph: ReachabilityGraph,
+    scope: ScopeGuard,
+    *,
+    container: CommandExecutor | None = None,
+) -> FunctionTool:
     def _recon(args: dict[str, object]) -> ToolResult:
         action = str_arg(args, "action").strip()
 
@@ -79,9 +91,31 @@ def build_recon_tool(firer: HttpFirer, graph: ReachabilityGraph, scope: ScopeGua
                 )
             return result
 
+        if action == "scan_ports":
+            if container is None:
+                return ToolResult(
+                    observation="error: no runtime container available for scan_ports", ok=False
+                )
+            host = str_arg(args, "host").strip()
+            if not host:
+                return ToolResult(observation="error: 'host' is required", ok=False)
+            ports = str_arg(args, "ports", "1-1000").strip()
+            runner = NmapServiceScanRunner(container, scope, host=host, ports=ports)
+            chain_report = run_recon_chain([runner])
+            if chain_report.skipped:
+                return ToolResult(
+                    observation=f"{action}: {host!r} is not in engagement - refused to scan",
+                    ok=False,
+                )
+            if chain_report.failed:
+                name, error = chain_report.failed[0]
+                return ToolResult(observation=f"{action}: {name} failed: {error}", ok=False)
+            return _report(action, chain_report.facts, graph, scope)
+
         return ToolResult(
             observation=(
-                f"error: unknown action {action!r} (valid: fetch_openapi, parse_graphql, mine_js)"
+                "error: unknown action "
+                f"{action!r} (valid: fetch_openapi, parse_graphql, mine_js, scan_ports)"
             ),
             ok=False,
         )
@@ -89,12 +123,13 @@ def build_recon_tool(firer: HttpFirer, graph: ReachabilityGraph, scope: ScopeGua
     return FunctionTool(
         name="recon",
         description=(
-            "Extract candidate endpoints from a spec or JS bundle and merge them into the "
-            "graph (scope-checked, same as http). args: "
-            '{"action": "fetch_openapi", "spec_url": str} or '
+            "Extract candidate endpoints from a spec or JS bundle, or run an nmap "
+            "service scan, and merge the results into the graph (scope-checked, same as "
+            'http). args: {"action": "fetch_openapi", "spec_url": str} or '
             '{"action": "parse_graphql", "endpoint_url": str, "introspection": dict '
             "(the raw introspection query response you already fired via http)} or "
-            '{"action": "mine_js", "js_source": str, "base_url": str}'
+            '{"action": "mine_js", "js_source": str, "base_url": str} or '
+            '{"action": "scan_ports", "host": str, "ports": str (optional, e.g. "1-1000")}'
         ),
         func=_recon,
     )

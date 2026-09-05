@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import httpx
 
 from lalo.execution.firer import HttpFirer
@@ -115,3 +117,66 @@ def test_unknown_action_is_a_failed_result() -> None:
     tool = build_recon_tool(_firer(lambda r: httpx.Response(200)), ReachabilityGraph(), _scope())
     result = tool.run({"action": "nope"})
     assert result.ok is False
+
+
+# --- scan_ports: the nmap ReconRunner, dispatched through the same tool -----
+
+_OPEN_PORT_XML = (
+    '<?xml version="1.0"?><nmaprun><host><ports>'
+    '<port protocol="tcp" portid="443">'
+    '<state state="open"/><service name="https"/></port>'
+    "</ports></host></nmaprun>"
+)
+
+
+@dataclass
+class _FakeExecResult:
+    ok: bool = True
+    stdout: str = ""
+
+
+class _FakeContainer:
+    def exec(self, command: str, *, timeout: float = 120.0) -> _FakeExecResult:
+        if command.startswith("command -v"):
+            return _FakeExecResult(ok=True)
+        return _FakeExecResult(ok=True, stdout=_OPEN_PORT_XML)
+
+
+def test_scan_ports_without_a_container_is_a_failed_result() -> None:
+    tool = build_recon_tool(_firer(lambda r: httpx.Response(200)), ReachabilityGraph(), _scope())
+    result = tool.run({"action": "scan_ports", "host": "app.example.com"})
+    assert result.ok is False
+    assert "container" in result.observation
+
+
+def test_scan_ports_requires_a_host() -> None:
+    tool = build_recon_tool(
+        _firer(lambda r: httpx.Response(200)),
+        ReachabilityGraph(),
+        _scope(),
+        container=_FakeContainer(),
+    )
+    result = tool.run({"action": "scan_ports"})
+    assert result.ok is False
+
+
+def test_scan_ports_refuses_an_out_of_engagement_host() -> None:
+    tool = build_recon_tool(
+        _firer(lambda r: httpx.Response(200)),
+        ReachabilityGraph(),
+        _scope(),
+        container=_FakeContainer(),
+    )
+    result = tool.run({"action": "scan_ports", "host": "10.0.0.9"})
+    assert result.ok is False
+    assert "not in engagement" in result.observation
+
+
+def test_scan_ports_merges_open_ports_into_the_graph() -> None:
+    graph = ReachabilityGraph()
+    tool = build_recon_tool(
+        _firer(lambda r: httpx.Response(200)), graph, _scope(), container=_FakeContainer()
+    )
+    result = tool.run({"action": "scan_ports", "host": "app.example.com"})
+    assert result.ok is True
+    assert graph.has_node("tcp://app.example.com:443")

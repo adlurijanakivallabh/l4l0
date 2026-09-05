@@ -33,10 +33,14 @@ The operator was informed of this after the fact, reviewed the actual
 resulting code directly, and retroactively approved keeping it; that approval
 is real, the originally-claimed prior one was not. Recorded here rather than
 silently rewritten, matching this project's own citation-accuracy discipline.)
-Concrete :class:`~lalo.recon.runner.ReconRunner` external-tool adapters (nmap,
-feroxbuster, ...) and a browser-automation tool remain explicitly out of
-scope for this pass: the free shell (``run_command``) already covers ad-hoc
-external tool use, and building either would be new subsystems, not wiring.
+A concrete :class:`~lalo.recon.runner.ReconRunner` (nmap, via
+:mod:`lalo.recon.scan`, wired into the ``recon`` tool's own ``scan_ports``
+action) closes the gap this docstring originally described as out of scope —
+built afterward, in direct response to today's own live end-to-end run
+against a local target, not as part of this module's original pass. A
+browser-automation tool remains out of scope: the free shell (``run_command``)
+already covers ad-hoc external tool use, and building one would be a new
+subsystem, not wiring.
 
 **Review timing** (a deliberate, simple choice, not a hidden requirement):
 CLAUDE.md's two non-blocking confidence layers run over every finding once
@@ -240,7 +244,7 @@ class ScanRunner:
                 build_recall_tool(skills),
                 build_query_graph_tool(agent_graph),
                 build_note_tool(agent_graph),
-                build_recon_tool(firer, agent_graph, scope),
+                build_recon_tool(firer, agent_graph, scope, container=container),
                 build_jwt_tool(),
             ]
             if identities.ids():
