@@ -19,12 +19,21 @@ AGPL/proprietary reasons behind it).
 
 ## Execution model (the design center)
 
-A hierarchical agent loop: a root agent takes the mission and spawns specialist
-sub-agents; each agent has a flat, powerful toolset centered on a **free shell**
-(`run_command` — runs/installs anything) plus `http` (multi-protocol firer),
-`browser`, `spawn_agent`, `record_finding`, `poll_oast`, `query_graph`/`note`,
-and `recall` (RAG over the skill library + past findings). The LLM drives; a
-durable orchestrator checkpoints every step so a crashed scan resumes exactly.
+**The agent itself is the primary methodology** — not fixed detector code. A
+hierarchical agent loop: a root agent takes the mission and `spawn_agent`s
+specialist children (each naming skills to `recall`); every agent has a flat,
+powerful toolset centered on a **free shell** (`run_command` — runs/installs
+anything) plus `http` (multi-protocol firer), `browser`, `spawn_agent`,
+`view_agent_graph`, `record_finding`, `poll_oast`, `query_graph`/`note`, and
+`recall` (retrieval over the skill library + past findings). The skill library
+(one dense playbook per vuln class: attack surface → recon → techniques →
+proof ladder → validation/false-positive discipline) is what the agent follows
+to find, exploit, and prove vulnerabilities — the actual methodology lives
+there, not in Python dispatch code. A durable orchestrator checkpoints every
+step so a crashed scan resumes exactly. Fixed Python detector functions, if
+present at all, are optional helpers an agent MAY call for a quick
+deterministic read on already-captured data — never the default path, never a
+gate, never required.
 
 ## Safety posture (the whole of it — stated once)
 
@@ -67,13 +76,17 @@ weaponizing it into credential theft or lateral movement is not.
 ## Confidence, not gates
 
 There is no oracle/confirmation gate and nothing is withheld from the report.
-Every fired candidate that trips a detector becomes a `Finding` immediately, with
-a deterministic, auditable **Confidence Score (0–100)** and a component breakdown
-(reproducibility, corroboration count, specificity, cross-context reproduction,
-chained-impact success, evidence-provenance match). Unverifiable evidence *lowers*
-the score and is flagged, never dropped. The LLM describes findings and proposes
-corroboration probes; it is never the sole arbiter of whether something is
-reported.
+Every finding the agent records via `record_finding` lands immediately, then
+goes through two non-blocking layers: (1) a deterministic **Confidence Score
+(0–100)** with a component breakdown (reproducibility, corroboration count,
+specificity, cross-context reproduction, chained-impact success,
+evidence-provenance match — unverifiable evidence *lowers* the score and is
+flagged, never dropped), and (2) an **independent LLM adversarial review** —
+"assume false by default, disprove it using only the real captured evidence
+shown, ignore the finder's own prose" — that returns confirmed / ruled-out /
+open-proof-gap plus a proof level and adjusts the confidence score accordingly.
+Neither layer ever removes a finding from the report; a multi-agent parent
+merges only a child's *authoritative* finding-ids, never its prose summary.
 
 ## Stack
 
