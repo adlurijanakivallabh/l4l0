@@ -31,6 +31,19 @@ the finding, matching CLAUDE.md's "neither layer ever removes a finding."
 A total provider failure (every provider in the review role's chain down)
 degrades to ``open_proof_gap`` rather than crashing the reporting pipeline
 or silently claiming a verdict that was never actually reached.
+
+:func:`run_adversarial_review` persists its :class:`ReviewResult` onto the
+finding's own graph node (via the existing, already-merging
+:meth:`~lalo.graph.model.ReachabilityGraph.add_node`, reused rather than
+adding a new graph-mutation method for this) before returning it — a real
+gap this closes, not an original design choice: nothing else in the
+codebase ever wrote a review verdict back onto a node, so
+:mod:`lalo.report.collect`'s ``review_verdict``/``review_proof_level``
+fields existed on every :class:`~lalo.report.collect.FindingRecord` but
+could never actually be populated by a real review, only ever default to
+``None``. This is the one and only place a verdict is written, so
+:mod:`lalo.report.collect` reading it back is a plain field read, not a
+second source of truth to keep in sync.
 """
 
 from __future__ import annotations
@@ -42,7 +55,7 @@ from pathlib import Path
 
 from ..core.errors import AllProvidersFailedError
 from ..core.model_router import CompletionRequest, ModelRouter
-from ..graph.model import ReachabilityGraph
+from ..graph.model import NodeKind, ReachabilityGraph
 from ..prompts import render_prompt
 from .confidence import ConfidenceScore
 
@@ -114,7 +127,7 @@ def run_adversarial_review(
     role: str = "review",
     prompt_overrides_dir: Path | None = None,
 ) -> ReviewResult:
-    """Run the independent review for one finding and return its verdict.
+    """Run the independent review for one finding, persist it, and return the verdict.
 
     ``role`` selects the :class:`~lalo.core.model_router.ModelRouter` chain
     (which provider serves this call) — a different axis from the *prompt*
@@ -125,8 +138,29 @@ def run_adversarial_review(
 
     Never raises: a total provider failure or an unparseable response
     degrades to ``open_proof_gap`` at the finding's unadjusted score rather
-    than crashing the confirmation pipeline or fabricating a verdict.
+    than crashing the confirmation pipeline or fabricating a verdict. Either
+    way, the result is written onto ``finding_id``'s own graph node before
+    returning, so a report generated from ``graph`` afterward can render it.
     """
+    result = _compute_review(graph, finding_id, confidence, router, role, prompt_overrides_dir)
+    graph.add_node(
+        finding_id,
+        NodeKind.FINDING,
+        review_verdict=result.verdict.value,
+        review_proof_level=result.proof_level,
+        review_reasoning=result.reasoning,
+    )
+    return result
+
+
+def _compute_review(
+    graph: ReachabilityGraph,
+    finding_id: str,
+    confidence: ConfidenceScore,
+    router: ModelRouter,
+    role: str,
+    prompt_overrides_dir: Path | None,
+) -> ReviewResult:
     node = graph.node(finding_id)
     system_prompt = render_prompt("review", overrides_dir=prompt_overrides_dir)
     try:

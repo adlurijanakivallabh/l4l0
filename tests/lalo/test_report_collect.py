@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from lalo.agent.tools import ToolRegistry
 from lalo.findings.tool import build_record_finding_tool
-from lalo.graph.model import ReachabilityGraph
+from lalo.graph.model import NodeKind, ReachabilityGraph
 from lalo.report.collect import collect_findings, sort_findings
 
 _HIGH_CVSS = {
@@ -104,3 +104,29 @@ def test_effective_severity_falls_back_to_cvss_severity_with_no_override() -> No
     record = collect_findings(graph)[0]
     assert record.effective_severity == record.cvss_severity
     assert record.display_severity is None
+
+
+def test_a_never_reviewed_finding_has_no_review_verdict() -> None:
+    graph = ReachabilityGraph()
+    _file_finding(graph)
+    record = collect_findings(graph)[0]
+    assert record.review_verdict is None
+    assert record.review_proof_level is None
+
+
+def test_a_persisted_review_verdict_is_read_back_onto_the_record() -> None:
+    """run_adversarial_review persists onto the finding's own node - this
+    confirms collect_findings actually reads that back, closing the gap
+    where a real review verdict never reached a rendered report."""
+    graph = ReachabilityGraph()
+    _file_finding(graph)
+    finding_id = collect_findings(graph)[0].finding_id
+    graph.add_node(
+        finding_id,
+        NodeKind.FINDING,
+        review_verdict="confirmed",
+        review_proof_level="L3",
+    )
+    record = collect_findings(graph)[0]
+    assert record.review_verdict == "confirmed"
+    assert record.review_proof_level == "L3"

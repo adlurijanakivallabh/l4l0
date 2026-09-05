@@ -1,34 +1,43 @@
 """Deterministic Markdown rendering — pure string assembly, never an LLM call.
 
 Adopts two specific, security-relevant ideas from a reference agent's own
-``report/writer.py`` (read in full): ``safe_fence`` (a backtick fence one
-character longer than the longest backtick run already inside the content
-being fenced, since a CommonMark fence is only closed by a run at least as
-long as the one that opened it — attacker-influenced evidence text, quoted
-verbatim from a captured target response, can otherwise break out of its
-own code block) and the general per-finding section structure (title,
-metadata line, then labeled sections for description/evidence/
-counterevidence/etc.), adapted to this project's own field names. A
-reference SAST platform's ``findings-renderer.ts`` fail-partial discipline
-("a per-class render failure is isolated... rather than aborting the whole
-report") is adopted directly for :func:`render_report_md`: one malformed
-finding renders as its own failure note, never a reason to drop or blank
-the rest of the report.
+``report/writer.py`` (read in full): the *idea* behind ``safe_fence`` (a
+backtick fence one character longer than the longest backtick run already
+inside the content being fenced, since a CommonMark fence is only closed by
+a run at least as long as the one that opened it — attacker-influenced
+evidence text, quoted verbatim from a captured target response, can
+otherwise break out of its own code block) and the general per-finding
+section structure (title, metadata line, then labeled sections for
+description/evidence/counterevidence/etc.), adapted to this project's own
+field names. :func:`safe_fence` below is a genuine reimplementation, not a
+port of the reference's regex-based version — a single-pass character scan
+computing the same longest-run value, precisely because a 2-line
+CommonMark-fence-length calculation has no meaningfully different "better"
+shape to invent, only a different one to independently derive. That
+reference's own ``csv_safe()`` (a same-file, adjacent CWE-1236 CSV-formula-
+injection guard prefixing a leading apostrophe on cells starting with
+``= + - @``/tab/CR) is a real, separate defensive idea this module does not
+need: L4L0 emits Markdown/JSON/SARIF, never CSV, so there is no spreadsheet-
+formula-injection surface here to guard against — noted as a deliberately
+inapplicable reference rather than a missed one. A reference SAST platform's
+``findings-renderer.ts`` fail-partial discipline ("a per-class render
+failure is isolated... rather than aborting the whole report") is adopted
+directly for :func:`render_report_md`: one malformed finding renders as its
+own failure note, never a reason to drop or blank the rest of the report.
 """
 
 from __future__ import annotations
 
-import re
-
 from .collect import FindingRecord
 from .coverage import CoverageSummary
-
-_BACKTICK_RUN = re.compile(r"`+")
 
 
 def safe_fence(content: str) -> str:
     """A fence long enough that ``content`` cannot break out of its own code block."""
-    longest = max((len(m.group()) for m in _BACKTICK_RUN.finditer(content)), default=0)
+    longest = current = 0
+    for char in content:
+        current = current + 1 if char == "`" else 0
+        longest = max(longest, current)
     return "`" * max(3, longest + 1)
 
 

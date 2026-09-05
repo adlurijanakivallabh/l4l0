@@ -22,8 +22,10 @@ be strictly worse.
 
 Matching is deliberately simple: an exact, case-insensitive comparison
 between a finding's ``vuln_class`` and a skill's name, rather than the
-reference's 40-entry word-phrasing table (``_SKILL_PHRASINGS``) built to
-bridge a skill's filename against a pentester's own wording. L4L0's skills
+reference's 29-entry word-phrasing table (``_SKILL_PHRASINGS``, 76 phrase
+strings total across all entries — counted directly from the real source,
+not estimated) built to bridge a skill's filename against a pentester's own
+wording. L4L0's skills
 and its own ``record_finding`` tool description both use the same short,
 hyphenated class names (``sql-injection``, ``xss``), so the exact match
 covers the common path; a mismatched free-text ``vuln_class`` is a real,

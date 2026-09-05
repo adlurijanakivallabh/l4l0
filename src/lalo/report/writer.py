@@ -7,6 +7,25 @@ reachability graph itself persists through. A reference agent's own
 writes atomically but never reads the file back to confirm the bytes landed
 intact; Phase 7's version already closes that gap, so this module has
 nothing further to add there, only to reuse.
+
+A second reference's own finalization design is more rigorous than this
+module in one specific dimension worth naming, not silently matching: its
+``exact-output-commit.ts``/``report-finalization.ts`` (read via comparison
+doc, real source confirmed) publish Markdown+JSON+SARIF+manifest as **one**
+atomic git commit — verified to have changed exactly the declared paths,
+idempotently re-adoptable after a lost acknowledgement, with any digest
+mismatch treated as a non-retryable integrity error. :func:`write_report`
+instead calls :func:`atomic_write_verified` three times, once per format —
+each individual file is atomic and byte-verified, but a crash between the
+first and third call can leave a run directory with a fresh ``report.md``
+and a stale (or absent) ``report.json``/``findings.sarif`` from a prior run,
+which the reference's single-commit design would not permit. Accepted as a
+real, open gap rather than closed here: L4L0 has no git-backed run-directory
+layer for a commit-style multi-file transaction to attach to, and adding one
+solely for this would be exactly the kind of unrequested infrastructure this
+project's own conventions warn against. A future run-directory redesign that
+does need atomic multi-file publication should build on this reference's
+design rather than reinvent it.
 """
 
 from __future__ import annotations

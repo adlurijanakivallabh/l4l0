@@ -11,6 +11,18 @@ kept structurally separate and one-directional: it can change what a
 back onto the graph node itself. The underlying, evidence-computed
 ``cvss_severity`` stays exactly what Phase 12a computed, always, for anyone
 who reads the finding directly rather than through a rendered report.
+
+That same reference's actual *human-facing* feature this idea is drawn from
+(``VulnerabilityDetail.tsx``, its shared local-viewer/public-share finding
+page, confirmed via source, not just its comparison doc) renders a
+``severity_override_reason``/``original_severity`` pair when a human has
+manually corrected the LLM's assigned severity — but its own comparison
+documentation notes this is confirmed inert/null-only in the surveyed OSS
+build (no code path there ever writes a non-null override). L4L0's
+:class:`SeverityOverride` and :func:`apply_overrides` are a real,
+functioning implementation of the same idea — an operator (or, later, any
+other reviewer) can actually produce and apply one — rather than a wired-up
+display for a value nothing yet sets.
 """
 
 from __future__ import annotations

@@ -15,9 +15,12 @@ concatenation") both state that report rendering must never itself be an
 LLM decision point. This module and its siblings only ever transform
 already-computed, already-persisted data (the Finding graph node plus
 :mod:`lalo.findings.confidence`'s deterministic score) — an LLM adversarial
-review result, if one has already been run and the caller has it, is an
-optional input to render, never something a report-generation call triggers
-on its own.
+review result, if one has already been run, is read back from wherever
+:func:`~lalo.findings.review.run_adversarial_review` persisted it onto the
+node (``review_verdict``/``review_proof_level``), never something a
+report-generation call triggers on its own. A finding never reviewed simply
+has neither key set, and both fields fall back to ``None`` — rendered as no
+review section at all, not a fabricated "not reviewed" verdict.
 
 Dedup is not re-implemented here: :mod:`lalo.findings.dedup` already merges
 same-(class, target, param) evidence into one graph node the moment a
@@ -92,6 +95,8 @@ def collect_findings(graph: ReachabilityGraph) -> list[FindingRecord]:
                 confidence=confidence,
                 reproduced=bool(node.get("reproduced", False)),
                 identities_confirmed=list(node.get("identities_confirmed", [])),
+                review_verdict=node.get("review_verdict"),
+                review_proof_level=node.get("review_proof_level"),
             )
         )
     return records

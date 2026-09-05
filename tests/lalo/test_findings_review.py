@@ -123,6 +123,31 @@ def test_an_invalid_proof_level_falls_back_to_l1_without_failing_the_review() ->
     assert result.proof_level == "L1"
 
 
+def test_the_verdict_is_persisted_onto_the_findings_own_graph_node() -> None:
+    """A report generated from `graph` afterward has to be able to see this -
+    nothing else in the codebase ever writes a review verdict onto a node."""
+    provider = _FakeProvider(
+        text='{"verdict": "confirmed", "proof_level": "L3", "reasoning": "grounded"}'
+    )
+    graph, finding_id = _graph_with_finding()
+    confidence = compute_confidence(graph, finding_id)
+    result = run_adversarial_review(graph, finding_id, confidence, _router(provider))
+    node = graph.node(finding_id)
+    assert node["review_verdict"] == result.verdict.value == "confirmed"
+    assert node["review_proof_level"] == result.proof_level == "L3"
+    assert node["review_reasoning"] == result.reasoning == "grounded"
+
+
+def test_persisting_the_verdict_never_clobbers_the_findings_other_attributes() -> None:
+    graph, finding_id = _graph_with_finding()
+    confidence = compute_confidence(graph, finding_id)
+    provider = _FakeProvider(text='{"verdict": "ruled_out", "proof_level": "L1"}')
+    run_adversarial_review(graph, finding_id, confidence, _router(provider))
+    node = graph.node(finding_id)
+    assert node["vuln_class"] == "sql-injection"
+    assert node["kind"] == NodeKind.FINDING.value
+
+
 def test_score_never_exceeds_100_or_drops_below_0() -> None:
     provider_high = _FakeProvider(text='{"verdict": "confirmed", "proof_level": "L4"}')
     graph, finding_id = _graph_with_finding(
