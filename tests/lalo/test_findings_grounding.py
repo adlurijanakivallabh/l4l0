@@ -34,3 +34,24 @@ def test_is_grounded_false_for_blank_excerpt() -> None:
 def test_is_grounded_checks_every_evidence_blob() -> None:
     evidence = ["irrelevant blob", "the real one has secret=abc123 in it"]
     assert is_grounded("secret=abc123", evidence) is True
+
+
+def test_is_grounded_true_for_pretty_printed_json_matching_a_compact_evidence_blob() -> None:
+    """Reproduces a real false negative from a live run against VAmPI: the
+    model's own evidence_excerpt was multi-line pretty-printed JSON quoting
+    the same object a captured response's evidence blob held as compact
+    single-line JSON - same content, different whitespace only."""
+    excerpt = '"admin": true,\n      "email": "admin@mail.com",\n      "username": "admin"'
+    evidence = [
+        'Raw response excerpt: { "users": [ '
+        '{ "admin": true, "email": "admin@mail.com", "username": "admin" } ] }'
+    ]
+    assert is_grounded(excerpt, evidence) is True
+
+
+def test_is_grounded_still_rejects_a_laundered_claim_regardless_of_whitespace() -> None:
+    """The whitespace-collapsing extension must never let a genuinely
+    fabricated token sequence through just because it's spread across lines."""
+    evidence = ["GET / -> HTTP/1.0 200 OK"]
+    excerpt = "GET /  ->  HTTP/1.0   200   OK\n; admin_password=secret"
+    assert is_grounded(excerpt, evidence) is False
