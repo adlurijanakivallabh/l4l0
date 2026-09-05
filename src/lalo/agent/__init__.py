@@ -14,6 +14,7 @@ from .spawn import (
     Isolatable,
     build_spawn_tools,
     isolate_for_child,
+    merge_finding_nodes,
 )
 from .tools import Tool, ToolCall, ToolRegistry, ToolResult, parse_tool_call
 
@@ -31,5 +32,6 @@ __all__ = [
     "ToolResult",
     "build_spawn_tools",
     "isolate_for_child",
+    "merge_finding_nodes",
     "parse_tool_call",
 ]

@@ -48,6 +48,7 @@ from enum import StrEnum
 from typing import Protocol, Self, runtime_checkable
 
 from ..core.errors import SpawnDepthExceededError
+from ..graph.model import NodeKind, ReachabilityGraph
 from .tools import FunctionTool, Tool, ToolResult, str_arg
 
 
@@ -73,6 +74,31 @@ class Isolatable(Protocol):
 def isolate_for_child[T: Isolatable](state: T) -> T:
     """Return the child's own deep copy of shared state, never the parent's live object."""
     return state.snapshot()
+
+
+def merge_finding_nodes(
+    parent: ReachabilityGraph, child: ReachabilityGraph, finding_ids: list[str]
+) -> None:
+    """Copy a child's authoritative finding nodes onto the parent's graph.
+
+    ``all_finding_ids`` (below) only ever returns the ids a child actually
+    filed through ``record_finding`` — this is the other half CLAUDE.md's
+    "merge only the child's authoritative finding-ids" rule needs: an id
+    alone is meaningless to a report built from the PARENT's graph unless
+    the finding node it names actually exists there too. Uses only the
+    graph's existing public API (``node``/``has_node``/``add_node``), not a
+    new bulk-copy method, since a handful of ids per spawn never needs one.
+    An id already present on the parent (the same finding independently
+    re-filed by a sibling, or merged once already) is left untouched rather
+    than overwritten — first writer wins, matching ``record_finding``'s own
+    dedup-by-key merge behavior within a single graph.
+    """
+    for finding_id in finding_ids:
+        if parent.has_node(finding_id) or not child.has_node(finding_id):
+            continue
+        attrs = child.node(finding_id)
+        kind = NodeKind(attrs.pop("kind"))
+        parent.add_node(finding_id, kind, **attrs)
 
 
 @dataclass

@@ -12,6 +12,19 @@
 </header>
 
 <main>
+  <section id="launch">
+    <h2>Scan</h2>
+    <form id="launch-form">
+      <label for="launch-targets">Targets (one per line)</label>
+      <textarea id="launch-targets" rows="3" placeholder="https://example.com&#10;10.0.0.0/24"></textarea>
+      <label for="launch-mission">Mission</label>
+      <textarea id="launch-mission" rows="3" placeholder="Find and prove any exploitable vulnerability in scope."></textarea>
+      <button type="submit">Start scan</button>
+      <button type="button" id="stop-scan">Stop</button>
+    </form>
+    <div id="launch-status"></div>
+  </section>
+
   <section id="agents">
     <h2>Agents</h2>
     <ul id="agent-list"></ul>

@@ -2,18 +2,60 @@
 
 from __future__ import annotations
 
+import threading
+import time
+from collections.abc import Callable
+from pathlib import Path
+
 import pytest
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
+import lalo.gui.app as app_module
 from lalo.gui.app import build_app, generate_token
 from lalo.gui.events import EventLog
 
 
-def _client(token: str = "test-token") -> tuple[TestClient, EventLog]:
+def _client(
+    token: str = "test-token", *, runs_dir: Path | None = None
+) -> tuple[TestClient, EventLog]:
     event_log = EventLog()
-    app = build_app(event_log, token)
+    app = build_app(event_log, token, runs_dir=runs_dir)
     return TestClient(app), event_log
+
+
+class _FakeScanRunner:
+    """Stands in for ScanRunner: no real Docker/LLM, just observable state."""
+
+    block: threading.Event | None = None
+    raises: Exception | None = None
+
+    def __init__(self, config: object, *, env: object = None, event_log: object = None) -> None:
+        self.config = config
+        self.cancelled = False
+
+    def run(self) -> None:
+        if self.block is not None:
+            self.block.wait(timeout=5)
+        if self.raises is not None:
+            raise self.raises
+
+    def cancel(self) -> None:
+        self.cancelled = True
+
+
+def _wait_until(
+    predicate: Callable[[], bool], *, timeout: float = 5.0, interval: float = 0.01
+) -> bool:
+    """Poll for a background-thread side effect - `done` firing inside the fake
+    runner races the caller's own except/finally handling in app.py, which is
+    what actually appends the event this waits for."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(interval)
+    return predicate()
 
 
 def test_generate_token_produces_a_real_unguessable_token() -> None:
@@ -118,3 +160,97 @@ def test_steer_appends_a_steering_event_and_nothing_else() -> None:
     assert len(events) == 1
     assert events[0].category == "steering"
     assert events[0].payload == {"text": "check the admin panel"}
+
+
+def test_scan_requires_a_valid_token(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(app_module, "ScanRunner", _FakeScanRunner)
+    client, _ = _client(token="real-token", runs_dir=tmp_path)
+    response = client.post(
+        "/scan?token=wrong", json={"mission": "find a bug", "targets": ["example.com"]}
+    )
+    assert response.status_code == 403
+
+
+def test_scan_requires_mission_and_targets(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(app_module, "ScanRunner", _FakeScanRunner)
+    client, _ = _client(runs_dir=tmp_path)
+    response = client.post("/scan?token=test-token", json={"mission": "  ", "targets": []})
+    assert response.status_code == 400
+
+
+def test_scan_launches_a_runner_and_returns_a_run_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(app_module, "ScanRunner", _FakeScanRunner)
+    client, _ = _client(runs_dir=tmp_path)
+    response = client.post(
+        "/scan?token=test-token", json={"mission": "find a bug", "targets": ["example.com"]}
+    )
+    assert response.status_code == 200
+    assert response.json()["ok"] is True
+    assert Path(response.json()["run_dir"]).parent == tmp_path
+
+
+def test_scan_refuses_a_second_launch_while_one_is_running(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    block = threading.Event()
+    _FakeScanRunner.block = block
+    monkeypatch.setattr(app_module, "ScanRunner", _FakeScanRunner)
+    try:
+        client, _ = _client(runs_dir=tmp_path)
+        body = {"mission": "find a bug", "targets": ["example.com"]}
+        first = client.post("/scan?token=test-token", json=body)
+        assert first.status_code == 200
+        second = client.post("/scan?token=test-token", json=body)
+        assert second.status_code == 409
+    finally:
+        block.set()
+        _FakeScanRunner.block = None
+
+
+def test_scan_stop_requires_a_running_scan(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(app_module, "ScanRunner", _FakeScanRunner)
+    client, _ = _client(runs_dir=tmp_path)
+    response = client.post("/scan/stop?token=test-token")
+    assert response.status_code == 400
+
+
+def test_scan_stop_cancels_the_current_runner(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    block = threading.Event()
+    _FakeScanRunner.block = block
+    monkeypatch.setattr(app_module, "ScanRunner", _FakeScanRunner)
+    try:
+        client, _ = _client(runs_dir=tmp_path)
+        client.post(
+            "/scan?token=test-token", json={"mission": "find a bug", "targets": ["example.com"]}
+        )
+        response = client.post("/scan/stop?token=test-token")
+        assert response.status_code == 200
+    finally:
+        block.set()
+        _FakeScanRunner.block = None
+
+
+def test_a_failed_scan_emits_a_status_event_instead_of_dying_silently(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _FakeScanRunner.raises = RuntimeError("boom")
+    monkeypatch.setattr(app_module, "ScanRunner", _FakeScanRunner)
+    try:
+        client, event_log = _client(runs_dir=tmp_path)
+        client.post(
+            "/scan?token=test-token", json={"mission": "find a bug", "targets": ["example.com"]}
+        )
+
+        def _failed_event_landed() -> bool:
+            _cursor, events = event_log.snapshot()
+            return any(
+                e.category == "status" and e.payload.get("event") == "scan_failed" for e in events
+            )
+
+        assert _wait_until(_failed_event_landed)
+    finally:
+        _FakeScanRunner.raises = None

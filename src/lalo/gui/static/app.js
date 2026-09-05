@@ -12,6 +12,13 @@
   const steerLogEl = document.getElementById("steer-log");
   const steerForm = document.getElementById("steer-form");
   const steerInput = document.getElementById("steer-input");
+  const launchForm = document.getElementById("launch-form");
+  const launchTargetsEl = document.getElementById("launch-targets");
+  const launchMissionEl = document.getElementById("launch-mission");
+  const stopScanBtn = document.getElementById("stop-scan");
+  const launchStatusEl = document.getElementById("launch-status");
+
+  const SCAN_STATUS_EVENTS = new Set(["scan_started", "scan_completed", "scan_failed"]);
 
   const agents = new Map();
   const findings = new Map();
@@ -64,6 +71,9 @@
     switch (event.category) {
       case "status":
         appendScrollback(`[status] ${JSON.stringify(event.payload)}`);
+        if (SCAN_STATUS_EVENTS.has(event.payload.event)) {
+          launchStatusEl.textContent = JSON.stringify(event.payload);
+        }
         break;
       case "log":
         appendScrollback(event.payload.text || JSON.stringify(event.payload));
@@ -174,6 +184,48 @@
       const div = document.createElement("div");
       div.textContent = `[not delivered: ${err.message}] ${text}`;
       steerLogEl.appendChild(div);
+    }
+  });
+
+  launchForm.addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    const targets = launchTargetsEl.value
+      .split("\n")
+      .map((t) => t.trim())
+      .filter(Boolean);
+    const mission = launchMissionEl.value.trim();
+    if (!targets.length || !mission) {
+      launchStatusEl.textContent = "error: at least one target and a mission are required";
+      return;
+    }
+    try {
+      const response = await fetch(`/scan?token=${encodeURIComponent(token)}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mission, targets }),
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(body.error || `request failed (${response.status})`);
+      }
+      launchStatusEl.textContent = `scan launched (${body.run_dir || "?"})`;
+    } catch (err) {
+      launchStatusEl.textContent = `error: ${err.message}`;
+    }
+  });
+
+  stopScanBtn.addEventListener("click", async () => {
+    try {
+      const response = await fetch(`/scan/stop?token=${encodeURIComponent(token)}`, {
+        method: "POST",
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(body.error || `request failed (${response.status})`);
+      }
+      launchStatusEl.textContent = "stop requested";
+    } catch (err) {
+      launchStatusEl.textContent = `error: ${err.message}`;
     }
   });
 

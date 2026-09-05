@@ -53,6 +53,9 @@ class NodeKind(StrEnum):
     EVIDENCE = "evidence"
     FINGERPRINT = "fingerprint"
     SERVICE = "service"
+    # A freeform scratch note an agent leaves for itself or another agent -
+    # deliberately untyped/unstructured, unlike every other kind above.
+    NOTE = "note"
 
 
 class EdgeKind(StrEnum):

@@ -9,6 +9,7 @@ from .js_mining import (
 )
 from .runner import ChainReport, ReconRunner, run_recon_chain
 from .spec_ingest import fetch_openapi_facts, parse_graphql_introspection
+from .tool import build_recon_tool
 
 __all__ = [
     "ChainReport",
@@ -16,6 +17,7 @@ __all__ = [
     "MergeReport",
     "ReconFact",
     "ReconRunner",
+    "build_recon_tool",
     "endpoint_urls_from_paths",
     "fetch_openapi_facts",
     "find_sourcemap_url",

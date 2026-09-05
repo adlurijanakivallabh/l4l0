@@ -61,6 +61,8 @@ from __future__ import annotations
 
 import asyncio
 import secrets
+import threading
+import uuid
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
@@ -70,14 +72,24 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from ..core.logging import get_logger
+from ..scan import ScanConfig, ScanRunner
 from .events import EventLog
+
+_log = get_logger("lalo.gui")
 
 STATIC_DIR = Path(__file__).parent / "static"
 _POLL_INTERVAL_S = 0.3
+_DEFAULT_RUNS_DIR = Path.home() / ".lalo" / "runs"
 
 
 class SteeringMessage(BaseModel):
     text: str
+
+
+class ScanRequest(BaseModel):
+    mission: str
+    targets: list[str]
 
 
 def generate_token() -> str:
@@ -89,8 +101,14 @@ def _event_to_json(event: Any) -> dict[str, Any]:
     return asdict(event)
 
 
-def build_app(event_log: EventLog, token: str) -> FastAPI:
+def build_app(event_log: EventLog, token: str, *, runs_dir: Path | None = None) -> FastAPI:
     app = FastAPI()
+    runs_dir = runs_dir or _DEFAULT_RUNS_DIR
+    # A single mutable slot, not a list/registry: this GUI is a single-operator
+    # local tool (CLAUDE.md's own design center) with one dashboard watching
+    # one scan at a time, so "is a scan already running" is a plain None-check,
+    # not a scheduler. /scan refuses a second launch while this is set.
+    current_runner: dict[str, ScanRunner | None] = {"runner": None}
 
     def _authorized(candidate: str | None) -> bool:
         return candidate is not None and secrets.compare_digest(candidate, token)
@@ -98,6 +116,50 @@ def build_app(event_log: EventLog, token: str) -> FastAPI:
     @app.get("/")
     def index() -> FileResponse:
         return FileResponse(STATIC_DIR / "index.html")
+
+    @app.post("/scan")
+    async def start_scan(
+        request: ScanRequest,
+        provided_token: str = Query(default="", alias="token"),
+    ) -> JSONResponse:
+        if not _authorized(provided_token):
+            return JSONResponse({"error": "invalid token"}, status_code=403)
+        mission = request.mission.strip()
+        targets = [t.strip() for t in request.targets if t.strip()]
+        if not mission or not targets:
+            return JSONResponse({"error": "'mission' and 'targets' are required"}, status_code=400)
+        if current_runner["runner"] is not None:
+            return JSONResponse({"error": "a scan is already running"}, status_code=409)
+
+        run_dir = runs_dir / uuid.uuid4().hex[:12]
+        config = ScanConfig(mission=mission, target_specs=targets, run_dir=run_dir)
+        runner = ScanRunner(config, event_log=event_log)
+        current_runner["runner"] = runner
+
+        def _run_and_clear() -> None:
+            try:
+                runner.run()
+            except Exception as exc:  # noqa: BLE001 - a background thread's own
+                # exception has no caller to propagate to; the dashboard is the
+                # only place this failure can surface, so it must be a status
+                # event, never a silently dead thread.
+                _log.exception("scan failed")
+                event_log.append("status", {"event": "scan_failed", "error": str(exc)})
+            finally:
+                current_runner["runner"] = None
+
+        threading.Thread(target=_run_and_clear, daemon=True).start()
+        return JSONResponse({"ok": True, "run_dir": str(run_dir)})
+
+    @app.post("/scan/stop")
+    async def stop_scan(provided_token: str = Query(default="", alias="token")) -> JSONResponse:
+        if not _authorized(provided_token):
+            return JSONResponse({"error": "invalid token"}, status_code=403)
+        runner = current_runner["runner"]
+        if runner is None:
+            return JSONResponse({"error": "no scan is running"}, status_code=400)
+        runner.cancel()
+        return JSONResponse({"ok": True})
 
     @app.post("/steer")
     async def steer(
@@ -153,15 +215,11 @@ def build_app(event_log: EventLog, token: str) -> FastAPI:
 def main() -> None:
     """Entry point for the ``lalo-gui`` script: the GUI is the primary way to run L4L0.
 
-    Wiring a live scan's events into the returned ``EventLog`` (via a
-    running :class:`~lalo.agent.loop.AgentLoop`'s own ``on_event`` callback)
-    is deliberately out of scope here — that spans nearly every phase built
-    so far (provider/config resolution, the runtime container, the full
-    tool registry, prompts) and belongs to whichever future integration
-    pass assembles them into one runnable scan, not to the GUI backend
-    module itself. This entry point serves the live-viewing mechanism ready
-    for that wiring: anything that calls ``event_log.append``/``.update``
-    appears in the dashboard immediately, reconnect-safe.
+    ``POST /scan`` (mission + target specs, token-gated, one scan at a time)
+    launches a real :class:`~lalo.scan.ScanRunner` on a background thread,
+    which streams every event into the returned ``EventLog`` — the wiring
+    this function's docstring used to describe as a future integration
+    pass's job now lives in :mod:`lalo.scan`, called from here.
     """
     import uvicorn
 
