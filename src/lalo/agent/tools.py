@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Protocol, runtime_checkable
 
@@ -51,7 +51,7 @@ class FunctionTool:
 
 
 class ToolRegistry:
-    def __init__(self, tools: list[Tool] | None = None) -> None:
+    def __init__(self, tools: Sequence[Tool] | None = None) -> None:
         self._tools: dict[str, Tool] = {}
         for tool in tools or []:
             self.register(tool)
