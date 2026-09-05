@@ -33,9 +33,13 @@ gate, no confirmation gate on findings, and **no network-egress cage by default*
 The mechanical guarantees, and the only hard lines, are:
 
 1. **Host isolation.** Every scan runs in a disposable container with
-   `CapDrop:[ALL]` + minimal caps, **no host mounts, no Docker socket, non-root**.
-   A malicious target response (or a bad tool install) can only dirty the
-   throwaway container — never the operator's host, credentials, or daemon. This
+   `CapDrop:[ALL]` + only the minimal caps a tool genuinely needs (e.g. NET_RAW
+   for SYN scans), `--security-opt no-new-privileges`, resource limits, and
+   crucially **no host bind-mounts and no Docker socket**. In-container root is
+   allowed — the agent must be free to install and run anything — because that
+   freedom never reaches the host: with no mount and no socket and dropped caps,
+   a malicious target response (or a bad tool install) can only dirty the
+   throwaway container, never the operator's host, credentials, or daemon. This
    line does not move.
 2. **Operator-declared targets.** L4L0 tests the engagement the operator
    specifies. This is target *definition*, not a cage: the structured

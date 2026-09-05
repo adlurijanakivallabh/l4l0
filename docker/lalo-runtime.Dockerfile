@@ -1,0 +1,63 @@
+# L4L0 runtime image — the disposable per-scan container's filesystem.
+#
+# Ships a broad best-in-class arsenal so the agent can work offline; the agent
+# can still `apt/pip/go/cargo install` anything else at runtime (in-container
+# root + network). Host isolation is enforced at `docker run` time by the
+# RuntimeContainer flags (cap-drop, no mounts, no socket) — NOT here.
+#
+# This image is large (multi-GB) and slow to build; build on demand:
+#   docker build -t lalo-runtime:latest -f docker/lalo-runtime.Dockerfile .
+FROM kalilinux/kali-rolling
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    GOBIN=/usr/local/bin \
+    PATH="/usr/local/bin:/root/.cargo/bin:${PATH}"
+
+# --- OS + language toolchains + apt-available security tools ---
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      ca-certificates curl wget git jq unzip build-essential pkg-config \
+      python3 python3-pip python3-venv pipx \
+      golang-go cargo \
+      nmap netcat-traditional dnsutils whois \
+      nikto sqlmap whatweb wafw00f hydra medusa \
+      radare2 gdb binwalk \
+      seclists wordlists \
+    && rm -rf /var/lib/apt/lists/*
+
+# --- Go-based recon/exploitation tools (ProjectDiscovery + others) ---
+RUN for pkg in \
+      github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest \
+      github.com/projectdiscovery/httpx/cmd/httpx@latest \
+      github.com/projectdiscovery/dnsx/cmd/dnsx@latest \
+      github.com/projectdiscovery/naabu/v2/cmd/naabu@latest \
+      github.com/projectdiscovery/katana/cmd/katana@latest \
+      github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest \
+      github.com/ffuf/ffuf/v2@latest \
+      github.com/hahwul/dalfox/v2@latest \
+      github.com/lc/gau/v2/cmd/gau@latest \
+      github.com/tomnomnom/waybackurls@latest \
+      github.com/PentestPad/subzy@latest \
+      github.com/sensepost/gowitness@latest \
+    ; do go install "$pkg" || echo "WARN: go install $pkg failed"; done \
+    && nuclei -update-templates || true
+
+# --- Rust: feroxbuster (recursive content discovery) ---
+RUN cargo install feroxbuster || echo "WARN: feroxbuster install failed"
+
+# --- Python tooling via pipx (isolated) ---
+RUN for tool in \
+      arjun corsy oralyzer sstimap \
+      scoutsuite prowler pacu \
+      netexec bloodhound-ce-python \
+      trufflehog3 semgrep \
+      graphw00f clairvoyance \
+    ; do pipx install "$tool" || echo "WARN: pipx install $tool failed"; done \
+    && pipx install --include-deps pwntools || true
+
+# --- Standalone binaries (SCA / secrets / TLS) ---
+RUN curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh \
+      | sh -s -- -b /usr/local/bin || echo "WARN: grype install failed" \
+ && curl -sSfL https://raw.githubusercontent.com/google/osv-scanner/main/install.sh \
+      | sh -s -- -b /usr/local/bin || echo "WARN: osv-scanner install failed"
+
+WORKDIR /work

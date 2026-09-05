@@ -65,6 +65,12 @@ class AllProvidersFailedError(ProviderError):
         self.failures = failures
 
 
+class ContainerError(LaloError):
+    """The disposable runtime container failed to start, exec, or was misused."""
+
+    code = "container_error"
+
+
 class ScopeError(LaloError):
     """Base for target/engagement-scope problems."""
 
