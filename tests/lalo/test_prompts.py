@@ -58,6 +58,43 @@ def test_a_malformed_override_falls_back_to_the_built_in(tmp_path: Path) -> None
     assert text == load_prompt_template("agent")
 
 
+def test_validate_template_rejects_an_unsupported_extra_placeholder() -> None:
+    """A template with an extra placeholder beyond the required set passes a
+    naive trial-substitution (it fills in every identifier IT declares) but
+    can never be filled by a real render_prompt() call, which only ever
+    supplies the required set - this must be rejected at load time, not
+    left to raise KeyError the first time anything actually renders it."""
+    with pytest.raises(PromptLoadError, match="unsupported placeholder"):
+        _validate_template("agent", "Scope: $engagement_scope\nExtra: $operator_note\n")
+
+
+def test_an_override_with_an_extra_placeholder_falls_back_and_still_renders(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "agent.txt").write_text(
+        "Scope: $engagement_scope\nExtra: $operator_note\n", encoding="utf-8"
+    )
+    text = load_prompt_template("agent", overrides_dir=tmp_path)
+    assert text == load_prompt_template("agent")
+    # and actually rendering it (as a real caller would) must not raise
+    rendered = render_prompt("agent", overrides_dir=tmp_path, engagement_scope="example.com")
+    assert "example.com" in rendered
+
+
+def test_an_override_path_that_is_a_directory_falls_back_to_the_built_in(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "agent.txt").mkdir()
+    text = load_prompt_template("agent", overrides_dir=tmp_path)
+    assert text == load_prompt_template("agent")
+
+
+def test_an_override_that_is_not_valid_utf8_falls_back_to_the_built_in(tmp_path: Path) -> None:
+    (tmp_path / "agent.txt").write_bytes(b"\xff\xfe not valid utf-8 \xff")
+    text = load_prompt_template("agent", overrides_dir=tmp_path)
+    assert text == load_prompt_template("agent")
+
+
 def test_no_override_file_present_falls_back_to_the_built_in(tmp_path: Path) -> None:
     text = load_prompt_template("review", overrides_dir=tmp_path)
     assert text == load_prompt_template("review")

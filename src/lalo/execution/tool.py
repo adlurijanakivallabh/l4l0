@@ -11,7 +11,7 @@ request/response shape.
 
 from __future__ import annotations
 
-from ..agent.tools import FunctionTool, ToolResult
+from ..agent.tools import FunctionTool, ToolResult, str_arg
 from .firer import HttpFirer
 
 _MAX_BODY_CHARS = 4000
@@ -22,7 +22,7 @@ def build_http_tool(firer: HttpFirer) -> FunctionTool:
         url = args.get("url")
         if not isinstance(url, str) or not url:
             return ToolResult(observation="error: 'url' is required", ok=False)
-        method = str(args.get("method", "GET")).upper()
+        method = str_arg(args, "method", "GET").upper()
         headers_raw = args.get("headers")
         headers = (
             {str(k): str(v) for k, v in headers_raw.items()}

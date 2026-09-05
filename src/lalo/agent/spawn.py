@@ -48,7 +48,7 @@ from enum import StrEnum
 from typing import Protocol, Self, runtime_checkable
 
 from ..core.errors import SpawnDepthExceededError
-from .tools import FunctionTool, Tool, ToolResult
+from .tools import FunctionTool, Tool, ToolResult, str_arg
 
 
 class AgentStatus(StrEnum):
@@ -199,8 +199,8 @@ def build_spawn_tools(
     """
 
     def _spawn(args: dict[str, object]) -> ToolResult:
-        name = str(args.get("name", "")).strip()
-        task = str(args.get("task", "")).strip()
+        name = str_arg(args, "name").strip()
+        task = str_arg(args, "task").strip()
         if not name or not task:
             return ToolResult(observation="error: 'name' and 'task' are required", ok=False)
         try:

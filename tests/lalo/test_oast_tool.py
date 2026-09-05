@@ -44,6 +44,14 @@ def test_poll_oast_requires_a_token() -> None:
         assert result.ok is False
 
 
+def test_poll_oast_requires_a_token_even_as_explicit_json_null() -> None:
+    with OASTServer() as oast:
+        _issue_tool, poll_tool = build_oast_tools(oast)
+        registry = ToolRegistry([poll_tool])
+        result = registry.dispatch("poll_oast", {"token": None})
+        assert result.ok is False
+
+
 def test_issue_oast_probe_accepts_an_optional_probe_ref() -> None:
     with OASTServer() as oast:
         issue_tool, _poll_tool = build_oast_tools(oast)

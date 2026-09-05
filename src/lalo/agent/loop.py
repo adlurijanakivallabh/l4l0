@@ -54,7 +54,7 @@ from ..orchestrator.budget import (
     BudgetExceededError,
     SubagentReserveExceededError,
 )
-from .tools import ToolRegistry, parse_tool_call
+from .tools import ToolRegistry, parse_tool_call, str_arg
 
 _log = get_logger("lalo.agent")
 
@@ -272,7 +272,7 @@ class AgentLoop:
                 if call.name == "finish":
                     self._emit("finished", {"step": step})
                     return AgentResult(
-                        "finished", step + 1, transcript, summary=str(call.args.get("summary", ""))
+                        "finished", step + 1, transcript, summary=str_arg(call.args, "summary")
                     )
 
                 signature = _call_signature(call.name, call.args)
@@ -321,7 +321,7 @@ class AgentLoop:
             return AgentResult("max_steps", self.config.max_steps, transcript)
         call = parse_tool_call(response.text)
         if call is not None and call.name == "finish":
-            summary = str(call.args.get("summary", ""))
+            summary = str_arg(call.args, "summary")
             self._emit("finished", {"step": self.config.max_steps, "reserved_turn": True})
             return AgentResult(
                 "max_steps_reserved_turn", self.config.max_steps, transcript, summary=summary

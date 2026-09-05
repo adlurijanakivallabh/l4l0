@@ -111,6 +111,14 @@ def test_batched_tool_calls_only_first_is_acted_on() -> None:
     assert router.calls == 2
 
 
+def test_finish_summary_defaults_to_empty_even_as_explicit_json_null() -> None:
+    registry = ToolRegistry([])
+    router = _scripted(['{"tool": "finish", "args": {"summary": null}}'])
+    loop = AgentLoop(router, registry, system_prompt="be an agent")  # type: ignore[arg-type]
+    result = loop.run("find something")
+    assert result.summary == ""
+
+
 def test_no_tool_call_is_retried_before_giving_up() -> None:
     registry = ToolRegistry([])
     router = _scripted(["just musing, no action", "still musing", "musing again"])

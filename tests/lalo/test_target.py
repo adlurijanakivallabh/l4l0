@@ -62,6 +62,28 @@ def test_bracketed_ipv6_specs_without_a_scheme_prefix_parse_correctly() -> None:
     assert without_port.in_engagement("::1")
 
 
+def test_from_specs_a_malformed_port_in_a_scheme_prefixed_spec_does_not_crash() -> None:
+    # urlsplit(...).port raises ValueError on a non-numeric or out-of-range
+    # port string; one bad entry among possibly many operator-supplied specs
+    # must degrade to "no port restriction" (matching the plain host:port
+    # branch's own established behavior for a non-digit port), never crash
+    # the whole engagement.
+    eng = Engagement.from_specs(["good.com", "https://example.com:abc/path"])
+    assert len(eng.rules) == 2
+    assert any(r.host == "example.com" and r.ports is None for r in eng.rules)
+
+
+def test_from_specs_an_out_of_range_port_does_not_crash() -> None:
+    eng = Engagement.from_specs(["https://example.com:99999"])
+    assert eng.rules[0].ports is None
+
+
+def test_from_specs_a_malformed_port_in_a_bracketed_ipv6_spec_does_not_crash() -> None:
+    eng = Engagement.from_specs(["[::1]:notaport"])
+    assert eng.rules[0].host == "::1"
+    assert eng.rules[0].ports is None
+
+
 def test_port_and_scheme_restrictions() -> None:
     eng = Engagement.from_specs(["api.example.com:8443"])
     assert eng.in_engagement("api.example.com", 8443)

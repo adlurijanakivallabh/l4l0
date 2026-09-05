@@ -120,3 +120,34 @@ def test_record_finding_redacts_a_registered_secret_before_it_reaches_the_graph(
     node = graph.node(graph.nodes_of_kind(NodeKind.FINDING)[0])
     assert "unique-marker-finding-test-4f2a1" not in node["description"]
     assert "unique-marker-finding-test-4f2a1" not in node["evidence"][0]
+
+
+def test_record_finding_redacts_a_secret_embedded_in_the_target_url() -> None:
+    """A target can itself carry a secret (a password-reset link, a session id
+    in the path) - it must never reach the graph node, the dedup key, the
+    tool's own observation string, or the graph's JSON-serialized form raw."""
+    shared_redactor().register_secret("super-secret-reset-token-abcdef123456")
+    graph = ReachabilityGraph()
+    result = _registry(graph).dispatch(
+        "record_finding",
+        _args(
+            target=("https://victim.example.com/reset?token=super-secret-reset-token-abcdef123456")
+        ),
+    )
+    node = graph.node(graph.nodes_of_kind(NodeKind.FINDING)[0])
+    assert "super-secret-reset-token-abcdef123456" not in node["target"]
+    assert "super-secret-reset-token-abcdef123456" not in node["dedup_key"]
+    assert "super-secret-reset-token-abcdef123456" not in result.observation
+    assert b"super-secret-reset-token-abcdef123456" not in graph.to_json()
+    # the target's identifiable structure survives - only the secret value is gone
+    assert "victim.example.com" in node["target"]
+
+
+def test_record_finding_redacts_a_secret_embedded_in_param() -> None:
+    shared_redactor().register_secret("param-secret-marker-9f2c1")
+    graph = ReachabilityGraph()
+    _registry(graph).dispatch(
+        "record_finding", _args(param="id (actual value: param-secret-marker-9f2c1)")
+    )
+    node = graph.node(graph.nodes_of_kind(NodeKind.FINDING)[0])
+    assert "param-secret-marker-9f2c1" not in (node["param"] or "")

@@ -84,7 +84,16 @@ class Engagement:
                 parts = urlsplit(spec)
                 scheme = parts.scheme or None
                 host = parts.hostname or ""
-                port = parts.port
+                # .port is lazily parsed and raises ValueError on a malformed
+                # or out-of-range port string (e.g. "https://x.com:abc") — one
+                # bad entry among possibly many operator-supplied specs must
+                # not crash the whole engagement, so treat it as "no port
+                # restriction" the same way the plain host:port branch below
+                # already does for a non-digit port.
+                try:
+                    port = parts.port
+                except ValueError:
+                    port = None
             elif spec.startswith("["):
                 # A bracketed IPv6 literal ("[::1]" or "[::1]:8080") with no
                 # scheme prefix — urlsplit needs a "//" authority marker to
@@ -93,7 +102,10 @@ class Engagement:
                 # produced a TargetRule that could never match anything here.
                 parts = urlsplit(f"//{spec}")
                 host = parts.hostname or ""
-                port = parts.port
+                try:
+                    port = parts.port
+                except ValueError:
+                    port = None
             elif spec.count(":") == 1:
                 host, _, port_str = spec.partition(":")
                 port = int(port_str) if port_str.isdigit() else None

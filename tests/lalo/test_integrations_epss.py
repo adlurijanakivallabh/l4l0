@@ -53,6 +53,19 @@ def test_fetch_epss_score_returns_none_on_malformed_json_never_raises() -> None:
     assert result is None
 
 
+def test_fetch_epss_score_returns_none_on_valid_json_non_dict_top_level_never_raises() -> None:
+    """Valid JSON whose top-level value isn't an object (a bare null/list/
+    string/number - plausible from a proxy, WAF, or rate-limit page) must not
+    crash with AttributeError from calling .get() on a non-dict."""
+    for body in (b"null", b"[]", b'"error"', b"42"):
+
+        def handler(_request: httpx.Request, body: bytes = body) -> httpx.Response:
+            return httpx.Response(200, content=body)
+
+        result = fetch_epss_score("CVE-2024-12345", client=_client(httpx.MockTransport(handler)))
+        assert result is None, f"body={body!r} should degrade to None, not raise"
+
+
 def test_fetch_epss_score_returns_none_on_a_missing_field_never_raises() -> None:
     def handler(_request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json={"data": [{"cve": "CVE-2024-12345"}]})
@@ -83,6 +96,13 @@ def test_build_epss_tool_reports_the_score_and_states_it_is_prioritization_only(
 def test_build_epss_tool_requires_a_cve() -> None:
     tool = build_epss_tool()
     result = tool.run({})
+    assert result.ok is False
+    assert "'cve' is required" in result.observation
+
+
+def test_build_epss_tool_requires_a_cve_even_as_explicit_json_null() -> None:
+    tool = build_epss_tool()
+    result = tool.run({"cve": None})
     assert result.ok is False
     assert "'cve' is required" in result.observation
 

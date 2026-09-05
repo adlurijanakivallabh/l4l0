@@ -71,9 +71,19 @@ def _validate_template(role: str, text: str) -> None:
         identifiers = set(template.get_identifiers())
     except ValueError as exc:
         raise PromptLoadError(f"{role}: malformed placeholder syntax: {exc}") from exc
-    missing = REQUIRED_PLACEHOLDERS.get(role, frozenset()) - identifiers
+    required = REQUIRED_PLACEHOLDERS.get(role, frozenset())
+    missing = required - identifiers
     if missing:
         raise PromptLoadError(f"{role}: missing required placeholder(s): {sorted(missing)}")
+    # A real render_prompt() call only ever supplies the caller-known
+    # `required` set as substitution variables (e.g. `engagement_scope` for
+    # "agent") — a template declaring any OTHER placeholder can never be
+    # filled at render time no matter how well-formed it looks here, and
+    # would otherwise pass this check only to raise KeyError the first time
+    # anything actually renders it.
+    extra = identifiers - required
+    if extra:
+        raise PromptLoadError(f"{role}: unsupported placeholder(s): {sorted(extra)}")
     try:
         # get_identifiers() only recognizes well-formed `$name`/`${name}` spots
         # and silently ignores anything else — a lone trailing `$`, or `$` not
@@ -107,10 +117,14 @@ def load_prompt_template(role: str, *, overrides_dir: Path | None = None) -> str
     if overrides_dir is not None:
         override_path = overrides_dir / f"{role}.txt"
         if override_path.exists():
-            text = override_path.read_text(encoding="utf-8")
             try:
+                text = override_path.read_text(encoding="utf-8")
                 _validate_template(role, text)
-            except PromptLoadError as exc:
+            except (OSError, UnicodeDecodeError, PromptLoadError) as exc:
+                # OSError covers a directory or unreadable file at the
+                # override path (e.g. a permissions error) — the read itself
+                # can fail before validation ever runs, and that must
+                # fall back exactly like a validation failure, not crash.
                 _log.warning(
                     "prompt override for role %r rejected, using built-in instead: %s",
                     role,

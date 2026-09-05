@@ -24,6 +24,25 @@ _FENCED = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL)
 _DECODER = json.JSONDecoder()
 
 
+def str_arg(args: dict[str, object], key: str, default: str = "") -> str:
+    """A string tool-call argument, treating an explicit JSON ``null`` the same
+    as an absent key.
+
+    ``str(args.get(key, default))`` alone only substitutes ``default`` when
+    the key is missing entirely — some LLM tool-calling clients instead emit
+    an explicit ``null`` for a field they consider "unset" (a present key
+    whose value is ``None``), which ``.get(key, default)`` does not catch,
+    silently turning the intended default into the literal string ``"None"``
+    instead. That string is non-empty and often passes a caller's own
+    ``if not value:`` required-field check, letting a should-have-been-caught
+    missing argument through as real, meaningfully wrong input (a literal
+    HTTP method of ``"NONE"``, a search query of ``"None"``, an agent name of
+    ``"None"``) rather than the intended default or a validation error.
+    """
+    value = args.get(key)
+    return default if value is None else str(value)
+
+
 @dataclass
 class ToolResult:
     observation: str

@@ -27,7 +27,7 @@ from dataclasses import dataclass
 
 import httpx
 
-from ..agent.tools import FunctionTool, ToolResult
+from ..agent.tools import FunctionTool, ToolResult, str_arg
 from ..core.redaction import redact
 
 _EPSS_API_URL = "https://api.first.org/data/v1/epss"
@@ -53,7 +53,12 @@ def fetch_epss_score(cve: str, *, client: httpx.Client | None = None) -> EPSSRes
         response = http_client.get(_EPSS_API_URL, params={"cve": cve})
         response.raise_for_status()
         payload = response.json()
-        entries = payload.get("data")
+        # response.json() can succeed on valid JSON whose top-level value
+        # isn't an object at all (a bare `null`/`[]`/string/number - plausible
+        # from a proxy, WAF, or rate-limit page) - .get() on that would raise
+        # AttributeError, which "never raises" does not carve out an exception
+        # for.
+        entries = payload.get("data") if isinstance(payload, dict) else None
         if not isinstance(entries, list) or not entries:
             return None
         entry = entries[0]
@@ -71,7 +76,7 @@ def fetch_epss_score(cve: str, *, client: httpx.Client | None = None) -> EPSSRes
 
 def build_epss_tool(*, client: httpx.Client | None = None) -> FunctionTool:
     def _lookup(args: dict[str, object]) -> ToolResult:
-        cve = str(args.get("cve", "")).strip()
+        cve = str_arg(args, "cve").strip()
         if not cve:
             return ToolResult(observation="error: 'cve' is required", ok=False)
         result = fetch_epss_score(cve, client=client)

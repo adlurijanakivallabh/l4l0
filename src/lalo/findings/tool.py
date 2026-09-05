@@ -23,7 +23,7 @@ import uuid
 from typing import Any
 
 from ..agent.tools import FunctionTool, ToolResult
-from ..core.redaction import redact
+from ..core.redaction import redact, safe_target_url
 from ..graph.model import EdgeKind, NodeKind, ReachabilityGraph
 from .cvss import compute_cvss
 from .dedup import dedup_key, find_duplicate
@@ -52,8 +52,16 @@ def build_record_finding_tool(graph: ReachabilityGraph) -> FunctionTool:
             return ToolResult(observation="error: " + "; ".join(errors), ok=False)
 
         vuln_class = str(fields["vuln_class"])
-        target = str(fields["target"])
-        param = str(args["param"]) if args.get("param") else None
+        # Redacted immediately, before anything derives from it: a target can
+        # legitimately embed a secret (a password-reset link, a session id in
+        # the path), and safe_target_url() understands URL structure (strips
+        # userinfo, redacts sensitive query values, keeps scheme/host/path
+        # readable) in a way the generic redact() does not. Every downstream
+        # use - the dedup key, the graph node, the observation string, and
+        # (via the graph) the payload later shown to the LLM adversarial
+        # reviewer - reads this already-redacted value, never the raw one.
+        target = safe_target_url(str(fields["target"]))
+        param = redact(str(args["param"])) if args.get("param") else None
         excerpt = str(fields["evidence_excerpt"])
         grounded = is_grounded(excerpt, evidence)
         cvss_breakdown = _as_str_dict(args.get("cvss_breakdown"))

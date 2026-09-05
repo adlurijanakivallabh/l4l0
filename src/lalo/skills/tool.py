@@ -9,16 +9,26 @@ question (how to close a candidate, how to calibrate severity).
 
 from __future__ import annotations
 
-from ..agent.tools import FunctionTool, ToolResult
+from ..agent.tools import FunctionTool, ToolResult, str_arg
 from .loader import Skill
 from .recall import recall
 
-_MAX_OBSERVATION_CHARS = 6000
+# A defensive backstop, not an expected-to-trigger limit: skill bodies are
+# fixed, curated, trusted content (never attacker-influenced, unlike e.g. a
+# captured HTTP response), so there is no reason to truncate one that
+# actually fits real methodology on one page. 6000 silently cut off 16 of
+# the library's 17 real skills mid-sentence - including inside the
+# Validation/False-Positive Discipline section every skill ends on - which
+# defeated exactly the anti-false-positive discipline this tool exists to
+# deliver. 12000 comfortably covers every skill shipped today (the longest
+# is ~7600 chars) with headroom for new ones; a skill that ever needs more
+# than that should be split, not silently cut.
+_MAX_OBSERVATION_CHARS = 12_000
 
 
 def build_recall_tool(skills: list[Skill]) -> FunctionTool:
     def _recall(args: dict[str, object]) -> ToolResult:
-        query = str(args.get("query", "")).strip()
+        query = str_arg(args, "query").strip()
         if not query:
             return ToolResult(observation="error: 'query' is required", ok=False)
         results = recall(query, skills, top_k=3)

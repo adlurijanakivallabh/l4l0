@@ -4,7 +4,29 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-from lalo.agent.tools import FunctionTool, ToolRegistry, ToolResult, parse_tool_call
+from lalo.agent.tools import FunctionTool, ToolRegistry, ToolResult, parse_tool_call, str_arg
+
+
+def test_str_arg_returns_the_value_when_present() -> None:
+    assert str_arg({"method": "post"}, "method", "GET") == "post"
+
+
+def test_str_arg_returns_the_default_when_the_key_is_absent() -> None:
+    assert str_arg({}, "method", "GET") == "GET"
+
+
+def test_str_arg_returns_the_default_on_an_explicit_json_null_not_the_string_none() -> None:
+    """The actual bug this helper exists to close: `str(args.get(key, default))`
+    alone only substitutes `default` when the key is missing, not when it is
+    present with a value of None - turning an intended default into the
+    literal, non-empty string "None" that then passes a caller's own
+    `if not value:` required-field check."""
+    assert str_arg({"method": None}, "method", "GET") == "GET"
+    assert str_arg({"query": None}, "query") == ""
+
+
+def test_str_arg_coerces_a_non_string_present_value() -> None:
+    assert str_arg({"count": 5}, "count") == "5"
 
 
 def test_registry_dispatch_routes_to_registered_tool() -> None:

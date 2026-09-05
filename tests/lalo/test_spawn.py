@@ -124,6 +124,17 @@ def test_spawn_agent_tool_requires_name_and_task() -> None:
     assert result.ok is False
 
 
+def test_spawn_agent_tool_requires_name_and_task_even_as_explicit_json_null() -> None:
+    """An explicit JSON null must be treated the same as an absent/empty
+    field, not stringified into the literal, non-empty "None"."""
+    coord = AgentCoordinator()
+    root = coord.register_root("root", "mission")
+    spawn_tool, _ = build_spawn_tools(coord, lambda *_a: ("", [], True), self_id=root)
+    registry = ToolRegistry([spawn_tool])
+    result = registry.dispatch("spawn_agent", {"name": None, "task": None})
+    assert result.ok is False
+
+
 def test_spawn_agent_tool_reports_depth_ceiling_as_a_failed_result_not_an_exception() -> None:
     coord = AgentCoordinator(max_depth=0)
     root = coord.register_root("root", "mission")

@@ -53,13 +53,14 @@ import os
 from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass
+from datetime import timedelta
 from typing import Literal
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from mcp.types import TextContent
 
-from ..agent.tools import FunctionTool, ToolResult
+from ..agent.tools import FunctionTool, ToolResult, str_arg
 from ..core.errors import LaloError
 
 ToolMode = Literal["read", "write"]
@@ -105,19 +106,38 @@ def resolve_credential(config: MCPServerConfig, env: Mapping[str, str] | None = 
 
 
 def check_tool_call(config: MCPServerConfig, tool_name: str) -> str | None:
-    """``None`` if the call is allowed; otherwise the reason it is refused."""
+    """``None`` if the call is allowed; otherwise the reason it is refused.
+
+    Gates on a ``read`` allowlist, not a ``write`` blocklist: ``ToolMode`` is
+    a ``Literal`` mypy checks against a hand-typed Python value, but
+    ``allowed_tools`` is meant to be an operator-declared config plausibly
+    loaded from JSON/YAML/env with no runtime validation — a single
+    capitalization typo ("Write" instead of "write") in a blocklist check
+    would silently be treated as read-equivalent and allowed. Requiring an
+    exact match against "read" instead means anything else - a typo, a
+    stray space, a future third mode - fails closed.
+    """
     mode = config.allowed_tools.get(tool_name)
     if mode is None:
         return f"{tool_name!r} is not in connection {config.name!r}'s tool allowlist"
-    if mode == "write" and config.read_only:
+    if mode != "read" and config.read_only:
         return (
-            f"{tool_name!r} is classified 'write' and connection {config.name!r} "
+            f"{tool_name!r} is not classified 'read' and connection {config.name!r} "
             "is read-only - refusing"
         )
     return None
 
 
 SessionConnector = Callable[[MCPServerConfig, str], AbstractAsyncContextManager["ClientSession"]]
+
+# Applied as ClientSession's own per-request default (covers initialize() and
+# every call_tool()), not just the http transport's own underlying-httpx
+# default: the mcp SDK applies no read timeout at all when one isn't given
+# explicitly, so a stdio-spawned subprocess that hangs (crashes without
+# exiting, deadlocks, or is deliberately slow) would otherwise block the
+# calling agent's turn forever - a worse failure mode than the clean,
+# ToolResult(ok=False) degradation this module is designed to always produce.
+_DEFAULT_SESSION_TIMEOUT = timedelta(seconds=30)
 
 
 @asynccontextmanager
@@ -131,7 +151,9 @@ async def _default_connector(
             env={config.credential_env_var: credential},
         )
         async with stdio_client(params) as (read, write):
-            async with ClientSession(read, write) as session:
+            async with ClientSession(
+                read, write, read_timeout_seconds=_DEFAULT_SESSION_TIMEOUT
+            ) as session:
                 await session.initialize()
                 yield session
     else:
@@ -143,7 +165,9 @@ async def _default_connector(
             write,
             _get_session_id,
         ):
-            async with ClientSession(read, write) as session:
+            async with ClientSession(
+                read, write, read_timeout_seconds=_DEFAULT_SESSION_TIMEOUT
+            ) as session:
                 await session.initialize()
                 yield session
 
@@ -211,7 +235,7 @@ def build_mcp_tool(
     allowed = ", ".join(f"{name} ({mode})" for name, mode in sorted(config.allowed_tools.items()))
 
     def _call(args: dict[str, object]) -> ToolResult:
-        tool_name = str(args.get("tool", ""))
+        tool_name = str_arg(args, "tool")
         if not tool_name:
             return ToolResult(observation="error: 'tool' is required", ok=False)
         arguments_raw = args.get("arguments")

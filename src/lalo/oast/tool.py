@@ -9,7 +9,7 @@ fire it, then poll the same token for a correlated hit.
 
 from __future__ import annotations
 
-from ..agent.tools import FunctionTool, ToolResult
+from ..agent.tools import FunctionTool, ToolResult, str_arg
 from .server import OASTServer
 
 
@@ -25,7 +25,7 @@ def build_oast_tools(oast: OASTServer) -> tuple[FunctionTool, FunctionTool]:
         return ToolResult(observation=observation)
 
     def _poll(args: dict[str, object]) -> ToolResult:
-        token = str(args.get("token", "")).strip()
+        token = str_arg(args, "token").strip()
         if not token:
             return ToolResult(observation="error: 'token' is required", ok=False)
         hits = oast.poll(token)

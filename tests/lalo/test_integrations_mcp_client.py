@@ -9,7 +9,9 @@ own ``connector`` seam instead of spawning a subprocess or hitting a URL.
 
 from __future__ import annotations
 
+import asyncio
 from contextlib import AbstractAsyncContextManager
+from datetime import timedelta
 
 import pytest
 from mcp import ClientSession
@@ -42,6 +44,11 @@ def _test_server() -> FastMCP:
     def always_fails() -> str:
         msg = "boom"
         raise RuntimeError(msg)
+
+    @server.tool()
+    async def hangs_forever() -> str:
+        await asyncio.sleep(60)
+        return "should never get here"
 
     return server
 
@@ -111,6 +118,16 @@ def test_check_tool_call_denies_an_unlisted_tool() -> None:
 
 def test_check_tool_call_denies_a_write_tool_on_a_read_only_connection() -> None:
     reason = check_tool_call(_config(read_only=True), "delete_everything")
+    assert reason is not None
+    assert "read-only" in reason
+
+
+def test_check_tool_call_fails_closed_on_a_malformed_mode_value() -> None:
+    """allowed_tools is operator-declared config with no runtime validation of
+    ToolMode - a typo'd/mistyped mode value must still be denied on a
+    read-only connection, not silently treated as read-equivalent."""
+    config = _config(allowed_tools={"delete_everything": "Write"}, read_only=True)  # type: ignore[arg-type]
+    reason = check_tool_call(config, "delete_everything")
     assert reason is not None
     assert "read-only" in reason
 
@@ -190,6 +207,30 @@ def test_call_external_tool_an_unreachable_connector_never_crashes() -> None:
     assert "failed" in result.observation
 
 
+def test_call_external_tool_a_hung_server_times_out_instead_of_hanging_forever() -> None:
+    """A stdio-spawned server that never responds (crashed without exiting,
+    deadlocked, or deliberately slow) must degrade to a failed ToolResult
+    within a bounded time, never block the calling turn indefinitely."""
+
+    def _short_timeout_connector(
+        _cfg: MCPServerConfig, _credential: str
+    ) -> AbstractAsyncContextManager[ClientSession]:
+        return create_connected_server_and_client_session(
+            _test_server(), read_timeout_seconds=timedelta(seconds=0.5)
+        )
+
+    config = _config(allowed_tools={"hangs_forever": "read"})
+    result = call_external_tool(
+        config,
+        "hangs_forever",
+        {},
+        connector=_short_timeout_connector,
+        env={"TEST_MCP_TOKEN": "secret"},
+    )
+    assert result.ok is False
+    assert "failed" in result.observation
+
+
 # --- build_mcp_tool: the agent-facing wiring --------------------------------
 
 
@@ -204,6 +245,13 @@ def test_build_mcp_tool_dispatches_through_the_registry() -> None:
 def test_build_mcp_tool_requires_a_tool_name() -> None:
     tool = build_mcp_tool(_config(), connector=_memory_connector, env={"TEST_MCP_TOKEN": "secret"})
     result = tool.run({})
+    assert result.ok is False
+    assert "'tool' is required" in result.observation
+
+
+def test_build_mcp_tool_requires_a_tool_name_even_as_explicit_json_null() -> None:
+    tool = build_mcp_tool(_config(), connector=_memory_connector, env={"TEST_MCP_TOKEN": "secret"})
+    result = tool.run({"tool": None})
     assert result.ok is False
     assert "'tool' is required" in result.observation
 

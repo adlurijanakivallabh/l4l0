@@ -58,6 +58,18 @@ def test_http_tool_requires_url() -> None:
     assert result.ok is False
 
 
+def test_http_tool_defaults_to_get_even_when_method_is_an_explicit_json_null() -> None:
+    seen: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["method"] = request.method
+        return httpx.Response(200)
+
+    registry = _tool(httpx.MockTransport(handler))
+    registry.dispatch("http", {"url": "https://app.example.com/x", "method": None})
+    assert seen["method"] == "GET"
+
+
 def test_http_tool_reports_out_of_scope_as_a_failed_result_not_a_crash() -> None:
     def handler(request: httpx.Request) -> httpx.Response:  # pragma: no cover
         raise AssertionError("must not fire out of scope")
