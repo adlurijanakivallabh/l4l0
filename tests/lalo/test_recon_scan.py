@@ -4,10 +4,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import pytest
+
 from lalo.execution.scope import ScopeGuard
 from lalo.execution.target import Engagement
 from lalo.recon.facts import FactKind
-from lalo.recon.scan import NmapServiceScanRunner
+from lalo.recon.scan import NmapServiceScanRunner, UnsafeNmapArgumentError
 
 _NMAP_XML = """<?xml version="1.0"?>
 <nmaprun>
@@ -115,3 +117,40 @@ def test_run_shell_quotes_the_host_and_port_range() -> None:
     assert container.commands is not None
     assert "127.0.0.1" in container.commands[0]
     assert "1-100" in container.commands[0]
+
+
+# --- argument injection: shlex.quote alone does not stop nmap flag smuggling -
+
+
+def test_is_available_rejects_a_host_that_looks_like_an_nmap_flag() -> None:
+    """shlex.quote leaves a value with no shell-special characters completely
+    unchanged - "--script=vulners" passes through as a single, valid-looking
+    argv token that nmap's OWN parser would read as a flag, not a target."""
+    container = _FakeContainer()
+    runner = NmapServiceScanRunner(container, _scope(), host="--script=vulners")
+    with pytest.raises(UnsafeNmapArgumentError):
+        runner.is_available()
+    assert container.commands is None  # never even reached the container
+
+
+def test_run_also_rejects_a_flag_shaped_host_even_called_directly() -> None:
+    container = _FakeContainer()
+    runner = NmapServiceScanRunner(container, _scope(), host="-oN/etc/cron.d/evil")
+    with pytest.raises(UnsafeNmapArgumentError):
+        runner.run()
+    assert container.commands is None
+
+
+def test_is_available_rejects_a_flag_shaped_ports_value() -> None:
+    container = _FakeContainer()
+    runner = NmapServiceScanRunner(container, _scope(), host="127.0.0.1", ports="--script=vulners")
+    with pytest.raises(UnsafeNmapArgumentError):
+        runner.is_available()
+
+
+def test_is_available_accepts_a_legitimate_hyphenated_hostname() -> None:
+    container = _FakeContainer()
+    engagement = Engagement.from_specs(["staging-api.example.com"])
+    scope = ScopeGuard(engagement)
+    runner = NmapServiceScanRunner(container, scope, host="staging-api.example.com")
+    assert runner.is_available() is True

@@ -30,10 +30,24 @@ does not add, rather than being silently assumed away.
 nmap's own XML output (``-oX -``) is parsed with ``defusedxml`` — declared as
 a project dependency specifically for XXE-safe XML parsing but, until this
 module, never actually used anywhere.
+
+``host``/``ports`` are validated against a strict allowlist, not just
+``shlex.quote``-escaped, before ever reaching a command line.
+``shlex.quote`` only defeats shell-metacharacter injection (breaking out of
+the argument into a second shell command); it does nothing to stop a value
+like ``"--script=vulners"`` — which contains no shell-special characters at
+all, so ``shlex.quote`` returns it completely unchanged — from being parsed
+by nmap ITSELF as a flag rather than a hostname, once it lands as a single
+argv token. ``host``/``ports`` here trace back to the agent's own tool-call
+arguments (:func:`~lalo.recon.tool.build_recon_tool`'s ``scan_ports``
+action), so treating them as adversarial input at this boundary is the same
+discipline :func:`~lalo.findings.model.validate_finding_fields` already
+applies to every other agent-supplied field reaching a structured tool.
 """
 
 from __future__ import annotations
 
+import re
 import shlex
 from dataclasses import dataclass
 
@@ -45,6 +59,17 @@ from .facts import FactKind, ReconFact
 
 _DEFAULT_PORT_RANGE = "1-1000"
 _SCAN_TIMEOUT_S = 180.0
+
+# A hostname, IPv4/IPv6 literal, or CIDR block - never leading with "-" (which
+# is what would let a value be parsed as an nmap flag rather than a target).
+_SAFE_HOST = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.:_-]*(?:/[0-9]{1,3})?$")
+# A port, comma list, or range ("80", "80,443", "1-1000") - same leading-"-"
+# constraint.
+_SAFE_PORTS = re.compile(r"^[0-9]+(?:[,-][0-9]+)*$")
+
+
+class UnsafeNmapArgumentError(ValueError):
+    """``host`` or ``ports`` doesn't match the safe positional-argument allowlist."""
 
 
 def _parse_nmap_xml(xml_text: str, host: str) -> list[ReconFact]:
@@ -84,8 +109,17 @@ class NmapServiceScanRunner:
     ports: str = _DEFAULT_PORT_RANGE
     name: str = "nmap"
 
+    def _validate_arguments(self) -> None:
+        if not _SAFE_HOST.match(self.host):
+            raise UnsafeNmapArgumentError(f"host {self.host!r} is not a safe scan target")
+        if not _SAFE_PORTS.match(self.ports):
+            raise UnsafeNmapArgumentError(f"ports {self.ports!r} is not a safe port spec")
+
     def is_available(self) -> bool:
-        # Host-level scope check first: an out-of-engagement host never even
+        # Argument-shape validation before anything else: a malformed value
+        # is refused outright, never merely quoted-and-passed-through.
+        self._validate_arguments()
+        # Host-level scope check next: an out-of-engagement host never even
         # reaches the point of asking whether nmap is installed - refusing to
         # fire is a scope decision, not an availability one, but this is the
         # gate run_recon_chain actually calls before run(), so it belongs here.
@@ -95,6 +129,9 @@ class NmapServiceScanRunner:
         return bool(getattr(result, "ok", False))
 
     def run(self) -> list[ReconFact]:
+        # Re-validated here too (cheap, defense in depth): run() must never
+        # trust that is_available() was actually called first.
+        self._validate_arguments()
         command = f"nmap -sV -T4 -p {shlex.quote(self.ports)} -oX - {shlex.quote(self.host)}"
         result = self.container.exec(command, timeout=_SCAN_TIMEOUT_S)
         if not getattr(result, "ok", False):

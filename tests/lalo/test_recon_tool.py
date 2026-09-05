@@ -172,6 +172,20 @@ def test_scan_ports_refuses_an_out_of_engagement_host() -> None:
     assert "not in engagement" in result.observation
 
 
+def test_scan_ports_refuses_a_flag_shaped_host() -> None:
+    """The agent's own 'host' arg reaching a real nmap command line - a
+    value like "--script=vulners" must never be quoted-and-passed-through."""
+    tool = build_recon_tool(
+        _firer(lambda r: httpx.Response(200)),
+        ReachabilityGraph(),
+        _scope(),
+        container=_FakeContainer(),
+    )
+    result = tool.run({"action": "scan_ports", "host": "--script=vulners"})
+    assert result.ok is False
+    assert "UnsafeNmapArgumentError" in result.observation
+
+
 def test_scan_ports_merges_open_ports_into_the_graph() -> None:
     graph = ReachabilityGraph()
     tool = build_recon_tool(
