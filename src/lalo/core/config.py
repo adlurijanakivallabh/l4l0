@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 
 # Environment variable that each known provider's API key is read from.
 _PROVIDER_KEY_ENV: dict[str, str] = {
+    "opencodex": "OPENCODEX_API_KEY",
     "anthropic": "ANTHROPIC_API_KEY",
     "openai": "OPENAI_API_KEY",
     "gemini": "GEMINI_API_KEY",
@@ -43,12 +44,13 @@ class Settings:
         return tuple(p.name for p in self.providers if p.api_key or p.name == "local")
 
 
-# Default routing: each role tries the strong model first, then cheaper/other
-# providers, so a refusal or outage on one fails over rather than aborting.
+# Default routing: try a locally-configured gateway first, then hosted providers,
+# so a refusal or outage on one fails over rather than aborting.
+_PREFERENCE = ("opencodex", "anthropic", "openai", "gemini", "local")
 _DEFAULT_ROUTES: dict[str, tuple[str, ...]] = {
-    "reasoning": ("anthropic", "openai", "gemini"),
-    "triage": ("anthropic", "openai", "gemini"),
-    "report": ("anthropic", "openai", "gemini"),
+    "reasoning": _PREFERENCE,
+    "triage": _PREFERENCE,
+    "report": _PREFERENCE,
 }
 
 
@@ -57,10 +59,16 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
     environ: Mapping[str, str] = env if env is not None else os.environ
     providers: list[ProviderConfig] = []
     for name, key_env in _PROVIDER_KEY_ENV.items():
-        providers.append(ProviderConfig(name=name, api_key=environ.get(key_env)))
+        cfg = ProviderConfig(
+            name=name,
+            api_key=environ.get(key_env),
+            model=environ.get(f"{name.upper()}_MODEL"),
+            base_url=environ.get(f"{name.upper()}_BASE_URL"),
+        )
+        providers.append(cfg)
     providers.append(ProviderConfig(name="local", base_url=environ.get("LOCAL_LLM_BASE_URL")))
     return Settings(
         providers=tuple(providers),
         routes=dict(_DEFAULT_ROUTES),
-        default_route=("anthropic", "openai", "gemini", "local"),
+        default_route=_PREFERENCE,
     )

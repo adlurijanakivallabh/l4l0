@@ -17,5 +17,7 @@ def test_load_settings_reads_provider_keys_from_env() -> None:
 
 def test_default_routes_present() -> None:
     settings = load_settings({})
-    assert settings.routes["reasoning"][0] == "anthropic"
+    # A locally-configured gateway is preferred first, with hosted providers as failover.
+    assert settings.routes["reasoning"][0] == "opencodex"
+    assert "anthropic" in settings.routes["reasoning"]
     assert settings.default_route  # non-empty fallback chain

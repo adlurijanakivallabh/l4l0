@@ -73,6 +73,53 @@ class AnthropicProvider:
         return CompletionResponse(text=text, provider=self.name, model=self.model)
 
 
+class OpenCodexProvider:
+    """OpenAI-compatible adapter for a local OpenCodex-style gateway."""
+
+    name = "opencodex"
+
+    def __init__(
+        self,
+        api_key: str,
+        *,
+        model: str = "gpt-5.6-luna",
+        client: httpx.Client | None = None,
+        base_url: str = "http://localhost:10100",
+    ) -> None:
+        self._api_key = api_key
+        self.model = model
+        self._base_url = base_url.rstrip("/")
+        self._client = client or httpx.Client(timeout=120.0)
+
+    def complete(self, request: CompletionRequest) -> CompletionResponse:
+        messages: list[dict[str, str]] = []
+        if request.system:
+            messages.append({"role": "system", "content": request.system})
+        messages.append({"role": "user", "content": request.prompt})
+        payload = {
+            "model": self.model,
+            "messages": messages,
+            "max_tokens": request.max_tokens,
+            "temperature": request.temperature,
+        }
+        try:
+            resp = self._client.post(
+                f"{self._base_url}/v1/chat/completions",
+                json=payload,
+                headers={"x-opencodex-api-key": self._api_key, "content-type": "application/json"},
+            )
+        except httpx.HTTPError as exc:
+            raise ProviderUnavailableError(type(exc).__name__, provider=self.name) from exc
+        if resp.status_code in _RETRYABLE_STATUS or resp.status_code >= 400:
+            raise ProviderUnavailableError(f"http {resp.status_code}", provider=self.name)
+        data = resp.json()
+        choices = data.get("choices", [])
+        if choices and choices[0].get("finish_reason") == "content_filter":
+            raise ProviderRefusalError("content_filter", provider=self.name)
+        text = choices[0].get("message", {}).get("content", "") if choices else ""
+        return CompletionResponse(text=text, provider=self.name, model=self.model)
+
+
 def build_router(settings: Settings) -> ModelRouter:
     """Assemble a router from settings, wiring adapters for configured providers."""
     providers: dict[str, Provider] = {}
@@ -80,6 +127,12 @@ def build_router(settings: Settings) -> ModelRouter:
         if cfg.name == "anthropic" and cfg.api_key:
             providers["anthropic"] = AnthropicProvider(
                 cfg.api_key, model=cfg.model or "claude-sonnet-5"
+            )
+        elif cfg.name == "opencodex" and cfg.api_key:
+            providers["opencodex"] = OpenCodexProvider(
+                cfg.api_key,
+                model=cfg.model or "gpt-5.6-luna",
+                base_url=cfg.base_url or "http://localhost:10100",
             )
         # OpenAI / Gemini / local adapters slot in here as they are added.
     return ModelRouter(

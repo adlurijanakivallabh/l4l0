@@ -28,6 +28,17 @@ def test_parse_no_json_returns_none() -> None:
     assert parse_tool_call("no tool call here") is None
 
 
+def test_parse_takes_first_of_concatenated_calls() -> None:
+    # Some models emit a whole plan at once; take the first, observe, then continue.
+    text = (
+        '{"tool":"http","args":{"url":"a"}}'
+        '{"tool":"http","args":{"url":"b"}}'
+        '{"tool":"finish","args":{"summary":"x"}}'
+    )
+    call = parse_tool_call(text)
+    assert call is not None and call.name == "http" and call.args == {"url": "a"}
+
+
 def test_registry_dispatch_and_unknown() -> None:
     reg = ToolRegistry([FunctionTool("echo", "echo", lambda a: ToolResult(str(a.get("x"))))])
     assert reg.dispatch("echo", {"x": 1}).observation == "1"

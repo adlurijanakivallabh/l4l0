@@ -13,11 +13,13 @@ from .tools import ToolRegistry, parse_tool_call
 _log = get_logger("lalo.agent")
 
 _PROTOCOL = (
-    "You act by emitting exactly one JSON object per turn:\n"
+    "Act ONE STEP AT A TIME. Emit EXACTLY ONE JSON object and then STOP — you will "
+    "be given that tool's result before you act again. Do NOT plan or emit multiple "
+    "steps at once, and do NOT call finish until you have seen real tool results.\n"
     '  {"tool": "<name>", "args": {...}}\n'
-    "Use the `finish` tool when the objective is met: "
+    "When the objective is genuinely met, and only then: "
     '{"tool": "finish", "args": {"summary": "..."}}\n'
-    "Emit only the JSON object, nothing else."
+    "Emit only the single JSON object, nothing else."
 )
 
 

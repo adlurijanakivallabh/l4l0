@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from typing import Protocol, runtime_checkable
 
 _FENCED = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL)
-_BRACES = re.compile(r"\{.*\}", re.DOTALL)
+_DECODER = json.JSONDecoder()
 
 
 @dataclass
@@ -86,16 +86,34 @@ def _try_load(blob: str) -> dict[str, object] | None:
     return obj if isinstance(obj, dict) else None
 
 
+def _to_call(obj: dict[str, object]) -> ToolCall:
+    raw_args = obj.get("args", {})
+    args = raw_args if isinstance(raw_args, dict) else {}
+    return ToolCall(name=str(obj["tool"]), args=args)
+
+
 def parse_tool_call(text: str) -> ToolCall | None:
-    """Extract a ``{"tool": ..., "args": ...}`` call from model output, or None."""
-    candidates: list[str] = _FENCED.findall(text)
-    match = _BRACES.search(text)
-    if match:
-        candidates.append(match.group(0))
-    for blob in candidates:
+    """Extract the FIRST ``{"tool": ..., "args": ...}`` call from model output.
+
+    Handles a fenced block, an object amid prose, and — importantly — a response
+    that concatenates several JSON objects (some models emit a whole plan at once):
+    we take the first valid tool call and let the loop observe its result before
+    the next action, rather than acting blind on a pre-planned batch.
+    """
+    for blob in _FENCED.findall(text):
         obj = _try_load(blob)
         if obj and "tool" in obj:
-            raw_args = obj.get("args", {})
-            args = raw_args if isinstance(raw_args, dict) else {}
-            return ToolCall(name=str(obj["tool"]), args=args)
-    return None
+            return _to_call(obj)
+    idx = 0
+    while True:
+        start = text.find("{", idx)
+        if start == -1:
+            return None
+        try:
+            obj, end = _DECODER.raw_decode(text, start)
+        except (json.JSONDecodeError, ValueError):
+            idx = start + 1
+            continue
+        if isinstance(obj, dict) and "tool" in obj:
+            return _to_call(obj)
+        idx = max(end, start + 1)
