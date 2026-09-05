@@ -7,6 +7,8 @@ untrusted data, never as instructions (OWASP LLM01).
 
 from __future__ import annotations
 
+from .templates import PromptRegistry
+
 SYSTEM_PROMPT = """You are L4L0, an autonomous web/API and network offensive-security agent \
 operating under explicit written authorization.
 
@@ -27,3 +29,6 @@ Rules:
 def mission_text(targets: list[str], objective: str) -> str:
     joined = ", ".join(targets)
     return f"Authorized engagement targets: {joined}\n\nObjective: {objective}"
+
+
+__all__ = ["SYSTEM_PROMPT", "PromptRegistry", "mission_text"]
