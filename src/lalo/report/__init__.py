@@ -6,9 +6,18 @@ silent clean). CVSS is a computed nominal base (compute-don't-trust). Exporters:
 Markdown / JSON / SARIF.
 """
 
-from .cvss import nominal_cvss
+from .cvss import compute_cvss3, nominal_cvss
 from .export import to_json, to_markdown, to_sarif
 from .poc import curl_poc
-from .render import render_markdown
+from .render import dedup_findings, render_markdown
 
-__all__ = ["curl_poc", "nominal_cvss", "render_markdown", "to_json", "to_markdown", "to_sarif"]
+__all__ = [
+    "compute_cvss3",
+    "curl_poc",
+    "dedup_findings",
+    "nominal_cvss",
+    "render_markdown",
+    "to_json",
+    "to_markdown",
+    "to_sarif",
+]

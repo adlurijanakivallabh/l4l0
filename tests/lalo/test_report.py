@@ -4,9 +4,19 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from lalo.detectors.ledger import CoverageLedger
 from lalo.models import Evidence, EvidenceKind, Finding, Severity
-from lalo.report import curl_poc, nominal_cvss, to_json, to_markdown, to_sarif
+from lalo.report import (
+    compute_cvss3,
+    curl_poc,
+    dedup_findings,
+    nominal_cvss,
+    to_json,
+    to_markdown,
+    to_sarif,
+)
 
 
 def _findings() -> list[Finding]:
@@ -22,6 +32,44 @@ def _findings() -> list[Finding]:
 def test_nominal_cvss() -> None:
     assert nominal_cvss(Severity.CRITICAL) == 9.8
     assert nominal_cvss(Severity.INFO) == 0.0
+
+
+def test_compute_cvss3_from_metrics() -> None:
+    score, severity, vector = compute_cvss3(
+        {"AV": "N", "AC": "L", "PR": "N", "UI": "N", "S": "U", "C": "H", "I": "H", "A": "H"}
+    )
+    assert score == 9.8
+    assert severity == "critical"
+    assert vector == "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"
+
+
+def test_compute_cvss3_rejects_bad_metric() -> None:
+    bad = {"AV": "Z", "AC": "L", "PR": "N", "UI": "N", "S": "U", "C": "H", "I": "H", "A": "H"}
+    with pytest.raises(ValueError, match="AV"):
+        compute_cvss3(bad)
+
+
+def test_dedup_findings_keeps_highest_confidence() -> None:
+    a = Finding.create("sqli", "sqli", Severity.HIGH, "https://app/item")
+    a.metadata["parameter"] = "id"
+    a.confidence = 40.0
+    b = Finding.create("sqli again", "sqli", Severity.HIGH, "https://app/item")
+    b.metadata["parameter"] = "id"
+    b.confidence = 80.0
+    deduped = dedup_findings([a, b])
+    assert len(deduped) == 1
+    assert deduped[0].confidence == 80.0
+    assert deduped[0].metadata["duplicates_absorbed"] == 1
+
+
+def test_counterevidence_rendered() -> None:
+    f = Finding.create("sqli", "sqli", Severity.HIGH, "https://app/item")
+    f.counterevidence = "the parameter may be numeric-cast server-side"
+    f.severity_change_conditions = "confirmed data exfiltration would raise to critical"
+    md = to_markdown([f])
+    assert "Counterevidence" in md
+    assert "numeric-cast" in md
+    assert "Severity would change if" in md
 
 
 def test_curl_poc_mentions_parameter() -> None:

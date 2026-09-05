@@ -98,6 +98,8 @@ def _record_tool(ctx: ScanContext) -> ToolFunc:
             target=str(args.get("target", "")),
             evidence=evidence,
         )
+        finding.counterevidence = str(args.get("counterevidence", ""))
+        finding.severity_change_conditions = str(args.get("severity_change_conditions", ""))
         breakdown = score_finding(finding, captures=ctx.captures)
         ctx.graph.add_finding(finding)
         flags = f" flags={breakdown.flags}" if breakdown.flags else ""
@@ -151,8 +153,9 @@ def build_registry(ctx: ScanContext) -> ToolRegistry:
             "record_finding",
             "Record a vulnerability. args: title, vuln_class, "
             "severity(info|low|medium|high|critical), target, "
-            "evidence:[{kind,summary,fire_ref,observed}]. Confidence is scored "
-            "against captured traffic; nothing is withheld.",
+            "evidence:[{kind,summary,fire_ref,observed}], counterevidence (the "
+            "strongest case AGAINST it), severity_change_conditions. Confidence is "
+            "scored against captured traffic; nothing is withheld.",
             _record_tool(ctx),
         ),
         FunctionTool("note", "Save a short note. args: text", _note_tool(ctx)),

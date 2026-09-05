@@ -22,6 +22,8 @@ def _finding_to_attrs(finding: Finding) -> dict[str, object]:
         "confidence": finding.confidence,
         "confidence_breakdown": dict(finding.confidence_breakdown),
         "poc": finding.poc,
+        "counterevidence": finding.counterevidence,
+        "severity_change_conditions": finding.severity_change_conditions,
         "evidence": [
             {
                 "kind": e.kind.value,
@@ -60,6 +62,8 @@ def _finding_from_attrs(attrs: dict[str, object]) -> Finding:
         confidence=cast("float | None", attrs.get("confidence")),
         confidence_breakdown=dict(breakdown),
         poc=cast("str | None", attrs.get("poc")),
+        counterevidence=str(attrs.get("counterevidence", "")),
+        severity_change_conditions=str(attrs.get("severity_change_conditions", "")),
         metadata=dict(metadata),
     )
 

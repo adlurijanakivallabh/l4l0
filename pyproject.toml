@@ -24,6 +24,8 @@ dependencies = [
     # Report export
     "weasyprint>=69.0",
     "html2docx>=1.6.0",
+    # CVSS v3 base-score computation (compute-don't-trust)
+    "cvss>=3.0,<4.0",
 ]
 
 [project.scripts]
@@ -76,3 +78,8 @@ markers = [
 python_version = "3.13"
 packages = ["lalo"]
 strict = true
+
+# Third-party libs without type stubs.
+[[tool.mypy.overrides]]
+module = ["cvss.*"]
+ignore_missing_imports = true

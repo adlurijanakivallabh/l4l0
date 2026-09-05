@@ -24,12 +24,32 @@ def _sorted(findings: list[Finding]) -> list[Finding]:
     )
 
 
+def dedup_findings(findings: list[Finding]) -> list[Finding]:
+    """Collapse duplicates (same class+target+parameter), keeping the highest
+    confidence; a survivor records how many duplicates it absorbed."""
+    best: dict[tuple[str, str, str], Finding] = {}
+    dupes: dict[tuple[str, str, str], int] = {}
+    for f in findings:
+        key = f.dedup_key()
+        current = best.get(key)
+        if current is None or (f.confidence or 0.0) > (current.confidence or 0.0):
+            best[key] = f
+        dupes[key] = dupes.get(key, 0) + 1
+    for key, f in best.items():
+        if dupes[key] > 1:
+            f.metadata.setdefault("duplicates_absorbed", dupes[key] - 1)
+    return list(best.values())
+
+
 def render_markdown(
     findings: list[Finding],
     *,
     coverage: CoverageLedger | None = None,
     title: str = "L4L0 Security Report",
+    dedup: bool = True,
 ) -> str:
+    if dedup:
+        findings = dedup_findings(findings)
     lines = [f"# {title}", ""]
     counts: dict[str, int] = {}
     for f in findings:
@@ -55,6 +75,10 @@ def render_markdown(
         lines.append("- Evidence:")
         for e in f.evidence:
             lines.append(f"    - [{e.kind.value}] {redact(e.summary)}")
+        if f.counterevidence:
+            lines.append(f"- Counterevidence: {redact(f.counterevidence)}")
+        if f.severity_change_conditions:
+            lines.append(f"- Severity would change if: {redact(f.severity_change_conditions)}")
         lines.append("- PoC:")
         lines.append("  ```")
         lines.append(f"  {f.poc or curl_poc(f)}")

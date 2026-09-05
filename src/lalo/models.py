@@ -59,7 +59,15 @@ class Finding:
     confidence: float | None = None  # 0-100, set by the confidence scorer
     confidence_breakdown: dict[str, float] = field(default_factory=dict)
     poc: str | None = None
+    # The strongest case AGAINST the finding, and what would change its severity —
+    # an adversarial-honesty pass recorded with every finding.
+    counterevidence: str = ""
+    severity_change_conditions: str = ""
     metadata: dict[str, object] = field(default_factory=dict)
+
+    def dedup_key(self) -> tuple[str, str, str]:
+        """Identity for deduplication: class + target + parameter (if any)."""
+        return (self.vuln_class, self.target, str(self.metadata.get("parameter", "")))
 
     @classmethod
     def create(
