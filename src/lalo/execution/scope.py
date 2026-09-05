@@ -29,6 +29,20 @@ _METADATA_NETS: tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...] = (
     ipaddress.ip_network("100.100.100.200/32"),  # Alibaba Cloud metadata
 )
 
+# Cloud-metadata *hostnames* denied by default (a rebinding-safe complement to the
+# IP ranges — a name can point anywhere, so block the well-known ones outright).
+_METADATA_HOSTS: frozenset[str] = frozenset(
+    {
+        "metadata",
+        "metadata.google.internal",
+        "metadata.goog",
+        "metadata.azure.com",
+        "metadata.oraclecloud.com",
+        "instance-data",
+        "instance-data.ec2.internal",
+    }
+)
+
 
 class Decision(Enum):
     ALLOWED = "allowed"
@@ -71,6 +85,8 @@ class ScopeGuard:
     def _hits_metadata(self, host: str | None) -> bool:
         if not host:
             return False
+        if host.lower() in _METADATA_HOSTS:  # well-known metadata hostname
+            return True
         if _in_metadata_range(host):  # literal IP
             return True
         return any(_in_metadata_range(ip) for ip in self.resolve_and_pin(host))

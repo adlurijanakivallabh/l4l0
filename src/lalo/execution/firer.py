@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
-from urllib.parse import urlsplit
+from urllib.parse import urljoin, urlsplit
 
 import httpx
 
@@ -108,6 +108,36 @@ class HttpFirer:
             elapsed_ms=(time.monotonic() - start) * 1000.0,
             http_version=resp.http_version,
         )
+
+    def fire_redirects(
+        self,
+        method: str,
+        url: str,
+        *,
+        headers: dict[str, str] | None = None,
+        content: bytes | None = None,
+        max_redirects: int = 5,
+    ) -> list[FireResult]:
+        """Follow redirects MANUALLY, re-checking scope on every hop.
+
+        Each hop goes through ``fire`` (hence ``ScopeGuard.check``), so a redirect
+        to an out-of-engagement or metadata host is skipped, not followed — the
+        defense against redirect-based SSRF/scope escape. Returns the full chain;
+        the last entry is the final response (or the refused hop).
+        """
+        chain: list[FireResult] = []
+        current, verb, body = url, method, content
+        for _ in range(max_redirects + 1):
+            result = self.fire(verb, current, headers=headers, content=body)
+            chain.append(result)
+            if not result.fired or result.status is None or not 300 <= result.status < 400:
+                break
+            location = result.headers.get("location")
+            if not location:
+                break
+            current = urljoin(current, location)  # next hop re-checked by fire()
+            verb, body = "GET", None  # browsers downgrade to GET on 301/302/303
+        return chain
 
     def close(self) -> None:
         self._client.close()
