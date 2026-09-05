@@ -53,8 +53,8 @@ packages = ["src/lalo"]
 src = ["src", "tests"]
 target-version = "py313"
 line-length = 100
-# Vendored corpora + legacy pre-L4L0 code are never our code — never lint them.
-exclude = ["third_party", ".claude", ".venv", "src/reachagent", "output", "logs"]
+# Vendored corpora are upstream files, never our code — never lint them.
+exclude = ["third_party", ".claude", ".venv", "output", "logs"]
 
 [tool.ruff.lint]
 # Baseline + security lint (S = bandit-equivalent).
