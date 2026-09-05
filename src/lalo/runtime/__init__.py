@@ -16,11 +16,14 @@ from .container import (
     RuntimeContainer,
     docker_available,
 )
+from .tool import CommandExecutor, build_run_command_tool
 
 __all__ = [
+    "CommandExecutor",
     "ExecResult",
     "ForbiddenCapabilityError",
     "RuntimeConfig",
     "RuntimeContainer",
+    "build_run_command_tool",
     "docker_available",
 ]
