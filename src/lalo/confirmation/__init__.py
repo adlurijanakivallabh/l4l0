@@ -7,12 +7,16 @@ anything being withheld.
 """
 
 from .diff import ResponseDiff, semantic_diff
+from .review import ReviewVerdict, adversarial_review, apply_review
 from .scoring import ConfidenceScorer, ScoreBreakdown, score_finding
 
 __all__ = [
     "ConfidenceScorer",
     "ResponseDiff",
+    "ReviewVerdict",
     "ScoreBreakdown",
+    "adversarial_review",
+    "apply_review",
     "score_finding",
     "semantic_diff",
 ]

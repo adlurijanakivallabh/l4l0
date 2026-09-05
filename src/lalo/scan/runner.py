@@ -40,7 +40,9 @@ def run_scan(
     scope = ScopeGuard(engagement=Engagement.from_specs(targets), egress_lock=egress_lock)
     the_graph = graph or ReachGraph()
     the_firer = firer or HttpFirer(scope)
-    ctx = ScanContext(graph=the_graph, firer=the_firer, container=container)
+    # Router is shared with the record path so every finding gets an independent
+    # adversarial confirmation review before it lands.
+    ctx = ScanContext(graph=the_graph, firer=the_firer, container=container, router=router)
     registry = build_registry(ctx)
     loop = AgentLoop(router, registry, system_prompt=SYSTEM_PROMPT, config=config)
     result = loop.run(mission_text(targets, objective))

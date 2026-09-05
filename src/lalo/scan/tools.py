@@ -7,7 +7,9 @@ from dataclasses import dataclass, field
 from typing import cast
 
 from ..agent.tools import FunctionTool, ToolRegistry, ToolResult
+from ..confirmation.review import adversarial_review, apply_review
 from ..confirmation.scoring import score_finding
+from ..core.model_router import ModelRouter
 from ..core.redaction import redact
 from ..execution.firer import HttpFirer
 from ..graph.store import ReachGraph
@@ -26,6 +28,9 @@ class ScanContext:
     container: RuntimeContainer | None = None
     captures: dict[str, str] = field(default_factory=dict)
     notes: list[str] = field(default_factory=list)
+    # When set, every recorded finding gets an independent adversarial review
+    # (assume-false, disprove from captured evidence) before it lands.
+    router: ModelRouter | None = None
     _fire_seq: int = 0
 
 
@@ -101,11 +106,16 @@ def _record_tool(ctx: ScanContext) -> ToolFunc:
         finding.counterevidence = str(args.get("counterevidence", ""))
         finding.severity_change_conditions = str(args.get("severity_change_conditions", ""))
         breakdown = score_finding(finding, captures=ctx.captures)
+        review_note = ""
+        if ctx.router is not None:
+            verdict = adversarial_review(finding, ctx.captures, ctx.router)
+            apply_review(finding, verdict)
+            review_note = f" review={verdict.verdict}(L{verdict.proof_level})"
         ctx.graph.add_finding(finding)
         flags = f" flags={breakdown.flags}" if breakdown.flags else ""
         return ToolResult(
             f"recorded finding {finding.id[:8]} '{finding.title}' "
-            f"confidence={breakdown.total}{flags}"
+            f"confidence={finding.confidence}{flags}{review_note}"
         )
 
     return run
