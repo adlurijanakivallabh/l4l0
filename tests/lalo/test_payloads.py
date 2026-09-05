@@ -48,5 +48,12 @@ def test_unicode_escape_produces_js_style_escapes() -> None:
     assert unicode_escape("ab") == "\\u0061\\u0062"
 
 
+def test_unicode_escape_encodes_supplementary_plane_as_a_surrogate_pair() -> None:
+    # A code point above 0xFFFF (e.g. an emoji) needs 5 hex digits, which
+    # ":04x"'s minimum-width formatting would emit unpadded -- not valid JS.
+    # A real JS string represents it as a UTF-16 surrogate pair instead.
+    assert unicode_escape(chr(0x1F600)) == "\\ud83d\\ude00"
+
+
 def test_html_entity_encode_produces_decimal_entities() -> None:
     assert html_entity_encode("<a>") == "&#60;&#97;&#62;"

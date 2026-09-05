@@ -16,7 +16,12 @@ in its own tool source and test suite); one has no domain-specific payload
 tooling anywhere in its agent framework — its own comparison notes state its
 LLM roles are "expected to just run arbitrary shell commands (nmap, curl,
 etc.) itself, guided only by prompt instructions" with no typed payload API
-at all.
+at all. (The "no self-owned corpus" reference does wire in a real tool that
+live-searches public exploit databases — Metasploit/GitHub-PoC/CVE — for
+ready-made exploit code at runtime; a materially different pattern from a
+static corpus, but "fetch and run external exploit code" is its own,
+separately-declared supply-chain line this project does not cross either
+way, so it changes nothing about this phase's scope.)
 
 Building a deterministic payload-selection/dispatch module here would
 reintroduce exactly the fixed-code-instead-of-agent-judgment pattern this

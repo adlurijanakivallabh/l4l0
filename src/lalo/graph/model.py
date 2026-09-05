@@ -7,10 +7,16 @@ Postgres tables (flow/task/subtask + tool-call logs) with no graph structure
 between findings; a reference TypeScript platform uses git-committed
 content-addressed artifacts plus durable workflow state, again relational/
 document-shaped, not a graph; a reference agent's own `report/state.py` (read
-directly) is an in-memory, loosely-typed dataclass store with ~20 freeform
-fields per finding and, critically, **no atomicity guarantee at all** —
-`save_run_data()` writes synchronously and unconditionally, no atomic rename,
-no byte-verify. This stays a largely original L4L0 mechanism, built on top of
+directly, along with the `report/writer.py` it calls into) is an in-memory,
+loosely-typed dataclass store with ~20 freeform fields per finding. Its
+`save_run_data()` is more mixed than a first pass suggested: most artifacts
+(the run record, individual vulnerability files, the CSV index) DO go
+through an atomic-rename helper (`tempfile.NamedTemporaryFile` +
+`Path.replace`) — only the final human-facing report writes directly with no
+atomic swap at all. What none of its writes do, atomic or not, is verify the
+written bytes before declaring success, and nothing ties the several
+per-artifact writes together as one crash-safe unit. This stays a largely
+original L4L0 mechanism, built on top of
 the `networkx` dependency already adopted in Phase 0 rather than hand-rolled
 (reuse over reinvention), specifically because a reachability/attack-chain
 model is what a role-bounded, evidence-driven agent needs to reason about
@@ -111,9 +117,29 @@ class ReachabilityGraph:
         # nx.all_simple_paths is a generator: NodeNotFound only raises once iterated,
         # so the list comprehension has to be inside the try, not just the call.
         try:
-            return [Chain(node_ids=list(p)) for p in nx.all_simple_paths(view, source, target)]
+            paths = list(nx.all_simple_paths(view, source, target))
         except nx.NodeNotFound:
             return []
+
+        chains: list[Chain] = []
+        seen: set[tuple[str, ...]] = set()
+        for path in paths:
+            if len(path) < 2:
+                # networkx's own documented special case for source == target:
+                # a trivial single-node "path" that traversed no edge at all —
+                # never a real chain, regardless of whether any edge exists.
+                continue
+            key = tuple(path)
+            if key in seen:
+                # Parallel edges of the same kind between the same node pair
+                # (e.g. two agents each recording their own ENABLES edge for
+                # the same relationship) make all_simple_paths enumerate the
+                # identical node sequence once per edge combination on a
+                # MultiDiGraph — one real chain, not one per edge.
+                continue
+            seen.add(key)
+            chains.append(Chain(node_ids=list(path)))
+        return chains
 
     def to_json(self) -> bytes:
         data = nx.node_link_data(self._g, edges="edges")

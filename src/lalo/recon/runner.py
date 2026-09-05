@@ -40,7 +40,14 @@ class ChainReport:
 def run_recon_chain(runners: list[ReconRunner]) -> ChainReport:
     report = ChainReport()
     for runner in runners:
-        if not runner.is_available():
+        try:
+            available = runner.is_available()
+        except Exception as exc:  # noqa: BLE001 - an availability probe (a network/API-key/
+            # subprocess reachability check, per this module's own docstring) must not
+            # sink the whole chain any more than run() itself is allowed to.
+            report.failed.append((runner.name, f"{type(exc).__name__}: {exc}"))
+            continue
+        if not available:
             report.skipped.append(runner.name)
             continue
         try:

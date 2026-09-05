@@ -13,9 +13,12 @@ class _FakeRunner:
     available: bool = True
     facts: list[ReconFact] = field(default_factory=list)
     raises: Exception | None = None
+    availability_error: Exception | None = None
     calls: int = 0
 
     def is_available(self) -> bool:
+        if self.availability_error is not None:
+            raise self.availability_error
         return self.available
 
     def run(self) -> list[ReconFact]:
@@ -58,3 +61,18 @@ def test_one_runners_crash_does_not_sink_the_rest_of_the_chain() -> None:
     assert len(report.failed) == 1
     assert report.failed[0][0] == "broken"
     assert "boom" in report.failed[0][1]
+
+
+def test_a_crashing_availability_check_does_not_sink_the_rest_of_the_chain() -> None:
+    # is_available() (a network/API-key/subprocess reachability probe, per
+    # this module's own docstring) can legitimately raise -- it must get the
+    # same fault isolation as run() itself, not crash the whole chain.
+    broken = _FakeRunner("broken", availability_error=RuntimeError("healthcheck failed"))
+    healthy = _FakeRunner("healthy", facts=[_fact("ok")])
+    report = run_recon_chain([broken, healthy])
+    assert report.facts == [_fact("ok")]
+    assert healthy.calls == 1
+    assert len(report.failed) == 1
+    assert report.failed[0][0] == "broken"
+    assert "healthcheck failed" in report.failed[0][1]
+    assert report.skipped == []  # a crash is "failed", not cleanly "skipped"

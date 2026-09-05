@@ -138,7 +138,11 @@ def login(firer: HttpFirer, identity: Identity, scheme: LoginScheme) -> Session:
     else:
         material = _extract_json_field(result.body, scheme.session_field)
 
-    if material is None:
+    if not material:
+        # Rejects an empty string, not just an absent field — a common failed-
+        # login response shape is a 200 with the session cookie/field cleared
+        # to "" (e.g. Set-Cookie: session=;), which `is None` alone would let
+        # through as a "successful" login with a useless empty credential.
         raise LoginFailedError(
             f"login for identity {identity.id} succeeded but no session material was found"
         )

@@ -78,6 +78,29 @@ def test_facts_from_a_legitimately_fetched_spec_still_pass_through_the_scope_gat
     assert report.rejected == []
 
 
+def test_fetch_openapi_facts_ignores_non_operation_sibling_keys() -> None:
+    # A Path Item Object legitimately carries non-operation sibling fields
+    # (summary, description, parameters, servers, $ref, ...) alongside real
+    # HTTP methods, per the OpenAPI 3.x / Swagger 2.0 spec -- those must never
+    # be recorded as if they were methods themselves.
+    doc = {
+        "paths": {
+            "/users": {
+                "summary": "Users collection",
+                "description": "...",
+                "parameters": [{"name": "id"}],
+                "get": {},
+            },
+        },
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=doc)
+
+    facts = fetch_openapi_facts(_firer(handler), "https://app.example.com/openapi.json")
+    assert facts[0].extra["methods"] == ["GET"]
+
+
 def test_fetch_openapi_facts_returns_empty_on_non_2xx_status() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(404)

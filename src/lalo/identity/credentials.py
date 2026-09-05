@@ -13,7 +13,10 @@ exists" and "credential is in the model's token stream." A companion prompt
 fragment from the second reference (`_credentials-in-findings.txt`, read in
 full) does the opposite for *submitted findings* — the model writes literal
 ``$username``/``$password`` placeholders in place of the values it was
-configured with, substituted only by a human reader afterward.
+configured with, and per that file's own text ("nothing expands them
+afterwards") they stay placeholders permanently, precisely so the real
+credentials never appear anywhere in the deliverable at all, not even for a
+human to fill in later.
 
 This module generalizes that placeholder idea to the point of use, not just
 the point of reporting: every :class:`Identity` registers its own credential

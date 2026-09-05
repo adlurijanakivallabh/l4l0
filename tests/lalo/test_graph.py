@@ -53,6 +53,27 @@ def test_find_chains_solves_a_seeded_multistep_exploit_path() -> None:
     assert chains == [Chain(node_ids=["idor", "admin", "upload", "rce"])]
 
 
+def test_find_chains_same_source_and_target_with_no_edges_finds_nothing() -> None:
+    # networkx's own documented special case for source == target is a
+    # trivial single-node "path" that traversed no edge at all -- that is
+    # never a real chain, regardless of whether the node has any edges.
+    g = ReachabilityGraph()
+    g.add_node("a", NodeKind.FINDING)
+    assert g.find_chains("a", "a") == []
+
+
+def test_find_chains_deduplicates_parallel_edges_of_the_same_kind() -> None:
+    # Two agents each recording their own ENABLES edge for the same
+    # relationship is exactly the scenario the MultiDiGraph choice exists to
+    # support -- it must not multiply into duplicate chain entries.
+    g = ReachabilityGraph()
+    g.add_node("a", NodeKind.FINDING)
+    g.add_node("b", NodeKind.FINDING)
+    g.add_edge("a", "b", EdgeKind.ENABLES, note="from-agent-1")
+    g.add_edge("a", "b", EdgeKind.ENABLES, note="from-agent-2")
+    assert g.find_chains("a", "b") == [Chain(node_ids=["a", "b"])]
+
+
 def test_find_chains_ignores_edges_of_a_different_kind() -> None:
     g = ReachabilityGraph()
     g.add_node("a", NodeKind.FINDING)

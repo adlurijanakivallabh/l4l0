@@ -6,10 +6,16 @@ produces is anchored to the host the spec was ACTUALLY fetched from, never
 to anything the document itself claims — a spec discovery result cannot
 self-grant scope, and even a legitimately-fetched-in-engagement spec is
 still passed back through the ordinary :func:`~lalo.recon.facts.merge_facts`
-gate before it can land on the graph. Confirmed against every reference's
-opposite failure mode: none enforces scope at the request layer at all
-(Phase 3's finding), so none has a "spec self-grants scope" gap to close in
-the first place — this is genuinely original hardening, not an adopted idea.
+gate before it can land on the graph. A reference recon utility, found on a
+retroactive audit pass (its own module docstring states the identical
+principle almost verbatim — "which base URLs it authorizes as in-scope hosts
+(scope cannot be self-granted by the agent)"), already does this at the host
+layer: it parses an OpenAPI/Swagger/Postman spec's declared base URLs into a
+prompt-text allowlist the agent is told is authorized, but does not re-check
+per request afterward. L4L0's version is mechanically stronger, not merely
+different: every fact still passes through the same code-level ScopeGuard
+check every other request does, on every use, not just once at discovery
+time into advisory prompt text.
 """
 
 from __future__ import annotations
@@ -19,6 +25,12 @@ from urllib.parse import urljoin
 
 from ..execution.firer import HttpFirer
 from .facts import FactKind, ReconFact
+
+# OpenAPI 3.x / Swagger 2.0 Path Item Object operation keys. A path item also
+# legitimately carries non-operation sibling fields (summary, description,
+# parameters, servers, $ref, ...) per spec — without this filter those get
+# recorded as bogus "methods" on the resulting fact.
+_OPENAPI_METHODS = frozenset({"get", "put", "post", "delete", "options", "head", "patch", "trace"})
 
 
 def fetch_openapi_facts(
@@ -48,7 +60,11 @@ def fetch_openapi_facts(
         if not isinstance(path, str):
             continue
         endpoint_url = urljoin(spec_url, path)
-        method_names = sorted(m.upper() for m in methods) if isinstance(methods, dict) else []
+        method_names = (
+            sorted(m.upper() for m in methods if m.lower() in _OPENAPI_METHODS)
+            if isinstance(methods, dict)
+            else []
+        )
         facts.append(
             ReconFact(
                 kind=FactKind.ENDPOINT,

@@ -63,6 +63,15 @@ def merge_facts(
             report.rejected.append((fact, decision.reason))
             continue
         if not graph.has_node(fact.url):
-            graph.add_node(fact.url, _NODE_KIND_FOR[fact.kind], source=fact.source, **fact.extra)
+            # `extra` nests under its own key rather than being splatted as
+            # **kwargs: fact.extra is an open per-fact metadata bag (any
+            # runner can put any key in it), and splatting it directly risked
+            # a TypeError ("multiple values for keyword argument") the moment
+            # a caller's key collided with `source`/`kind` — which crashed
+            # this whole loop, discarding every fact in the same batch, not
+            # just the offending one.
+            graph.add_node(
+                fact.url, _NODE_KIND_FOR[fact.kind], source=fact.source, extra=dict(fact.extra)
+            )
         report.accepted.append(fact)
     return report

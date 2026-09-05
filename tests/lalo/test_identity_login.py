@@ -103,6 +103,21 @@ def test_login_missing_session_material_raises() -> None:
         login(firer, _ALICE, scheme)
 
 
+def test_login_empty_session_value_raises_not_a_false_positive_login() -> None:
+    # A common failed-login response shape: HTTP 200 with the session cookie
+    # present but cleared to an empty string -- must not be mistaken for a
+    # successful login just because the field itself is present.
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, headers={"set-cookie": "session=; Path=/"})
+
+    firer = _firer(client=httpx.Client(transport=httpx.MockTransport(handler)))
+    scheme = LoginScheme(
+        login_url="https://app.example.com/login", session_source=SessionSource.COOKIE
+    )
+    with pytest.raises(LoginFailedError):
+        login(firer, _ALICE, scheme)
+
+
 def test_login_out_of_engagement_url_is_never_fired_and_raises() -> None:
     def handler(request: httpx.Request) -> httpx.Response:  # pragma: no cover
         raise AssertionError("out-of-engagement login must not fire")

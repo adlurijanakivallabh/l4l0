@@ -54,3 +54,22 @@ def test_merging_the_same_url_twice_does_not_duplicate_the_node() -> None:
     merge_facts(graph, _scope(), [fact])
     merge_facts(graph, _scope(), [fact])
     assert len(graph) == 1
+
+
+def test_merge_facts_survives_an_extra_key_that_collides_with_a_node_field() -> None:
+    # `extra` is an open per-fact metadata bag -- a key named "source" or
+    # "kind" (mirroring ReconFact's own top-level field names) used to crash
+    # the whole merge_facts call with a keyword-collision TypeError, silently
+    # discarding every other fact in the same batch.
+    graph = ReachabilityGraph()
+    colliding = ReconFact(
+        kind=FactKind.ENDPOINT,
+        url="https://app.example.com/x",
+        source="test",
+        extra={"source": "oops", "kind": "also-oops"},
+    )
+    report = merge_facts(graph, _scope(), [colliding])
+    assert report.accepted == [colliding]
+    node = graph.node("https://app.example.com/x")
+    assert node["source"] == "test"  # the REAL field, never overwritten
+    assert node["extra"] == {"source": "oops", "kind": "also-oops"}
