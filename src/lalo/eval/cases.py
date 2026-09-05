@@ -14,18 +14,56 @@ challenges, binary solved/unsolved, 96% success rate) with no
 precision/false-positive measurement at all, since a flag-capture format has
 no "nothing here" case to score — confirming CLAUDE.md's own more rigorous
 design choice (recall AND precision, not just a binary win rate) is a
-deliberate improvement, not an oversight. A reference platform's own
-``pipeline-testing`` prompt fixtures (read directly) are hermetic,
-deterministic prompt scripts used to exercise pipeline mechanics without a
-live LLM's non-determinism — independently confirming the pattern this
-project's own test suite already uses throughout (a scripted/fake provider
-standing in for a real model call), which the harness's own tests below
-follow again rather than adopting anything new.
+deliberate improvement, not an oversight.
+
+A fourth reference's own ``tests/support/local_target.py`` +
+``tests/test_local_target.py`` + ``tests/test_local_benchmark.py`` (read
+directly, not just its comparison doc — the single most directly
+on-point piece of prior art among all five references for this exact
+concern, missed on an earlier pass) is the closest real analogue to this
+harness's own shape: a tiny, synthetic, deliberately vulnerable in-process
+HTTP target (a template-injection toy endpoint, `{{7*7}}` -> `49`,
+`{{config.FLAG}}` -> the flag) plus a fully scripted three-step benchmark
+(discover -> test -> exploit) that fires *real* HTTP requests against it and
+asserts the exact evidence text appears verbatim in the trace before a flag
+is accepted — via fake ``BenchmarkSupervisorBackend``/
+``BenchmarkExecutorBackend`` stream implementations standing in for its
+real LLM backends. That fake-backend pair, not the reference platform's
+``pipeline-testing`` prompts described below, is the actual matching
+instance of "a scripted/fake provider standing in for a real model call"
+this project's own test suite (e.g. :mod:`tests.lalo.test_findings_review`,
+:mod:`tests.lalo.test_agent_loop`) uses throughout. Its own harness never
+gates on a numeric precision/recall threshold either — it just asserts the
+flag was captured — one toy vulnerability rather than a class matrix, but a
+real confirmation that a scripted-backend eval harness with genuine
+evidence-grounding is established practice, not a novel L4L0 invention.
+
+A previous version of this docstring cited a different reference platform's
+own ``pipeline-testing`` prompt fixtures for that same "scripted provider"
+idea; that citation mischaracterized the actual mechanism, confirmed by
+reading the real prompt files it named (``exploit-auth.txt`` and siblings
+under ``prompts/pipeline-testing/``): those fixtures still invoke a real,
+live LLM (which still navigates via a real Playwright session and takes a
+real screenshot) — the prompt merely *instructs* the model to fabricate a
+canned result ("simulated successful exploitation") rather than test
+anything, purely to exercise unrelated plumbing (session isolation,
+collector-tool wiring) cheaply in CI. That is a materially different thing
+from a fake provider that is never called at all, which is what this
+project's own tests actually do and what the fourth reference above
+actually matches. Kept here, corrected, rather than silently dropped, so
+the earlier inaccurate citation isn't just replaced without a record that
+it was wrong.
 
 Findings are already graph nodes (Phase 7/12) with a computed confidence
 score (Phase 12b), so scoring a case is a read over already-existing data —
 :func:`run_case` reuses :func:`~lalo.report.collect.collect_findings`
-rather than re-deriving anything from the graph directly.
+rather than re-deriving anything from the graph directly. This module's own
+tests (unlike the fake-backend pattern discussed above) use no provider
+abstraction at all, scripted or otherwise: :func:`run_case` never invokes an
+LLM in the first place — it only reads findings a prior ``record_finding``
+call already put on the graph — so there is no non-determinism here for a
+scripted stand-in to eliminate, and a claim that these tests "follow" that
+pattern would be describing a problem this module doesn't have.
 """
 
 from __future__ import annotations

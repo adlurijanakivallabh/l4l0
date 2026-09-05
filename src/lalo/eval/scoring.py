@@ -89,6 +89,17 @@ def append_composite_history(
 
     Never overwrites prior entries - the history file is the project's own
     eval trend across its development, not a single run's snapshot.
+
+    Not safe against two concurrent callers appending to the same ``path``
+    at once (read-modify-write, no lock): the second writer's read misses
+    the first's not-yet-flushed append, and one entry is silently lost
+    rather than both landing. Accepted rather than fixed with file locking -
+    this project's own convention (CLAUDE.md: bring an eval target up only
+    for one live run, tear it down immediately after) means eval runs
+    happen one at a time by construction, so the race has no real caller to
+    trigger it today. A genuinely concurrent eval runner would need to close
+    this properly (a lock file, or a single writer process), not just get a
+    bigger try/except around the same race.
     """
     existing = json.loads(path.read_bytes()) if path.exists() else []
     existing.append({"label": label, "recorded_at": recorded_at, **asdict(score)})
