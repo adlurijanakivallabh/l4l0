@@ -41,6 +41,24 @@ def test_snapshot_is_an_independent_deep_copy() -> None:
     assert len(child) == 2
 
 
+def test_has_edge_of_kind_true_for_either_direction() -> None:
+    g = ReachabilityGraph()
+    g.add_node("a", NodeKind.FINDING)
+    g.add_node("b", NodeKind.FINDING)
+    g.add_edge("a", "b", EdgeKind.ENABLES)
+    assert g.has_edge_of_kind("a", EdgeKind.ENABLES) is True
+    assert g.has_edge_of_kind("b", EdgeKind.ENABLES) is True
+
+
+def test_has_edge_of_kind_false_for_a_different_kind_or_unknown_node() -> None:
+    g = ReachabilityGraph()
+    g.add_node("a", NodeKind.FINDING)
+    g.add_node("b", NodeKind.FINDING)
+    g.add_edge("a", "b", EdgeKind.SUPPORTS)
+    assert g.has_edge_of_kind("a", EdgeKind.ENABLES) is False
+    assert g.has_edge_of_kind("nonexistent", EdgeKind.ENABLES) is False
+
+
 def test_find_chains_solves_a_seeded_multistep_exploit_path() -> None:
     g = ReachabilityGraph()
     for node_id in ("idor", "admin", "upload", "rce"):

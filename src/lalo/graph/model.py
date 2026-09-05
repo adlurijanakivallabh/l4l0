@@ -97,6 +97,13 @@ class ReachabilityGraph:
     def nodes_of_kind(self, kind: NodeKind) -> list[str]:
         return [n for n, data in self._g.nodes(data=True) if data.get("kind") == kind.value]
 
+    def has_edge_of_kind(self, node_id: str, kind: EdgeKind) -> bool:
+        """Whether ``node_id`` touches an edge of ``kind``, in either direction."""
+        if not self._g.has_node(node_id):
+            return False
+        touching = (*self._g.out_edges(node_id, data=True), *self._g.in_edges(node_id, data=True))
+        return any(data.get("kind") == kind.value for *_ends, data in touching)
+
     def __len__(self) -> int:
         return self._g.number_of_nodes()
 

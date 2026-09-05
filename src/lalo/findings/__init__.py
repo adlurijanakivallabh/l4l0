@@ -7,6 +7,7 @@ finding. Two non-blocking layers run after landing: a deterministic
 :mod:`~lalo.findings.review` that only ever adjusts that score.
 """
 
+from .confidence import ConfidenceScore, compute_confidence
 from .cvss import CvssResult, compute_cvss
 from .dedup import dedup_key, find_duplicate
 from .grounding import is_grounded
@@ -15,9 +16,11 @@ from .tool import build_record_finding_tool
 
 __all__ = [
     "REQUIRED_TEXT_FIELDS",
+    "ConfidenceScore",
     "CvssResult",
     "Finding",
     "build_record_finding_tool",
+    "compute_confidence",
     "compute_cvss",
     "dedup_key",
     "find_duplicate",
