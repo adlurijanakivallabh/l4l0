@@ -1,7 +1,8 @@
 """CVE/EPSS enrichment — a prioritization fact only, never a severity input.
 
 No reference project does anything comparable: EPSS was grepped for across
-all five ``REACHAGENT_COMPARISON.md`` files and found in none. This is an
+all five reference projects' own comparison documentation and found in
+none. This is an
 original L4L0 addition, exactly as the governing plan expects for this
 sub-concern — most of Phase 7-12's mechanisms (the reachability graph,
 self-hosted OAST, the deterministic Confidence Score) are original for the

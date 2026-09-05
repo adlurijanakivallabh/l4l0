@@ -1,9 +1,10 @@
 """Scan scheduling for continuous attack-surface monitoring (ASM).
 
-Original — confirmed via REACHAGENT_COMPARISON.md across all five reference
-projects that none schedules autonomous re-scans (shannon/pentagi run one
-CLI-triggered flow per invocation; strix's viewer/CLI has no repeat-scan
-concept). No reference source to read here.
+Original — confirmed via each reference project's own comparison
+documentation, across all five, that none schedules autonomous re-scans
+(two reference platforms each run one CLI-triggered flow per invocation;
+a reference agent's viewer/CLI has no repeat-scan concept). No reference
+source to read here.
 """
 
 from __future__ import annotations

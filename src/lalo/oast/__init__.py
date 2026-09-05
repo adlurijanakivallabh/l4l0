@@ -1,7 +1,8 @@
 """Self-hosted out-of-band application security testing (OAST) server.
 
-Original — confirmed via REACHAGENT_COMPARISON.md across all five reference
-projects that none builds an integrated, self-hosted OAST mechanism (one
+Original — confirmed via each reference project's own comparison
+documentation, across all five, that none builds an integrated,
+self-hosted OAST mechanism (one
 bundles a third-party OOB client as an external tool the agent may invoke, but
 nothing wires automatic per-probe token issuance + interaction correlation into
 its own confirmation pipeline the way this module does).

@@ -4,9 +4,10 @@ Reference reads for this phase (all five, real source and comparison-doc
 detail). A reference agent's own external-MCP integration
 (``docs/integrations/mcp.mdx``) connects to arbitrary operator-configured
 MCP servers and exposes their tools directly mid-run, with only a coarse
-allow-by-name filter and an explicit written admission: *"Strix does not
-decide for you which of a server's tools only read and which change
-things, so run the server in its own read-only mode if it has one."* That
+allow-by-name filter and an explicit written admission that it does not
+decide which of a server's tools only read versus which change things,
+telling the operator to run the server in its own read-only mode instead
+if one exists. That
 is the gap this module closes: :data:`ToolMode` requires the operator to
 classify every allowed tool as ``read`` or ``write`` at config time, and
 :func:`check_tool_call` refuses a ``write``-classified call outright when

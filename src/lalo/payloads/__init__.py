@@ -1,7 +1,7 @@
 """Payload intelligence — deliberately narrow (Phase 10, optional/reference material).
 
 Reference reads for this phase (all five, via each project's own
-REACHAGENT_COMPARISON.md) converged on a finding that reshaped this phase's
+comparison documentation) converged on a finding that reshaped this phase's
 scope: **no reference maintains a self-owned, structured payload corpus.**
 A reference agent's real payload content lives as prose inside its ~68
 per-vulnerability-class skill markdown files (confirmed via its own skills

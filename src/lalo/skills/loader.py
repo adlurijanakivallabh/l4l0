@@ -1,7 +1,7 @@
 """Loads skill markdown files (YAML frontmatter + body) from the skill content directory.
 
 Reference reads for this phase (all five, via each project's own
-REACHAGENT_COMPARISON.md, plus real source): a reference agent's own
+comparison documentation, plus real source): a reference agent's own
 `skills/__init__.py` (read directly) confirms its skills are "plain markdown
 files with YAML frontmatter (name/description)" resolved by name — the
 format this module adopts, generalized with an explicit `category` (this
@@ -11,8 +11,9 @@ per-vulnerability-class skills, requested by topic) and optional `keywords`
 that doesn't use the skill's exact name). A second reference's per-class
 exploit prompts and a third reference's per-domain agent docs were read for
 methodology content, not file-format ideas — see the individual skill files'
-own citations for what was adopted from each. pentagi and PentestGPT were
-confirmed, via their own real source, to have no comparable per-topic skill
+own citations for what was adopted from each. Two other reference
+platforms were confirmed, via their own real source, to have no comparable
+per-topic skill
 library at all (methodology lives in a single orchestrator persona template
 and generic task-formation prompts, not addressable knowledge packs).
 """
