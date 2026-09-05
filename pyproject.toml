@@ -81,5 +81,5 @@ strict = true
 
 # Third-party libs without type stubs.
 [[tool.mypy.overrides]]
-module = ["cvss.*"]
+module = ["cvss.*", "weasyprint.*", "html2docx.*"]
 ignore_missing_imports = true

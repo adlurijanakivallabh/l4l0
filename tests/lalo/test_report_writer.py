@@ -9,7 +9,14 @@ from lalo.agent.tools import ToolRegistry
 from lalo.findings.tool import build_record_finding_tool
 from lalo.graph.model import NodeKind, ReachabilityGraph
 from lalo.report.overrides import SeverityOverride
-from lalo.report.writer import JSON_FILENAME, MARKDOWN_FILENAME, SARIF_FILENAME, write_report
+from lalo.report.writer import (
+    DOCX_FILENAME,
+    JSON_FILENAME,
+    MARKDOWN_FILENAME,
+    PDF_FILENAME,
+    SARIF_FILENAME,
+    write_report,
+)
 from lalo.skills.loader import Skill, SkillCategory
 
 _VALID_CVSS = {
@@ -66,14 +73,18 @@ def _graph_with_finding() -> tuple[ReachabilityGraph, str]:
     return graph, finding_id
 
 
-def test_write_report_writes_all_three_formats(tmp_path: Path) -> None:
+def test_write_report_writes_all_five_formats(tmp_path: Path) -> None:
     graph, _ = _graph_with_finding()
     paths = write_report(tmp_path, graph, _SKILLS, generated_at="2026-01-01")
     assert paths["markdown"] == tmp_path / MARKDOWN_FILENAME
     assert paths["json"] == tmp_path / JSON_FILENAME
     assert paths["sarif"] == tmp_path / SARIF_FILENAME
+    assert paths["pdf"] == tmp_path / PDF_FILENAME
+    assert paths["docx"] == tmp_path / DOCX_FILENAME
     for path in paths.values():
         assert path.exists()
+    assert paths["pdf"].read_bytes().startswith(b"%PDF-")
+    assert paths["docx"].read_bytes().startswith(b"PK")
 
 
 def test_write_report_markdown_contains_the_finding(tmp_path: Path) -> None:
