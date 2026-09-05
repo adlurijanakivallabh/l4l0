@@ -18,6 +18,19 @@ def test_from_specs_parses_forms() -> None:
     )
 
 
+def test_describe_empty_engagement() -> None:
+    assert Engagement(rules=()).describe() == "(no targets declared)"
+
+
+def test_describe_renders_every_rule_with_host_scheme_and_port() -> None:
+    eng = Engagement.from_specs(["example.com", "https://api.example.com:8443"])
+    rendered = eng.describe()
+    assert "- example.com" in rendered
+    assert "api.example.com" in rendered
+    assert "scheme(s): https" in rendered
+    assert "port(s): 8443" in rendered
+
+
 def test_in_engagement_exact_and_wildcard() -> None:
     eng = Engagement.from_specs(["example.com", "*.example.com"])
     assert eng.in_engagement("example.com")

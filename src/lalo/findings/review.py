@@ -38,36 +38,15 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from enum import StrEnum
+from pathlib import Path
 
 from ..core.errors import AllProvidersFailedError
 from ..core.model_router import CompletionRequest, ModelRouter
 from ..graph.model import ReachabilityGraph
+from ..prompts import render_prompt
 from .confidence import ConfidenceScore
 
 _VALID_PROOF_LEVELS = frozenset({"L1", "L2", "L3", "L4"})
-
-_SYSTEM_PROMPT = """You are an independent adversarial reviewer of a security finding.
-
-Assume the finding is a false positive by default. Your job is to disprove it.
-Evaluate the claim based ONLY on the vuln_class/target/param identity and the raw
-captured evidence shown below. You are NOT shown the finder's own description or
-counterevidence text - it may be hallucinated, so do not ask for it and do not
-assume anything it might have said.
-
-Reply with a single JSON object and nothing else:
-{"verdict": "confirmed" | "ruled_out" | "open_proof_gap",
- "proof_level": "L1" | "L2" | "L3" | "L4",
- "reasoning": "one or two sentences, grounded only in the evidence shown"}
-
-- "confirmed": the evidence shown directly demonstrates the claimed vulnerability.
-- "ruled_out": the evidence shown does not support the claim, or actively
-  contradicts it (e.g. the excerpt is not present in the evidence, or the
-  evidence shows a control working correctly).
-- "open_proof_gap": the evidence is suggestive but insufficient to confirm or
-  rule out - name the specific gap in your reasoning.
-- proof_level is your assessment of how far the evidence goes, independent of
-  verdict (L1 = anomaly only, L2 = confirmed but low-value, L3 = real impact,
-  L4 = durable/systemic)."""
 
 
 class ReviewVerdict(StrEnum):
@@ -133,18 +112,27 @@ def run_adversarial_review(
     router: ModelRouter,
     *,
     role: str = "review",
+    prompt_overrides_dir: Path | None = None,
 ) -> ReviewResult:
     """Run the independent review for one finding and return its verdict.
+
+    ``role`` selects the :class:`~lalo.core.model_router.ModelRouter` chain
+    (which provider serves this call) — a different axis from the *prompt*
+    template, which is always the ``review`` role in
+    :mod:`lalo.prompts` regardless of which provider chain answers it.
+    ``prompt_overrides_dir``, if given, lets an operator supply their own
+    ``review.txt`` (falls back to the built-in on any validation failure).
 
     Never raises: a total provider failure or an unparseable response
     degrades to ``open_proof_gap`` at the finding's unadjusted score rather
     than crashing the confirmation pipeline or fabricating a verdict.
     """
     node = graph.node(finding_id)
+    system_prompt = render_prompt("review", overrides_dir=prompt_overrides_dir)
     try:
         response = router.complete(
             role,
-            CompletionRequest(system=_SYSTEM_PROMPT, prompt=_build_user_prompt(node)),
+            CompletionRequest(system=system_prompt, prompt=_build_user_prompt(node)),
         )
     except AllProvidersFailedError:
         return _fallback("review unavailable: every provider failed", confidence.score)

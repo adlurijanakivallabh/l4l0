@@ -109,3 +109,18 @@ class Engagement:
                 )
             )
         return cls(rules=tuple(rules))
+
+    def describe(self) -> str:
+        """A human-readable rendering of every authorized rule (for prompts/reports)."""
+        if not self.rules:
+            return "(no targets declared)"
+        return "\n".join(f"- {_describe_rule(rule)}" for rule in self.rules)
+
+
+def _describe_rule(rule: TargetRule) -> str:
+    parts = [rule.host]
+    if rule.schemes:
+        parts.append(f"scheme(s): {', '.join(sorted(rule.schemes))}")
+    if rule.ports:
+        parts.append(f"port(s): {', '.join(str(p) for p in sorted(rule.ports))}")
+    return " - ".join(parts)
