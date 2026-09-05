@@ -39,6 +39,28 @@ def test_redact_leaves_plain_text_untouched() -> None:
     assert redact(text) == text
 
 
+def test_redact_more_secret_shapes() -> None:
+    for secret in (
+        "AIzaSyD-EXAMPLE_key_1234567890abcdefghil",  # Google API key (39 chars)
+        "sk_live_abcdef0123456789ABCDEF",  # Stripe
+        "ocx_data_5ece2a7afb4335315ce3fa02e5ccbcf7",  # OpenCodex-style
+        "gho_ABCDEFGHIJKLMNOPQRSTUVWXYZ012345",  # GitHub oauth
+    ):
+        out = redact(f"key is {secret} end")
+        assert secret not in out, secret
+        assert REDACTION_PLACEHOLDER in out
+
+
+def test_redact_json_style_secret() -> None:
+    out = redact('{"username":"bob","password":"hunter2secret"}')
+    assert "hunter2secret" not in out
+    assert "bob" in out  # non-secret field preserved
+
+
+def test_redact_pem_private_key_header() -> None:
+    assert REDACTION_PLACEHOLDER in redact("-----BEGIN RSA PRIVATE KEY-----\nMIIE...")
+
+
 def test_safe_target_url_strips_userinfo_and_sensitive_query() -> None:
     url = "https://user:hunter2@app.example.com:8443/login?token=abc123secret&next=/home"
     out = safe_target_url(url)

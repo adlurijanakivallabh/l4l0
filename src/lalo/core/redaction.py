@@ -20,15 +20,27 @@ REDACTION_PLACEHOLDER = "«REDACTED»"
 _TOKEN_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{4,}\b"),  # JWT
     re.compile(r"\bAKIA[0-9A-Z]{16}\b"),  # AWS access key id
+    re.compile(r"\bASIA[0-9A-Z]{16}\b"),  # AWS temp access key id
     re.compile(r"\bghp_[A-Za-z0-9]{30,}\b"),  # GitHub PAT
     re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,}\b"),  # GitHub fine-grained PAT
+    re.compile(r"\bgh[oprsu]_[A-Za-z0-9]{20,}\b"),  # GitHub oauth/refresh/server tokens
+    re.compile(r"\bsk-ant-[A-Za-z0-9_-]{20,}\b"),  # Anthropic key (before generic sk-)
     re.compile(r"\bsk-[A-Za-z0-9_-]{20,}\b"),  # OpenAI-style secret key
-    re.compile(r"\bsk-ant-[A-Za-z0-9_-]{20,}\b"),  # Anthropic key
+    re.compile(r"\bsk_live_[0-9A-Za-z]{16,}\b"),  # Stripe live secret
+    re.compile(r"\bAIza[0-9A-Za-z_-]{35}\b"),  # Google API key
+    re.compile(r"\bya29\.[0-9A-Za-z_-]{20,}\b"),  # Google OAuth access token
     re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{10,}\b"),  # Slack token
+    re.compile(r"\bocx_[A-Za-z0-9_]{20,}\b"),  # OpenCodex gateway key
+    re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH |DSA |PGP )?PRIVATE KEY-----"),  # PEM private key
     # key=value / key: value forms for obviously sensitive keys
     re.compile(
         r"(?i)\b(?:bearer|authorization|token|api[_-]?key|secret|client[_-]?secret"
         r"|password|passwd|pwd)\b\s*[=:]\s*\S+"
+    ),
+    # JSON-style "key": "value" forms for sensitive keys
+    re.compile(
+        r'(?i)"(?:password|passwd|pwd|secret|token|access_token|refresh_token'
+        r'|api[_-]?key|client_secret|authorization)"\s*:\s*"[^"]+"'
     ),
 )
 
