@@ -38,13 +38,18 @@ DEFAULT_USAGE_PATH = Path.home() / ".lalo" / "usage.json"
 
 @dataclass
 class UsageStats:
-    """Lifetime totals, plus a per-provider breakdown."""
+    """Lifetime totals, plus per-provider and per-agent breakdowns."""
 
     total_requests: int = 0
     total_input_tokens: int = 0
     total_output_tokens: int = 0
     total_cost_usd: float = 0.0
     by_provider: dict[str, dict[str, float]] = field(default_factory=dict)
+    # Keyed by agent_id (the root agent, or a spawned child) - populated only
+    # for callers that pass one; a caller that doesn't opt in (agent_id=None)
+    # contributes to the lifetime/by_provider totals exactly as before, same
+    # optional-opt-in shape as usage_path itself.
+    by_agent: dict[str, dict[str, float]] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -53,18 +58,22 @@ class UsageStats:
             "total_output_tokens": self.total_output_tokens,
             "total_cost_usd": self.total_cost_usd,
             "by_provider": self.by_provider,
+            "by_agent": self.by_agent,
         }
 
     @classmethod
     def from_dict(cls, data: dict[str, object]) -> UsageStats:
         by_provider_raw = data.get("by_provider")
         by_provider = dict(by_provider_raw) if isinstance(by_provider_raw, dict) else {}
+        by_agent_raw = data.get("by_agent")
+        by_agent = dict(by_agent_raw) if isinstance(by_agent_raw, dict) else {}
         return cls(
             total_requests=int(data.get("total_requests", 0)),  # type: ignore[call-overload]
             total_input_tokens=int(data.get("total_input_tokens", 0)),  # type: ignore[call-overload]
             total_output_tokens=int(data.get("total_output_tokens", 0)),  # type: ignore[call-overload]
             total_cost_usd=float(data.get("total_cost_usd", 0.0)),  # type: ignore[arg-type]
             by_provider=by_provider,
+            by_agent=by_agent,
         )
 
 
@@ -92,6 +101,7 @@ def record_usage(
     path: Path = DEFAULT_USAGE_PATH,
     pricing_table: PricingTable | None = None,
     cost_limit_usd: float | None = None,
+    agent_id: str | None = None,
 ) -> UsageStats:
     """Add ``response``'s usage to the persisted lifetime total and return it.
 
@@ -101,6 +111,12 @@ def record_usage(
     afterward (see :class:`~lalo.core.errors.CostLimitExceededError`'s own
     docstring for why this is the opposite order from the reference this
     module is informed by).
+
+    ``agent_id`` (root or a spawned child's own id) attributes this response
+    to ``by_agent`` the same way ``response.provider`` already attributes it
+    to ``by_provider`` - omitted (the default) when the caller has no agent
+    identity to report, in which case only the lifetime/by_provider totals
+    are updated, exactly as before this parameter existed.
     """
     stats = load_usage(path)
     stats.total_requests += 1
@@ -122,6 +138,17 @@ def record_usage(
     provider_stats["output_tokens"] += output_tokens
     if cost is not None:
         provider_stats["cost_usd"] += cost
+
+    if agent_id:
+        agent_stats = stats.by_agent.setdefault(
+            agent_id,
+            {"requests": 0.0, "input_tokens": 0.0, "output_tokens": 0.0, "cost_usd": 0.0},
+        )
+        agent_stats["requests"] += 1
+        agent_stats["input_tokens"] += input_tokens
+        agent_stats["output_tokens"] += output_tokens
+        if cost is not None:
+            agent_stats["cost_usd"] += cost
 
     atomic_write_verified(
         path, json.dumps(stats.to_dict(), indent=2, sort_keys=True).encode("utf-8")

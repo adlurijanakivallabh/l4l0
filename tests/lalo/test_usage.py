@@ -79,6 +79,25 @@ def test_record_usage_tracks_a_per_provider_breakdown(tmp_path: Path) -> None:
     assert stats.by_provider["openai"]["requests"] == 1
 
 
+def test_record_usage_tracks_a_per_agent_breakdown(tmp_path: Path) -> None:
+    path = tmp_path / "usage.json"
+    record_usage(_response(input_tokens=1000, output_tokens=500), path=path, agent_id="root")
+    record_usage(_response(input_tokens=200, output_tokens=100), path=path, agent_id="child-1")
+    record_usage(_response(input_tokens=50, output_tokens=25), path=path, agent_id="root")
+    stats = load_usage(path)
+    assert set(stats.by_agent) == {"root", "child-1"}
+    assert stats.by_agent["root"]["requests"] == 2
+    assert stats.by_agent["root"]["input_tokens"] == 1050
+    assert stats.by_agent["child-1"]["requests"] == 1
+
+
+def test_record_usage_with_no_agent_id_leaves_by_agent_empty(tmp_path: Path) -> None:
+    path = tmp_path / "usage.json"
+    stats = record_usage(_response(), path=path)
+    assert stats.by_agent == {}
+    assert stats.total_requests == 1
+
+
 def test_record_usage_raises_after_persisting_once_the_limit_is_crossed(tmp_path: Path) -> None:
     """The record must land BEFORE the raise - the API call already happened
     and already cost real money, so the ledger has to reflect it regardless

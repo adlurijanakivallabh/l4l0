@@ -31,6 +31,7 @@ from lalo.agent.spawn import merge_finding_nodes
 from lalo.agent.tools import FunctionTool, ToolResult
 from lalo.core.errors import ConfigError, ContainerError
 from lalo.core.model_router import CompletionResponse, ModelRouter
+from lalo.core.usage import load_usage
 from lalo.graph.model import NodeKind, ReachabilityGraph
 from lalo.gui.events import EventLog
 from lalo.integrations.mcp_client import MCPServerConfig
@@ -373,6 +374,33 @@ def test_scan_runner_emits_usage_delta_when_usage_path_is_configured(
     # token deltas are honestly 0 -- but real completions did happen this run,
     # so the request count must reflect that, not also default to 0.
     assert usage_delta["requests"] > 0
+
+
+def test_scan_runner_attributes_usage_to_the_root_agent_id(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(scan_module, "docker_available", lambda: True)
+    monkeypatch.setattr(scan_module, "RuntimeContainer", _FakeContainer)
+    router = ModelRouter(
+        providers={"fake": _ScriptedProvider(_respond)},
+        routes={"reasoning": ("fake",), "review": ("fake",)},
+        default_route=("fake",),
+    )
+    monkeypatch.setattr(scan_module, "build_router", lambda _settings: router)
+
+    usage_path = tmp_path / "usage.json"
+    config = ScanConfig(
+        mission="find a bug",
+        target_specs=["example.com"],
+        run_dir=tmp_path / "run",
+        usage_path=usage_path,
+    )
+    ScanRunner(config, env={"ANTHROPIC_API_KEY": "sk-test"}).run()
+
+    stats = load_usage(usage_path)
+    # AgentCoordinator hands out ids as "agent-N" starting from 1 - the root
+    # agent registered by ScanRunner.run() is always the first one.
+    assert stats.by_agent["agent-1"]["requests"] > 0
 
 
 def test_cancel_before_run_stops_on_the_first_step(

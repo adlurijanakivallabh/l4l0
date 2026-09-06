@@ -205,6 +205,7 @@ class AgentLoop:
         on_event: Callable[[str, dict[str, object]], None] | None = None,
         should_stop: Callable[[], bool] | None = None,
         usage_path: Path | None = None,
+        agent_id: str | None = None,
     ) -> None:
         self.router = router
         self.registry = registry
@@ -223,6 +224,11 @@ class AgentLoop:
         # usage log). See _complete()'s own note for why this was dead code
         # before this fix despite being fully built and tested in isolation.
         self.usage_path = usage_path
+        # This loop's own identity (the root agent, or a spawned child) for
+        # UsageStats.by_agent - None is a legitimate value here too, meaning
+        # "record lifetime/by_provider totals but attribute nothing to a
+        # specific agent."
+        self.agent_id = agent_id
 
     def _emit(self, event: str, payload: dict[str, object]) -> None:
         if self.on_event is not None:
@@ -260,7 +266,7 @@ class AgentLoop:
             return None
         if self.usage_path is not None:
             try:
-                record_usage(response, path=self.usage_path)
+                record_usage(response, path=self.usage_path, agent_id=self.agent_id)
             except Exception:
                 _log.exception("usage recording failed; continuing without it")
         return response

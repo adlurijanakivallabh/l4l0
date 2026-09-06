@@ -468,6 +468,7 @@ class ScanRunner:
                     on_event=lambda ev, pl: self._on_agent_event(child_id, ev, pl),
                     should_stop=self._should_stop,
                     usage_path=self.config.usage_path,
+                    agent_id=child_id,
                 )
                 result = child_loop.run(task)
                 after = set(child_graph.nodes_of_kind(NodeKind.FINDING))
@@ -512,6 +513,7 @@ class ScanRunner:
             on_event=lambda ev, pl: self._on_root_event(root_id, ev, pl, graph, graph_path),
             should_stop=self._should_stop,
             usage_path=self.config.usage_path,
+            agent_id=root_id,
         )
         # Only the root agent's own steps are journaled/resumable -- a spawned
         # child still mid-execution at crash time simply restarts from scratch

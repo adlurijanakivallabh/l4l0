@@ -388,6 +388,25 @@ def test_usage_is_recorded_when_a_usage_path_is_provided(tmp_path) -> None:
     assert "fake" in stats.by_provider
 
 
+def test_usage_is_attributed_to_the_loops_own_agent_id(tmp_path) -> None:
+    tool, _ = _counting_tool("noop")
+    registry = ToolRegistry([tool])
+    router = _scripted(
+        ['{"tool": "noop", "args": {}}', '{"tool": "finish", "args": {"summary": "done"}}']
+    )
+    usage_path = tmp_path / "usage.json"
+    loop = AgentLoop(
+        router,  # type: ignore[arg-type]
+        registry,
+        system_prompt="",
+        usage_path=usage_path,
+        agent_id="agent-42",
+    )
+    loop.run("mission")
+    stats = load_usage(usage_path)
+    assert stats.by_agent["agent-42"]["requests"] == 2
+
+
 def test_usage_is_not_recorded_without_an_explicit_usage_path() -> None:
     tool, _ = _counting_tool("noop")
     registry = ToolRegistry([tool])
