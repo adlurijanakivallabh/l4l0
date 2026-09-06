@@ -39,6 +39,7 @@ def _record(
             "evidence_excerpt": evidence_excerpt,
             "counterevidence": "No WAF observed.",
             "severity_change_conditions": "Confirmed exfil would raise severity.",
+            "remediation": "Apply input validation and least-privilege fixes.",
             "cvss_breakdown": _VALID_CVSS,
         },
     )

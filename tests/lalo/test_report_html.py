@@ -37,6 +37,7 @@ def _record(evidence: list[str] | None = None, title: str = "SQLi in /search") -
             "evidence_excerpt": "syntax error",
             "counterevidence": "No WAF observed.",
             "severity_change_conditions": "Confirmed exfil would raise severity.",
+            "remediation": "Apply input validation and least-privilege fixes.",
             "cvss_breakdown": _VALID_CVSS,
         },
     )
@@ -81,6 +82,7 @@ def test_render_finding_html_warns_when_evidence_is_not_grounded() -> None:
             "evidence_excerpt": "never actually captured",
             "counterevidence": "none",
             "severity_change_conditions": "none",
+            "remediation": "Apply input validation and least-privilege fixes.",
             "cvss_breakdown": _VALID_CVSS,
         },
     )

@@ -54,6 +54,7 @@ class FindingRecord:
     evidence_grounded: bool
     counterevidence: str
     severity_change_conditions: str
+    remediation: str
     cvss_score: float
     cvss_severity: str
     cvss_vector: str
@@ -89,6 +90,7 @@ def collect_findings(graph: ReachabilityGraph) -> list[FindingRecord]:
                 evidence_grounded=bool(node.get("evidence_grounded", False)),
                 counterevidence=str(node.get("counterevidence", "")),
                 severity_change_conditions=str(node.get("severity_change_conditions", "")),
+                remediation=str(node.get("remediation", "")),
                 cvss_score=float(node.get("cvss_score", 0.0)),
                 cvss_severity=str(node.get("cvss_severity", "info")),
                 cvss_vector=str(node.get("cvss_vector", "")),

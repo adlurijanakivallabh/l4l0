@@ -33,6 +33,7 @@ def _graph_with_finding() -> ReachabilityGraph:
             "evidence_excerpt": "real captured proof",
             "counterevidence": "none found",
             "severity_change_conditions": "would change if X",
+            "remediation": "Apply input validation and least-privilege fixes.",
             "cvss_breakdown": _VALID_CVSS,
         },
     )

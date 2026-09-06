@@ -62,6 +62,7 @@ def _build_rule(record: FindingRecord) -> dict[str, Any]:
         "name": record.vuln_class or rule_id,
         "shortDescription": {"text": record.title or rule_id},
         "fullDescription": {"text": record.description or record.title or rule_id},
+        "help": {"text": record.remediation or "(no remediation stated)"},
         "defaultConfiguration": {"level": _sarif_level(record)},
         "properties": {"security-severity": _security_severity(record)},
     }

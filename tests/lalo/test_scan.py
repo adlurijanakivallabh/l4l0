@@ -153,6 +153,7 @@ def _record_finding_call() -> str:
                 "evidence_excerpt": "syntax error near 'OR'",
                 "counterevidence": "none found",
                 "severity_change_conditions": "would drop if input were parameterized",
+                "remediation": "Apply input validation and least-privilege fixes.",
                 "cvss_breakdown": _HIGH_CVSS,
             },
         }

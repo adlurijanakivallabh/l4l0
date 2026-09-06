@@ -31,6 +31,7 @@ def _file(graph: ReachabilityGraph, vuln_class: str, target: str) -> None:
             "evidence_excerpt": "e",
             "counterevidence": "none",
             "severity_change_conditions": "x",
+            "remediation": "Apply input validation and least-privilege fixes.",
             "cvss_breakdown": _VALID_CVSS,
         },
     )

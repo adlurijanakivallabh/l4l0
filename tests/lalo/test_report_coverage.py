@@ -75,6 +75,7 @@ def test_build_coverage_summary_marks_a_filed_class_as_assessed() -> None:
             "evidence_excerpt": "e",
             "counterevidence": "none",
             "severity_change_conditions": "x",
+            "remediation": "Apply input validation and least-privilege fixes.",
             "cvss_breakdown": _VALID_CVSS,
         },
     )
@@ -97,6 +98,7 @@ def test_build_coverage_summary_matching_is_case_insensitive() -> None:
             "evidence_excerpt": "e",
             "counterevidence": "none",
             "severity_change_conditions": "x",
+            "remediation": "Apply input validation and least-privilege fixes.",
             "cvss_breakdown": _VALID_CVSS,
         },
     )

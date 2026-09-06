@@ -66,6 +66,7 @@ def _graph_with_finding() -> tuple[ReachabilityGraph, str]:
             "evidence_excerpt": "e",
             "counterevidence": "none",
             "severity_change_conditions": "x",
+            "remediation": "Apply input validation and least-privilege fixes.",
             "cvss_breakdown": _VALID_CVSS,
         },
     )
@@ -144,6 +145,7 @@ def test_write_report_resorts_by_the_overridden_severity_not_the_original(
             "evidence_excerpt": "e",
             "counterevidence": "none",
             "severity_change_conditions": "x",
+            "remediation": "Apply input validation and least-privilege fixes.",
             "cvss_breakdown": _LOW_CVSS,
         },
     )
@@ -159,6 +161,7 @@ def test_write_report_resorts_by_the_overridden_severity_not_the_original(
             "evidence_excerpt": "e",
             "counterevidence": "none",
             "severity_change_conditions": "x",
+            "remediation": "Apply input validation and least-privilege fixes.",
             "cvss_breakdown": _VALID_CVSS,
         },
     )

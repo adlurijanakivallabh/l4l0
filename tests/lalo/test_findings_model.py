@@ -26,6 +26,7 @@ def _full_fields(**overrides: object) -> dict[str, object]:
         "evidence_excerpt": "syntax error near 'OR'",
         "counterevidence": "No WAF observed; error is a raw DB driver message.",
         "severity_change_conditions": "Confirming data exfiltration would raise severity.",
+        "remediation": "Apply input validation and least-privilege fixes.",
         "cvss_breakdown": _VALID_CVSS,
     }
     base.update(overrides)

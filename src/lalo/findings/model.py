@@ -10,6 +10,22 @@ a tool-call-shape check only — "you forgot to fill in a required field" —
 never a truth judgment. A finding with weak or ungrounded evidence still
 records once every field is present; :mod:`~lalo.findings.confidence`
 scores the weakness, it never blocks the recording.
+
+A fresh re-read of that same real source (this project's Phase 12 shannon/
+strix reference-pass cycle) surfaced a genuine gap against its own ten
+required fields: that reference requires ``remediation_steps`` on every
+finding and L4L0 had no equivalent — a report telling an operator what is
+broken without saying how to fix it is a real product gap, not
+evidentiary rigor, so it is added here as its own mandatory field rather
+than folded into ``description``. Deliberately NOT adopted from that same
+list: separate ``impact``/``technical_analysis`` fields (redundant with
+``description`` plus the CVSS breakdown's own impact metrics for this
+project's own field set), a self-declared ``confidence``/
+``confidence_rationale`` (superseded by :mod:`~lalo.findings.confidence`'s
+computed score — compute, don't trust, the same stance already taken for
+CVSS), and ``poc_script_code`` (superseded by this project's own
+evidence-provenance grounding against real captured traffic, which that
+reference's own equivalent field is never checked against).
 """
 
 from __future__ import annotations
@@ -32,6 +48,9 @@ REQUIRED_TEXT_FIELDS = {
         "severity_change_conditions cannot be empty - state the one concrete piece "
         "of evidence that would raise or lower the severity"
     ),
+    "remediation": (
+        "remediation cannot be empty - state concrete steps to fix or mitigate this finding"
+    ),
 }
 
 
@@ -45,6 +64,7 @@ class Finding:
     evidence_excerpt: str
     counterevidence: str
     severity_change_conditions: str
+    remediation: str
     cvss_breakdown: dict[str, str]
     param: str | None = None
     reproduced: bool = False

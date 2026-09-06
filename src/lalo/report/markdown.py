@@ -83,6 +83,10 @@ def render_finding_md(record: FindingRecord) -> str:
     lines.append(record.severity_change_conditions or "(none stated)")
     lines.append("")
 
+    lines.append("### Remediation\n")
+    lines.append(record.remediation or "(none stated)")
+    lines.append("")
+
     lines.append("### Confidence Breakdown\n")
     lines.extend(f"- {name}: {points}" for name, points in record.confidence.breakdown.items())
     if record.confidence.flags:

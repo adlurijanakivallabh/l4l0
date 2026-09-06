@@ -89,6 +89,7 @@ def test_live_vampi_unauthenticated_user_listing_scores_as_a_true_positive() -> 
             "evidence_excerpt": "username",
             "counterevidence": "No authentication header was required and none was sent.",
             "severity_change_conditions": "Exposed password hashes would raise severity.",
+            "remediation": "Apply input validation and least-privilege fixes.",
             "cvss_breakdown": _ACCESS_CONTROL_CVSS,
         },
     )

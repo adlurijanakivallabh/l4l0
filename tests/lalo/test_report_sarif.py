@@ -32,6 +32,7 @@ def _file(graph: ReachabilityGraph, **overrides: object) -> None:
         "evidence_excerpt": "e",
         "counterevidence": "none",
         "severity_change_conditions": "x",
+        "remediation": "Apply input validation and least-privilege fixes.",
         "cvss_breakdown": _VALID_CVSS,
     }
     args.update(overrides)

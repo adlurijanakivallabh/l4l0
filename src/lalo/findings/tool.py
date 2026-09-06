@@ -115,6 +115,7 @@ def build_record_finding_tool(graph: ReachabilityGraph) -> FunctionTool:
             evidence_excerpt=redact(excerpt),
             counterevidence=redact(str(fields["counterevidence"])),
             severity_change_conditions=redact(str(fields["severity_change_conditions"])),
+            remediation=redact(str(fields["remediation"])),
             cvss_breakdown=cvss_breakdown,
             param=param,
             reproduced=reproduced,
@@ -133,6 +134,7 @@ def build_record_finding_tool(graph: ReachabilityGraph) -> FunctionTool:
             "evidence_grounded": grounded,
             "counterevidence": finding.counterevidence,
             "severity_change_conditions": finding.severity_change_conditions,
+            "remediation": finding.remediation,
             "cvss_breakdown": finding.cvss_breakdown,
             "cvss_score": cvss.score,
             "cvss_severity": cvss.severity,
@@ -167,7 +169,8 @@ def build_record_finding_tool(graph: ReachabilityGraph) -> FunctionTool:
             'literally appear in one of the evidence entries), "counterevidence": str '
             "(the strongest case against this finding, or what you checked and found "
             'none of), "severity_change_conditions": str (what would raise/lower '
-            'severity), "cvss_breakdown": {"attack_vector": "N|A|L|P", '
+            'severity), "remediation": str (concrete steps to fix or mitigate this), '
+            '"cvss_breakdown": {"attack_vector": "N|A|L|P", '
             '"attack_complexity": "L|H", "privileges_required": "N|L|H", '
             '"user_interaction": "N|R", "scope": "U|C", "confidentiality": "N|L|H", '
             '"integrity": "N|L|H", "availability": "N|L|H"}, "param": str (optional), '

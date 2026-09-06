@@ -87,6 +87,7 @@ def render_finding_html(record: FindingRecord) -> str:
         "<h3>What Would Change This Severity</h3>"
         f"<p>{_e(record.severity_change_conditions) or '(none stated)'}</p>"
     )
+    parts.append(f"<h3>Remediation</h3><p>{_e(record.remediation) or '(none stated)'}</p>")
 
     parts.append("<h3>Confidence Breakdown</h3><ul>")
     parts += [

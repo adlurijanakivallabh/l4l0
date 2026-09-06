@@ -39,6 +39,7 @@ def _file_finding(graph: ReachabilityGraph, **overrides: object) -> None:
         "evidence_excerpt": "real captured proof",
         "counterevidence": "none found",
         "severity_change_conditions": "would change if X",
+        "remediation": "Apply input validation and least-privilege fixes.",
         "cvss_breakdown": _HIGH_CVSS,
     }
     args.update(overrides)
