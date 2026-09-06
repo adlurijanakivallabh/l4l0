@@ -11,7 +11,7 @@ from lalo.prompts.loader import PROMPTS_DIR, _validate_template
 
 
 def test_every_built_in_role_loads_and_validates() -> None:
-    for role in ("agent", "review"):
+    for role in ("agent", "review", "review_second_opinion"):
         assert load_prompt_template(role).strip()
 
 
@@ -42,6 +42,17 @@ def test_render_prompt_substitutes_rules_of_engagement() -> None:
 def test_render_prompt_for_review_needs_no_variables() -> None:
     rendered = render_prompt("review")
     assert "adversarial reviewer" in rendered
+
+
+def test_render_prompt_for_review_second_opinion_needs_no_variables() -> None:
+    rendered = render_prompt("review_second_opinion")
+    assert "production-viability skeptic" in rendered
+
+
+def test_review_and_review_second_opinion_are_differently_framed() -> None:
+    """The whole point of the second opinion is a genuinely distinct lens,
+    not the same prompt re-asked - the two built-ins must not be identical."""
+    assert load_prompt_template("review") != load_prompt_template("review_second_opinion")
 
 
 def test_load_prompt_template_unknown_role_raises() -> None:

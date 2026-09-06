@@ -44,12 +44,24 @@ could never actually be populated by a real review, only ever default to
 ``None``. This is the one and only place a verdict is written, so
 :mod:`lalo.report.collect` reading it back is a plain field read, not a
 second source of truth to keep in sync.
+
+A fresh Shannon re-check of this same confirmation-oracle territory
+confirmed its own gate-shaped export mechanism is NOT adoptable (a hard
+drop for three whole status classes before its primary machine-consumable
+artifact — exactly what this module's own non-blocking design exists to
+avoid), but its differently-framed multi-persona pattern transplants
+cleanly as a purely additive extra signal: ``run_adversarial_review``'s
+opt-in ``second_opinion`` runs a SECOND, differently-lensed review
+(``review_second_opinion.txt``) and applies a small, fixed, always-positive
+bonus only on agreement — genuine independent corroboration, never a
+second gate, never a way to score a finding lower than the primary review
+alone would have.
 """
 
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from pathlib import Path
 
@@ -71,6 +83,15 @@ _CONFIRMED_ONLY_PROOF_LEVELS = frozenset({"L2", "L3", "L4"})
 # already exhausted its own failover chain by the time that reaches here, so
 # retrying would just repeat the same failure).
 _MAX_ATTEMPTS = 2
+# Opt-in second opinion (run_adversarial_review's own second_opinion=): a
+# fixed, always-positive bonus when a second, differently-framed reviewer
+# (review_second_opinion.txt's production-viability-skeptic lens, distinct
+# from the primary evidence-authenticity lens) independently reaches the
+# SAME verdict - genuine cross-lens corroboration. Never a penalty for
+# disagreement: this is an additional non-blocking signal, never a second
+# gate, so the worst case is simply "no bonus," never a lower score than the
+# primary review alone would have produced.
+_SECOND_OPINION_AGREEMENT_BONUS = 5
 
 
 class ReviewVerdict(StrEnum):
@@ -137,6 +158,7 @@ def run_adversarial_review(
     *,
     role: str = "review",
     prompt_overrides_dir: Path | None = None,
+    second_opinion: bool = False,
 ) -> ReviewResult:
     """Run the independent review for one finding, persist it, and return the verdict.
 
@@ -147,6 +169,16 @@ def run_adversarial_review(
     ``prompt_overrides_dir``, if given, lets an operator supply their own
     ``review.txt`` (falls back to the built-in on any validation failure).
 
+    ``second_opinion`` (opt-in, off by default — doubles this call's review-
+    role LLM cost per finding) runs a SECOND, differently-framed review
+    (``review_second_opinion.txt``'s production-viability-skeptic lens,
+    distinct from the primary evidence-authenticity lens) and applies
+    :data:`_SECOND_OPINION_AGREEMENT_BONUS` only when it independently
+    reaches the same verdict — disagreement never lowers the score below
+    what the primary review alone produced, matching CLAUDE.md's
+    non-blocking-layers design (an additional corroboration signal, never a
+    second gate).
+
     Never raises: a total provider failure or an unparseable response
     degrades to ``open_proof_gap`` at the finding's unadjusted score rather
     than crashing the confirmation pipeline or fabricating a verdict. Either
@@ -154,13 +186,27 @@ def run_adversarial_review(
     returning, so a report generated from ``graph`` afterward can render it.
     """
     result = _compute_review(graph, finding_id, confidence, router, role, prompt_overrides_dir)
-    graph.add_node(
-        finding_id,
-        NodeKind.FINDING,
-        review_verdict=result.verdict.value,
-        review_proof_level=result.proof_level,
-        review_reasoning=result.reasoning,
-    )
+    attrs: dict[str, object] = {
+        "review_verdict": result.verdict.value,
+        "review_proof_level": result.proof_level,
+        "review_reasoning": result.reasoning,
+    }
+    if second_opinion:
+        second = _compute_review(
+            graph,
+            finding_id,
+            confidence,
+            router,
+            role,
+            prompt_overrides_dir,
+            prompt_role="review_second_opinion",
+        )
+        attrs["second_opinion_verdict"] = second.verdict.value
+        attrs["second_opinion_reasoning"] = second.reasoning
+        if second.verdict == result.verdict:
+            boosted = min(100, result.adjusted_score + _SECOND_OPINION_AGREEMENT_BONUS)
+            result = replace(result, adjusted_score=boosted)
+    graph.add_node(finding_id, NodeKind.FINDING, **attrs)
     return result
 
 
@@ -187,9 +233,11 @@ def _compute_review(
     router: ModelRouter,
     role: str,
     prompt_overrides_dir: Path | None,
+    *,
+    prompt_role: str = "review",
 ) -> ReviewResult:
     node = graph.node(finding_id)
-    system_prompt = render_prompt("review", overrides_dir=prompt_overrides_dir)
+    system_prompt = render_prompt(prompt_role, overrides_dir=prompt_overrides_dir)
     user_prompt = _build_user_prompt(node)
 
     parsed: dict[str, object] | None = None

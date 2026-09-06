@@ -287,6 +287,33 @@ def test_scan_runner_wires_every_phase_into_one_completed_run(
     assert (run_dir / "graph.json").exists()
 
 
+def test_scan_runner_enable_second_opinion_review_runs_a_second_review_call(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(scan_module, "docker_available", lambda: True)
+    monkeypatch.setattr(scan_module, "RuntimeContainer", _FakeContainer)
+    provider = _ScriptedProvider(_respond)
+    router = ModelRouter(
+        providers={"fake": provider},
+        routes={"reasoning": ("fake",), "review": ("fake",)},
+        default_route=("fake",),
+    )
+    monkeypatch.setattr(scan_module, "build_router", lambda _settings: router)
+
+    run_dir = tmp_path / "run"
+    config = ScanConfig(
+        mission="find a bug",
+        target_specs=["example.com"],
+        run_dir=run_dir,
+        enable_second_opinion_review=True,
+    )
+    ScanRunner(config, env={"ANTHROPIC_API_KEY": "sk-test"}).run()
+
+    graph = ReachabilityGraph.load(run_dir / "graph.json")
+    finding_id = graph.nodes_of_kind(NodeKind.FINDING)[0]
+    assert "second_opinion_verdict" in graph.node(finding_id)
+
+
 def test_scan_runner_injects_rules_of_engagement_into_the_system_prompt(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

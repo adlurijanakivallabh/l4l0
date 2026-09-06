@@ -179,6 +179,14 @@ class ScanConfig:
     # budget_ceiling being resume-adjustable operational knobs, not locked
     # scope/safety fields.
     max_duration_s: float | None = None
+    # False (the default) keeps the review role's LLM cost at one call per
+    # finding. True doubles it - a second, differently-lensed review
+    # (findings/review.py's own production-viability-skeptic
+    # review_second_opinion.txt) runs per finding, feeding a small,
+    # always-positive corroboration bonus into the confidence score on
+    # agreement, never a penalty on disagreement. An operational cost/
+    # thoroughness tradeoff, not a locked scope/safety field.
+    enable_second_opinion_review: bool = False
 
 
 @dataclass
@@ -674,7 +682,13 @@ class ScanRunner:
 
         for finding_id in graph.nodes_of_kind(NodeKind.FINDING):
             confidence = compute_confidence(graph, finding_id)
-            review = run_adversarial_review(graph, finding_id, confidence, router)
+            review = run_adversarial_review(
+                graph,
+                finding_id,
+                confidence,
+                router,
+                second_opinion=self.config.enable_second_opinion_review,
+            )
             node = graph.node(finding_id)
             self._emit(
                 "finding",

@@ -250,3 +250,96 @@ def test_score_never_exceeds_100_or_drops_below_0() -> None:
     confidence2 = compute_confidence(graph2, finding_id2)
     result2 = run_adversarial_review(graph2, finding_id2, confidence2, _router(provider_low))
     assert result2.adjusted_score >= 0
+
+
+# --- opt-in second opinion ---------------------------------------------------
+
+
+def test_second_opinion_is_off_by_default() -> None:
+    provider = _FakeProvider(text='{"verdict": "confirmed", "proof_level": "L3"}')
+    graph, finding_id = _graph_with_finding()
+    confidence = compute_confidence(graph, finding_id)
+    run_adversarial_review(graph, finding_id, confidence, _router(provider))
+    assert len(provider.seen_prompts) == 1  # only the primary review call happened
+    assert "second_opinion_verdict" not in graph.node(finding_id)
+
+
+def test_second_opinion_agreement_adds_a_bonus() -> None:
+    provider = _FakeProvider(
+        texts=[
+            '{"verdict": "confirmed", "proof_level": "L3", "reasoning": "primary"}',
+            '{"verdict": "confirmed", "proof_level": "L3", "reasoning": "second"}',
+        ]
+    )
+    graph, finding_id = _graph_with_finding()
+    confidence = compute_confidence(graph, finding_id)
+    result = run_adversarial_review(
+        graph, finding_id, confidence, _router(provider), second_opinion=True
+    )
+    primary_only = min(100, confidence.score + 10)
+    assert result.adjusted_score == min(100, primary_only + 5)
+
+
+def test_second_opinion_disagreement_never_lowers_the_score() -> None:
+    provider = _FakeProvider(
+        texts=[
+            '{"verdict": "confirmed", "proof_level": "L3", "reasoning": "primary"}',
+            '{"verdict": "ruled_out", "proof_level": "L1", "reasoning": "second"}',
+        ]
+    )
+    graph, finding_id = _graph_with_finding()
+    confidence = compute_confidence(graph, finding_id)
+    result = run_adversarial_review(
+        graph, finding_id, confidence, _router(provider), second_opinion=True
+    )
+    assert result.verdict is ReviewVerdict.CONFIRMED  # the primary verdict is untouched
+    assert result.adjusted_score == min(100, confidence.score + 10)  # no bonus, no penalty
+
+
+def test_second_opinion_bonus_is_capped_at_100() -> None:
+    provider = _FakeProvider(text='{"verdict": "confirmed", "proof_level": "L4"}')
+    graph, finding_id = _graph_with_finding(
+        reproduced=True,
+        evidence=["a", "b", "c", "d"],
+        evidence_excerpt="a genuinely long and specific proof excerpt for max score",
+        identities_confirmed=["alice", "bob"],
+    )
+    confidence = compute_confidence(graph, finding_id)
+    result = run_adversarial_review(
+        graph, finding_id, confidence, _router(provider), second_opinion=True
+    )
+    assert result.adjusted_score == 100
+
+
+def test_second_opinion_persists_its_own_verdict_and_reasoning() -> None:
+    provider = _FakeProvider(
+        texts=[
+            '{"verdict": "confirmed", "proof_level": "L3", "reasoning": "primary"}',
+            '{"verdict": "open_proof_gap", "proof_level": "L1", "reasoning": "second reasoning"}',
+        ]
+    )
+    graph, finding_id = _graph_with_finding()
+    confidence = compute_confidence(graph, finding_id)
+    run_adversarial_review(graph, finding_id, confidence, _router(provider), second_opinion=True)
+    node = graph.node(finding_id)
+    assert node["second_opinion_verdict"] == "open_proof_gap"
+    assert node["second_opinion_reasoning"] == "second reasoning"
+    # the primary verdict fields are unaffected by the second pass
+    assert node["review_verdict"] == "confirmed"
+
+
+def test_second_opinion_uses_a_differently_framed_system_prompt() -> None:
+    provider = _FakeProvider(
+        texts=[
+            '{"verdict": "confirmed", "proof_level": "L3"}',
+            '{"verdict": "confirmed", "proof_level": "L3"}',
+        ]
+    )
+    graph, finding_id = _graph_with_finding()
+    confidence = compute_confidence(graph, finding_id)
+    run_adversarial_review(graph, finding_id, confidence, _router(provider), second_opinion=True)
+    assert len(provider.seen_prompts) == 2
+    primary_system = provider.seen_prompts[0].system or ""
+    second_system = provider.seen_prompts[1].system or ""
+    assert "production-viability skeptic" in second_system
+    assert "production-viability skeptic" not in primary_system

@@ -118,6 +118,7 @@ PROMPTS_DIR = Path(__file__).parent / "content"
 REQUIRED_PLACEHOLDERS: dict[str, frozenset[str]] = {
     "agent": frozenset({"engagement_scope", "rules_of_engagement"}),
     "review": frozenset(),
+    "review_second_opinion": frozenset(),
 }
 
 
