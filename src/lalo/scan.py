@@ -198,7 +198,28 @@ def _terminal_status(stop_reason: str) -> RunStatus:
 class ScanRunner:
     """Runs one scan to completion. Call :meth:`run` from a background thread
     (it blocks for the whole scan) and :meth:`cancel` from any other thread to
-    request cooperative early termination."""
+    request early termination.
+
+    Phase 2, shannon pass (closes Phase 2): that reference's own ``stop``
+    command implements a deliberately elaborate cancel-then-terminate-then-
+    verify workflow lifecycle, with its own docstring naming the property
+    worth adopting -- "Shannon does not silently believe a scan stopped."
+    :meth:`cancel` here used to be purely cooperative (set a flag, checked
+    only at the next agent-loop step boundary) -- correct for the model call
+    itself, but a scan blocked on a long-running tool call (a multi-minute
+    nmap sweep, say) would keep running for however long that ONE call takes
+    to finish naturally, regardless of how urgently an operator needs it
+    stopped (e.g. having just realized a target is more sensitive than
+    intended). ``cancel`` now ALSO force-stops the running container the
+    instant it's called, from whatever thread called it -- interrupting a
+    blocking ``exec()`` immediately (a forcibly-removed container makes the
+    in-flight ``docker exec`` fail fast with a real, ordinary tool-observation
+    failure, not a hang or a crash) rather than waiting for a timeout. The
+    cooperative flag stays too, since the container may not exist yet (a
+    cancel requested before ``run()`` even starts still needs to stop the
+    agent loop's very first step) and because a graceful in-between-steps
+    stop is still the common, non-urgent case.
+    """
 
     def __init__(
         self,
@@ -211,9 +232,13 @@ class ScanRunner:
         self._env = env
         self.event_log = event_log
         self._cancelled = False
+        self._container: RuntimeContainer | None = None
 
     def cancel(self) -> None:
         self._cancelled = True
+        container = self._container
+        if container is not None:
+            container.stop()
 
     def _should_stop(self) -> bool:
         return self._cancelled
@@ -280,6 +305,7 @@ class ScanRunner:
             )
 
         container = RuntimeContainer(self.config.container_config)
+        self._container = container
         container.start()
         try:
             oast = OASTServer()
@@ -301,6 +327,7 @@ class ScanRunner:
                 oast.stop()
         finally:
             container.stop()
+            self._container = None
 
     def _run_inside(
         self,

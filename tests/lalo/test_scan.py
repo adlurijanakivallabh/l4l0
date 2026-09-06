@@ -229,6 +229,54 @@ def test_cancel_before_run_stops_on_the_first_step(
     assert provider.calls == 0
 
 
+# --- Phase 2, shannon pass: cancel force-stops the container, not just a flag -
+
+
+def test_cancel_before_a_container_exists_does_not_raise(tmp_path: Path) -> None:
+    config = ScanConfig(
+        mission="find a bug", target_specs=["example.com"], run_dir=tmp_path / "run"
+    )
+    runner = ScanRunner(config)
+    runner.cancel()  # no container started yet -- must be a safe no-op beyond the flag
+    assert runner._cancelled is True
+
+
+def test_cancel_force_stops_a_running_container_immediately(tmp_path: Path) -> None:
+    config = ScanConfig(
+        mission="find a bug", target_specs=["example.com"], run_dir=tmp_path / "run"
+    )
+    runner = ScanRunner(config)
+    fake = _FakeContainer()
+    fake.start()
+    runner._container = fake  # simulates a scan currently blocked mid-exec()
+    runner.cancel()
+    # A hard stop, not just the cooperative flag -- proves cancel() doesn't
+    # wait for the agent loop's next step boundary to interrupt the container.
+    assert fake.started is False
+
+
+def test_container_reference_is_cleared_after_a_completed_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(scan_module, "docker_available", lambda: True)
+    monkeypatch.setattr(scan_module, "RuntimeContainer", _FakeContainer)
+    router = ModelRouter(
+        providers={"fake": _ScriptedProvider(_respond)},
+        routes={"reasoning": ("fake",), "review": ("fake",)},
+        default_route=("fake",),
+    )
+    monkeypatch.setattr(scan_module, "build_router", lambda _settings: router)
+
+    config = ScanConfig(
+        mission="find a bug", target_specs=["example.com"], run_dir=tmp_path / "run"
+    )
+    runner = ScanRunner(config, env={"ANTHROPIC_API_KEY": "sk-test"})
+    runner.run()
+    # No stale reference a LATER cancel() call could act on for a container
+    # that no longer exists.
+    assert runner._container is None
+
+
 # --- Phase 2, pentagi/PentestGPT pass: crash-mid-scan resume -----------------
 
 
