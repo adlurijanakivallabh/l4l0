@@ -55,14 +55,33 @@ class ProviderUnavailableError(ProviderError):
 
 
 class AllProvidersFailedError(ProviderError):
-    """Every provider in a role's failover chain failed."""
+    """Every provider in a role's failover chain failed.
+
+    ``failures`` (per-provider ``(name, reason)`` pairs) is folded directly
+    into the exception's own message, not just stored as an attribute: every
+    raise site was building this list and then discarding it when the
+    exception reached a plain ``str(exc)`` caller (the GUI's scan_failed
+    status event, in particular) — an operator with a broken/expired
+    credential saw only "every configured provider failed preflight
+    verification" with zero indication of *why*, defeating the entire point
+    of a preflight check that exists specifically to surface that early.
+    """
 
     code = "all_providers_failed"
 
-    def __init__(self, message: str = "", *, role: str = "", failures: object = None) -> None:
-        super().__init__(message, code=self.code)
+    def __init__(
+        self,
+        message: str = "",
+        *,
+        role: str = "",
+        failures: list[tuple[str, str]] | None = None,
+    ) -> None:
         self.role = role
-        self.failures = failures
+        self.failures = failures or []
+        if self.failures:
+            detail = "; ".join(f"{name}: {reason}" for name, reason in self.failures)
+            message = f"{message} ({detail})" if message else detail
+        super().__init__(message, code=self.code)
 
 
 class ScopeError(LaloError):
