@@ -32,6 +32,24 @@ class _FakeContainer:
         return self._result
 
 
+class _StreamingFakeContainer:
+    """Like _FakeContainer, but implements exec_streaming instead of exec -
+    exec() raises if called, proving the streaming path is actually taken
+    when on_shell_event is provided."""
+
+    def __init__(self, result: _FakeExecResult, chunks: list[tuple[str, str]]) -> None:
+        self._result = result
+        self._chunks = chunks
+
+    def exec(self, command: str | list[str], *, timeout: float = 120.0) -> _FakeExecResult:
+        raise AssertionError("exec() must not be called when on_shell_event is provided")
+
+    def exec_streaming(self, command: str, on_chunk, *, timeout: float = 120.0) -> _FakeExecResult:
+        for stream, text in self._chunks:
+            on_chunk(stream, text)
+        return self._result
+
+
 def test_run_command_dispatches_to_the_container_and_reports_success() -> None:
     container = _FakeContainer(_FakeExecResult(exit_code=0, stdout="hello\n", stderr=""))
     tool = build_run_command_tool(container)
@@ -131,3 +149,24 @@ def test_run_command_timeout_error_message_reflects_the_effective_timeout() -> N
     tool = build_run_command_tool(container, timeout=120.0)
     result = ToolRegistry([tool]).dispatch("run_command", {"command": "x", "timeout": 5})
     assert "timed out after 5" in result.observation
+
+
+def test_run_command_emits_start_chunk_end_shell_events_when_streaming_is_available() -> None:
+    result = _FakeExecResult(exit_code=0, stdout="hello\n", stderr="")
+    container = _StreamingFakeContainer(result, [("stdout", "hello\n")])
+    events: list[dict[str, object]] = []
+    tool = build_run_command_tool(container, on_shell_event=events.append)
+
+    outcome = tool.run({"command": "echo hello"})
+
+    assert outcome.ok is True
+    assert events[0]["event"] == "start"
+    assert events[0]["command"] == "echo hello"
+    command_id = events[0]["command_id"]
+    assert events[1] == {
+        "event": "chunk",
+        "command_id": command_id,
+        "stream": "stdout",
+        "text": "hello\n",
+    }
+    assert events[2] == {"event": "end", "command_id": command_id, "exit_code": 0}

@@ -152,6 +152,12 @@ class _FakeContainer:
     def exec(self, command: object, *, timeout: float = 120.0) -> SimpleNamespace:
         return SimpleNamespace(exit_code=0, stdout="", stderr="", ok=True, timed_out=False)
 
+    def exec_streaming(
+        self, command: object, on_chunk, *, timeout: float = 120.0
+    ) -> SimpleNamespace:
+        on_chunk("stdout", "")
+        return SimpleNamespace(exit_code=0, stdout="", stderr="", ok=True, timed_out=False)
+
 
 def _record_finding_call() -> str:
     return json.dumps(
@@ -188,6 +194,14 @@ def _respond(call_index: int, prompt: str) -> str:
         return "ok"
     if "HISTORY (most recent last):" not in prompt:
         return _record_finding_call()  # the first real mission turn
+    return _finish_call()
+
+
+def _respond_run_command_then_finish(call_index: int, prompt: str) -> str:
+    if "MISSION:" not in prompt:
+        return "ok"
+    if "HISTORY (most recent last):" not in prompt:
+        return json.dumps({"tool": "run_command", "args": {"command": "ls"}})
     return _finish_call()
 
 
@@ -412,6 +426,32 @@ def test_scan_runner_emits_a_trace_summary_on_the_completed_event(
     assert "agent_step" in summary["spans"]
     assert summary["spans"]["agent_step"]["count"] >= 1
     assert summary["counters"].get("tool_calls", 0) > 0
+
+
+def test_scan_runner_emits_shell_events_for_a_real_run_command_call(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(scan_module, "docker_available", lambda: True)
+    monkeypatch.setattr(scan_module, "RuntimeContainer", _FakeContainer)
+    router = ModelRouter(
+        providers={"fake": _ScriptedProvider(_respond_run_command_then_finish)},
+        routes={"reasoning": ("fake",), "review": ("fake",)},
+        default_route=("fake",),
+    )
+    monkeypatch.setattr(scan_module, "build_router", lambda _settings: router)
+
+    event_log = EventLog()
+    config = ScanConfig(
+        mission="find a bug", target_specs=["example.com"], run_dir=tmp_path / "run"
+    )
+    ScanRunner(config, env={"ANTHROPIC_API_KEY": "sk-test"}, event_log=event_log).run()
+
+    _cursor, events = event_log.snapshot()
+    shell_events = [e for e in events if e.category == "shell"]
+    assert any(e.payload.get("event") == "start" for e in shell_events)
+    assert any(
+        e.payload.get("event") == "end" and e.payload.get("exit_code") == 0 for e in shell_events
+    )
 
 
 def test_scan_runner_enable_second_opinion_review_runs_a_second_review_call(

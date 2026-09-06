@@ -30,7 +30,7 @@ from collections import deque
 from dataclasses import dataclass
 from typing import Any, Literal
 
-EventCategory = Literal["status", "log", "agent", "finding", "steering", "chain"]
+EventCategory = Literal["status", "log", "agent", "finding", "steering", "chain", "shell"]
 
 MAX_EVENTS = 10_000
 

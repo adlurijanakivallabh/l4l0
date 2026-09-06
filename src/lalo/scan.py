@@ -885,7 +885,12 @@ class ScanRunner:
                 return result.summary, new_ids, result.stop_reason in _TERMINAL_SUCCESS
 
             tools: list[Tool] = [
-                build_run_command_tool(container),
+                build_run_command_tool(
+                    container,
+                    on_shell_event=lambda payload: self._emit(
+                        "shell", {"agent_id": self_id, **payload}
+                    ),
+                ),
                 build_http_tool(firer),
                 build_record_finding_tool(agent_graph),
                 *build_oast_tools(oast),

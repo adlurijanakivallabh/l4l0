@@ -12,6 +12,8 @@ rather than a bespoke per-tool client.
 
 from __future__ import annotations
 
+import uuid
+from collections.abc import Callable
 from typing import Protocol
 
 from ..agent.tools import FunctionTool, ToolResult
@@ -45,6 +47,7 @@ def build_run_command_tool(
     *,
     timeout: float = 120.0,
     max_timeout: float = _DEFAULT_MAX_TIMEOUT_S,
+    on_shell_event: Callable[[dict[str, object]], None] | None = None,
 ) -> FunctionTool:
     def _run(args: dict[str, object]) -> ToolResult:
         command = args.get("command")
@@ -57,7 +60,27 @@ def build_run_command_tool(
         )
         if isinstance(effective_timeout, str):
             return ToolResult(observation=f"error: {effective_timeout}", ok=False)
-        result = container.exec(command, timeout=effective_timeout)
+
+        if on_shell_event is not None and hasattr(container, "exec_streaming"):
+            command_id = uuid.uuid4().hex[:12]
+            on_shell_event({"event": "start", "command_id": command_id, "command": command})
+
+            def _on_chunk(stream: str, text: str) -> None:
+                on_shell_event(
+                    {"event": "chunk", "command_id": command_id, "stream": stream, "text": text}
+                )
+
+            result = container.exec_streaming(command, _on_chunk, timeout=effective_timeout)
+            on_shell_event(
+                {
+                    "event": "end",
+                    "command_id": command_id,
+                    "exit_code": getattr(result, "exit_code", None),
+                }
+            )
+        else:
+            result = container.exec(command, timeout=effective_timeout)
+
         exit_code = getattr(result, "exit_code", None)
         stdout = getattr(result, "stdout", "")
         stderr = getattr(result, "stderr", "")
