@@ -127,6 +127,23 @@ default). ``pricing_table`` (optional, ``None`` by default) closes the
 missing wire without changing that design; :class:`~lalo.scan.ScanRunner`
 threads its own ``ScanConfig.pricing_table`` through here the same way it
 already does for ``usage_path``.
+
+A second live VAmPI run (re-run to confirm a scoring-taxonomy fix)
+surfaced a different real gap: ``model batched N tool calls in one reply...
+only the first is acted on`` fired constantly - up to 26 calls in one reply
+- yet nothing in that turn's own OBSERVATION ever told the model this
+happened; :func:`~lalo.agent.tools._warn_if_batched` only ever logs it
+server-side, invisible to the agent itself. A model that assumes its whole
+batched plan executed can go on reasoning from state it never actually
+reached (e.g. treating "register, log in, fetch profile" as all having
+happened when only "register" did). :class:`~lalo.agent.tools.ToolCall`
+now carries ``dropped_calls``; when nonzero, this loop prepends an explicit
+note to the very observation the model reads next turn - the same
+information the log line already had, now reaching the one reader who
+actually needs to act on it. ``_PROTOCOL`` already says "Act ONE STEP AT A
+TIME" as forcefully as prompt text can; this doesn't replace that
+instruction, it's the missing feedback loop for when a model doesn't
+comply with it anyway.
 """
 
 from __future__ import annotations
@@ -684,6 +701,17 @@ class AgentLoop:
                     ok = bool(entry["ok"])
                     self._emit("tool_result", {"tool": call.name, "ok": ok})
 
+                if call.dropped_calls > 0:
+                    # The model itself must be told, in its own context, not
+                    # just an operator reading server logs (parse_tool_call's
+                    # own _warn_if_batched) - otherwise it has no way to know
+                    # its own assumed multi-step plan mostly never ran, and
+                    # can go on to reason from state it never actually reached.
+                    observation = (
+                        f"[note: this reply contained {call.dropped_calls} additional tool "
+                        "call(s) that were NOT executed - only ONE call runs per turn. Wait "
+                        "for this result before issuing your next call.]\n" + observation
+                    )
                 transcript.append(
                     {"tool": call.name, "args": call.args, "observation": observation}
                 )

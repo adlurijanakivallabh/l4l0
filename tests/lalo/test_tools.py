@@ -93,6 +93,20 @@ def test_parse_tool_call_batched_objects_returns_only_first() -> None:
     call = parse_tool_call(text)
     assert call is not None
     assert call.name == "first"
+    assert call.dropped_calls == 1
+
+
+def test_parse_tool_call_a_single_call_has_zero_dropped_calls() -> None:
+    call = parse_tool_call('{"tool": "solo", "args": {}}')
+    assert call is not None
+    assert call.dropped_calls == 0
+
+
+def test_parse_tool_call_counts_every_dropped_call_not_just_whether_any_were() -> None:
+    text = "".join(f'{{"tool": "t{i}", "args": {{}}}}' for i in range(5))
+    call = parse_tool_call(text)
+    assert call is not None
+    assert call.dropped_calls == 4
 
 
 def test_parse_tool_call_logs_when_a_batch_is_dropped() -> None:
@@ -119,6 +133,7 @@ def test_parse_tool_call_logs_when_a_fenced_batch_is_dropped() -> None:
         call = parse_tool_call(text)
     assert call is not None
     assert call.name == "first"
+    assert call.dropped_calls == 1
     mock_log.warning.assert_called_once()
 
 

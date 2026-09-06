@@ -53,6 +53,12 @@ class ToolResult:
 class ToolCall:
     name: str
     args: dict[str, object] = field(default_factory=dict)
+    # How many additional tool calls this same reply contained, past the
+    # first one actually acted on - 0 for the overwhelmingly common case of
+    # a well-formed single call. Threaded through so the caller (agent/loop.py)
+    # can tell the MODEL its batch was truncated, not just log it server-side
+    # where the agent itself never sees it (see parse_tool_call's own note).
+    dropped_calls: int = 0
 
 
 @runtime_checkable
@@ -114,10 +120,10 @@ def _try_load(blob: str) -> dict[str, object] | None:
     return obj if isinstance(obj, dict) else None
 
 
-def _to_call(obj: dict[str, object]) -> ToolCall:
+def _to_call(obj: dict[str, object], *, dropped_calls: int = 0) -> ToolCall:
     raw_args = obj.get("args", {})
     args = raw_args if isinstance(raw_args, dict) else {}
-    return ToolCall(name=str(obj["tool"]), args=args)
+    return ToolCall(name=str(obj["tool"]), args=args, dropped_calls=dropped_calls)
 
 
 def _warn_if_batched(count: int, where: str) -> None:
@@ -138,12 +144,14 @@ def parse_tool_call(text: str) -> ToolCall | None:
     the next action, rather than acting blind on a pre-planned batch. Every
     dropped call past the first is logged (not just silently discarded), so a
     model that keeps batching stays observable instead of an invisible pattern
-    only noticeable from its downstream effects.
+    only noticeable from its downstream effects; the returned :class:`ToolCall`'s
+    own ``dropped_calls`` additionally lets the caller tell the MODEL itself its
+    batch was truncated, not just an operator reading server logs.
     """
     fenced = [obj for blob in _FENCED.findall(text) if (obj := _try_load(blob)) and "tool" in obj]
     if fenced:
         _warn_if_batched(len(fenced), "fenced blocks")
-        return _to_call(fenced[0])
+        return _to_call(fenced[0], dropped_calls=len(fenced) - 1)
 
     found: list[dict[str, object]] = []
     idx = 0
@@ -163,4 +171,4 @@ def parse_tool_call(text: str) -> ToolCall | None:
     if not found:
         return None
     _warn_if_batched(len(found), "inline JSON objects")
-    return _to_call(found[0])
+    return _to_call(found[0], dropped_calls=len(found) - 1)

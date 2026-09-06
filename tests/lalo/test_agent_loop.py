@@ -130,6 +130,43 @@ def test_batched_tool_calls_only_first_is_acted_on() -> None:
     assert router.calls == 2
 
 
+def test_a_batched_reply_tells_the_model_its_extra_calls_were_dropped() -> None:
+    """Closes a real gap: a dropped batched call was previously only ever
+    logged server-side (parse_tool_call's own _warn_if_batched) - the model
+    itself had no way to know its assumed multi-step plan mostly never ran,
+    and could go on reasoning from state it never actually reached."""
+    tool, _ = _counting_tool("run_command")
+    registry = ToolRegistry([tool])
+    router = _scripted(
+        [
+            '{"tool": "run_command", "args": {"cmd": "ls"}} '
+            '{"tool": "run_command", "args": {"cmd": "whoami"}} '
+            '{"tool": "finish", "args": {"summary": "premature"}}',
+            '{"tool": "finish", "args": {"summary": "done"}}',
+        ]
+    )
+    loop = AgentLoop(router, registry, system_prompt="be an agent")  # type: ignore[arg-type]
+    loop.run("find something")
+    final_prompt = router.prompts[-1]
+    assert "2 additional tool" in final_prompt
+    assert "NOT executed" in final_prompt
+
+
+def test_a_non_batched_reply_carries_no_dropped_call_note() -> None:
+    tool, _ = _counting_tool("run_command")
+    registry = ToolRegistry([tool])
+    router = _scripted(
+        [
+            '{"tool": "run_command", "args": {"cmd": "ls"}}',
+            '{"tool": "finish", "args": {"summary": "done"}}',
+        ]
+    )
+    loop = AgentLoop(router, registry, system_prompt="be an agent")  # type: ignore[arg-type]
+    loop.run("find something")
+    final_prompt = router.prompts[-1]
+    assert "NOT executed" not in final_prompt
+
+
 def test_finish_summary_defaults_to_empty_even_as_explicit_json_null() -> None:
     registry = ToolRegistry([])
     router = _scripted(['{"tool": "finish", "args": {"summary": null}}'])
