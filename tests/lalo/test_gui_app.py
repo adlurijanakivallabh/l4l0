@@ -328,6 +328,30 @@ def test_scan_resume_run_id_rejects_a_dot_dot_run_id(
     assert response.status_code == 400
 
 
+def test_scan_resume_run_id_rejects_a_real_path_traversal_payload(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The actual bug a security review caught: unlike /runs/{run_id}/...,
+    resume_run_id is a JSON body string with no Starlette path-segment
+    protection against an embedded "/" - a bare ".", ".." check (the
+    original, insufficient fix) lets "../escaped_dir" straight through to
+    runs_dir / run_id, escaping runs_dir entirely. A real manifest placed
+    outside runs_dir proves the traversal would otherwise have worked."""
+    monkeypatch.setattr(app_module, "ScanRunner", _FakeScanRunner)
+    runs_dir = tmp_path / "runs"
+    runs_dir.mkdir()
+    escaped_dir = tmp_path / "escaped_dir"
+    escaped_dir.mkdir()
+    (escaped_dir / "resume_manifest.json").write_text(
+        '{"mission": "escaped the runs directory", "target_specs": ["evil.example.com"], '
+        '"egress_lock": false}',
+        encoding="utf-8",
+    )
+    client, _ = _client(runs_dir=runs_dir)
+    response = client.post("/scan", json={"resume_run_id": "../escaped_dir"})
+    assert response.status_code == 400
+
+
 def test_scan_resume_run_id_reads_the_locked_fields_from_the_manifest_not_the_request(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

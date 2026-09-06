@@ -77,12 +77,32 @@ comes back from that run's own :func:`~lalo.scan.read_resume_manifest`,
 never from the request body - a resume can't even attempt to diverge from
 what was originally authorized, on top of ``ScanRunner.run()``'s own
 existing ``ResumeConfigMismatchError`` backstop if it somehow did.
+
+A background security review of that same change caught a real path-
+traversal bug in it, fixed same session: ``/runs/{run_id}/events`` and
+``/runs/{run_id}/report/{fmt}`` take ``run_id`` as a URL PATH SEGMENT, so
+Starlette's own routing already rejects an embedded ``/`` before their
+``run_id in (".", "..")`` check ever runs - that check only ever needed to
+catch the residual single-segment ``..`` case. ``resume_run_id`` is a
+plain JSON body STRING with no such structural protection from the
+framework; the identical-looking check let ``"../../../../etc"`` straight
+through to ``runs_dir / run_id``, escaping ``runs_dir`` entirely and
+handing an attacker (or a malformed client) read access to any
+manifest-shaped JSON file reachable from that traversal, PLUS a
+subsequent scan's ``journal.jsonl``/``events.jsonl``/``graph.json``/reports
+all written wherever it pointed. ``_SAFE_RUN_ID`` closes it with a strict
+allowlist (matches this project's own real run-id shape,
+``uuid.uuid4().hex[:12]``) applied uniformly to all three call sites, not
+just the newly-vulnerable one - defense in depth for the two that were
+already structurally safe costs nothing and removes the asymmetry that
+made the bug easy to introduce in the first place.
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
+import re
 import threading
 import uuid
 from dataclasses import asdict
@@ -126,6 +146,13 @@ _log = get_logger("lalo.gui")
 STATIC_DIR = Path(__file__).parent / "static"
 _POLL_INTERVAL_S = 0.3
 _DEFAULT_RUNS_DIR = Path.home() / ".lalo" / "runs"
+# Every real run_id this project ever creates is uuid.uuid4().hex[:12] - a
+# strict allowlist (not a "/"/".."  blocklist) closes path traversal for
+# GOOD, including the shapes a blocklist alone would miss (an absolute
+# path, a URL-encoded segment, a value that isn't even routed as a URL
+# path segment at all - see build_app's own module docstring for the real
+# bug this closed).
+_SAFE_RUN_ID = re.compile(r"^[A-Za-z0-9_-]+$")
 
 
 class SteeringMessage(BaseModel):
@@ -223,7 +250,7 @@ def build_app(event_log: EventLog, *, runs_dir: Path | None = None) -> FastAPI:
 
         if request.resume_run_id:
             run_id = request.resume_run_id
-            if not run_id or run_id in (".", ".."):
+            if not _SAFE_RUN_ID.match(run_id):
                 return JSONResponse({"error": "invalid run_id"}, status_code=400)
             run_dir = runs_dir / run_id
             manifest = read_resume_manifest(run_dir)
@@ -320,9 +347,11 @@ def build_app(event_log: EventLog, *, runs_dir: Path | None = None) -> FastAPI:
     @app.get("/runs/{run_id}/events")
     def run_events(run_id: str) -> JSONResponse:
         # Starlette's default path converter already excludes "/" from a
-        # single {run_id} segment; this additionally rejects the one
-        # traversal shape still expressible as one segment.
-        if not run_id or run_id in (".", ".."):
+        # single {run_id} segment; _SAFE_RUN_ID is defense in depth here
+        # (this handler was never the vulnerable one - see the module
+        # docstring for which one was and why the allowlist applies to all
+        # three uniformly regardless).
+        if not _SAFE_RUN_ID.match(run_id):
             return JSONResponse({"error": "invalid run_id"}, status_code=400)
         run_path = runs_dir / run_id
         if not run_path.is_dir():
@@ -333,7 +362,7 @@ def build_app(event_log: EventLog, *, runs_dir: Path | None = None) -> FastAPI:
 
     @app.get("/runs/{run_id}/report/{fmt}", response_model=None)
     def run_report(run_id: str, fmt: str) -> FileResponse | JSONResponse:
-        if not run_id or run_id in (".", ".."):
+        if not _SAFE_RUN_ID.match(run_id):
             return JSONResponse({"error": "invalid run_id"}, status_code=400)
         format_info = _REPORT_FORMATS.get(fmt)
         if format_info is None:
