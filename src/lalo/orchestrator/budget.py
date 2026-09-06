@@ -21,7 +21,8 @@ the reason a resumed run must be constructed with its true cumulative spend.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import threading
+from dataclasses import dataclass, field
 from enum import StrEnum
 
 
@@ -78,6 +79,18 @@ class Budget:
     ceiling: int
     spent: int = 0
     subagent_reserve: float = _SUBAGENT_RESERVE
+    # Guards spend()'s read-modify-write: multi-lane concurrent sub-agents
+    # (agent/spawn.py's spawn_agents) share ONE Budget across every
+    # concurrently-running child's AgentLoop, each calling spend(1) after
+    # every one of its own steps - `self.spent += amount` is not atomic
+    # (LOAD/ADD/STORE bytecodes the GIL can interleave), so without this a
+    # race silently under-counts spend, making the budget more permissive
+    # than intended rather than raising a visible error. Excluded from
+    # equality/repr/init: a Lock has no meaningful value comparison and
+    # every real caller already constructs Budget via ceiling=.../spent=...
+    _lock: threading.Lock = field(
+        default_factory=threading.Lock, init=False, repr=False, compare=False
+    )
 
     def fraction(self) -> float:
         return self.spent / self.ceiling if self.ceiling else 1.0
@@ -87,7 +100,8 @@ class Budget:
         return _highest_crossed(self.fraction(), bands)
 
     def spend(self, amount: int = 1) -> None:
-        self.spent += amount
+        with self._lock:
+            self.spent += amount
 
     def remaining(self) -> int:
         return max(0, self.ceiling - self.spent)

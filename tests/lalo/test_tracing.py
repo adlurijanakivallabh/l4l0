@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import threading
+
 from lalo.observability import Tracer
 
 
@@ -32,3 +34,16 @@ def test_counter_accumulates() -> None:
     tracer.counter("requests_fired")
     tracer.counter("requests_fired", 4)
     assert tracer.counters["requests_fired"] == 5.0
+
+
+def test_counter_is_thread_safe_under_concurrent_increments() -> None:
+    """Without the lock, self.counters[name] = self.counters.get(name, 0.0)
+    + value from N threads loses increments (multi-lane concurrent
+    sub-agents share ONE Tracer)."""
+    tracer = Tracer()
+    threads = [threading.Thread(target=lambda: tracer.counter("tool_calls")) for _ in range(500)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert tracer.counters["tool_calls"] == 500.0

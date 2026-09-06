@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -35,6 +36,13 @@ class Tracer:
 
     spans: list[Span] = field(default_factory=list)
     counters: dict[str, float] = field(default_factory=dict)
+    # Guards counter()'s read-modify-write only - span()'s self.spans.append()
+    # is a single CPython list operation, already atomic under the GIL with
+    # no read-modify-write hazard. Excluded from equality/repr/init, same
+    # reasoning as Budget's own lock field.
+    _lock: threading.Lock = field(
+        default_factory=threading.Lock, init=False, repr=False, compare=False
+    )
 
     @contextmanager
     def span(self, name: str, **attributes: Any) -> Iterator[Span]:
@@ -49,7 +57,8 @@ class Tracer:
             )
 
     def counter(self, name: str, value: float = 1.0) -> None:
-        self.counters[name] = self.counters.get(name, 0.0) + value
+        with self._lock:
+            self.counters[name] = self.counters.get(name, 0.0) + value
 
 
 _DEFAULT_TRACER = Tracer()

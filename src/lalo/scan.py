@@ -60,13 +60,20 @@ change this without touching anything else here.
 from __future__ import annotations
 
 import json
+import threading
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from .agent.loop import AgentConfig, AgentLoop, AgentResult
-from .agent.spawn import AgentCoordinator, build_spawn_tools, isolate_for_child, merge_finding_nodes
+from .agent.spawn import (
+    AgentCoordinator,
+    build_parallel_spawn_tool,
+    build_spawn_tools,
+    isolate_for_child,
+    merge_finding_nodes,
+)
 from .agent.tools import Tool, ToolRegistry
 from .browser.session import BrowserSession
 from .browser.tool import build_browser_tool
@@ -333,6 +340,17 @@ class ScanRunner:
         self.event_log = event_log
         self._cancelled = False
         self._container: RuntimeContainer | None = None
+        # Multi-lane concurrent sub-agents (spawn_agents) run several
+        # children's own AgentLoops on real OS threads at once - _emit_lock
+        # serializes every _emit() call (the durable file append plus
+        # event_log.append(), both hit by every one of those children's own
+        # tool_call/tool_result/status events), and _graph_lock serializes
+        # every touch of a SHARED ReachabilityGraph (a child's own isolated
+        # copy is never touched concurrently by anything else - only the
+        # isolate_for_child() snapshot and the eventual merge_finding_nodes()
+        # call back onto a shared parent graph ever need this).
+        self._emit_lock = threading.Lock()
+        self._graph_lock = threading.Lock()
 
     def cancel(self) -> None:
         self._cancelled = True
@@ -350,13 +368,17 @@ class ScanRunner:
         # scan's own narration once the process exits or a later scan starts).
         # Same sensitivity class as journal.jsonl (tool_call args can carry a
         # session token, a login password) - same append_owner_only_line
-        # primitive, same 0600 permission model.
-        append_owner_only_line(
-            _events_path(self.config.run_dir),
-            json.dumps({"category": category, "payload": payload}, sort_keys=True, default=str),
-        )
-        if self.event_log is not None:
-            self.event_log.append(category, payload)
+        # primitive, same 0600 permission model. Locked: concurrently
+        # spawned children (spawn_agents) each call this from their own
+        # thread on every one of their own tool_call/tool_result/status
+        # events.
+        with self._emit_lock:
+            append_owner_only_line(
+                _events_path(self.config.run_dir),
+                json.dumps({"category": category, "payload": payload}, sort_keys=True, default=str),
+            )
+            if self.event_log is not None:
+                self.event_log.append(category, payload)
 
     def _on_agent_event(self, agent_id: str, event: str, payload: dict[str, object]) -> None:
         if event in ("tool_call", "tool_result"):
@@ -525,8 +547,16 @@ class ScanRunner:
 
         def _build_registry(agent_graph: ReachabilityGraph, self_id: str) -> ToolRegistry:
             def _run_child(child_id: str, _name: str, task: str) -> tuple[str, list[str], bool]:
-                before = set(agent_graph.nodes_of_kind(NodeKind.FINDING))
-                child_graph = isolate_for_child(agent_graph)
+                # Locked: spawn_agents can run several _run_child calls for
+                # SIBLING children on real OS threads at once. agent_graph is
+                # shared across them, so only the brief touches to it (the
+                # before-snapshot/isolate here, the merge at the end) are
+                # serialized - the long-running child_loop.run(task) below
+                # operates purely on child_graph, its own private deep copy,
+                # and executes fully unlocked/in parallel.
+                with self._graph_lock:
+                    before = set(agent_graph.nodes_of_kind(NodeKind.FINDING))
+                    child_graph = isolate_for_child(agent_graph)
                 child_registry = _build_registry(child_graph, child_id)
                 child_loop = AgentLoop(
                     router,
@@ -543,7 +573,8 @@ class ScanRunner:
                 result = child_loop.run(task)
                 after = set(child_graph.nodes_of_kind(NodeKind.FINDING))
                 new_ids = list(after - before)
-                merge_finding_nodes(agent_graph, child_graph, new_ids)
+                with self._graph_lock:
+                    merge_finding_nodes(agent_graph, child_graph, new_ids)
                 return result.summary, new_ids, result.stop_reason in _TERMINAL_SUCCESS
 
             tools: list[Tool] = [
@@ -567,7 +598,10 @@ class ScanRunner:
             spawn_tool, view_graph_tool = build_spawn_tools(
                 coordinator, _run_child, self_id=self_id
             )
-            tools += [spawn_tool, view_graph_tool]
+            parallel_spawn_tool = build_parallel_spawn_tool(
+                coordinator, _run_child, self_id=self_id
+            )
+            tools += [spawn_tool, parallel_spawn_tool, view_graph_tool]
             return ToolRegistry(tools)
 
         self._emit("status", {"event": "scan_started", "targets": self.config.target_specs})

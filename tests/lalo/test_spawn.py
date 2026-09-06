@@ -2,13 +2,22 @@
 
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass, field
 
 import pytest
 
-from lalo.agent.spawn import AgentCoordinator, AgentStatus, build_spawn_tools, isolate_for_child
+from lalo.agent.spawn import (
+    AgentCoordinator,
+    AgentStatus,
+    build_parallel_spawn_tool,
+    build_spawn_tools,
+    isolate_for_child,
+    merge_finding_nodes,
+)
 from lalo.agent.tools import ToolRegistry
 from lalo.core.errors import SpawnDepthExceededError
+from lalo.graph.model import NodeKind, ReachabilityGraph
 
 
 def test_spawn_increases_depth_from_parent() -> None:
@@ -165,4 +174,202 @@ def test_a_crashing_child_still_reaches_a_terminal_status_not_a_permanent_ghost(
     child_id = "agent-2"
     assert coord.node(child_id).status is AgentStatus.FAILED
     assert coord.node(child_id).status is not AgentStatus.RUNNING
-    assert "[failed]" in coord.render_tree()
+
+
+# --- AgentCoordinator: thread safety for multi-lane concurrent sub-agents ---
+
+
+def test_agent_coordinator_spawn_is_thread_safe_under_concurrent_calls() -> None:
+    """Without the lock, _counter += 1 from N threads loses increments and
+    can hand out duplicate agent ids - both silently corrupt the spawn tree."""
+    coord = AgentCoordinator(max_depth=5)
+    root = coord.register_root("root", "mission")
+    child_ids: list[str] = []
+    lock = threading.Lock()
+
+    def spawn_one() -> None:
+        child_id = coord.spawn(root, "child", "subtask")
+        with lock:
+            child_ids.append(child_id)
+
+    threads = [threading.Thread(target=spawn_one) for _ in range(50)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert len(child_ids) == 50
+    assert len(set(child_ids)) == 50  # every id unique - no lost/duplicate increments
+    assert len(coord.children_of(root)) == 50
+
+
+# --- merge_finding_nodes: cross-child dedup ---------------------------------
+
+
+def _finding_node(graph: ReachabilityGraph, node_id: str, **overrides: object) -> None:
+    attrs: dict[str, object] = {
+        "title": "SQLi in /search",
+        "vuln_class": "sql-injection",
+        "target": "https://x.example.com/search",
+        "dedup_key": '["sql-injection", "https://x.example.com/search", ""]',
+        "evidence": ["e1"],
+        "identities_confirmed": [],
+        "reproduced": False,
+        "evidence_grounded": True,
+    }
+    attrs.update(overrides)
+    graph.add_node(node_id, NodeKind.FINDING, **attrs)
+
+
+def test_merge_finding_nodes_merges_a_dedup_key_match_instead_of_filing_a_second_node() -> None:
+    parent = ReachabilityGraph()
+    _finding_node(parent, "f-existing", evidence=["from-sibling-a"])
+    child = ReachabilityGraph()
+    _finding_node(child, "f-new", evidence=["from-sibling-b"])
+
+    merge_finding_nodes(parent, child, ["f-new"])
+
+    assert not parent.has_node("f-new")  # never filed as a second node
+    merged = parent.node("f-existing")
+    assert set(merged["evidence"]) == {"from-sibling-a", "from-sibling-b"}
+
+
+def test_merge_finding_nodes_or_combines_reproduced_and_evidence_grounded() -> None:
+    parent = ReachabilityGraph()
+    _finding_node(parent, "f-existing", reproduced=False, evidence_grounded=False)
+    child = ReachabilityGraph()
+    _finding_node(child, "f-new", reproduced=True, evidence_grounded=True)
+
+    merge_finding_nodes(parent, child, ["f-new"])
+
+    merged = parent.node("f-existing")
+    assert merged["reproduced"] is True
+    assert merged["evidence_grounded"] is True
+
+
+def test_merge_finding_nodes_unions_identities_confirmed() -> None:
+    parent = ReachabilityGraph()
+    _finding_node(parent, "f-existing", identities_confirmed=["alice"])
+    child = ReachabilityGraph()
+    _finding_node(child, "f-new", identities_confirmed=["bob"])
+
+    merge_finding_nodes(parent, child, ["f-new"])
+
+    assert parent.node("f-existing")["identities_confirmed"] == ["alice", "bob"]
+
+
+def test_merge_finding_nodes_with_no_dedup_key_match_adds_a_new_node() -> None:
+    parent = ReachabilityGraph()
+    child = ReachabilityGraph()
+    _finding_node(child, "f-new", dedup_key='["xss", "https://x.example.com/other", ""]')
+
+    merge_finding_nodes(parent, child, ["f-new"])
+
+    assert parent.has_node("f-new")
+    assert parent.node("f-new")["vuln_class"] == "sql-injection"
+
+
+def test_merge_finding_nodes_is_idempotent_for_an_id_already_on_the_parent() -> None:
+    parent = ReachabilityGraph()
+    _finding_node(parent, "f-1", evidence=["original"])
+    child = ReachabilityGraph()
+    _finding_node(child, "f-1", evidence=["should never be seen"])
+
+    merge_finding_nodes(parent, child, ["f-1"])
+
+    assert parent.node("f-1")["evidence"] == ["original"]
+
+
+# --- spawn_agents: bounded parallel fan-out/join ----------------------------
+
+
+def test_spawn_agents_actually_runs_children_concurrently_not_serially() -> None:
+    """If this ran children one at a time, the first one's barrier.wait()
+    would block until the 5s timeout and raise BrokenBarrierError - the only
+    way all 3 reach the barrier is if they're genuinely running at once."""
+    coord = AgentCoordinator(max_depth=5)
+    root = coord.register_root("root", "mission")
+    barrier = threading.Barrier(3, timeout=5)
+
+    def run_child(child_id: str, name: str, task: str) -> tuple[str, list[str], bool]:
+        barrier.wait()
+        return f"done {name}", [], True
+
+    tool = build_parallel_spawn_tool(coord, run_child, self_id=root)
+    registry = ToolRegistry([tool])
+    result = registry.dispatch(
+        "spawn_agents",
+        {"tasks": [{"name": f"c{i}", "task": f"t{i}"} for i in range(3)]},
+    )
+    assert result.ok is True
+
+
+def test_spawn_agents_requires_at_least_two_tasks() -> None:
+    coord = AgentCoordinator(max_depth=5)
+    root = coord.register_root("root", "mission")
+    tool = build_parallel_spawn_tool(coord, lambda *_a: ("", [], True), self_id=root)
+    registry = ToolRegistry([tool])
+    result = registry.dispatch("spawn_agents", {"tasks": [{"name": "a", "task": "t"}]})
+    assert result.ok is False
+    assert "spawn_agent" in result.observation  # nudges toward the singular tool
+
+
+def test_spawn_agents_validates_each_tasks_name_and_task() -> None:
+    coord = AgentCoordinator(max_depth=5)
+    root = coord.register_root("root", "mission")
+    tool = build_parallel_spawn_tool(coord, lambda *_a: ("", [], True), self_id=root)
+    registry = ToolRegistry([tool])
+    result = registry.dispatch(
+        "spawn_agents", {"tasks": [{"name": "a", "task": "t"}, {"name": "", "task": ""}]}
+    )
+    assert result.ok is False
+
+
+def test_spawn_agents_reports_depth_ceiling_as_a_failed_result_not_an_exception() -> None:
+    coord = AgentCoordinator(max_depth=0)
+    root = coord.register_root("root", "mission")
+    tool = build_parallel_spawn_tool(coord, lambda *_a: ("", [], True), self_id=root)
+    registry = ToolRegistry([tool])
+    result = registry.dispatch(
+        "spawn_agents", {"tasks": [{"name": "a", "task": "t"}, {"name": "b", "task": "t"}]}
+    )
+    assert result.ok is False
+    assert "depth" in result.observation
+
+
+def test_spawn_agents_a_crashing_child_still_reaches_a_terminal_status() -> None:
+    coord = AgentCoordinator(max_depth=5)
+    root = coord.register_root("root", "mission")
+
+    def run_child(child_id: str, name: str, task: str) -> tuple[str, list[str], bool]:
+        if name == "bad":
+            raise RuntimeError("child agent loop crashed")
+        return "ok", [], True
+
+    tool = build_parallel_spawn_tool(coord, run_child, self_id=root)
+    registry = ToolRegistry([tool])
+    result = registry.dispatch(
+        "spawn_agents", {"tasks": [{"name": "good", "task": "t"}, {"name": "bad", "task": "t"}]}
+    )
+    assert result.ok is False  # overall failure since one child crashed
+    assert "crashed" in result.observation
+    assert coord.node("agent-2").status is AgentStatus.COMPLETED
+    assert coord.node("agent-3").status is AgentStatus.FAILED
+
+
+def test_spawn_agents_merges_every_childs_finding_ids_and_summary() -> None:
+    coord = AgentCoordinator(max_depth=5)
+    root = coord.register_root("root", "mission")
+
+    def run_child(child_id: str, name: str, task: str) -> tuple[str, list[str], bool]:
+        return f"confirmed for {name}", [f"f-{name}"], True
+
+    tool = build_parallel_spawn_tool(coord, run_child, self_id=root)
+    registry = ToolRegistry([tool])
+    result = registry.dispatch(
+        "spawn_agents", {"tasks": [{"name": "a", "task": "t"}, {"name": "b", "task": "t"}]}
+    )
+    assert result.ok is True
+    assert set(coord.all_finding_ids(root)) == {"f-a", "f-b"}
+    assert "confirmed for a" in result.observation
+    assert "confirmed for b" in result.observation

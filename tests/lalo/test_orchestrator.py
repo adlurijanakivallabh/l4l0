@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import stat
+import threading
 
 import pytest
 
@@ -150,6 +151,20 @@ def test_resume_restores_true_cumulative_spend_not_zero() -> None:
     resumed = Budget(ceiling=100, spent=persisted_spend)
     with pytest.raises(SubagentReserveExceededError):
         resumed.check_subagent()  # immediately over reserve, exactly as before the crash
+
+
+def test_budget_spend_is_thread_safe_under_concurrent_calls() -> None:
+    """Without the lock, self.spent += amount from N threads loses
+    increments (multi-lane concurrent sub-agents share ONE Budget) - the
+    budget would silently become MORE permissive than configured instead of
+    raising a visible error once genuinely exhausted."""
+    budget = Budget(ceiling=100_000)
+    threads = [threading.Thread(target=lambda: budget.spend(1)) for _ in range(500)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert budget.spent == 500
 
 
 def test_scheduler_due() -> None:

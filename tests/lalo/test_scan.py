@@ -181,6 +181,85 @@ def _respond(call_index: int, prompt: str) -> str:
     return _finish_call()
 
 
+def _record_finding_call_for(target: str) -> str:
+    return json.dumps(
+        {
+            "tool": "record_finding",
+            "args": {
+                "title": f"SQLi on {target}",
+                "description": "unsanitized query param",
+                "vuln_class": "sql-injection",
+                "target": target,
+                "evidence": ["syntax error near 'OR'"],
+                "evidence_excerpt": "syntax error near 'OR'",
+                "counterevidence": "none found",
+                "severity_change_conditions": "would drop if input were parameterized",
+                "remediation": "Apply input validation and least-privilege fixes.",
+                "cvss_breakdown": _HIGH_CVSS,
+            },
+        }
+    )
+
+
+def _spawn_agents_call() -> str:
+    return json.dumps(
+        {
+            "tool": "spawn_agents",
+            "args": {
+                "tasks": [
+                    {"name": "Child A", "task": "CHILD-A-TASK: test host a.example.com"},
+                    {"name": "Child B", "task": "CHILD-B-TASK: test host b.example.com"},
+                ]
+            },
+        }
+    )
+
+
+def _respond_with_a_parallel_spawn(call_index: int, prompt: str) -> str:
+    if "FINDING TO REVIEW" in prompt:
+        return '{"verdict": "confirmed", "proof_level": "L3", "reasoning": "grounded"}'
+    if "MISSION:" not in prompt:
+        return "ok"  # the preflight verify_router() health-check call
+    if "CHILD-A-TASK" in prompt:
+        if "HISTORY (most recent last):" not in prompt:
+            return _record_finding_call_for("https://a.example.com/search")
+        return _finish_call()
+    if "CHILD-B-TASK" in prompt:
+        if "HISTORY (most recent last):" not in prompt:
+            return _record_finding_call_for("https://b.example.com/search")
+        return _finish_call()
+    # the root's own mission turns
+    if "HISTORY (most recent last):" not in prompt:
+        return _spawn_agents_call()
+    return _finish_call()
+
+
+def test_scan_runner_dispatches_spawn_agents_and_merges_both_childrens_findings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(scan_module, "docker_available", lambda: True)
+    monkeypatch.setattr(scan_module, "RuntimeContainer", _FakeContainer)
+    router = ModelRouter(
+        providers={"fake": _ScriptedProvider(_respond_with_a_parallel_spawn)},
+        routes={"reasoning": ("fake",), "review": ("fake",)},
+        default_route=("fake",),
+    )
+    monkeypatch.setattr(scan_module, "build_router", lambda _settings: router)
+
+    config = ScanConfig(
+        mission="find bugs across both hosts",
+        target_specs=["a.example.com", "b.example.com"],
+        run_dir=tmp_path / "run",
+    )
+    outcome = ScanRunner(config, env={"ANTHROPIC_API_KEY": "sk-test"}).run()
+
+    assert outcome.status is RunStatus.COMPLETED
+    graph = ReachabilityGraph.load(tmp_path / "run" / "graph.json")
+    finding_ids = graph.nodes_of_kind(NodeKind.FINDING)
+    targets = {graph.node(fid).get("target") for fid in finding_ids}
+    assert targets == {"https://a.example.com/search", "https://b.example.com/search"}
+
+
 def test_scan_runner_wires_every_phase_into_one_completed_run(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
