@@ -379,6 +379,48 @@ def test_repeating_tool_call_aborted_steps_reports_real_turn_count() -> None:
     assert result.steps == 3  # 3 real turns happened before the abort
 
 
+def test_agent_step_span_is_tagged_and_split_into_llm_and_tool_dispatch_spans() -> None:
+    """agent_step used to wrap the LLM completion call and the tool-dispatch
+    call together, so "slow because the LLM took 40s" could never be told
+    apart from "slow because a tool took 40s". This confirms the split:
+    llm_completion and tool_dispatch are separate, agent_id-tagged spans
+    nested inside (not siblings of) the outer agent_step span, and a
+    per-tool-name counter tracks dispatches alongside the existing
+    aggregate."""
+    tool, _ = _counting_tool("probe")
+    registry = ToolRegistry([tool])
+    router = _scripted(
+        ['{"tool": "probe", "args": {"x": 1}}', '{"tool": "finish", "args": {"summary": "done"}}']
+    )
+    loop = AgentLoop(
+        router,  # type: ignore[arg-type]
+        registry,
+        system_prompt="",
+        agent_id="agent-7",
+    )
+    loop.run("mission")
+
+    names_in_order = [s.name for s in loop.tracer.spans]
+    step_spans = [s for s in loop.tracer.spans if s.name == "agent_step"]
+    llm_spans = [s for s in loop.tracer.spans if s.name == "llm_completion"]
+    dispatch_spans = [s for s in loop.tracer.spans if s.name == "tool_dispatch"]
+
+    assert step_spans and all(s.attributes["agent_id"] == "agent-7" for s in step_spans)
+    assert llm_spans and all(s.attributes["agent_id"] == "agent-7" for s in llm_spans)
+    assert dispatch_spans and all(s.attributes["agent_id"] == "agent-7" for s in dispatch_spans)
+    assert dispatch_spans[0].attributes["tool"] == "probe"
+
+    # A nested span closes (and so appends to the flat spans list) before its
+    # enclosing agent_step span does - proves real nesting, not two spans
+    # merely emitted back-to-back as siblings.
+    first_agent_step_idx = names_in_order.index("agent_step")
+    assert names_in_order.index("llm_completion") < first_agent_step_idx
+    assert names_in_order.index("tool_dispatch") < first_agent_step_idx
+
+    assert loop.tracer.counters["tool_calls"] == 1  # "finish" never reaches the counter
+    assert loop.tracer.counters["tool_calls:probe"] == 1
+
+
 def test_two_agent_loops_do_not_share_a_tracer_by_default() -> None:
     tool, _ = _counting_tool("probe")
     router1 = _scripted(['{"tool": "probe", "args": {}}', '{"tool": "finish", "args": {}}'])

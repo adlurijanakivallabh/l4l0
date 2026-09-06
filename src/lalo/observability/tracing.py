@@ -22,6 +22,12 @@ class Span:
     start: float
     end: float | None = None
     attributes: dict[str, Any] = field(default_factory=dict)
+    # Wall-clock (time.time()) creation timestamp - start/end above stay
+    # time.monotonic()-based (correct for duration math, meaningless across a
+    # process restart); this is the separate additive field for "when did
+    # this actually happen" in real calendar time, so a span can be
+    # correlated with a journaled Checkpoint or a GUI Event's own `ts`.
+    wall_start: float = field(default_factory=time.time)
 
     @property
     def duration_ms(self) -> float | None:

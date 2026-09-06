@@ -5,12 +5,14 @@ from __future__ import annotations
 import os
 import stat
 import threading
+import time
 
 import pytest
 
 from lalo.orchestrator import (
     Budget,
     BudgetBand,
+    Checkpoint,
     DurableJournal,
     RunStatus,
     ScanSchedule,
@@ -108,6 +110,17 @@ def test_torn_last_line_is_ignored(tmp_path) -> None:
     reloaded = DurableJournal(path)
     assert reloaded.has("a")
     assert not reloaded.has("b")
+
+
+def test_checkpoint_carries_a_wall_clock_timestamp() -> None:
+    # Checkpoint is a standalone dataclass -- DurableJournal itself stores raw
+    # (key -> result) pairs internally and never constructs one (confirmed:
+    # no `Checkpoint(` call site anywhere in src/lalo), so this exercises the
+    # dataclass's own default directly rather than via DurableJournal.get().
+    before = time.time()
+    checkpoint = Checkpoint(key="k", result={"ok": True})
+    after = time.time()
+    assert before <= checkpoint.ts <= after
 
 
 def test_highest_band_wins_not_first() -> None:

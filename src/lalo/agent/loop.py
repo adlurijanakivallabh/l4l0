@@ -627,10 +627,11 @@ class AgentLoop:
                 self._emit("budget_exhausted", {"step": step})
                 return AgentResult(stop_reason, step, transcript)
 
-            with self.tracer.span("agent_step", step=step):
+            with self.tracer.span("agent_step", step=step, agent_id=self.agent_id):
                 directive = self._budget_directive()
                 prompt = self._render_prompt(mission, transcript, directive)
-                response = self._complete(prompt)
+                with self.tracer.span("llm_completion", step=step, agent_id=self.agent_id):
+                    response = self._complete(prompt)
                 if response is None:
                     response = self._retry_through_provider_outage(prompt)
                 if response is None:
@@ -693,10 +694,13 @@ class AgentLoop:
                             "ok": result.ok,
                         }
 
-                    if journal is not None:
-                        entry = journal.run_once(f"{agent_key}:{step}", _dispatch_once)
-                    else:
-                        entry = _dispatch_once()
+                    with self.tracer.span(
+                        "tool_dispatch", step=step, agent_id=self.agent_id, tool=call.name
+                    ):
+                        if journal is not None:
+                            entry = journal.run_once(f"{agent_key}:{step}", _dispatch_once)
+                        else:
+                            entry = _dispatch_once()
                     observation = str(entry["observation"])
                     ok = bool(entry["ok"])
                     self._emit("tool_result", {"tool": call.name, "ok": ok})
@@ -716,6 +720,7 @@ class AgentLoop:
                     {"tool": call.name, "args": call.args, "observation": observation}
                 )
                 self.tracer.counter("tool_calls")
+                self.tracer.counter(f"tool_calls:{call.name}")
                 if self.budget is not None:
                     self.budget.spend(1)
 

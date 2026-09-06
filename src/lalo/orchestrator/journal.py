@@ -38,8 +38,9 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -50,6 +51,7 @@ from ..core.atomic_io import append_owner_only_line
 class Checkpoint:
     key: str
     result: Any
+    ts: float = field(default_factory=time.time)
 
 
 class DurableJournal:

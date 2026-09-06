@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+import time
 
 from lalo.observability import Tracer
 
@@ -47,3 +48,17 @@ def test_counter_is_thread_safe_under_concurrent_increments() -> None:
     for t in threads:
         t.join()
     assert tracer.counters["tool_calls"] == 500.0
+
+
+def test_span_wall_start_is_a_real_wall_clock_time() -> None:
+    """start/end stay time.monotonic()-based (correct for duration math, and
+    meaningless across process restarts) - wall_start is the separate,
+    additive field for "when did this actually happen" in real calendar
+    time, e.g. to correlate a span with a journaled checkpoint or a GUI
+    event's own `ts`."""
+    tracer = Tracer()
+    before = time.time()
+    with tracer.span("x") as span:
+        pass
+    after = time.time()
+    assert before <= span.wall_start <= after

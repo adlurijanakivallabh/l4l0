@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import time
+
 import pytest
 
 from lalo.gui.events import EventLog
@@ -130,3 +132,11 @@ def test_eviction_cleans_up_change_cursor_bookkeeping() -> None:
     assert log.update(first.id, {"i": 99}) is None
     _cursor, events = log.snapshot()
     assert len(events) == 1
+
+
+def test_event_carries_a_wall_clock_timestamp() -> None:
+    before = time.time()
+    log = EventLog()
+    event = log.append("status", {"event": "x"})
+    after = time.time()
+    assert before <= event.ts <= after

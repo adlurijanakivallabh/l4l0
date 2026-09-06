@@ -26,8 +26,9 @@ already fully solved elsewhere.
 from __future__ import annotations
 
 import itertools
+import time
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Literal
 
 EventCategory = Literal["status", "log", "agent", "finding", "steering", "chain", "shell"]
@@ -41,6 +42,7 @@ class Event:
     category: EventCategory
     payload: dict[str, Any]
     version: int = 1
+    ts: float = field(default_factory=time.time)
 
 
 class EventLog:
