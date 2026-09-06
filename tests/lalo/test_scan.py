@@ -270,6 +270,87 @@ def test_scan_runner_dispatches_spawn_agents_and_merges_both_childrens_findings(
     assert targets == {"https://a.example.com/search", "https://b.example.com/search"}
 
 
+_LEAKED_AWS_KEY = "AKIAABCDEFGHIJKLMNOP"
+
+
+def _record_finding_call_with_a_secret() -> str:
+    return json.dumps(
+        {
+            "tool": "record_finding",
+            "args": {
+                "title": "Leaked AWS key via SSRF",
+                "description": "metadata endpoint reachable",
+                "vuln_class": "ssrf",
+                "target": "https://example.com/fetch",
+                "evidence": [f"response body: aws_key={_LEAKED_AWS_KEY}"],
+                "evidence_excerpt": f"aws_key={_LEAKED_AWS_KEY}",
+                "counterevidence": "none found",
+                "severity_change_conditions": "none",
+                "remediation": "rotate the key and block metadata access",
+                "cvss_breakdown": _HIGH_CVSS,
+            },
+        }
+    )
+
+
+def _respond_secret_finding(call_index: int, prompt: str) -> str:
+    if "MISSION:" not in prompt:
+        return "ok"
+    if "HISTORY (most recent last):" not in prompt:
+        return _record_finding_call_with_a_secret()
+    return _finish_call()
+
+
+def test_scan_runner_leaves_a_captured_secret_unredacted_by_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Closes an explicit, informed operator request: ScanConfig.redact_findings
+    defaults to False, so a captured secret appears verbatim in the
+    delivered report - not the old, conservative default."""
+    monkeypatch.setattr(scan_module, "docker_available", lambda: True)
+    monkeypatch.setattr(scan_module, "RuntimeContainer", _FakeContainer)
+    router = ModelRouter(
+        providers={"fake": _ScriptedProvider(_respond_secret_finding)},
+        routes={"reasoning": ("fake",), "review": ("fake",)},
+        default_route=("fake",),
+    )
+    monkeypatch.setattr(scan_module, "build_router", lambda _settings: router)
+
+    config = ScanConfig(
+        mission="find a bug", target_specs=["example.com"], run_dir=tmp_path / "run"
+    )
+    outcome = ScanRunner(config, env={"ANTHROPIC_API_KEY": "sk-test"}).run()
+
+    report_json = json.loads(outcome.report_paths["json"].read_text())
+    evidence = report_json["findings"][0]["evidence"][0]
+    assert _LEAKED_AWS_KEY in evidence
+
+
+def test_scan_runner_still_redacts_when_redact_findings_is_explicitly_true(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(scan_module, "docker_available", lambda: True)
+    monkeypatch.setattr(scan_module, "RuntimeContainer", _FakeContainer)
+    router = ModelRouter(
+        providers={"fake": _ScriptedProvider(_respond_secret_finding)},
+        routes={"reasoning": ("fake",), "review": ("fake",)},
+        default_route=("fake",),
+    )
+    monkeypatch.setattr(scan_module, "build_router", lambda _settings: router)
+
+    config = ScanConfig(
+        mission="find a bug",
+        target_specs=["example.com"],
+        run_dir=tmp_path / "run",
+        redact_findings=True,
+    )
+    outcome = ScanRunner(config, env={"ANTHROPIC_API_KEY": "sk-test"}).run()
+
+    report_json = json.loads(outcome.report_paths["json"].read_text())
+    evidence = report_json["findings"][0]["evidence"][0]
+    assert _LEAKED_AWS_KEY not in evidence
+
+
 def test_scan_runner_wires_every_phase_into_one_completed_run(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

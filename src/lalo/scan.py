@@ -92,6 +92,19 @@ run's own usage delta (never the ``usage_path`` ledger's cumulative total,
 which can span many scans) and threaded into :func:`~lalo.report.writer.
 write_report` closes the second.
 
+**Redaction is now opt-in, not opt-out** (an explicit, informed operator
+request, not a project-wide "secrets don't matter" stance): ``core/
+redaction.py``'s ``redact()`` used to run unconditionally for every log
+line and every submitted finding field. ``ScanConfig.redact_findings``
+(default ``False``) is set once, first thing in :meth:`run`, via
+``set_redaction_enabled`` - captured credentials now appear verbatim in
+the delivered report and logs unless an operator explicitly opts back
+into the old, conservative behavior. This does not touch CLAUDE.md's own
+confirmation-authority boundary, which was already maximally open before
+this change (nothing has ever gated or removed a finding); it only
+changes whether a literal secret STRING inside otherwise-complete
+evidence gets masked in the delivered artifact.
+
 **Review timing** (a deliberate, simple choice, not a hidden requirement):
 CLAUDE.md's two non-blocking confidence layers run over every finding once
 the primary agent (and every spawned descendant) has finished, not
@@ -136,6 +149,7 @@ from .core.errors import (
 from .core.model_router import ModelRouter
 from .core.pricing import PricingTable
 from .core.providers import build_router, verify_router
+from .core.redaction import set_redaction_enabled
 from .core.usage import load_usage
 from .execution.firer import HttpFirer, probe_reachability
 from .execution.scope import ScopeGuard
@@ -256,6 +270,14 @@ class ScanConfig:
     # agreement, never a penalty on disagreement. An operational cost/
     # thoroughness tradeoff, not a locked scope/safety field.
     enable_second_opinion_review: bool = False
+    # False (the default) means secrets are NOT redacted - an explicit,
+    # informed operator choice (see core/redaction.py's own
+    # set_redaction_enabled docstring for the full reasoning): captured
+    # credentials appear verbatim in the delivered report and in logs.
+    # Unlike egress_lock/fail_on_unreachable_targets above, this default is
+    # the PERMISSIVE one on purpose - an operator who wants the older,
+    # conservative report-hygiene behavior back sets this True.
+    redact_findings: bool = False
 
 
 @dataclass
@@ -678,6 +700,12 @@ class ScanRunner:
             graph.save(graph_path)
 
     def run(self) -> ScanOutcome:
+        # Set before anything else in this run can possibly log or record a
+        # finding - the redaction toggle is process-wide (see
+        # core/redaction.py's own set_redaction_enabled docstring), so it
+        # must be in effect from the very first line this run could emit,
+        # not applied partway through.
+        set_redaction_enabled(self.config.redact_findings)
         # Started here, not in __init__: a session's wall-clock budget
         # should measure from when the scan actually begins running, not
         # from whenever the ScanRunner object happened to be constructed.

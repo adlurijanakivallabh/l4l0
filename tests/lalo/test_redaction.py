@@ -10,6 +10,7 @@ from lalo.core.redaction import (
     redact,
     safe_error_from_code,
     safe_target_url,
+    set_redaction_enabled,
     shared_redactor,
 )
 
@@ -106,3 +107,21 @@ def test_safe_error_from_code_is_fixed_table() -> None:
 def test_normalize_semantic_label() -> None:
     assert normalize_semantic_label("  SQL Injection (blind) ") == "sql_injection_blind"
     assert normalize_semantic_label("!!!") == "unlabeled"
+
+
+# --- set_redaction_enabled: an explicit, informed operator opt-out ----------
+# Reset after every test suite-wide via conftest.py's own autouse fixture,
+# not just within this file - see that fixture's docstring for why.
+
+
+def test_set_redaction_enabled_false_makes_redact_a_passthrough() -> None:
+    text = "Authorization: Bearer eyJhbGciOiJIUzI1NiiiXX.eyJzdWIiOiJhYmM1.sig9value00"
+    set_redaction_enabled(False)
+    assert redact(text) == text
+
+
+def test_set_redaction_enabled_true_restores_normal_redaction() -> None:
+    text = "Authorization: Bearer eyJhbGciOiJIUzI1NiiiXX.eyJzdWIiOiJhYmM1.sig9value00"
+    set_redaction_enabled(False)
+    set_redaction_enabled(True)
+    assert REDACTION_PLACEHOLDER in redact(text)

@@ -182,6 +182,25 @@ class SecretRedactor:
 # (e.g. from config loading) so every call site's `redact()` benefits immediately.
 _SHARED = SecretRedactor()
 
+# True (the default) preserves every existing call site's behavior exactly.
+# An explicit, informed operator choice — not a project-wide "secrets don't
+# matter" stance — to disable it entirely: some engagements want captured
+# credentials to appear verbatim in the delivered report/logs (e.g. a
+# personal/lab run where the operator IS the only reader and redaction just
+# means re-deriving a value they already have from the raw evidence blob);
+# others (a client-facing report that gets stored/shared more widely than a
+# raw scan log ever would) want it kept on. `set_redaction_enabled` is the
+# one process-wide switch every current caller of `redact()` already routes
+# through (`core/logging.py`'s formatter, every `findings/tool.py` field) -
+# `ScanRunner` sets it once per run from `ScanConfig.redact_findings`.
+_ENABLED = True
+
+
+def set_redaction_enabled(enabled: bool) -> None:
+    """Turn redaction on/off process-wide for every existing `redact()` caller."""
+    global _ENABLED
+    _ENABLED = enabled
+
 
 def shared_redactor() -> SecretRedactor:
     """Return the one shared redactor instance — register secrets onto this."""
@@ -189,7 +208,10 @@ def shared_redactor() -> SecretRedactor:
 
 
 def redact(text: str) -> str:
-    """Redact ``text`` through the shared instance. The universal entry point."""
+    """Redact ``text`` through the shared instance, unless disabled via
+    :func:`set_redaction_enabled` - the universal entry point."""
+    if not _ENABLED:
+        return text
     return _SHARED.redact(text)
 
 
