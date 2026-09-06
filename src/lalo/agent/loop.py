@@ -169,6 +169,29 @@ def _call_signature(name: str, args: dict[str, object]) -> str:
     return name + "|" + json.dumps(args, sort_keys=True, default=str)
 
 
+def _truncate_observation(text: str, max_chars: int) -> str:
+    """Cap ``text`` at ``max_chars``, keeping head AND tail with a clear marker.
+
+    Phase 6, cai pass: informed by a reference agent's own worker-output
+    truncation (read in full — ``_truncate_worker_output``), adopted here at
+    the one place every tool observation, spawned-child summaries included,
+    already funnels through. A naive ``text[:max_chars]`` head-only slice (the
+    prior behavior) does two things wrong at once: it discards exactly the
+    part of a long observation most likely to carry the actual conclusion (a
+    child agent's closing verdict, a scan tool's final result line tends to
+    come last, not first), and it gives the model no signal that anything was
+    cut at all — a truncated observation and a genuinely short one were
+    indistinguishable.
+    """
+    if len(text) <= max_chars:
+        return text
+    half = max_chars // 2
+    if half <= 0:
+        return f"[...truncated {len(text)} chars...]"
+    dropped = len(text) - 2 * half
+    return f"{text[:half]}\n\n[...truncated {dropped} chars...]\n\n{text[-half:]}"
+
+
 class AgentLoop:
     def __init__(
         self,
@@ -381,7 +404,9 @@ class AgentLoop:
                         return {
                             "tool": _name,
                             "args": _args,
-                            "observation": result.observation[: self.config.max_observation_chars],
+                            "observation": _truncate_observation(
+                                result.observation, self.config.max_observation_chars
+                            ),
                             "ok": result.ok,
                         }
 

@@ -14,7 +14,7 @@ from collections.abc import Callable
 
 import pytest
 
-from lalo.agent.loop import AgentConfig, AgentLoop
+from lalo.agent.loop import AgentConfig, AgentLoop, _truncate_observation
 from lalo.agent.tools import FunctionTool, ToolRegistry, ToolResult
 from lalo.core.errors import AllProvidersFailedError
 from lalo.core.model_router import CompletionRequest, CompletionResponse
@@ -336,6 +336,42 @@ def test_two_agent_loops_do_not_share_a_tracer_by_default() -> None:
     loop2.run("m2")
     assert loop1.tracer.counters.get("tool_calls") == 1
     assert loop2.tracer.counters.get("tool_calls") == 1
+
+
+def test_truncate_observation_keeps_short_text_untouched() -> None:
+    assert _truncate_observation("hello", 100) == "hello"
+
+
+def test_truncate_observation_keeps_head_and_tail_with_a_marker() -> None:
+    text = "A" * 50 + "B" * 50 + "CONCLUSION: found the bug"
+    truncated = _truncate_observation(text, 40)
+    assert truncated.startswith("A" * 20)
+    # The tail (where a real conclusion tends to live) survives truncation --
+    # a naive head-only slice would have discarded it entirely.
+    assert truncated.endswith("CONCLUSION: found the bug"[-20:])
+    assert "truncated" in truncated
+    assert len(truncated) > 40  # the marker text itself adds a few chars
+
+
+def test_a_long_tool_observation_is_head_and_tail_truncated_not_cut() -> None:
+    long_observation = "START-MARKER-" + ("x" * 10_000) + "-END-MARKER-WITH-VERDICT"
+    tool = FunctionTool(
+        name="verbose", description="t", func=lambda _args: ToolResult(observation=long_observation)
+    )
+    registry = ToolRegistry([tool])
+    router = _scripted(
+        ['{"tool": "verbose", "args": {}}', '{"tool": "finish", "args": {"summary": "done"}}']
+    )
+    loop = AgentLoop(
+        router,  # type: ignore[arg-type]
+        registry,
+        system_prompt="",
+        config=AgentConfig(max_observation_chars=200),
+    )
+    loop.run("mission")
+    observation = str(router.prompts[-1])  # the finish-turn prompt includes rendered history
+    assert "END-MARKER-WITH-VERDICT" in observation
+    assert "truncated" in observation
 
 
 def test_usage_is_recorded_when_a_usage_path_is_provided(tmp_path) -> None:
