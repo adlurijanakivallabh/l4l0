@@ -162,6 +162,22 @@ def build_app(event_log: EventLog, token: str, *, runs_dir: Path | None = None) 
         threading.Thread(target=_run_and_clear, daemon=True).start()
         return JSONResponse({"ok": True, "run_dir": str(run_dir)})
 
+    @app.get("/status")
+    def status(provided_token: str = Query(default="", alias="token")) -> JSONResponse:
+        if not _authorized(provided_token):
+            return JSONResponse({"error": "invalid token"}, status_code=403)
+        cursor, events = event_log.snapshot()
+        findings_count = sum(1 for e in events if e.category == "finding")
+        last_status = next((e.payload for e in reversed(events) if e.category == "status"), None)
+        return JSONResponse(
+            {
+                "running": current_runner["runner"] is not None,
+                "cursor": cursor,
+                "findings_count": findings_count,
+                "last_status": last_status,
+            }
+        )
+
     @app.post("/scan/stop")
     async def stop_scan(provided_token: str = Query(default="", alias="token")) -> JSONResponse:
         if not _authorized(provided_token):

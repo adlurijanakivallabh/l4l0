@@ -171,6 +171,43 @@ def test_steer_appends_a_steering_event_and_nothing_else() -> None:
     assert events[0].payload == {"text": "check the admin panel"}
 
 
+def test_status_requires_a_valid_token() -> None:
+    client, _ = _client(token="real-token")
+    response = client.get("/status?token=wrong")
+    assert response.status_code == 403
+
+
+def test_status_with_no_scan_run_yet() -> None:
+    client, _ = _client()
+    response = client.get("/status?token=test-token")
+    assert response.status_code == 200
+    assert response.json() == {
+        "running": False,
+        "cursor": 0,
+        "findings_count": 0,
+        "last_status": None,
+    }
+
+
+def test_status_counts_findings_and_reports_the_running_flag() -> None:
+    client, event_log = _client()
+    event_log.append("finding", {"finding_id": "f1"})
+    event_log.append("finding", {"finding_id": "f2"})
+    event_log.append("log", {"text": "noise"})
+    response = client.get("/status?token=test-token")
+    body = response.json()
+    assert body["findings_count"] == 2
+    assert body["running"] is False
+
+
+def test_status_reports_the_most_recent_status_event() -> None:
+    client, event_log = _client()
+    event_log.append("status", {"event": "scan_started", "targets": ["example.com"]})
+    event_log.append("status", {"event": "scan_completed", "status": "completed"})
+    response = client.get("/status?token=test-token")
+    assert response.json()["last_status"] == {"event": "scan_completed", "status": "completed"}
+
+
 def test_scan_requires_a_valid_token(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(app_module, "ScanRunner", _FakeScanRunner)
     client, _ = _client(token="real-token", runs_dir=tmp_path)
@@ -294,6 +331,24 @@ def test_scan_stop_cancels_the_current_runner(
         )
         response = client.post("/scan/stop?token=test-token")
         assert response.status_code == 200
+    finally:
+        block.set()
+        _FakeScanRunner.block = None
+
+
+def test_status_reports_running_while_a_scan_is_in_flight(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    block = threading.Event()
+    _FakeScanRunner.block = block
+    monkeypatch.setattr(app_module, "ScanRunner", _FakeScanRunner)
+    try:
+        client, _ = _client(runs_dir=tmp_path)
+        client.post(
+            "/scan?token=test-token", json={"mission": "find a bug", "targets": ["example.com"]}
+        )
+        response = client.get("/status?token=test-token")
+        assert response.json()["running"] is True
     finally:
         block.set()
         _FakeScanRunner.block = None
