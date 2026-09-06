@@ -92,6 +92,7 @@ class ScanRequest(BaseModel):
     mission: str
     targets: list[str]
     exclude_targets: list[str] = []
+    rules_of_engagement: str = ""
 
 
 def generate_token() -> str:
@@ -139,6 +140,7 @@ def build_app(event_log: EventLog, token: str, *, runs_dir: Path | None = None) 
             mission=mission,
             target_specs=targets,
             exclude_target_specs=exclude_targets,
+            rules_of_engagement=request.rules_of_engagement.strip(),
             run_dir=run_dir,
             usage_path=DEFAULT_USAGE_PATH,
         )

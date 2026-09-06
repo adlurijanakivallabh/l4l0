@@ -132,6 +132,12 @@ class JwtMalformedError(LaloError):
     code = "jwt_malformed"
 
 
+class TotpSecretError(LaloError):
+    """A TOTP secret was not valid base32."""
+
+    code = "totp_secret_invalid"
+
+
 class ResumeConfigMismatchError(LaloError):
     """A resumed scan's config doesn't match the manifest recorded on first start.
 

@@ -229,6 +229,33 @@ def test_scan_request_defaults_exclude_targets_to_empty(
     assert current_config().exclude_target_specs == []
 
 
+def test_scan_request_passes_rules_of_engagement_through_to_scan_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(app_module, "ScanRunner", _FakeScanRunner)
+    client, _ = _client(runs_dir=tmp_path)
+    client.post(
+        "/scan?token=test-token",
+        json={
+            "mission": "find a bug",
+            "targets": ["example.com"],
+            "rules_of_engagement": "  no destructive testing  ",
+        },
+    )
+    assert current_config().rules_of_engagement == "no destructive testing"
+
+
+def test_scan_request_defaults_rules_of_engagement_to_empty(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(app_module, "ScanRunner", _FakeScanRunner)
+    client, _ = _client(runs_dir=tmp_path)
+    client.post(
+        "/scan?token=test-token", json={"mission": "find a bug", "targets": ["example.com"]}
+    )
+    assert current_config().rules_of_engagement == ""
+
+
 def test_scan_refuses_a_second_launch_while_one_is_running(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

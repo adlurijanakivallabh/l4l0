@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 
 import httpx
@@ -53,6 +54,65 @@ def test_login_json_scheme_extracts_cookie_session() -> None:
     assert session.kind is SessionSource.COOKIE
     assert session.value == "abc123"
     assert session.auth_header() == ("Cookie", "session=abc123")
+
+
+def test_login_includes_a_totp_code_when_the_scheme_configures_one() -> None:
+    seen: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        seen["otp"] = body.get("otp")
+        return httpx.Response(200, headers={"set-cookie": "session=abc123; Path=/"})
+
+    firer = _firer(client=httpx.Client(transport=httpx.MockTransport(handler)))
+    secret = base64.b32encode(b"a real totp secret!!").decode("ascii")
+    scheme = LoginScheme(login_url="https://app.example.com/login", totp_secret=secret)
+    login(firer, _ALICE, scheme)
+    assert isinstance(seen["otp"], str)
+    assert seen["otp"].isdigit()
+    assert len(seen["otp"]) == 6
+
+
+def test_login_uses_a_custom_totp_field_name() -> None:
+    seen: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        seen["body"] = body
+        return httpx.Response(200, headers={"set-cookie": "session=abc123; Path=/"})
+
+    firer = _firer(client=httpx.Client(transport=httpx.MockTransport(handler)))
+    secret = base64.b32encode(b"a real totp secret!!").decode("ascii")
+    scheme = LoginScheme(
+        login_url="https://app.example.com/login", totp_secret=secret, totp_field="mfa_code"
+    )
+    login(firer, _ALICE, scheme)
+    body = seen["body"]
+    assert isinstance(body, dict)
+    assert "mfa_code" in body
+    assert "otp" not in body
+
+
+def test_login_without_a_totp_secret_never_sends_one() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        assert "otp" not in body
+        return httpx.Response(200, headers={"set-cookie": "session=abc123; Path=/"})
+
+    firer = _firer(client=httpx.Client(transport=httpx.MockTransport(handler)))
+    scheme = LoginScheme(login_url="https://app.example.com/login")
+    login(firer, _ALICE, scheme)
+
+
+def test_login_raises_login_failed_on_an_invalid_totp_secret() -> None:
+    firer = _firer(
+        client=httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(200)))
+    )
+    scheme = LoginScheme(
+        login_url="https://app.example.com/login", totp_secret="not valid base32 at all!!!"
+    )
+    with pytest.raises(LoginFailedError):
+        login(firer, _ALICE, scheme)
 
 
 def test_login_form_scheme_extracts_json_field_bearer_session() -> None:

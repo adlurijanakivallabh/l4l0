@@ -122,6 +122,12 @@ class ScanConfig:
     target_specs: list[str]
     run_dir: Path
     exclude_target_specs: list[str] = field(default_factory=list)
+    # Constraints beyond target scope (e.g. "no destructive testing outside
+    # business hours", "do not touch the payments service") -- kept distinct
+    # from the free-form `mission` so it's always injected into the agent
+    # prompt as its own guaranteed block, never dependent on whether the
+    # mission text happens to repeat it. Empty by default (nothing extra).
+    rules_of_engagement: str = ""
     egress_lock: bool = False
     max_steps: int = 25
     spawn_max_depth: int = 3
@@ -173,18 +179,20 @@ class _ResumeManifest:
     ``max_steps``/``spawn_max_depth``/``budget_ceiling``, which would have
     made exactly that normal, expected resume flow impossible (any budget
     increase would be rejected as a "different config"). Only fields that
-    actually define WHAT is authorized (mission, targets, exclusions) or
-    toggle a safety control (egress_lock) are locked; operational tuning
-    knobs are free to change across a resume.
+    actually define WHAT is authorized (mission, targets, exclusions, rules
+    of engagement) or toggle a safety control (egress_lock) are locked;
+    operational tuning knobs are free to change across a resume.
     """
 
     mission: str
     target_specs: list[str]
     egress_lock: bool
-    # Defaulted (unlike the fields above) so a manifest written before this
-    # field existed still resumes -- an old run predates the concept of an
-    # exclusion list, which is honestly "none", not a reason to refuse resume.
+    # Both defaulted (unlike the fields above) so a manifest written before
+    # these fields existed still resumes -- an old run predates the concept
+    # of an exclusion list or a distinct rules-of-engagement field, which is
+    # honestly "none"/"" for that run, not a reason to refuse resume.
     exclude_target_specs: list[str] = field(default_factory=list)
+    rules_of_engagement: str = ""
 
     @classmethod
     def from_config(cls, config: ScanConfig) -> _ResumeManifest:
@@ -192,6 +200,7 @@ class _ResumeManifest:
             mission=config.mission,
             target_specs=list(config.target_specs),
             exclude_target_specs=list(config.exclude_target_specs),
+            rules_of_engagement=config.rules_of_engagement,
             egress_lock=config.egress_lock,
         )
 
@@ -435,7 +444,14 @@ class ScanRunner:
         coordinator = AgentCoordinator(max_depth=self.config.spawn_max_depth)
         budget = Budget(ceiling=self.config.budget_ceiling)
         tracer = Tracer()
-        system_prompt = render_prompt("agent", engagement_scope=engagement.describe())
+        system_prompt = render_prompt(
+            "agent",
+            engagement_scope=engagement.describe(),
+            rules_of_engagement=(
+                self.config.rules_of_engagement.strip()
+                or "(none specified beyond the engagement scope and mission above)"
+            ),
+        )
 
         def _build_registry(agent_graph: ReachabilityGraph, self_id: str) -> ToolRegistry:
             def _run_child(child_id: str, _name: str, task: str) -> tuple[str, list[str], bool]:

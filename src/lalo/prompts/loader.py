@@ -116,7 +116,7 @@ PROMPTS_DIR = Path(__file__).parent / "content"
 # override missing one of these is rejected (falls back to the built-in)
 # rather than silently shipping a prompt that lost, e.g., its scope statement.
 REQUIRED_PLACEHOLDERS: dict[str, frozenset[str]] = {
-    "agent": frozenset({"engagement_scope"}),
+    "agent": frozenset({"engagement_scope", "rules_of_engagement"}),
     "review": frozenset(),
 }
 

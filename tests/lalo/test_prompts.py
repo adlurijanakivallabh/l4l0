@@ -20,10 +20,23 @@ def test_agent_role_declares_the_engagement_scope_placeholder() -> None:
     assert "$engagement_scope" in text
 
 
+def test_agent_role_declares_the_rules_of_engagement_placeholder() -> None:
+    text = load_prompt_template("agent")
+    assert "$rules_of_engagement" in text
+
+
 def test_render_prompt_substitutes_the_engagement_scope() -> None:
-    rendered = render_prompt("agent", engagement_scope="- example.com")
+    rendered = render_prompt("agent", engagement_scope="- example.com", rules_of_engagement="none")
     assert "- example.com" in rendered
     assert "$engagement_scope" not in rendered
+
+
+def test_render_prompt_substitutes_rules_of_engagement() -> None:
+    rendered = render_prompt(
+        "agent", engagement_scope="- example.com", rules_of_engagement="no destructive testing"
+    )
+    assert "no destructive testing" in rendered
+    assert "$rules_of_engagement" not in rendered
 
 
 def test_render_prompt_for_review_needs_no_variables() -> None:
@@ -65,19 +78,25 @@ def test_validate_template_rejects_an_unsupported_extra_placeholder() -> None:
     supplies the required set - this must be rejected at load time, not
     left to raise KeyError the first time anything actually renders it."""
     with pytest.raises(PromptLoadError, match="unsupported placeholder"):
-        _validate_template("agent", "Scope: $engagement_scope\nExtra: $operator_note\n")
+        _validate_template(
+            "agent",
+            "Scope: $engagement_scope\nRoE: $rules_of_engagement\nExtra: $operator_note\n",
+        )
 
 
 def test_an_override_with_an_extra_placeholder_falls_back_and_still_renders(
     tmp_path: Path,
 ) -> None:
     (tmp_path / "agent.txt").write_text(
-        "Scope: $engagement_scope\nExtra: $operator_note\n", encoding="utf-8"
+        "Scope: $engagement_scope\nRoE: $rules_of_engagement\nExtra: $operator_note\n",
+        encoding="utf-8",
     )
     text = load_prompt_template("agent", overrides_dir=tmp_path)
     assert text == load_prompt_template("agent")
     # and actually rendering it (as a real caller would) must not raise
-    rendered = render_prompt("agent", overrides_dir=tmp_path, engagement_scope="example.com")
+    rendered = render_prompt(
+        "agent", overrides_dir=tmp_path, engagement_scope="example.com", rules_of_engagement="none"
+    )
     assert "example.com" in rendered
 
 

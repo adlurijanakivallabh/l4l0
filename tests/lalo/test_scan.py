@@ -204,6 +204,79 @@ def test_scan_runner_wires_every_phase_into_one_completed_run(
     assert (run_dir / "graph.json").exists()
 
 
+def test_scan_runner_injects_rules_of_engagement_into_the_system_prompt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(scan_module, "docker_available", lambda: True)
+    monkeypatch.setattr(scan_module, "RuntimeContainer", _FakeContainer)
+
+    seen_systems: list[str] = []
+
+    class _CapturingProvider:
+        name = "fake"
+
+        def complete(self, request: object) -> CompletionResponse:
+            seen_systems.append(getattr(request, "system", None) or "")
+            return CompletionResponse(
+                text=_respond(0, request.prompt),  # type: ignore[attr-defined]
+                provider="fake",
+                model="fake-model",
+            )
+
+    router = ModelRouter(
+        providers={"fake": _CapturingProvider()},
+        routes={"reasoning": ("fake",), "review": ("fake",)},
+        default_route=("fake",),
+    )
+    monkeypatch.setattr(scan_module, "build_router", lambda _settings: router)
+
+    config = ScanConfig(
+        mission="find a bug",
+        target_specs=["example.com"],
+        run_dir=tmp_path / "run",
+        rules_of_engagement="no destructive testing; do not touch /admin",
+    )
+    ScanRunner(config, env={"ANTHROPIC_API_KEY": "sk-test"}).run()
+
+    assert any("no destructive testing; do not touch /admin" in s for s in seen_systems)
+
+
+def test_scan_runner_defaults_rules_of_engagement_to_a_stated_none(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(scan_module, "docker_available", lambda: True)
+    monkeypatch.setattr(scan_module, "RuntimeContainer", _FakeContainer)
+
+    seen_systems: list[str] = []
+
+    class _CapturingProvider:
+        name = "fake"
+
+        def complete(self, request: object) -> CompletionResponse:
+            seen_systems.append(getattr(request, "system", None) or "")
+            return CompletionResponse(
+                text=_respond(0, request.prompt),  # type: ignore[attr-defined]
+                provider="fake",
+                model="fake-model",
+            )
+
+    router = ModelRouter(
+        providers={"fake": _CapturingProvider()},
+        routes={"reasoning": ("fake",), "review": ("fake",)},
+        default_route=("fake",),
+    )
+    monkeypatch.setattr(scan_module, "build_router", lambda _settings: router)
+
+    config = ScanConfig(
+        mission="find a bug", target_specs=["example.com"], run_dir=tmp_path / "run"
+    )
+    ScanRunner(config, env={"ANTHROPIC_API_KEY": "sk-test"}).run()
+
+    assert any(
+        "none specified beyond the engagement scope and mission above" in s for s in seen_systems
+    )
+
+
 def test_scan_runner_applies_exclude_target_specs_end_to_end(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -460,6 +533,20 @@ def test_resume_manifest_without_the_exclude_field_still_resumes(tmp_path: Path)
     """A manifest written before exclude_target_specs existed has no such key
     in its persisted JSON - resuming against it must not raise, and must
     treat the omission as "no exclusions were ever declared", not a mismatch."""
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    old_manifest = {"mission": "find a bug", "target_specs": ["example.com"], "egress_lock": False}
+    scan_module._manifest_path(run_dir).write_text(json.dumps(old_manifest), encoding="utf-8")  # noqa: SLF001
+
+    config = ScanConfig(mission="find a bug", target_specs=["example.com"], run_dir=run_dir)
+    scan_module._load_or_write_manifest(config)  # noqa: SLF001 - must not raise
+
+
+def test_resume_manifest_without_rules_of_engagement_still_resumes(tmp_path: Path) -> None:
+    """Same backward-compatibility guarantee as the exclude_target_specs
+    manifest field: a manifest written before rules_of_engagement existed
+    has no such key - resuming must treat that as "" (never specified),
+    not a mismatch."""
     run_dir = tmp_path / "run"
     run_dir.mkdir()
     old_manifest = {"mission": "find a bug", "target_specs": ["example.com"], "egress_lock": False}

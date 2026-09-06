@@ -22,10 +22,11 @@ from enum import StrEnum
 from http.cookies import SimpleCookie
 from urllib.parse import urlencode
 
-from ..core.errors import LoginFailedError, SessionNotMirroredError
+from ..core.errors import LoginFailedError, SessionNotMirroredError, TotpSecretError
 from ..execution.firer import HttpFirer
 from ..graph import NodeKind, ReachabilityGraph
 from .credentials import Identity
+from .totp import generate_totp
 
 
 class BodyEncoding(StrEnum):
@@ -51,6 +52,12 @@ class LoginScheme:
     session_source: SessionSource = SessionSource.COOKIE
     # Cookie name / JSON field name / static header name, per session_source.
     session_field: str = "session"
+    # A base32 TOTP secret, when the target's login flow requires a second
+    # factor -- operator/engagement-setup knowledge (the enrolled secret),
+    # exactly like username_field/password_field above, never something an
+    # agent supplies or guesses at per call.
+    totp_secret: str | None = None  # noqa: S105 - a field name, not a literal secret
+    totp_field: str = "otp"
 
 
 @dataclass(frozen=True)
@@ -120,6 +127,13 @@ def login(firer: HttpFirer, identity: Identity, scheme: LoginScheme) -> Session:
         scheme.username_field: identity.username,
         scheme.password_field: identity.credential.value,
     }
+    if scheme.totp_secret is not None:
+        try:
+            fields[scheme.totp_field] = generate_totp(scheme.totp_secret)
+        except TotpSecretError as exc:
+            raise LoginFailedError(
+                f"login scheme for identity {identity.id} has an invalid totp_secret: {exc}"
+            ) from exc
     if scheme.body_encoding is BodyEncoding.JSON:
         content = json.dumps(fields).encode("utf-8")
         headers = {"Content-Type": "application/json"}
