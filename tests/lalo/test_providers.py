@@ -33,6 +33,39 @@ def test_anthropic_success_and_refusal() -> None:
         blocked.complete(CompletionRequest(prompt="x"))
 
 
+def test_anthropic_reports_real_token_usage() -> None:
+    def ok(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "stop_reason": "end_turn",
+                "content": [{"type": "text", "text": "hi"}],
+                "usage": {"input_tokens": 42, "output_tokens": 7},
+            },
+        )
+
+    provider = AnthropicProvider(
+        "k", model="claude-sonnet-5", client=httpx.Client(transport=httpx.MockTransport(ok))
+    )
+    response = provider.complete(CompletionRequest(prompt="x"))
+    assert response.input_tokens == 42
+    assert response.output_tokens == 7
+
+
+def test_anthropic_missing_usage_leaves_tokens_none_not_zero() -> None:
+    def ok(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, json={"stop_reason": "end_turn", "content": [{"type": "text", "text": "hi"}]}
+        )
+
+    provider = AnthropicProvider(
+        "k", model="m", client=httpx.Client(transport=httpx.MockTransport(ok))
+    )
+    response = provider.complete(CompletionRequest(prompt="x"))
+    assert response.input_tokens is None
+    assert response.output_tokens is None
+
+
 def test_anthropic_5xx_maps_to_unavailable() -> None:
     def bad(request: httpx.Request) -> httpx.Response:
         return httpx.Response(503, json={})
@@ -62,6 +95,30 @@ def test_openai_compatible_success_and_content_filter() -> None:
     )
     assert provider.complete(CompletionRequest(prompt="x")).text == "hi"
 
+
+def test_openai_compatible_reports_real_token_usage() -> None:
+    def ok(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"finish_reason": "stop", "message": {"content": "hi"}}],
+                "usage": {"prompt_tokens": 11, "completion_tokens": 3},
+            },
+        )
+
+    provider = OpenAICompatibleProvider(
+        "gw",
+        "k",
+        model="m",
+        base_url="http://x",
+        client=httpx.Client(transport=httpx.MockTransport(ok)),
+    )
+    response = provider.complete(CompletionRequest(prompt="x"))
+    assert response.input_tokens == 11
+    assert response.output_tokens == 3
+
+
+def test_openai_compatible_content_filter() -> None:
     def filtered(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
             200, json={"choices": [{"finish_reason": "content_filter", "message": {}}]}

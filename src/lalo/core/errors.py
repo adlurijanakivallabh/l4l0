@@ -111,3 +111,25 @@ class JwtMalformedError(LaloError):
     """A JWT string did not have the expected header.payload.signature shape."""
 
     code = "jwt_malformed"
+
+
+class CostLimitExceededError(LaloError):
+    """A run's cumulative estimated spend has crossed an operator-set ceiling.
+
+    Raised AFTER the triggering usage is persisted (see
+    :func:`lalo.core.usage.record_usage`), never before — the API call that
+    crossed the ceiling already happened and already cost real money, so the
+    ledger must reflect that regardless of whether the caller then stops the
+    run. A reference agent's own equivalent check runs before its ledger
+    update, meaning the interaction that actually tipped it over is never
+    recorded — an inaccurate ledger at the exact moment accuracy matters most.
+    """
+
+    code = "cost_limit_exceeded"
+
+    def __init__(
+        self, message: str = "", *, total_cost_usd: float = 0.0, limit_usd: float = 0.0
+    ) -> None:
+        super().__init__(message, code=self.code)
+        self.total_cost_usd = total_cost_usd
+        self.limit_usd = limit_usd

@@ -74,7 +74,14 @@ class AnthropicProvider:
             for block in data.get("content", [])
             if block.get("type") == "text"
         )
-        return CompletionResponse(text=text, provider=self.name, model=self.model)
+        usage = data.get("usage") or {}
+        return CompletionResponse(
+            text=text,
+            provider=self.name,
+            model=self.model,
+            input_tokens=usage.get("input_tokens"),
+            output_tokens=usage.get("output_tokens"),
+        )
 
 
 class OpenAICompatibleProvider:
@@ -140,7 +147,14 @@ class OpenAICompatibleProvider:
         # for a dataclass field typed str.
         message = choices[0].get("message", {}) if choices else {}
         text = message.get("content") or ""
-        return CompletionResponse(text=text, provider=self.name, model=self.model)
+        usage = data.get("usage") or {}
+        return CompletionResponse(
+            text=text,
+            provider=self.name,
+            model=self.model,
+            input_tokens=usage.get("prompt_tokens"),
+            output_tokens=usage.get("completion_tokens"),
+        )
 
 
 def _build_adapter(resolved: ResolvedProvider) -> Provider:
