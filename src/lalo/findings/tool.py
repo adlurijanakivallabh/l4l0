@@ -202,7 +202,11 @@ def build_record_finding_tool(graph: ReachabilityGraph) -> FunctionTool:
             "File a vulnerability finding. Lands immediately and unconditionally once "
             "required fields are present - it is never blocked on how strong the "
             "evidence is, only on whether the fields are filled in. args: "
-            '{"title": str, "description": str, "vuln_class": str, "target": str, '
+            '{"title": str, "description": str, '
+            '"vuln_class": str (a short, hyphenated slug matching the recalled skill\'s '
+            'own name - e.g. "sql-injection", "access-control", "jwt", "xss", "ssrf" - '
+            "never a full sentence, a CWE id, or an OWASP category name; coverage "
+            'reporting and eval scoring both match this field by exact name), "target": str, '
             '"evidence": list[str] (raw captured proof - response bodies, OAST hits, '
             'command output), "evidence_excerpt": str (the specific proof text - must '
             'literally appear in one of the evidence entries), "counterevidence": str '

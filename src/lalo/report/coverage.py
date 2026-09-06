@@ -25,11 +25,26 @@ between a finding's ``vuln_class`` and a skill's name, rather than the
 reference's 29-entry word-phrasing table (``_SKILL_PHRASINGS``, 76 phrase
 strings total across all entries — counted directly from the real source,
 not estimated) built to bridge a skill's filename against a pentester's own
-wording. L4L0's skills
-and its own ``record_finding`` tool description both use the same short,
-hyphenated class names (``sql-injection``, ``xss``), so the exact match
-covers the common path; a mismatched free-text ``vuln_class`` is a real,
-acknowledged ceiling of this simpler approach, not an oversight.
+wording. L4L0's skills use short, hyphenated class names (``sql-injection``,
+``xss``), so the exact match covers the common path IF the agent's own
+``vuln_class`` choice actually matches one.
+
+**Correction, found via a real live-agent eval run against VAmPI (not a
+hypothetical):** this docstring previously claimed ``record_finding``'s own
+tool description "uses the same short, hyphenated class names" already —
+false. The description only ever said ``"vuln_class": str``, no convention
+stated at all, and a real autonomous run confirmed the consequence: the
+agent filed two genuinely correct findings (a real SQL injection, a real
+broken-access-control issue) as ``"SQL Injection"`` and ``"OWASP
+API1:2023 Broken Object Level Authorization"`` — neither matches any skill
+name or any eval ground-truth class by exact string, so both coverage and
+eval scoring silently read them as unmatched despite being right. Fixed at
+the source (``findings/tool.py``'s own tool description now names the
+hyphenated-slug convention explicitly, with examples), not by loosening the
+match here — a real free-text mismatch is still a real, acknowledged
+ceiling of this simpler approach for a class the agent invents outside the
+skill library entirely, just no longer for the common, in-library case a
+one-line prompt fix already closes.
 """
 
 from __future__ import annotations
