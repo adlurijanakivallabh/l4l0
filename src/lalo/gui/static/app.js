@@ -35,6 +35,7 @@
 
   const openSettingsBtn = document.getElementById("open-settings");
   const closeSettingsBtn = document.getElementById("close-settings");
+  const themeToggleBtn = document.getElementById("theme-toggle");
   const settingsDrawer = document.getElementById("settings-drawer");
   const providerListEl = document.getElementById("provider-list");
   const providerSelectEl = document.getElementById("provider-select");
@@ -420,6 +421,33 @@
   closeSettingsBtn.addEventListener("click", () => {
     settingsDrawer.hidden = true;
   });
+
+  // ---------- theme toggle ----------
+
+  function applyStoredTheme() {
+    let stored = null;
+    try {
+      stored = localStorage.getItem("lalo-theme");
+    } catch {
+      // localStorage unavailable (private mode, blocked) - default theme stands
+    }
+    if (stored === "light" || stored === "dark") {
+      document.documentElement.setAttribute("data-theme", stored);
+    }
+  }
+
+  themeToggleBtn.addEventListener("click", () => {
+    const current = document.documentElement.getAttribute("data-theme") === "light" ? "light" : "dark";
+    const next = current === "light" ? "dark" : "light";
+    document.documentElement.setAttribute("data-theme", next);
+    try {
+      localStorage.setItem("lalo-theme", next);
+    } catch {
+      // best-effort persistence only - the toggle still works for this page view
+    }
+  });
+
+  applyStoredTheme();
 
   providerForm.addEventListener("submit", async (ev) => {
     ev.preventDefault();
