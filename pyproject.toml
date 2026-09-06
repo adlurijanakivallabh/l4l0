@@ -25,6 +25,7 @@ dependencies = [
     # Report export
     "weasyprint>=69.0",
     "html2docx>=1.6.0",
+    "pypdf>=6.17.0",  # encrypting a PDF export at rest (report content is sensitive)
     # CVSS v3 base-score computation (compute-don't-trust)
     "cvss>=3.0,<4.0",
 ]

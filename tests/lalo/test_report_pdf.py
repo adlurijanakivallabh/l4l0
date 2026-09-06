@@ -12,10 +12,19 @@ refuses, and the render still completes without ever touching the network."
 
 from __future__ import annotations
 
+from io import BytesIO
+
 import pytest
+from pypdf import PdfReader
+from pypdf.errors import FileNotDecryptedError
 
 from lalo.report import pdf as pdf_module
-from lalo.report.pdf import ExternalResourceBlockedError, render_report_pdf
+from lalo.report.pdf import (
+    ExternalResourceBlockedError,
+    encrypt_pdf,
+    generate_password,
+    render_report_pdf,
+)
 
 _MINIMAL_HTML = "<!doctype html><html><body><h1>Report</h1><p>hello</p></body></html>"
 
@@ -50,3 +59,49 @@ def test_render_report_pdf_never_lets_an_external_image_reach_the_fetcher_unbloc
     pdf_bytes = render_report_pdf(html)
     assert pdf_bytes.startswith(b"%PDF-")  # render still completes
     assert "http://attacker.example/pixel.png" in seen_urls
+
+
+# --- generate_password / encrypt_pdf: protecting sensitive report content --
+
+
+def test_generate_password_is_long_and_varies_every_call() -> None:
+    first = generate_password()
+    second = generate_password()
+    assert len(first) >= 20
+    assert len(second) >= 20
+    assert first != second
+
+
+def test_encrypt_pdf_produces_a_real_pdf_that_requires_the_password() -> None:
+    plain = render_report_pdf(_MINIMAL_HTML)
+    password = generate_password()
+    encrypted = encrypt_pdf(plain, password)
+
+    assert encrypted.startswith(b"%PDF-")
+    assert encrypted != plain
+
+    reader = PdfReader(BytesIO(encrypted))
+    assert reader.is_encrypted
+    with pytest.raises(FileNotDecryptedError):
+        reader.pages[0].extract_text()
+
+
+def test_encrypt_pdf_decrypts_with_the_correct_password_and_preserves_content() -> None:
+    plain_html = "<!doctype html><html><body><p>secret-marker-xyz</p></body></html>"
+    plain = render_report_pdf(plain_html)
+    password = generate_password()
+    encrypted = encrypt_pdf(plain, password)
+
+    reader = PdfReader(BytesIO(encrypted))
+    result = reader.decrypt(password)
+    assert result != 0  # 0 == PasswordType.NOT_DECRYPTED
+    assert "secret-marker-xyz" in reader.pages[0].extract_text()
+
+
+def test_encrypt_pdf_rejects_the_wrong_password() -> None:
+    plain = render_report_pdf(_MINIMAL_HTML)
+    encrypted = encrypt_pdf(plain, generate_password())
+
+    reader = PdfReader(BytesIO(encrypted))
+    result = reader.decrypt("definitely-not-the-real-password")
+    assert result == 0  # PasswordType.NOT_DECRYPTED
