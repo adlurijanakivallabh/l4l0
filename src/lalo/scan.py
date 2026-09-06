@@ -60,6 +60,25 @@ two maps are independent (an identity isn't tied to one scheme), so pairing
 them for preflight is the operator's call, not a cartesian-product guess this
 module should make.
 
+**Trace persistence** (an audit finding, not a request): every agent step
+already ran inside a :meth:`~lalo.observability.tracing.Tracer.span`, and a
+single shared :class:`~lalo.observability.tracing.Tracer` was already passed
+to the root and every spawned child - but nothing ever read `.spans`/
+`.counters` back out. The data was collected, logged once at debug level,
+and discarded the moment the process exited. Closed by writing every span/
+counter to ``trace.json`` in the run directory at run end (alongside
+``events.jsonl``/``graph.json``) and folding a small aggregated summary
+(span count/total duration per name, raw counters) into the
+``scan_completed`` status event, both via :func:`_write_trace_file`/
+:func:`_trace_summary`. Deliberately NOT changed: :class:`AgentLoop`'s own
+default of a fresh ``Tracer()`` per instance when no explicit one is passed
+- that default is only ever exercised by ad-hoc/test construction, since
+this module already explicitly shares one ``Tracer`` across the whole spawn
+tree; switching that default to the process-wide singleton would make two
+unrelated scans running in the same long-lived process (the GUI server
+serves more than one) silently share trace state, a worse regression than
+the gap it would claim to close.
+
 **Review timing** (a deliberate, simple choice, not a hidden requirement):
 CLAUDE.md's two non-blocking confidence layers run over every finding once
 the primary agent (and every spawned descendant) has finished, not
@@ -282,6 +301,48 @@ def _journal_path(run_dir: Path) -> Path:
 
 def _events_path(run_dir: Path) -> Path:
     return run_dir / "events.jsonl"
+
+
+def _trace_path(run_dir: Path) -> Path:
+    return run_dir / "trace.json"
+
+
+def _trace_summary(tracer: Tracer) -> dict[str, object]:
+    """Aggregate ``tracer``'s spans by name (count + total duration) plus its
+    raw counters - an audit found this data was previously collected, logged
+    at debug level, and then discarded: nothing anywhere ever read a
+    :class:`~lalo.observability.tracing.Tracer`'s ``.spans``/``.counters``
+    back out. Small and JSON-serializable on purpose, for both the durable
+    ``trace.json`` file below and the ``scan_completed`` status event.
+    """
+    by_name: dict[str, dict[str, float]] = {}
+    for s in tracer.spans:
+        agg = by_name.setdefault(s.name, {"count": 0.0, "total_duration_ms": 0.0})
+        agg["count"] += 1
+        agg["total_duration_ms"] += s.duration_ms or 0.0
+    return {"spans": by_name, "counters": dict(tracer.counters)}
+
+
+def _write_trace_file(run_dir: Path, tracer: Tracer) -> None:
+    """Persist every raw span/counter to ``trace.json``, alongside
+    ``events.jsonl`` - the durable, after-the-fact answer to "what took
+    long and how often did each tool run" that a plain in-memory Tracer
+    could never give once the process exits.
+    """
+    payload = {
+        "spans": [
+            {
+                "name": s.name,
+                "start": s.start,
+                "end": s.end,
+                "duration_ms": s.duration_ms,
+                "attributes": s.attributes,
+            }
+            for s in tracer.spans
+        ],
+        "counters": dict(tracer.counters),
+    }
+    _trace_path(run_dir).write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
 def load_run_events(run_dir: Path) -> EventLog:
@@ -842,10 +903,12 @@ class ScanRunner:
         )
         report_paths = write_report(self.config.run_dir, graph, skills, status=status)
         graph.save(self.config.run_dir / "graph.json")
+        _write_trace_file(self.config.run_dir, tracer)
         completed_payload: dict[str, object] = {
             "event": "scan_completed",
             "status": status.value,
             "report_paths": {fmt: str(path) for fmt, path in report_paths.items()},
+            "trace_summary": _trace_summary(tracer),
         }
         if usage_path is not None and usage_before is not None:
             usage_after = load_usage(usage_path)

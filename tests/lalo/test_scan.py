@@ -288,6 +288,39 @@ def test_scan_runner_wires_every_phase_into_one_completed_run(
     assert json.loads(outcome.report_paths["json"].read_text())["status"] == "completed"
     assert (run_dir / "graph.json").exists()
 
+    trace = json.loads((run_dir / "trace.json").read_text())
+    assert any(s["name"] == "agent_step" for s in trace["spans"])
+    assert trace["counters"].get("tool_calls", 0) > 0
+
+
+def test_scan_runner_emits_a_trace_summary_on_the_completed_event(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Closes a real gap an audit found: Tracer's own spans/counters were
+    collected, logged at debug level, and then discarded - nothing anywhere
+    ever surfaced them, during or after a run."""
+    monkeypatch.setattr(scan_module, "docker_available", lambda: True)
+    monkeypatch.setattr(scan_module, "RuntimeContainer", _FakeContainer)
+    router = ModelRouter(
+        providers={"fake": _ScriptedProvider(_respond)},
+        routes={"reasoning": ("fake",), "review": ("fake",)},
+        default_route=("fake",),
+    )
+    monkeypatch.setattr(scan_module, "build_router", lambda _settings: router)
+
+    event_log = EventLog()
+    config = ScanConfig(
+        mission="find a bug", target_specs=["example.com"], run_dir=tmp_path / "run"
+    )
+    ScanRunner(config, env={"ANTHROPIC_API_KEY": "sk-test"}, event_log=event_log).run()
+
+    _cursor, events = event_log.snapshot()
+    completed = next(e for e in events if e.payload.get("event") == "scan_completed")
+    summary = completed.payload["trace_summary"]
+    assert "agent_step" in summary["spans"]
+    assert summary["spans"]["agent_step"]["count"] >= 1
+    assert summary["counters"].get("tool_calls", 0) > 0
+
 
 def test_scan_runner_enable_second_opinion_review_runs_a_second_review_call(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
