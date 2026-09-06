@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import http.server
 import json
+import stat
 import threading
 import time
 from collections.abc import Iterator
@@ -288,9 +289,13 @@ def test_scan_runner_wires_every_phase_into_one_completed_run(
     assert json.loads(outcome.report_paths["json"].read_text())["status"] == "completed"
     assert (run_dir / "graph.json").exists()
 
-    trace = json.loads((run_dir / "trace.json").read_text())
+    trace_path = run_dir / "trace.json"
+    trace = json.loads(trace_path.read_text())
     assert any(s["name"] == "agent_step" for s in trace["spans"])
     assert trace["counters"].get("tool_calls", 0) > 0
+    # A span's own attributes can carry the same confidential engagement/
+    # target data the graph and report files do - same owner-only guarantee.
+    assert stat.S_IMODE(trace_path.stat().st_mode) == 0o600
 
 
 def test_scan_runner_emits_a_trace_summary_on_the_completed_event(

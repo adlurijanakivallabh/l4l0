@@ -328,6 +328,13 @@ def _write_trace_file(run_dir: Path, tracer: Tracer) -> None:
     ``events.jsonl`` - the durable, after-the-fact answer to "what took
     long and how often did each tool run" that a plain in-memory Tracer
     could never give once the process exits.
+
+    Routed through :func:`atomic_write_verified` like every other whole-file
+    run-directory artifact (the graph, every report format, the usage log) -
+    a span's own ``attributes`` can carry the same confidential
+    engagement/target data those do, so this needs the identical owner-only
+    (``0600``) guarantee, not a plain ``Path.write_text`` at the OS default
+    mode.
     """
     payload = {
         "spans": [
@@ -342,7 +349,7 @@ def _write_trace_file(run_dir: Path, tracer: Tracer) -> None:
         ],
         "counters": dict(tracer.counters),
     }
-    _trace_path(run_dir).write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    atomic_write_verified(_trace_path(run_dir), json.dumps(payload, indent=2).encode("utf-8"))
 
 
 def load_run_events(run_dir: Path) -> EventLog:
