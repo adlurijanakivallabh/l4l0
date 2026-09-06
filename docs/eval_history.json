@@ -1,0 +1,10 @@
+[
+  {
+    "label": "vampi-live-agent",
+    "recorded_at": "2026-09-06T13:57:40.939543+00:00",
+    "mean_recall": 0.0,
+    "mean_precision": 0.0,
+    "calibration_gap": null,
+    "case_count": 1
+  }
+]
