@@ -75,20 +75,46 @@ boundary — it only ever influences what the agent chooses to prioritize
 within its own ordinary think-act-observe loop, the same read-only design
 the steering endpoint itself already established.
 
-A follow-up audit of that same live comparison found a real gap in
-:mod:`lalo.core.redaction`'s own stated design ("every subsystem that
+A follow-up audit of that same live comparison found what looked like a gap
+in :mod:`lalo.core.redaction`'s own stated design ("every subsystem that
 renders text... routes through" the shared redactor): true for logging and
 for a submitted finding's own fields, but not for this loop — a tool
 observation went straight from ``registry.dispatch`` into ``transcript``,
-and from there into the literal prompt string sent to the provider, with no
-call to ``redact()`` anywhere on that path. A secret discovered mid-scan (a
-leaked token in a response body, another identity's password) flowed
-straight into the outbound LLM request; only an operator's own
-pre-registered credentials were ever incidentally caught, and only via log
-lines, not this path. Closed at the one choke point every tool observation
-already funnels through — ``_dispatch_once``, immediately before
-``_truncate_observation`` (before, not after: a secret straddling the
-truncation boundary would otherwise be split into two unmatchable halves).
+with no call to ``redact()`` anywhere on that path. A fix was shipped
+routing ``_dispatch_once``'s observation through ``redact()`` before
+``_truncate_observation`` — and then reverted, here, after a real live
+autonomous run against a live target proved it was wrong, not merely
+incomplete.
+
+**Reverted, with the evidence that forced it:** ``identity/tool.py``'s
+``login_as`` registers a freshly captured session value with the shared
+redactor specifically so it never leaks into a LOG line — its own comment
+says so explicitly: "the agent's own captured credential to actively reuse
+in subsequent ``http`` calls, not a third-party secret to withhold from
+it." Routing tool observations through the SAME shared redactor's
+``redact()`` before they reach the transcript broke exactly that: the
+session value ``login_as`` deliberately returns for reuse got replaced with
+the redaction placeholder before the agent ever saw it again, in its own
+tool result. A live run against VAmPI then hit the identical failure mode
+through a completely different path — no ``login_as`` involved at all: a
+plain ``http`` login response containing an ordinary JWT (VAmPI's own,
+returned in the clear, exactly as REST APIs commonly do) got caught by the
+pattern-based JWT heuristic, and the agent was observed sending
+``Authorization: Bearer REDACTED`` on its next request — it could no longer
+see the session token it had just legitimately obtained to actually use for
+IDOR/BOLA and JWT-manipulation testing, the specific capability that
+mission needed. ``core/pricing.py``'s design principle for a different
+input applies here too: a captured token is either the agent's own
+legitimate credential to actively use, or a genuinely different secret
+worth investigating — collapsing both into "redact it from the live
+prompt" makes the tool actively worse at its job for the common case to
+guard, unevenly, against a rarer one. The narrower, already-covered risk
+this fix set out to close (a secret ending up somewhere a human or a
+report reads it) stays closed exactly where it already was:
+``findings/tool.py`` redacts every submitted finding field, and
+``core/logging.py``'s formatter redacts anything actually logged — neither
+of those needed this reverted change to be true, and neither lost anything
+when it was undone.
 
 A second finding from that same pass: :func:`~lalo.core.usage.record_usage`
 accepts a ``pricing_table`` and has real cost-estimation logic
@@ -115,7 +141,6 @@ from ..core.errors import AllProvidersFailedError
 from ..core.logging import get_logger
 from ..core.model_router import CompletionRequest, CompletionResponse, ModelRouter
 from ..core.pricing import PricingTable
-from ..core.redaction import redact
 from ..core.usage import record_usage
 from ..observability import Tracer
 from ..orchestrator.budget import (
@@ -646,7 +671,7 @@ class AgentLoop:
                             "tool": _name,
                             "args": _args,
                             "observation": _truncate_observation(
-                                redact(result.observation), self.config.max_observation_chars
+                                result.observation, self.config.max_observation_chars
                             ),
                             "ok": result.ok,
                         }

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
+import httpx
 import pytest
 
 from lalo.agent.loop import AgentConfig, AgentLoop, _truncate_observation
@@ -20,6 +21,21 @@ from lalo.core.errors import AllProvidersFailedError
 from lalo.core.model_router import CompletionRequest, CompletionResponse
 from lalo.core.redaction import REDACTION_PLACEHOLDER
 from lalo.core.usage import load_usage
+from lalo.execution.firer import HttpFirer
+from lalo.execution.scope import ScopeGuard
+from lalo.execution.target import Engagement
+from lalo.graph import ReachabilityGraph
+from lalo.identity import (
+    BodyEncoding,
+    Credential,
+    CredentialKind,
+    Identity,
+    IdentityStore,
+    LoginScheme,
+    SessionRegistry,
+    SessionSource,
+)
+from lalo.identity.tool import build_login_tool
 from lalo.orchestrator.budget import Budget
 from lalo.orchestrator.journal import DurableJournal
 
@@ -375,18 +391,26 @@ def test_a_long_tool_observation_is_head_and_tail_truncated_not_cut() -> None:
     assert "truncated" in observation
 
 
-def test_a_secret_discovered_in_a_tool_observation_never_reaches_the_prompt() -> None:
-    """Closes a real gap: a tool observation went straight from
-    registry.dispatch into transcript, and from there into the literal
-    outbound prompt, with no redact() call anywhere on that path - only an
-    operator's own pre-registered credentials were ever incidentally caught,
-    and only via log lines. A secret discovered mid-scan (an AWS key in a
-    response body here) must never flow into the LLM-provider request."""
-    leaked_key = "AKIAABCDEFGHIJKLMNOP"
+def test_a_captured_session_token_in_a_tool_observation_reaches_the_prompt_unredacted() -> None:
+    """Deliberate, evidence-based non-behavior, not an oversight: a prior
+    fix routed tool observations through redact() before they reached the
+    prompt, and a live autonomous run against a real target (VAmPI) proved
+    it wrong, not merely incomplete - the agent captured a legitimate JWT
+    from an ordinary login response and could no longer see it on the next
+    turn (it sent "Authorization: Bearer REDACTED" instead), losing the
+    ability to actually reuse it for IDOR/BOLA and JWT-manipulation testing.
+    identity/tool.py's own login_as has the identical requirement, by its
+    own comment: a captured session value is "the agent's own captured
+    credential to actively reuse... not a third-party secret to withhold
+    from it." redact() still runs at every OTHER existing choke point
+    (every submitted finding field in findings/tool.py, anything actually
+    logged via core/logging.py's formatter) - this loop's own tool
+    observations are the one place it must not, by design."""
+    captured_token = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ0ZXN0In0.dGVzdHNpZw"
     tool = FunctionTool(
         name="http",
         description="t",
-        func=lambda _args: ToolResult(observation=f"response body: aws_key={leaked_key}"),
+        func=lambda _args: ToolResult(observation=f"response body: token={captured_token}"),
     )
     registry = ToolRegistry([tool])
     router = _scripted(
@@ -395,8 +419,54 @@ def test_a_secret_discovered_in_a_tool_observation_never_reaches_the_prompt() ->
     loop = AgentLoop(router, registry, system_prompt="")  # type: ignore[arg-type]
     loop.run("mission")
     final_prompt = router.prompts[-1]
-    assert leaked_key not in final_prompt
-    assert REDACTION_PLACEHOLDER in final_prompt
+    assert captured_token in final_prompt
+    assert REDACTION_PLACEHOLDER not in final_prompt
+
+
+def test_a_real_login_as_call_returns_its_session_header_unredacted() -> None:
+    """The exact regression this class of bug takes: login_as registers its
+    own captured session value with the shared redactor (identity/tool.py's
+    own docstring: only so it never leaks into a LOG line), and this loop
+    used to route every tool observation through that SAME redactor before
+    the transcript - so the value login_as deliberately returns for reuse
+    got replaced with the placeholder before the agent ever saw it again.
+    Uses the real build_login_tool/HttpFirer, not a fake, since a fake
+    login tool would never register anything with the shared redactor in
+    the first place and so could never have caught this."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, headers={"set-cookie": "session=captured-session-abc123"})
+
+    engagement = Engagement.from_specs(["app.example.com"])
+    scope = ScopeGuard(engagement=engagement, resolver=lambda h: frozenset({"93.184.216.34"}))
+    firer = HttpFirer(scope, client=httpx.Client(transport=httpx.MockTransport(handler)))
+    graph = ReachabilityGraph()
+    identities = IdentityStore()
+    alice = Identity(
+        id="alice", username="alice", credential=Credential(CredentialKind.PASSWORD, "hunter2xxxxx")
+    )
+    identities.add(alice)
+    sessions = SessionRegistry(graph)
+    scheme = LoginScheme(
+        login_url="https://app.example.com/login",
+        body_encoding=BodyEncoding.JSON,
+        session_source=SessionSource.COOKIE,
+        session_field="session",
+    )
+    login_tool = build_login_tool(firer, identities, sessions, {"default": scheme})
+
+    registry = ToolRegistry([login_tool])
+    router = _scripted(
+        [
+            '{"tool": "login_as", "args": {"identity_id": "alice", "scheme": "default"}}',
+            '{"tool": "finish", "args": {"summary": "done"}}',
+        ]
+    )
+    loop = AgentLoop(router, registry, system_prompt="")  # type: ignore[arg-type]
+    loop.run("mission")
+    final_prompt = router.prompts[-1]
+    assert "captured-session-abc123" in final_prompt
+    assert REDACTION_PLACEHOLDER not in final_prompt
 
 
 def test_usage_is_recorded_when_a_usage_path_is_provided(tmp_path) -> None:
