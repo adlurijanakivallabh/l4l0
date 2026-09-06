@@ -9,7 +9,7 @@ import pytest
 from lalo.execution.scope import ScopeGuard
 from lalo.execution.target import Engagement
 from lalo.recon.facts import FactKind
-from lalo.recon.scan import NmapServiceScanRunner, UnsafeNmapArgumentError
+from lalo.recon.scan import NmapServiceScanRunner, UnsafeNmapArgumentError, _parse_nmap_xml
 
 _NMAP_XML = """<?xml version="1.0"?>
 <nmaprun>
@@ -108,6 +108,40 @@ def test_run_returns_empty_on_malformed_xml_never_crashes() -> None:
     container = _FakeContainer(stdout="not xml at all <<<")
     runner = NmapServiceScanRunner(container, _scope(), host="127.0.0.1")
     assert runner.run() == []
+
+
+def test_parse_nmap_xml_labels_each_host_with_its_own_resolved_address() -> None:
+    """A real bug: a CIDR scan's XML has one <host> element per live address,
+    but every result used to be labeled with the single literal host string
+    passed to the scan (e.g. "10.0.0.0/24") instead of that host block's own
+    resolved address - indistinguishable from every other host's ports."""
+    xml = """<?xml version="1.0"?>
+<nmaprun>
+  <host>
+    <address addr="10.0.0.5" addrtype="ipv4"/>
+    <ports><port protocol="tcp" portid="22"><state state="open"/></port></ports>
+  </host>
+  <host>
+    <address addr="10.0.0.9" addrtype="ipv4"/>
+    <ports><port protocol="tcp" portid="80"><state state="open"/></port></ports>
+  </host>
+</nmaprun>
+"""
+    facts = _parse_nmap_xml(xml, "10.0.0.0/24")
+    urls = {f.url for f in facts}
+    assert urls == {"tcp://10.0.0.5:22", "tcp://10.0.0.9:80"}
+
+
+def test_parse_nmap_xml_falls_back_to_the_passed_in_host_with_no_address_element() -> None:
+    xml = """<?xml version="1.0"?>
+<nmaprun>
+  <host>
+    <ports><port protocol="tcp" portid="80"><state state="open"/></port></ports>
+  </host>
+</nmaprun>
+"""
+    facts = _parse_nmap_xml(xml, "127.0.0.1")
+    assert {f.url for f in facts} == {"tcp://127.0.0.1:80"}
 
 
 def test_run_shell_quotes_the_host_and_port_range() -> None:

@@ -43,6 +43,15 @@ arguments (:func:`~lalo.recon.tool.build_recon_tool`'s ``scan_ports``
 action), so treating them as adversarial input at this boundary is the same
 discipline :func:`~lalo.findings.model.validate_finding_fields` already
 applies to every other agent-supplied field reaching a structured tool.
+
+Fixed a real correctness bug an audit surfaced: ``_SAFE_HOST`` permits a
+CIDR suffix, latent support for scanning a whole range in one call, but
+:func:`_parse_nmap_xml` used to label every result across every ``<host>``
+element nmap's XML returns with the single literal ``host`` string that was
+passed in, never that specific ``<host>`` block's own resolved
+``<address addr=...>`` — scanning a ``/24`` would have attributed every live
+host's open ports to the same literal CIDR string, indistinguishable from
+each other. Now reads the address per ``<host>`` block.
 """
 
 from __future__ import annotations
@@ -73,29 +82,50 @@ class UnsafeNmapArgumentError(ValueError):
 
 
 def _parse_nmap_xml(xml_text: str, host: str) -> list[ReconFact]:
+    """One :class:`ReconFact` per open TCP port, labeled with the address
+    each ``<host>`` block actually resolved to - never the literal ``host``
+    argument that was passed in. That distinction only matters once ``host``
+    covers more than one live address (a CIDR block: ``_SAFE_HOST`` permits
+    the ``/N`` suffix), where nmap's XML returns one ``<host>`` element per
+    live address; using the invocation argument for every result would
+    attribute every host's ports to the same literal string, indistinguishable
+    from each other and not a real resolvable host for downstream scope-
+    checking or reporting. Falls back to ``host`` only if a ``<host>`` block
+    is missing its own ``<address>`` element, which real nmap output never
+    does.
+    """
     facts: list[ReconFact] = []
     try:
         root = ElementTree.fromstring(xml_text)
     except ElementTree.ParseError:
         return facts
-    for port_el in root.findall(".//host/ports/port"):
-        state_el = port_el.find("state")
-        if state_el is None or state_el.get("state") != "open":
-            continue
-        port_id = port_el.get("portid")
-        protocol = port_el.get("protocol", "tcp")
-        if port_id is None or protocol != "tcp":
-            continue
-        service_el = port_el.find("service")
-        extra: dict[str, object] = {}
-        if service_el is not None:
-            for attr in ("name", "product", "version"):
-                value = service_el.get(attr)
-                if value:
-                    extra[attr] = value
-        facts.append(
-            ReconFact(kind=FactKind.HOST, url=f"tcp://{host}:{port_id}", source="nmap", extra=extra)
-        )
+    for host_el in root.findall(".//host"):
+        address_el = host_el.find("address")
+        resolved_host = address_el.get("addr") if address_el is not None else None
+        target_host = resolved_host or host
+        for port_el in host_el.findall("./ports/port"):
+            state_el = port_el.find("state")
+            if state_el is None or state_el.get("state") != "open":
+                continue
+            port_id = port_el.get("portid")
+            protocol = port_el.get("protocol", "tcp")
+            if port_id is None or protocol != "tcp":
+                continue
+            service_el = port_el.find("service")
+            extra: dict[str, object] = {}
+            if service_el is not None:
+                for attr in ("name", "product", "version"):
+                    value = service_el.get(attr)
+                    if value:
+                        extra[attr] = value
+            facts.append(
+                ReconFact(
+                    kind=FactKind.HOST,
+                    url=f"tcp://{target_host}:{port_id}",
+                    source="nmap",
+                    extra=extra,
+                )
+            )
     return facts
 
 
