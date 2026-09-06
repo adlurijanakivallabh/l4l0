@@ -116,7 +116,18 @@ class RuntimeConfig:
     fine here, see the module docstring). ``cap_add`` is how a caller opts a
     scan into anything BEYOND the fixed :data:`_BASELINE_CAPS` (e.g.
     ``("NET_RAW",)`` for a raw-socket tool); each is validated against
-    :data:`_FORBIDDEN_CAPS` at construction time.
+    :data:`_FORBIDDEN_CAPS` at construction time. ``enable_vpn`` is a separate,
+    narrower opt-in (Phase 1, PentestGPT pass — its own ``docker-compose.yml``
+    grants ``NET_ADMIN`` + a mounted ``/dev/net/tun`` specifically "for OpenVPN
+    (HackTheBox/TryHackMe connectivity)"): many real engagements are only
+    reachable via a client-provided OpenVPN/WireGuard config, and the sandbox
+    had no path to that network at all before this. Off by default and kept
+    separate from ``cap_add`` — NET_ADMIN is materially more powerful than
+    anything else this module grants, so a scan opts into it explicitly rather
+    than it riding along with some other capability request; ``/dev/net/tun``
+    stays namespace-scoped (lets a process create a virtual interface inside
+    its OWN network namespace only), so this doesn't touch the "no host
+    bind-mounts" line — no host filesystem or host network state is exposed.
     No restart policy is set on purpose: this is a single-shot disposable
     container — a crash should surface immediately, not silently retry and mask
     a fast-crash-loop.
@@ -129,6 +140,7 @@ class RuntimeConfig:
     memory: str = "3g"
     pids_limit: int = 2048  # caps fork bombs
     cap_add: tuple[str, ...] = ()
+    enable_vpn: bool = False
     log_max_size: str = "10m"
     log_max_files: int = 3
     extra_run_args: tuple[str, ...] = ()
@@ -192,6 +204,8 @@ class RuntimeContainer:
             args += ["--cap-add", cap]
         for cap in self.config.cap_add:
             args += ["--cap-add", cap]
+        if self.config.enable_vpn:
+            args += ["--cap-add", "NET_ADMIN", "--device", "/dev/net/tun:/dev/net/tun"]
         # Deliberately NO -v/--mount (no host filesystem) and NO docker socket —
         # never offered as a config option here, unlike every reference that
         # either lacks scope-egress hardening or ships host-socket delegation.

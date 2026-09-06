@@ -103,3 +103,24 @@ def test_sys_ptrace_baseline_is_present_even_with_an_empty_cap_add() -> None:
     args = container._run_args()
     ptrace_index = args.index("SYS_PTRACE")
     assert args[ptrace_index - 1] == "--cap-add"
+
+
+def test_vpn_is_off_by_default() -> None:
+    args = RuntimeContainer(RuntimeConfig(image=_IMAGE))._run_args()
+    assert "NET_ADMIN" not in args
+    assert "--device" not in args
+
+
+def test_enable_vpn_grants_net_admin_and_the_tun_device() -> None:
+    args = RuntimeContainer(RuntimeConfig(image=_IMAGE, enable_vpn=True))._run_args()
+    assert "NET_ADMIN" in args
+    device_index = args.index("--device")
+    assert args[device_index + 1] == "/dev/net/tun:/dev/net/tun"
+
+
+def test_enable_vpn_grants_a_working_tun_device_and_net_admin_on_a_live_daemon() -> None:
+    with RuntimeContainer(RuntimeConfig(image=_IMAGE, enable_vpn=True)) as c:
+        cap_eff = c.exec("grep CapEff /proc/self/status").stdout
+        hex_value = cap_eff.split()[-1]
+        assert int(hex_value, 16) & 0x1000, f"CAP_NET_ADMIN not effective: {cap_eff!r}"
+        assert c.exec("test -c /dev/net/tun").ok

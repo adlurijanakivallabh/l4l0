@@ -26,6 +26,14 @@ ENV DEBIAN_FRONTEND=noninteractive \
 # `msfconsole -q -x '...'` like any other installed tool — no RPC daemon, no
 # host reach, no hardcoded credentials (cai's own devcontainer ships an
 # msfrpcd listener with a hardcoded password on container start; not adopted).
+#
+# openvpn/wireguard-tools: Phase 1, PentestGPT pass — its own docker-compose.yml
+# grants NET_ADMIN + a mounted /dev/net/tun specifically "for OpenVPN
+# (HackTheBox/TryHackMe connectivity)". Many real engagements are only
+# reachable via a client-provided VPN config; the arsenal had no VPN client at
+# all. The container-level device/capability grant lives in
+# runtime/container.py's RuntimeConfig.enable_vpn (an explicit per-scan
+# opt-in, not baseline) — these packages are just what actually uses it.
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates curl wget git jq unzip build-essential pkg-config \
       python3 python3-pip python3-venv pipx \
@@ -34,6 +42,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       nikto sqlmap whatweb wafw00f hydra medusa \
       radare2 gdb binwalk \
       metasploit-framework \
+      openvpn wireguard-tools \
       seclists wordlists \
     && rm -rf /var/lib/apt/lists/*
 
