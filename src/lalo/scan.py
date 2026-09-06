@@ -47,6 +47,19 @@ only one agent is ever calling tools at any moment, so there is no
 concurrent access to isolate a browser session against, and starting a real
 Chromium instance per agent would be pure waste for that reason.
 
+**Login preflight** (added after a live comparison run showed a broken login
+only ever surfacing deep into a mission, after budget was already spent on
+unauthenticated groundwork): ``ScanConfig.login_preflight_pairs`` lets an
+operator name which ``(identity_id, scheme_name)`` pairs to authenticate once
+during preflight, before the container/OAST/browser or the main agent loop
+start - see :meth:`ScanRunner._preflight_logins`. Advisory by default (a
+failure is logged as a status event, matching ``fail_on_unreachable_targets``'
+own stance), with ``fail_on_broken_login`` to hard-stop instead. Empty by
+default and never auto-populated from ``identities``/``login_schemes``: those
+two maps are independent (an identity isn't tied to one scheme), so pairing
+them for preflight is the operator's call, not a cartesian-product guess this
+module should make.
+
 **Review timing** (a deliberate, simple choice, not a hidden requirement):
 CLAUDE.md's two non-blocking confidence layers run over every finding once
 the primary agent (and every spawned descendant) has finished, not
@@ -84,6 +97,7 @@ from .core.errors import (
     AllProvidersFailedError,
     ConfigError,
     ContainerError,
+    LoginFailedError,
     ResumeConfigMismatchError,
     TargetUnreachableError,
 )
@@ -100,7 +114,7 @@ from .findings.tool import build_record_finding_tool
 from .graph.model import NodeKind, ReachabilityGraph
 from .graph.tool import build_note_tool, build_query_graph_tool
 from .identity.credentials import Identity, IdentityStore
-from .identity.login import LoginScheme, SessionRegistry
+from .identity.login import LoginScheme, SessionRegistry, login
 from .identity.tool import build_jwt_tool, build_login_tool, build_session_check_tool
 from .integrations.mcp_client import MCPServerConfig, build_mcp_tool
 from .oast.server import OASTServer
@@ -143,6 +157,19 @@ class ScanConfig:
     budget_ceiling: int = 300
     identities: dict[str, Identity] = field(default_factory=dict)
     login_schemes: dict[str, LoginScheme] = field(default_factory=dict)
+    # (identity_id, scheme_name) pairs to authenticate once during preflight,
+    # before the main agent loop starts, rather than only ever discovering a
+    # broken login whenever the agent itself gets around to calling
+    # `login_as` mid-mission - by then it may have already burned real
+    # budget on unauthenticated groundwork. Empty by default: identities and
+    # login_schemes are two independent maps (an identity isn't tied to one
+    # scheme), so pairing them is the operator's call, not a guess this
+    # module should make via a cartesian product.
+    login_preflight_pairs: list[tuple[str, str]] = field(default_factory=list)
+    # False (the default) mirrors fail_on_unreachable_targets' own advisory-
+    # only stance: a failed preflight login is always logged as a status
+    # event, and set True only to hard-stop the scan on it instead.
+    fail_on_broken_login: bool = False
     # Keyed by connection name, matching `identities`' own convention -- a
     # dict key structurally rules out two connections silently colliding on
     # the same agent-facing `mcp_<name>` tool name, unlike a plain list
@@ -440,6 +467,58 @@ class ScanRunner:
             if e.category == "steering" and "text" in e.payload
         ]
 
+    def _preflight_logins(self, firer: HttpFirer) -> list[tuple[str, str, str]]:
+        """Authenticate every configured ``(identity_id, scheme_name)`` pair
+        once, before the main agent loop starts, catching a broken login
+        immediately rather than only whenever the agent itself gets around
+        to calling ``login_as`` mid-mission - potentially after already
+        burning real budget on unauthenticated groundwork.
+
+        Returns ``(identity_id, scheme_name, reason)`` for every pair that
+        failed; always advisory (logged via a status event) regardless of
+        ``fail_on_broken_login`` - the caller decides whether a failure is
+        fatal. A resulting session is discarded, not registered: this is a
+        credential-shape check, not a substitute for the agent's own
+        `login_as` call, which is what actually registers a usable session
+        on the graph (see identity/login.py's own SessionRegistry
+        docstring for why that invariant matters).
+        """
+        failures: list[tuple[str, str, str]] = []
+        for identity_id, scheme_name in self.config.login_preflight_pairs:
+            identity = self.config.identities.get(identity_id)
+            scheme = self.config.login_schemes.get(scheme_name)
+            if identity is None or scheme is None:
+                reason = (
+                    f"unknown identity {identity_id!r}"
+                    if identity is None
+                    else f"unknown scheme {scheme_name!r}"
+                )
+                failures.append((identity_id, scheme_name, reason))
+                self._emit(
+                    "status",
+                    {
+                        "event": "login_preflight_failed",
+                        "identity_id": identity_id,
+                        "scheme": scheme_name,
+                        "reason": reason,
+                    },
+                )
+                continue
+            try:
+                login(firer, identity, scheme)
+            except LoginFailedError as exc:
+                failures.append((identity_id, scheme_name, str(exc)))
+                self._emit(
+                    "status",
+                    {
+                        "event": "login_preflight_failed",
+                        "identity_id": identity_id,
+                        "scheme": scheme_name,
+                        "reason": str(exc),
+                    },
+                )
+        return failures
+
     def _emit(self, category: EventCategory, payload: dict[str, object]) -> None:
         # Durably persisted regardless of whether a live EventLog is attached
         # (EventLog itself is process-lifetime, not run-scoped - it outlives
@@ -543,6 +622,7 @@ class ScanRunner:
         preflight_firer = HttpFirer(scope)
         try:
             reachability = probe_reachability(engagement, preflight_firer)
+            login_failures = self._preflight_logins(preflight_firer)
         finally:
             preflight_firer.close()
         unreachable: list[tuple[str, str]] = []
@@ -558,6 +638,14 @@ class ScanRunner:
             raise TargetUnreachableError(
                 f"target reachability preflight failed ({detail}) and "
                 "fail_on_unreachable_targets is set"
+            )
+        if self.config.fail_on_broken_login and login_failures:
+            detail = "; ".join(
+                f"{identity_id}/{scheme_name}: {reason}"
+                for identity_id, scheme_name, reason in login_failures
+            )
+            raise LoginFailedError(
+                f"login preflight failed ({detail}) and fail_on_broken_login is set"
             )
 
         container = RuntimeContainer(self.config.container_config)

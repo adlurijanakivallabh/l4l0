@@ -30,11 +30,13 @@ import pytest
 import lalo.scan as scan_module
 from lalo.agent.spawn import merge_finding_nodes
 from lalo.agent.tools import FunctionTool, ToolResult
-from lalo.core.errors import ConfigError, ContainerError, TargetUnreachableError
+from lalo.core.errors import ConfigError, ContainerError, LoginFailedError, TargetUnreachableError
 from lalo.core.model_router import CompletionResponse, ModelRouter
 from lalo.core.usage import load_usage
 from lalo.graph.model import NodeKind, ReachabilityGraph
 from lalo.gui.events import EventLog
+from lalo.identity.credentials import Credential, CredentialKind, Identity
+from lalo.identity.login import LoginScheme, SessionSource
 from lalo.integrations.mcp_client import MCPServerConfig
 from lalo.orchestrator.budget import RunStatus
 from lalo.scan import ScanConfig, ScanRunner, _terminal_status, load_run_events
@@ -611,6 +613,126 @@ def test_scan_runner_hard_stops_on_an_unreachable_target_when_opted_in(
     )
     with pytest.raises(TargetUnreachableError, match="example.com"):
         ScanRunner(config, env={"ANTHROPIC_API_KEY": "sk-test"}).run()
+
+
+def test_scan_runner_defaults_to_advisory_only_for_a_broken_login_preflight(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A COOKIE-source scheme with no login_url is a real, hermetic
+    (no-network) LoginFailedError - see identity/login.py's own login()."""
+    monkeypatch.setattr(scan_module, "docker_available", lambda: True)
+    monkeypatch.setattr(scan_module, "RuntimeContainer", _FakeContainer)
+    router = ModelRouter(
+        providers={"fake": _ScriptedProvider(_respond)},
+        routes={"reasoning": ("fake",), "review": ("fake",)},
+        default_route=("fake",),
+    )
+    monkeypatch.setattr(scan_module, "build_router", lambda _settings: router)
+
+    event_log = EventLog()
+    config = ScanConfig(
+        mission="find a bug",
+        target_specs=["example.com"],
+        run_dir=tmp_path / "run",
+        identities={"alice": Identity("alice", "alice", Credential(CredentialKind.PASSWORD, "x"))},
+        login_schemes={"broken": LoginScheme()},
+        login_preflight_pairs=[("alice", "broken")],
+    )
+    outcome = ScanRunner(config, env={"ANTHROPIC_API_KEY": "sk-test"}, event_log=event_log).run()
+
+    assert outcome.status is RunStatus.COMPLETED  # never blocked by an advisory-only signal
+    _cursor, events = event_log.snapshot()
+    failed = [e for e in events if e.payload.get("event") == "login_preflight_failed"]
+    assert len(failed) == 1
+    assert failed[0].payload["identity_id"] == "alice"
+    assert failed[0].payload["scheme"] == "broken"
+
+
+def test_scan_runner_hard_stops_on_a_broken_login_preflight_when_opted_in(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(scan_module, "docker_available", lambda: True)
+    monkeypatch.setattr(scan_module, "RuntimeContainer", _FakeContainer)
+    router = ModelRouter(
+        providers={"fake": _ScriptedProvider(_respond)},
+        routes={"reasoning": ("fake",), "review": ("fake",)},
+        default_route=("fake",),
+    )
+    monkeypatch.setattr(scan_module, "build_router", lambda _settings: router)
+
+    config = ScanConfig(
+        mission="find a bug",
+        target_specs=["example.com"],
+        run_dir=tmp_path / "run",
+        identities={"alice": Identity("alice", "alice", Credential(CredentialKind.PASSWORD, "x"))},
+        login_schemes={"broken": LoginScheme()},
+        login_preflight_pairs=[("alice", "broken")],
+        fail_on_broken_login=True,
+    )
+    with pytest.raises(LoginFailedError, match="alice/broken"):
+        ScanRunner(config, env={"ANTHROPIC_API_KEY": "sk-test"}).run()
+
+
+def test_scan_runner_login_preflight_succeeds_for_a_header_scheme(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A HEADER-source scheme needs no network call at all (login.py's own
+    login() short-circuits before ever touching the firer) - proves the
+    success path, not just the failure path above."""
+    monkeypatch.setattr(scan_module, "docker_available", lambda: True)
+    monkeypatch.setattr(scan_module, "RuntimeContainer", _FakeContainer)
+    router = ModelRouter(
+        providers={"fake": _ScriptedProvider(_respond)},
+        routes={"reasoning": ("fake",), "review": ("fake",)},
+        default_route=("fake",),
+    )
+    monkeypatch.setattr(scan_module, "build_router", lambda _settings: router)
+
+    event_log = EventLog()
+    config = ScanConfig(
+        mission="find a bug",
+        target_specs=["example.com"],
+        run_dir=tmp_path / "run",
+        identities={
+            "alice": Identity("alice", "alice", Credential(CredentialKind.API_KEY, "sk-abc"))
+        },
+        login_schemes={
+            "api_key": LoginScheme(session_source=SessionSource.HEADER, session_field="X-Api-Key")
+        },
+        login_preflight_pairs=[("alice", "api_key")],
+    )
+    outcome = ScanRunner(config, env={"ANTHROPIC_API_KEY": "sk-test"}, event_log=event_log).run()
+
+    assert outcome.status is RunStatus.COMPLETED
+    _cursor, events = event_log.snapshot()
+    assert not any(e.payload.get("event") == "login_preflight_failed" for e in events)
+
+
+def test_scan_runner_login_preflight_reports_an_unknown_identity_or_scheme(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(scan_module, "docker_available", lambda: True)
+    monkeypatch.setattr(scan_module, "RuntimeContainer", _FakeContainer)
+    router = ModelRouter(
+        providers={"fake": _ScriptedProvider(_respond)},
+        routes={"reasoning": ("fake",), "review": ("fake",)},
+        default_route=("fake",),
+    )
+    monkeypatch.setattr(scan_module, "build_router", lambda _settings: router)
+
+    event_log = EventLog()
+    config = ScanConfig(
+        mission="find a bug",
+        target_specs=["example.com"],
+        run_dir=tmp_path / "run",
+        login_preflight_pairs=[("nobody", "nothing")],
+    )
+    ScanRunner(config, env={"ANTHROPIC_API_KEY": "sk-test"}, event_log=event_log).run()
+
+    _cursor, events = event_log.snapshot()
+    failed = [e for e in events if e.payload.get("event") == "login_preflight_failed"]
+    assert len(failed) == 1
+    assert "unknown identity" in str(failed[0].payload["reason"])
 
 
 def test_cancel_before_run_stops_on_the_first_step(
