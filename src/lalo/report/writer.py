@@ -60,7 +60,13 @@ from ..core.logging import get_logger
 from ..graph.model import ReachabilityGraph
 from ..orchestrator.budget import RunStatus
 from ..skills.loader import Skill
-from .collect import build_chain_records, build_executive_summary, collect_findings, sort_findings
+from .collect import (
+    ReportUsage,
+    build_chain_records,
+    build_executive_summary,
+    collect_findings,
+    sort_findings,
+)
 from .coverage import build_coverage_summary
 from .docx import render_report_docx
 from .html import render_report_html
@@ -86,6 +92,7 @@ def write_report(
     overrides: list[SeverityOverride] | None = None,
     generated_at: str | None = None,
     status: RunStatus | None = None,
+    usage: ReportUsage | None = None,
 ) -> dict[str, Path]:
     """Assemble every format from ``graph`` and write them, byte-verified.
 
@@ -94,6 +101,11 @@ def write_report(
     *why* a scan stopped (budget exhausted, an unverified stop, an error)
     directly in the delivered report, rather than that information living
     only in the live GUI event stream and being lost once the run ends.
+
+    ``usage`` (optional) surfaces LLM token/cost totals in the delivered
+    report - an audit found this was previously only ever visible as a
+    transient GUI toast, never persisted anywhere an operator could read it
+    after the fact.
 
     Returns the written path for each format, keyed by ``"markdown"``,
     ``"json"``, and ``"sarif"`` (always present - a failure here propagates
@@ -119,6 +131,7 @@ def write_report(
         generated_at=generated_at,
         status=status_value,
         summary=summary,
+        usage=usage,
     )
     json_document = {
         "generated_at": generated_at,
@@ -127,6 +140,7 @@ def write_report(
         "findings": [asdict(record) for record in records],
         "coverage": asdict(coverage),
         "chains": [asdict(chain) for chain in chains],
+        "usage": asdict(usage) if usage is not None else None,
     }
     # Only a genuinely COMPLETED run is a successful execution for SARIF's
     # purposes here - BUDGET_EXHAUSTED/UNVERIFIED_STOP/ERROR (and RUNNING,
@@ -149,6 +163,7 @@ def write_report(
         generated_at=generated_at,
         status=status_value,
         summary=summary,
+        usage=usage,
     )
 
     paths = {

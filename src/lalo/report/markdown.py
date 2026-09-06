@@ -30,7 +30,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from .collect import ChainRecord, ExecutiveSummary, FindingRecord
+from .collect import ChainRecord, ExecutiveSummary, FindingRecord, ReportUsage
 from .coverage import CoverageSummary
 
 
@@ -108,6 +108,7 @@ def render_report_md(
     generated_at: str | None = None,
     status: str | None = None,
     summary: ExecutiveSummary | None = None,
+    usage: ReportUsage | None = None,
 ) -> str:
     lines = ["# L4L0 Security Assessment Report", ""]
     if generated_at:
@@ -118,6 +119,17 @@ def render_report_md(
         lines.append("")
     lines.append(f"**Findings:** {len(records)}")
     lines.append("")
+
+    if usage is not None:
+        cost_note = (
+            f", est. cost ${usage.total_cost_usd:.4f}" if usage.total_cost_usd is not None else ""
+        )
+        lines.append(
+            f"**LLM Usage:** {usage.total_requests} requests, "
+            f"{usage.total_input_tokens:,} input / {usage.total_output_tokens:,} output "
+            f"tokens{cost_note}"
+        )
+        lines.append("")
 
     if summary is not None:
         lines.append("## Executive Summary\n")

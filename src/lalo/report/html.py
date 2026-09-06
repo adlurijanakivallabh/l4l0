@@ -30,7 +30,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from html import escape
 
-from .collect import ChainRecord, ExecutiveSummary, FindingRecord
+from .collect import ChainRecord, ExecutiveSummary, FindingRecord, ReportUsage
 from .coverage import CoverageSummary
 
 _STYLE = """
@@ -138,6 +138,7 @@ def render_report_html(
     generated_at: str | None = None,
     status: str | None = None,
     summary: ExecutiveSummary | None = None,
+    usage: ReportUsage | None = None,
 ) -> str:
     parts = [
         "<!doctype html>",
@@ -149,6 +150,15 @@ def render_report_html(
     if status:
         parts.append(f"<p><strong>Scan Status:</strong> {_e(status)}</p>")
     parts.append(f"<p><strong>Findings:</strong> {len(records)}</p>")
+    if usage is not None:
+        cost_note = (
+            f", est. cost ${usage.total_cost_usd:.4f}" if usage.total_cost_usd is not None else ""
+        )
+        parts.append(
+            f"<p><strong>LLM Usage:</strong> {usage.total_requests} requests, "
+            f"{usage.total_input_tokens:,} input / {usage.total_output_tokens:,} output "
+            f"tokens{cost_note}</p>"
+        )
 
     if summary is not None:
         parts.append("<h2>Executive Summary</h2>")

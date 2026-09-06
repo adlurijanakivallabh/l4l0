@@ -523,6 +523,81 @@ def test_scan_runner_emits_usage_delta_when_usage_path_is_configured(
     assert usage_delta["requests"] > 0
 
 
+def test_scan_runner_estimates_cost_when_a_pricing_table_is_configured(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Closes a real gap: record_usage's own pricing_table parameter was
+    fully built and tested but never actually passed from the one real call
+    site - every live run left UsageStats.total_cost_usd permanently at 0.0,
+    and the delivered report had no cost/token figures at all."""
+    monkeypatch.setattr(scan_module, "docker_available", lambda: True)
+    monkeypatch.setattr(scan_module, "RuntimeContainer", _FakeContainer)
+
+    class _TokenReportingProvider:
+        name = "fake"
+        calls = 0
+
+        def complete(self, request: object) -> CompletionResponse:
+            text = _respond(self.calls, request.prompt)  # type: ignore[attr-defined]
+            self.calls += 1
+            return CompletionResponse(
+                text=text,
+                provider="fake",
+                model="fake-model",
+                input_tokens=1000,
+                output_tokens=100,
+            )
+
+    router = ModelRouter(
+        providers={"fake": _TokenReportingProvider()},
+        routes={"reasoning": ("fake",), "review": ("fake",)},
+        default_route=("fake",),
+    )
+    monkeypatch.setattr(scan_module, "build_router", lambda _settings: router)
+
+    run_dir = tmp_path / "run"
+    config = ScanConfig(
+        mission="find a bug",
+        target_specs=["example.com"],
+        run_dir=run_dir,
+        usage_path=tmp_path / "usage.json",
+        pricing_table={"fake-model": (1.0, 2.0)},  # $1/$2 per million input/output tokens
+    )
+    outcome = ScanRunner(config, env={"ANTHROPIC_API_KEY": "sk-test"}).run()
+
+    report_json = json.loads(outcome.report_paths["json"].read_text())
+    assert report_json["usage"]["total_cost_usd"] > 0
+    assert report_json["usage"]["total_input_tokens"] > 0
+    assert "est. cost $" in outcome.report_paths["markdown"].read_text()
+
+
+def test_scan_runner_report_usage_is_unknown_cost_with_no_pricing_table(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """total_cost_usd must read as unknown (None/absent), never a fabricated
+    $0.00, when the operator never configured a pricing table."""
+    monkeypatch.setattr(scan_module, "docker_available", lambda: True)
+    monkeypatch.setattr(scan_module, "RuntimeContainer", _FakeContainer)
+    router = ModelRouter(
+        providers={"fake": _ScriptedProvider(_respond)},
+        routes={"reasoning": ("fake",), "review": ("fake",)},
+        default_route=("fake",),
+    )
+    monkeypatch.setattr(scan_module, "build_router", lambda _settings: router)
+
+    config = ScanConfig(
+        mission="find a bug",
+        target_specs=["example.com"],
+        run_dir=tmp_path / "run",
+        usage_path=tmp_path / "usage.json",
+    )
+    outcome = ScanRunner(config, env={"ANTHROPIC_API_KEY": "sk-test"}).run()
+
+    report_json = json.loads(outcome.report_paths["json"].read_text())
+    assert report_json["usage"]["total_cost_usd"] is None
+    assert "cost" not in outcome.report_paths["markdown"].read_text().lower()
+
+
 def test_scan_runner_durably_persists_events_even_with_no_live_event_log(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

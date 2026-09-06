@@ -147,6 +147,24 @@ def build_executive_summary(records: list[FindingRecord]) -> ExecutiveSummary:
 
 
 @dataclass(frozen=True)
+class ReportUsage:
+    """LLM usage for the run, surfaced in the delivered report rather than
+    only ever reaching the operator as a transient GUI toast (the gap an
+    audit found: core/usage.py's own UsageStats was real and durably
+    persisted, but report/writer.py, html.py, and pdf.py had zero references
+    to it anywhere). ``total_cost_usd`` is ``None`` when no pricing table was
+    configured for the run - "unknown", never a fabricated ``$0.00``,
+    matching core/pricing.py's own "cost for an unrecognized model is
+    unknown, not zero" design principle.
+    """
+
+    total_requests: int
+    total_input_tokens: int
+    total_output_tokens: int
+    total_cost_usd: float | None
+
+
+@dataclass(frozen=True)
 class ChainRecord:
     """One resolved attack chain, ready to render — the graph's raw finding
     ids (:data:`~lalo.graph.model.EdgeKind.ENABLES` order) plus their

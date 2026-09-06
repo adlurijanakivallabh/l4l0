@@ -79,6 +79,19 @@ unrelated scans running in the same long-lived process (the GUI server
 serves more than one) silently share trace state, a worse regression than
 the gap it would claim to close.
 
+**Cost/usage report visibility** (the same audit pass): ``core/pricing.py``
+and ``core/usage.py``'s ``record_usage`` were fully built with real cost-
+estimation logic, but ``ScanConfig`` had no field to actually supply a
+price table, and ``report/writer.py``/``html.py``/``pdf.py`` had zero
+references to usage or cost anywhere - token/cost totals only ever reached
+the operator as a transient GUI toast, never the delivered report.
+``ScanConfig.pricing_table`` (optional, ``None`` by default - see the
+field's own docstring for why no default table is baked in) closes the
+first half; a :class:`~lalo.report.collect.ReportUsage` built from THIS
+run's own usage delta (never the ``usage_path`` ledger's cumulative total,
+which can span many scans) and threaded into :func:`~lalo.report.writer.
+write_report` closes the second.
+
 **Review timing** (a deliberate, simple choice, not a hidden requirement):
 CLAUDE.md's two non-blocking confidence layers run over every finding once
 the primary agent (and every spawned descendant) has finished, not
@@ -121,6 +134,7 @@ from .core.errors import (
     TargetUnreachableError,
 )
 from .core.model_router import ModelRouter
+from .core.pricing import PricingTable
 from .core.providers import build_router, verify_router
 from .core.usage import load_usage
 from .execution.firer import HttpFirer, probe_reachability
@@ -143,6 +157,7 @@ from .orchestrator.budget import Budget, RunStatus
 from .orchestrator.journal import DurableJournal
 from .prompts import render_prompt
 from .recon.tool import build_recon_tool
+from .report.collect import ReportUsage
 from .report.writer import write_report
 from .runtime.container import RuntimeConfig, RuntimeContainer, docker_available
 from .runtime.tool import build_run_command_tool
@@ -202,6 +217,14 @@ class ScanConfig:
     # record real lifetime token/cost usage for this scan's completions; the
     # GUI's own real scan-launch path opts in.
     usage_path: Path | None = None
+    # None (the default) means cost is never estimated - core/pricing.py's
+    # own design deliberately ships with no baked-in price table (real-world
+    # token pricing changes too often, and varies too much per operator's
+    # own negotiated rate, to assert as a fact on the operator's behalf).
+    # Meaningless without usage_path also being set - cost is derived from
+    # the SAME per-completion token counts usage recording already captures,
+    # never computed independently.
+    pricing_table: PricingTable | None = None
     # False (the default) preserves probe_reachability's own advisory-only
     # design -- an in-engagement network/infra or raw-TCP target may simply
     # not speak HTTP, so "unreachable" is never assumed to mean
@@ -809,6 +832,7 @@ class ScanRunner:
                     usage_path=self.config.usage_path,
                     agent_id=child_id,
                     get_steering=self._pending_steering,
+                    pricing_table=self.config.pricing_table,
                 )
                 result = child_loop.run(task)
                 after = set(child_graph.nodes_of_kind(NodeKind.FINDING))
@@ -859,6 +883,7 @@ class ScanRunner:
             usage_path=self.config.usage_path,
             agent_id=root_id,
             get_steering=self._pending_steering,
+            pricing_table=self.config.pricing_table,
         )
         # Only the root agent's own steps are journaled/resumable -- a spawned
         # child still mid-execution at crash time simply restarts from scratch
@@ -908,7 +933,28 @@ class ScanRunner:
             if self._wall_clock_exceeded
             else _terminal_status(result.stop_reason)
         )
-        report_paths = write_report(self.config.run_dir, graph, skills, status=status)
+        # Built before write_report, not after: usage_path is a LIFETIME
+        # ledger potentially shared across many scans, so the report must
+        # show this run's own delta, not the ledger's cumulative total -
+        # exactly the subtraction the GUI's own usage_delta event already
+        # does below, computed once here and reused for both.
+        report_usage: ReportUsage | None = None
+        if usage_path is not None and usage_before is not None:
+            usage_after = load_usage(usage_path)
+            report_usage = ReportUsage(
+                total_requests=usage_after.total_requests - usage_before.total_requests,
+                total_input_tokens=usage_after.total_input_tokens - usage_before.total_input_tokens,
+                total_output_tokens=usage_after.total_output_tokens
+                - usage_before.total_output_tokens,
+                total_cost_usd=(
+                    usage_after.total_cost_usd - usage_before.total_cost_usd
+                    if self.config.pricing_table is not None
+                    else None
+                ),
+            )
+        report_paths = write_report(
+            self.config.run_dir, graph, skills, status=status, usage=report_usage
+        )
         graph.save(self.config.run_dir / "graph.json")
         _write_trace_file(self.config.run_dir, tracer)
         completed_payload: dict[str, object] = {
@@ -917,12 +963,11 @@ class ScanRunner:
             "report_paths": {fmt: str(path) for fmt, path in report_paths.items()},
             "trace_summary": _trace_summary(tracer),
         }
-        if usage_path is not None and usage_before is not None:
-            usage_after = load_usage(usage_path)
+        if report_usage is not None:
             completed_payload["usage_delta"] = {
-                "requests": usage_after.total_requests - usage_before.total_requests,
-                "input_tokens": usage_after.total_input_tokens - usage_before.total_input_tokens,
-                "output_tokens": usage_after.total_output_tokens - usage_before.total_output_tokens,
+                "requests": report_usage.total_requests,
+                "input_tokens": report_usage.total_input_tokens,
+                "output_tokens": report_usage.total_output_tokens,
             }
         self._emit("status", completed_payload)
         return ScanOutcome(status=status, result=result, report_paths=report_paths)

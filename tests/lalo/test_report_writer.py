@@ -12,6 +12,7 @@ from lalo.agent.tools import ToolRegistry
 from lalo.findings.tool import build_record_finding_tool
 from lalo.graph.model import NodeKind, ReachabilityGraph
 from lalo.orchestrator.budget import RunStatus
+from lalo.report.collect import ReportUsage
 from lalo.report.overrides import SeverityOverride
 from lalo.report.writer import (
     DOCX_FILENAME,
@@ -247,6 +248,32 @@ def test_write_report_includes_an_executive_summary_in_every_format(tmp_path: Pa
         "highest_severity": "high",
     }
     assert "## Executive Summary" in paths["markdown"].read_text(encoding="utf-8")
+
+
+def test_write_report_threads_usage_into_json_and_markdown(tmp_path: Path) -> None:
+    """Closes a real gap: token/cost totals previously reached the operator
+    only as a transient GUI toast, never the delivered report."""
+    graph, _ = _graph_with_finding()
+    usage = ReportUsage(
+        total_requests=2, total_input_tokens=500, total_output_tokens=150, total_cost_usd=0.005
+    )
+    paths = write_report(tmp_path, graph, _SKILLS, usage=usage)
+
+    doc = json.loads(paths["json"].read_text(encoding="utf-8"))
+    assert doc["usage"] == {
+        "total_requests": 2,
+        "total_input_tokens": 500,
+        "total_output_tokens": 150,
+        "total_cost_usd": 0.005,
+    }
+    assert "**LLM Usage:**" in paths["markdown"].read_text(encoding="utf-8")
+
+
+def test_write_report_with_no_usage_omits_it_from_json(tmp_path: Path) -> None:
+    graph, _ = _graph_with_finding()
+    paths = write_report(tmp_path, graph, _SKILLS)
+    doc = json.loads(paths["json"].read_text(encoding="utf-8"))
+    assert doc["usage"] is None
 
 
 def test_write_report_with_no_status_omits_it_from_json_and_markdown(tmp_path: Path) -> None:

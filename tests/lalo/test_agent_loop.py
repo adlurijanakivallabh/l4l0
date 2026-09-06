@@ -413,6 +413,47 @@ def test_usage_is_recorded_when_a_usage_path_is_provided(tmp_path) -> None:
     assert "fake" in stats.by_provider
 
 
+def test_pricing_table_is_threaded_through_to_record_usage(tmp_path) -> None:
+    """Closes a real gap: record_usage's own pricing_table parameter was
+    fully built and tested but _complete (the one real call site) never
+    passed one through - every live run left UsageStats.total_cost_usd
+    permanently at 0.0."""
+    tool, _ = _counting_tool("noop")
+    registry = ToolRegistry([tool])
+
+    class _TokenReportingRouter:
+        def complete(self, role: str, request: CompletionRequest) -> CompletionResponse:
+            return CompletionResponse(
+                text='{"tool": "finish", "args": {"summary": "done"}}',
+                provider="fake",
+                model="fake-model",
+                input_tokens=1000,
+                output_tokens=100,
+            )
+
+    usage_path = tmp_path / "usage.json"
+    loop = AgentLoop(
+        _TokenReportingRouter(),  # type: ignore[arg-type]
+        registry,
+        system_prompt="",
+        usage_path=usage_path,
+        pricing_table={"fake-model": (1.0, 2.0)},  # $1/$2 per million input/output tokens
+    )
+    loop.run("mission")
+    stats = load_usage(usage_path)
+    assert stats.total_cost_usd == pytest.approx(1000 * 1.0 / 1_000_000 + 100 * 2.0 / 1_000_000)
+
+
+def test_with_no_pricing_table_cost_stays_zero(tmp_path) -> None:
+    tool, _ = _counting_tool("noop")
+    registry = ToolRegistry([tool])
+    router = _scripted(['{"tool": "finish", "args": {"summary": "done"}}'])
+    usage_path = tmp_path / "usage.json"
+    loop = AgentLoop(router, registry, system_prompt="", usage_path=usage_path)  # type: ignore[arg-type]
+    loop.run("mission")
+    assert load_usage(usage_path).total_cost_usd == 0.0
+
+
 # --- live operator steering --------------------------------------------------
 
 

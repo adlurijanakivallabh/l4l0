@@ -7,7 +7,13 @@ from dataclasses import replace
 from lalo.agent.tools import ToolRegistry
 from lalo.findings.tool import build_record_finding_tool
 from lalo.graph.model import ReachabilityGraph
-from lalo.report.collect import ChainRecord, ExecutiveSummary, FindingRecord, collect_findings
+from lalo.report.collect import (
+    ChainRecord,
+    ExecutiveSummary,
+    FindingRecord,
+    ReportUsage,
+    collect_findings,
+)
 from lalo.report.coverage import CoverageSummary
 from lalo.report.html import render_finding_html, render_report_html
 
@@ -164,6 +170,31 @@ def test_render_report_html_with_no_status_has_no_status_line() -> None:
     coverage = CoverageSummary(assessed=[], not_assessed=[])
     rendered = render_report_html([], coverage)
     assert "Scan Status" not in rendered
+
+
+def test_render_report_html_shows_usage_with_a_known_cost() -> None:
+    coverage = CoverageSummary(assessed=[], not_assessed=[])
+    usage = ReportUsage(
+        total_requests=3, total_input_tokens=1000, total_output_tokens=200, total_cost_usd=0.0123
+    )
+    rendered = render_report_html([], coverage, usage=usage)
+    assert "3 requests, 1,000 input / 200 output tokens, est. cost $0.0123" in rendered
+
+
+def test_render_report_html_shows_usage_without_a_configured_pricing_table() -> None:
+    coverage = CoverageSummary(assessed=[], not_assessed=[])
+    usage = ReportUsage(
+        total_requests=3, total_input_tokens=1000, total_output_tokens=200, total_cost_usd=None
+    )
+    rendered = render_report_html([], coverage, usage=usage)
+    assert "3 requests, 1,000 input / 200 output tokens" in rendered
+    assert "cost" not in rendered.lower()
+
+
+def test_render_report_html_with_no_usage_has_no_usage_line() -> None:
+    coverage = CoverageSummary(assessed=[], not_assessed=[])
+    rendered = render_report_html([], coverage)
+    assert "LLM Usage" not in rendered
 
 
 def test_render_report_html_renders_the_executive_summary_when_given() -> None:

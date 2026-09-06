@@ -89,6 +89,18 @@ lines, not this path. Closed at the one choke point every tool observation
 already funnels through — ``_dispatch_once``, immediately before
 ``_truncate_observation`` (before, not after: a secret straddling the
 truncation boundary would otherwise be split into two unmatchable halves).
+
+A second finding from that same pass: :func:`~lalo.core.usage.record_usage`
+accepts a ``pricing_table`` and has real cost-estimation logic
+(:mod:`lalo.core.pricing`), but ``_complete`` — the one real call site —
+never passed one through. Every live run left ``UsageStats.total_cost_usd``
+permanently at ``0.0``, dead by omission rather than by design (the design
+itself, per ``pricing.py``'s own docstring, is deliberately "operator
+supplies a table, or cost is simply never estimated" — never a fabricated
+default). ``pricing_table`` (optional, ``None`` by default) closes the
+missing wire without changing that design; :class:`~lalo.scan.ScanRunner`
+threads its own ``ScanConfig.pricing_table`` through here the same way it
+already does for ``usage_path``.
 """
 
 from __future__ import annotations
@@ -102,6 +114,7 @@ from pathlib import Path
 from ..core.errors import AllProvidersFailedError
 from ..core.logging import get_logger
 from ..core.model_router import CompletionRequest, CompletionResponse, ModelRouter
+from ..core.pricing import PricingTable
 from ..core.redaction import redact
 from ..core.usage import record_usage
 from ..observability import Tracer
@@ -294,6 +307,7 @@ class AgentLoop:
         agent_id: str | None = None,
         sleep: Callable[[float], None] = time.sleep,
         get_steering: Callable[[], list[str]] | None = None,
+        pricing_table: PricingTable | None = None,
     ) -> None:
         self.router = router
         self.registry = registry
@@ -323,6 +337,14 @@ class AgentLoop:
         # usage log). See _complete()'s own note for why this was dead code
         # before this fix despite being fully built and tested in isolation.
         self.usage_path = usage_path
+        # None (the default) means cost is never estimated - core/pricing.py's
+        # own design has no baked-in price table (real-world pricing changes
+        # too often, and varies too much per operator's negotiated rate, to
+        # ship as an asserted fact). An audit found record_usage's own
+        # pricing_table parameter was fully built and tested but never
+        # actually passed from here, the one real call site - every live run
+        # left UsageStats.total_cost_usd permanently at 0.0.
+        self.pricing_table = pricing_table
         # This loop's own identity (the root agent, or a spawned child) for
         # UsageStats.by_agent - None is a legitimate value here too, meaning
         # "record lifetime/by_provider totals but attribute nothing to a
@@ -387,7 +409,12 @@ class AgentLoop:
             return None
         if self.usage_path is not None:
             try:
-                record_usage(response, path=self.usage_path, agent_id=self.agent_id)
+                record_usage(
+                    response,
+                    path=self.usage_path,
+                    agent_id=self.agent_id,
+                    pricing_table=self.pricing_table,
+                )
             except Exception:
                 _log.exception("usage recording failed; continuing without it")
         return response
