@@ -37,6 +37,20 @@ into the durable journal's ``run_once`` model — each spawn is one resumable
 step — without inventing an async messaging layer nothing in this phase's
 verify criteria requires. True concurrent siblings, if ever needed, would be
 an additive change on top of this, not a rewrite of it.
+
+Re-verified against the full sequential five-reference cycle (this session's
+standing methodology): the first reference's own ``create_agent`` tool
+description (re-read in full alongside its coordinator, above) carries two
+genuinely cheap, low-risk pieces of prompt-level guidance the original build
+here had dropped — check ``view_agent_graph`` first so a duplicate specialist
+doesn't waste turns, and state what's already known in ``task`` so a child
+doesn't rediscover it — folded into ``spawn_agent``'s own tool description
+below. Its per-child ``skills`` parameter (pre-declared at spawn time) was
+deliberately NOT adopted: L4L0's children decide their own skill needs via
+``recall`` once running, rather than having them assigned upfront. The other
+four references' async inter-agent-messaging tools (send-a-message-to-any-
+running-agent, wait-for-a-message) remain out of scope for the same reason
+already stated above — no mailbox model exists here to hang them on.
 """
 
 from __future__ import annotations
@@ -260,6 +274,10 @@ def build_spawn_tools(
         description=(
             "Spawn a child agent for a focused subtask; runs to completion and returns its "
             "authoritative filed finding ids — never trust its own prose as evidence. "
+            "Call view_agent_graph first to confirm no existing agent already covers this "
+            "scope — a duplicate specialist wastes turns. In 'task', state what is ALREADY "
+            "KNOWN (what recon already mapped, which surfaces are already covered) so the "
+            "child builds on it instead of rediscovering it from scratch. "
             'args: {"name": str, "task": str}'
         ),
         func=_spawn,
