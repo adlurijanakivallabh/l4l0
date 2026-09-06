@@ -318,6 +318,21 @@ def _manifest_path(run_dir: Path) -> Path:
     return run_dir / "resume_manifest.json"
 
 
+def read_resume_manifest(run_dir: Path) -> dict[str, object] | None:
+    """The locked engagement fields (mission/targets/exclusions/rules of
+    engagement/egress_lock) a prior run of ``run_dir`` persisted - for a
+    caller (the GUI's own resume affordance) that wants to relaunch it
+    without retyping them, so a resume can never accidentally diverge from
+    what was originally authorized. ``None`` if ``run_dir`` was never
+    actually started (no manifest was ever written).
+    """
+    path = _manifest_path(run_dir)
+    if not path.exists():
+        return None
+    data = json.loads(path.read_bytes())
+    return data if isinstance(data, dict) else None
+
+
 def _journal_path(run_dir: Path) -> Path:
     return run_dir / "journal.jsonl"
 

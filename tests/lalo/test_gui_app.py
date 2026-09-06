@@ -310,6 +310,58 @@ def test_scan_launches_a_runner_and_returns_a_run_dir(
     assert Path(response.json()["run_dir"]).parent == tmp_path
 
 
+def test_scan_resume_run_id_on_a_run_with_no_manifest_is_404(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(app_module, "ScanRunner", _FakeScanRunner)
+    client, _ = _client(runs_dir=tmp_path)
+    response = client.post("/scan", json={"resume_run_id": "no-such-run"})
+    assert response.status_code == 404
+
+
+def test_scan_resume_run_id_rejects_a_dot_dot_run_id(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(app_module, "ScanRunner", _FakeScanRunner)
+    client, _ = _client(runs_dir=tmp_path)
+    response = client.post("/scan", json={"resume_run_id": ".."})
+    assert response.status_code == 400
+
+
+def test_scan_resume_run_id_reads_the_locked_fields_from_the_manifest_not_the_request(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Closes a real gap: /scan always minted a fresh run_dir, so a
+    crashed/stopped run's own persisted manifest could never be matched
+    again - scan.py's real resume mechanism (DurableJournal,
+    _ResumeManifest) was genuine and unit-tested but structurally
+    unreachable through the one interface this project actually has."""
+    monkeypatch.setattr(app_module, "ScanRunner", _FakeScanRunner)
+    run_dir = tmp_path / "abc123"
+    run_dir.mkdir()
+    (run_dir / "resume_manifest.json").write_text(
+        '{"mission": "the ORIGINAL authorized mission", '
+        '"target_specs": ["original.example.com"], "egress_lock": false}',
+        encoding="utf-8",
+    )
+    client, _ = _client(runs_dir=tmp_path)
+    # Any mission/targets in the request body must be ignored for a resume -
+    # only the manifest's own locked fields may ever reach ScanConfig.
+    response = client.post(
+        "/scan",
+        json={
+            "resume_run_id": "abc123",
+            "mission": "a DIFFERENT, unauthorized mission",
+            "targets": ["evil.example.com"],
+        },
+    )
+    assert response.status_code == 200
+    config = current_config()
+    assert config.mission == "the ORIGINAL authorized mission"
+    assert config.target_specs == ["original.example.com"]
+    assert config.run_dir == run_dir
+
+
 def test_scan_request_passes_exclude_targets_through_to_scan_config(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -253,6 +253,11 @@
       link.href = `/runs/${encodeURIComponent(run.run_id)}/report/${fmt}`;
       link.hidden = false;
     }
+    if (!run.running) {
+      const resumeBtn = item.querySelector(".run-resume-btn");
+      resumeBtn.hidden = false;
+      resumeBtn.dataset.runId = run.run_id;
+    }
     return item;
   }
 
@@ -489,6 +494,26 @@
     }
   }
 
+  async function resumeRun(runId, button) {
+    button.disabled = true;
+    try {
+      const response = await fetch("/scan", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ resume_run_id: runId }),
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(body.error || `request failed (${response.status})`);
+      }
+      appendAgentText(`Resuming run ${runId}…`);
+      onScanStarted();
+    } catch (err) {
+      appendAgentText(`[resume failed: ${err.message}]`);
+      button.disabled = false;
+    }
+  }
+
   async function sendSteering(text) {
     composerSendBtn.disabled = true;
     composerInput.disabled = true;
@@ -570,6 +595,12 @@
   });
 
   refreshRunsBtn.addEventListener("click", () => loadRunHistory());
+
+  runHistoryListEl.addEventListener("click", (ev) => {
+    const btn = ev.target.closest(".run-resume-btn");
+    if (!btn) return;
+    resumeRun(btn.dataset.runId, btn);
+  });
 
   connect();
   loadRunHistory();

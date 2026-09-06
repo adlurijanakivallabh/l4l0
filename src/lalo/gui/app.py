@@ -62,6 +62,21 @@ console with no code-fence/PoC rendering has no legitimate use for
 narrower, more conservative choice — not a rejection of the reference's own
 (correctly reasoned) approach to a harder problem it actually has and this
 module does not.
+
+**Resume was a real, tested mechanism nobody could actually reach.**
+:mod:`lalo.scan`'s own crash/resume replay (``_ResumeManifest``,
+``DurableJournal``) is genuine and unit-tested - but ``/scan`` always
+minted a fresh ``uuid.uuid4()`` run directory, so a crashed or
+budget-exhausted run's own persisted manifest could never be matched
+again through the one interface this project actually has. Writing an
+operator doc explaining "how to resume a run" without fixing this first
+would have documented a capability the GUI structurally couldn't reach.
+``ScanRequest.resume_run_id`` closes it: when set, every locked engagement
+field (mission, targets, exclusions, rules of engagement, egress lock)
+comes back from that run's own :func:`~lalo.scan.read_resume_manifest`,
+never from the request body - a resume can't even attempt to diverge from
+what was originally authorized, on top of ``ScanRunner.run()``'s own
+existing ``ResumeConfigMismatchError`` backstop if it somehow did.
 """
 
 from __future__ import annotations
@@ -89,7 +104,7 @@ from ..report.writer import (
     PDF_FILENAME,
     SARIF_FILENAME,
 )
-from ..scan import ScanConfig, ScanRunner, load_run_events
+from ..scan import ScanConfig, ScanRunner, load_run_events, read_resume_manifest
 from .events import EventLog
 
 # fmt -> (filename in a run_dir, media type) - a fixed allowlist, not a raw
@@ -118,10 +133,15 @@ class SteeringMessage(BaseModel):
 
 
 class ScanRequest(BaseModel):
-    mission: str
-    targets: list[str]
+    # Both default empty rather than required: a resume request (resume_run_id
+    # set) supplies neither - the locked engagement fields are read back from
+    # that run's own resume_manifest.json instead, never retyped, so a resume
+    # can never accidentally mismatch what was originally authorized.
+    mission: str = ""
+    targets: list[str] = []
     exclude_targets: list[str] = []
     rules_of_engagement: str = ""
+    resume_run_id: str | None = None
 
 
 def _event_to_json(event: Any) -> dict[str, Any]:
@@ -198,23 +218,56 @@ def build_app(event_log: EventLog, *, runs_dir: Path | None = None) -> FastAPI:
 
     @app.post("/scan")
     async def start_scan(request: ScanRequest) -> JSONResponse:
-        mission = request.mission.strip()
-        targets = [t.strip() for t in request.targets if t.strip()]
-        exclude_targets = [t.strip() for t in request.exclude_targets if t.strip()]
-        if not mission or not targets:
-            return JSONResponse({"error": "'mission' and 'targets' are required"}, status_code=400)
         if current_runner["runner"] is not None:
             return JSONResponse({"error": "a scan is already running"}, status_code=409)
 
-        run_dir = runs_dir / uuid.uuid4().hex[:12]
-        config = ScanConfig(
-            mission=mission,
-            target_specs=targets,
-            exclude_target_specs=exclude_targets,
-            rules_of_engagement=request.rules_of_engagement.strip(),
-            run_dir=run_dir,
-            usage_path=DEFAULT_USAGE_PATH,
-        )
+        if request.resume_run_id:
+            run_id = request.resume_run_id
+            if not run_id or run_id in (".", ".."):
+                return JSONResponse({"error": "invalid run_id"}, status_code=400)
+            run_dir = runs_dir / run_id
+            manifest = read_resume_manifest(run_dir)
+            if manifest is None:
+                return JSONResponse(
+                    {"error": f"no resumable run found for {run_id!r}"}, status_code=404
+                )
+            # Every locked engagement field comes back from the run's OWN
+            # persisted manifest, never from this request's mission/targets -
+            # ScanRunner.run() would reject a mismatch anyway
+            # (ResumeConfigMismatchError), but reading it back here means a
+            # resume can never even attempt to diverge from what was
+            # originally authorized in the first place.
+            raw_targets = manifest["target_specs"]
+            raw_excludes = manifest.get("exclude_target_specs", [])
+            config = ScanConfig(
+                mission=str(manifest["mission"]),
+                target_specs=[str(t) for t in raw_targets] if isinstance(raw_targets, list) else [],
+                exclude_target_specs=(
+                    [str(t) for t in raw_excludes] if isinstance(raw_excludes, list) else []
+                ),
+                rules_of_engagement=str(manifest.get("rules_of_engagement", "")),
+                egress_lock=bool(manifest["egress_lock"]),
+                run_dir=run_dir,
+                usage_path=DEFAULT_USAGE_PATH,
+            )
+        else:
+            mission = request.mission.strip()
+            targets = [t.strip() for t in request.targets if t.strip()]
+            exclude_targets = [t.strip() for t in request.exclude_targets if t.strip()]
+            if not mission or not targets:
+                return JSONResponse(
+                    {"error": "'mission' and 'targets' are required"}, status_code=400
+                )
+            run_dir = runs_dir / uuid.uuid4().hex[:12]
+            config = ScanConfig(
+                mission=mission,
+                target_specs=targets,
+                exclude_target_specs=exclude_targets,
+                rules_of_engagement=request.rules_of_engagement.strip(),
+                run_dir=run_dir,
+                usage_path=DEFAULT_USAGE_PATH,
+            )
+
         runner = ScanRunner(config, event_log=event_log)
         current_runner["runner"] = runner
 

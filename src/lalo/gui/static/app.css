@@ -246,6 +246,20 @@ button, input, textarea {
 }
 .run-report-link:hover { text-decoration: underline; }
 
+.run-resume-btn {
+  flex: none;
+  font: inherit;
+  font-size: 0.68rem;
+  font-weight: 600;
+  color: var(--accent);
+  background: transparent;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+}
+.run-resume-btn:hover { text-decoration: underline; }
+.run-resume-btn:disabled { color: var(--text-faint); cursor: not-allowed; }
+
 .main {
   padding: 24px 24px 0;
   overflow-x: hidden;

@@ -40,7 +40,13 @@ from lalo.identity.credentials import Credential, CredentialKind, Identity
 from lalo.identity.login import LoginScheme, SessionSource
 from lalo.integrations.mcp_client import MCPServerConfig
 from lalo.orchestrator.budget import RunStatus
-from lalo.scan import ScanConfig, ScanRunner, _terminal_status, load_run_events
+from lalo.scan import (
+    ScanConfig,
+    ScanRunner,
+    _terminal_status,
+    load_run_events,
+    read_resume_manifest,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -644,6 +650,29 @@ def test_load_run_events_skips_a_torn_final_line_from_a_crash(tmp_path: Path) ->
     _cursor, events = replay.snapshot()
     assert len(events) == 1
     assert events[0].payload == {"event": "scan_started"}
+
+
+def test_read_resume_manifest_on_a_run_that_never_started_is_none(tmp_path: Path) -> None:
+    assert read_resume_manifest(tmp_path / "never-started") is None
+
+
+def test_read_resume_manifest_returns_the_locked_engagement_fields(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "resume_manifest.json").write_text(
+        '{"mission": "find a bug", "target_specs": ["example.com"], '
+        '"exclude_target_specs": ["admin.example.com"], '
+        '"rules_of_engagement": "no destructive testing", "egress_lock": true}',
+        encoding="utf-8",
+    )
+    manifest = read_resume_manifest(run_dir)
+    assert manifest == {
+        "mission": "find a bug",
+        "target_specs": ["example.com"],
+        "exclude_target_specs": ["admin.example.com"],
+        "rules_of_engagement": "no destructive testing",
+        "egress_lock": True,
+    }
 
 
 def test_scan_runner_attributes_usage_to_the_root_agent_id(

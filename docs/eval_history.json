@@ -6,5 +6,13 @@
     "mean_precision": 0.0,
     "calibration_gap": null,
     "case_count": 1
+  },
+  {
+    "label": "vampi-live-agent",
+    "recorded_at": "2026-09-06T14:27:03.413505+00:00",
+    "mean_recall": 0.25,
+    "mean_precision": 1.0,
+    "calibration_gap": null,
+    "case_count": 1
   }
 ]
