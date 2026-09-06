@@ -62,7 +62,16 @@ additional commands entirely.
    Test whether the input can inject an additional flag or a second
    positional argument to the invoked binary — this is a real, distinct
    primitive from full shell injection and deserves its own confirmation
-   rather than being dismissed just because a semicolon did nothing.
+   rather than being dismissed just because a semicolon did nothing. Check
+   specifically whether the binary supports an end-of-options marker
+   (`--`) and whether the application actually places it before the
+   untrusted value — its absence, or wrong placement, is what makes flag
+   injection reachable at all. Where the target itself reparses an
+   argument as a second language (an `@response-file`, a `--config` path,
+   an included/authentication file), a value that only ever looked like a
+   filename can carry its own injected directives once that second file is
+   read — trace both who controls the *path* and who controls its
+   *content* before ruling this out.
 5. **Filter evasion, only once you know a filter exists.** Alternate
    whitespace/field-separator forms, quoting/escaping tricks, and
    alternate binary paths exist to get past a specific denylist you have
