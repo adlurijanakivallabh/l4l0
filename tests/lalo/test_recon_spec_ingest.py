@@ -8,7 +8,12 @@ from lalo.execution.firer import HttpFirer
 from lalo.execution.scope import ScopeGuard
 from lalo.execution.target import Engagement
 from lalo.graph import ReachabilityGraph
-from lalo.recon import fetch_openapi_facts, merge_facts, parse_graphql_introspection
+from lalo.recon import (
+    fetch_openapi_facts,
+    merge_facts,
+    parse_graphql_introspection,
+    parse_postman_collection,
+)
 
 
 def _firer(handler) -> HttpFirer:
@@ -132,3 +137,103 @@ def test_parse_graphql_introspection_extracts_type_names() -> None:
 def test_parse_graphql_introspection_handles_malformed_shape_gracefully() -> None:
     facts = parse_graphql_introspection({"data": None}, "https://app.example.com/graphql")
     assert facts[0].extra["graphql_types"] == []
+
+
+def test_parse_postman_collection_extracts_a_flat_request() -> None:
+    collection = {
+        "item": [
+            {
+                "name": "Get users",
+                "request": {"method": "GET", "url": "https://app.example.com/users"},
+            }
+        ]
+    }
+    facts = parse_postman_collection(collection)
+    assert len(facts) == 1
+    assert facts[0].url == "https://app.example.com/users"
+    assert facts[0].source == "postman"
+    assert facts[0].extra["methods"] == ["GET"]
+
+
+def test_parse_postman_collection_handles_the_structured_url_object() -> None:
+    collection = {
+        "item": [
+            {
+                "request": {
+                    "method": "POST",
+                    "url": {"raw": "https://app.example.com/login", "host": ["app", "example"]},
+                }
+            }
+        ]
+    }
+    facts = parse_postman_collection(collection)
+    assert facts[0].url == "https://app.example.com/login"
+    assert facts[0].extra["methods"] == ["POST"]
+
+
+def test_parse_postman_collection_recurses_through_nested_folders() -> None:
+    collection = {
+        "item": [
+            {
+                "name": "Auth",
+                "item": [
+                    {
+                        "name": "Users",
+                        "item": [
+                            {
+                                "request": {
+                                    "method": "GET",
+                                    "url": "https://app.example.com/deep",
+                                }
+                            }
+                        ],
+                    }
+                ],
+            }
+        ]
+    }
+    facts = parse_postman_collection(collection)
+    assert len(facts) == 1
+    assert facts[0].url == "https://app.example.com/deep"
+
+
+def test_parse_postman_collection_skips_unresolved_template_variables() -> None:
+    # Guessing what {{baseUrl}} resolves to would risk fabricating an
+    # endpoint that was never actually declared -- skip it instead.
+    collection = {
+        "item": [
+            {"request": {"method": "GET", "url": "{{baseUrl}}/users"}},
+            {"request": {"method": "GET", "url": "https://app.example.com/real"}},
+        ]
+    }
+    facts = parse_postman_collection(collection)
+    assert len(facts) == 1
+    assert facts[0].url == "https://app.example.com/real"
+
+
+def test_parse_postman_collection_caps_pathological_folder_depth() -> None:
+    # Build a collection nested far past the depth cap; a request at the
+    # bottom of that pathological chain must never be reached at all.
+    leaf = {"request": {"method": "GET", "url": "https://app.example.com/too-deep"}}
+    collection: dict[str, object] = {"item": [leaf]}
+    for _ in range(40):
+        collection = {"item": [collection]}
+    facts = parse_postman_collection(collection)
+    assert facts == []
+
+
+def test_parse_postman_collection_ignores_malformed_entries() -> None:
+    collection = {
+        "item": [
+            "not a dict",
+            {"request": "not a dict either"},
+            {"request": {"url": None}},
+            {},
+        ]
+    }
+    assert parse_postman_collection(collection) == []
+
+
+def test_parse_postman_collection_handles_a_non_dict_or_missing_item_list() -> None:
+    assert parse_postman_collection({}) == []
+    assert parse_postman_collection({"item": "not a list"}) == []

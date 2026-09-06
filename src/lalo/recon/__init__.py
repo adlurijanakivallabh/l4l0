@@ -8,7 +8,7 @@ from .js_mining import (
     mine_sourcemap_sources,
 )
 from .runner import ChainReport, ReconRunner, run_recon_chain
-from .spec_ingest import fetch_openapi_facts, parse_graphql_introspection
+from .spec_ingest import fetch_openapi_facts, parse_graphql_introspection, parse_postman_collection
 from .tool import build_recon_tool
 
 __all__ = [
@@ -25,5 +25,6 @@ __all__ = [
     "mine_js_for_paths",
     "mine_sourcemap_sources",
     "parse_graphql_introspection",
+    "parse_postman_collection",
     "run_recon_chain",
 ]

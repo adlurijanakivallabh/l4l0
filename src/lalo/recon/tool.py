@@ -30,7 +30,7 @@ from .facts import FactKind, ReconFact, merge_facts
 from .js_mining import endpoint_urls_from_paths, find_sourcemap_url, mine_js_for_paths
 from .runner import run_recon_chain
 from .scan import NmapServiceScanRunner
-from .spec_ingest import fetch_openapi_facts, parse_graphql_introspection
+from .spec_ingest import fetch_openapi_facts, parse_graphql_introspection, parse_postman_collection
 
 
 def _report(
@@ -72,6 +72,16 @@ def build_recon_tool(
             return _report(
                 action, parse_graphql_introspection(introspection, endpoint_url), graph, scope
             )
+
+        if action == "parse_postman":
+            collection = args.get("collection")
+            if not isinstance(collection, dict):
+                return ToolResult(
+                    observation="error: 'collection' (dict, the raw Postman collection JSON) "
+                    "is required",
+                    ok=False,
+                )
+            return _report(action, parse_postman_collection(collection), graph, scope)
 
         if action == "mine_js":
             js_source = str_arg(args, "js_source")
@@ -115,7 +125,8 @@ def build_recon_tool(
         return ToolResult(
             observation=(
                 "error: unknown action "
-                f"{action!r} (valid: fetch_openapi, parse_graphql, mine_js, scan_ports)"
+                f"{action!r} (valid: fetch_openapi, parse_graphql, parse_postman, mine_js, "
+                "scan_ports)"
             ),
             ok=False,
         )
@@ -123,12 +134,13 @@ def build_recon_tool(
     return FunctionTool(
         name="recon",
         description=(
-            "Extract candidate endpoints from a spec or JS bundle, or run an nmap "
-            "service scan, and merge the results into the graph (scope-checked, same as "
-            'http). args: {"action": "fetch_openapi", "spec_url": str} or '
+            "Extract candidate endpoints from a spec, Postman collection, or JS bundle, or "
+            "run an nmap service scan, and merge the results into the graph (scope-checked, "
+            'same as http). args: {"action": "fetch_openapi", "spec_url": str} or '
             '{"action": "parse_graphql", "endpoint_url": str, "introspection": dict '
             "(the raw introspection query response you already fired via http)} or "
-            '{"action": "mine_js", "js_source": str, "base_url": str} or '
+            '{"action": "parse_postman", "collection": dict (the raw Postman collection JSON)} '
+            'or {"action": "mine_js", "js_source": str, "base_url": str} or '
             '{"action": "scan_ports", "host": str, "ports": str (optional, e.g. "1-1000")}'
         ),
         func=_recon,

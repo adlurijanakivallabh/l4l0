@@ -1,4 +1,4 @@
-"""OpenAPI/GraphQL spec ingestion — fired through the real scope-checked firer.
+"""OpenAPI/GraphQL/Postman spec ingestion — fired through the real scope-checked firer.
 
 The spec's own claimed base URL (OpenAPI's ``servers[].url``) is untrusted
 input, never an automatic scope grant: every endpoint fact this module
@@ -16,11 +16,25 @@ per request afterward. L4L0's version is mechanically stronger, not merely
 different: every fact still passes through the same code-level ScopeGuard
 check every other request does, on every use, not just once at discovery
 time into advisory prompt text.
+
+Phase 9, strix pass: re-reading that same reference's real ``utils/api_spec.py``
+in full (not just the module-docstring principle it already contributed)
+surfaced a genuine gap this module never closed — it also parses Postman
+collections (an extremely common real-world API-spec format), walking nested
+folders with a depth cap against pathological nesting, extracting only each
+request's own concrete URL. :func:`parse_postman_collection` adds the same
+capability here. Deliberately NOT adopted: Postman collection-variable
+resolution (``{{baseUrl}}``-style templating) — building a template-
+resolution engine to guess what an unresolved variable might mean would risk
+fabricating an endpoint that doesn't exist; a request whose URL still
+contains an unresolved ``{{...}}`` placeholder after this parse is skipped
+outright, never guessed at.
 """
 
 from __future__ import annotations
 
 import json
+from typing import Any
 from urllib.parse import urljoin
 
 from ..execution.firer import HttpFirer
@@ -31,6 +45,12 @@ from .facts import FactKind, ReconFact
 # parameters, servers, $ref, ...) per spec — without this filter those get
 # recorded as bogus "methods" on the resulting fact.
 _OPENAPI_METHODS = frozenset({"get", "put", "post", "delete", "options", "head", "patch", "trace"})
+
+# Matches a reference recon utility's own choice: a real-world Postman
+# collection is a user-authored tree with no depth guarantee; without a cap,
+# a pathological (or adversarially crafted) collection could recurse
+# indefinitely.
+_POSTMAN_MAX_FOLDER_DEPTH = 25
 
 
 def fetch_openapi_facts(
@@ -101,3 +121,71 @@ def parse_graphql_introspection(
             extra={"graphql_types": type_names},
         )
     ]
+
+
+def _postman_request_url(request: Any) -> str | None:
+    """Extract the literal URL from one Postman request object, or None.
+
+    Postman allows a request's ``url`` to be either a plain string or a
+    structured object with a ``raw`` field — both are real, observed shapes.
+    A URL still containing an unresolved ``{{variable}}`` placeholder is
+    never returned: guessing what it might resolve to risks fabricating an
+    endpoint that was never actually declared.
+    """
+    if not isinstance(request, dict):
+        return None
+    url = request.get("url")
+    if isinstance(url, str):
+        raw = url
+    elif isinstance(url, dict) and isinstance(url.get("raw"), str):
+        raw = url["raw"]
+    else:
+        return None
+    raw = raw.strip()
+    if not raw or "{{" in raw:
+        return None
+    return raw
+
+
+def _walk_postman_items(items: Any, *, depth: int) -> list[ReconFact]:
+    if depth > _POSTMAN_MAX_FOLDER_DEPTH or not isinstance(items, list):
+        return []
+    facts: list[ReconFact] = []
+    for entry in items:
+        if not isinstance(entry, dict):
+            continue
+        nested = entry.get("item")
+        if isinstance(nested, list):
+            facts.extend(_walk_postman_items(nested, depth=depth + 1))
+            continue
+        request = entry.get("request")
+        url = _postman_request_url(request)
+        if url is None:
+            continue
+        method = ""
+        if isinstance(request, dict) and isinstance(request.get("method"), str):
+            method = request["method"].upper()
+        facts.append(
+            ReconFact(
+                kind=FactKind.ENDPOINT,
+                url=url,
+                source="postman",
+                extra={"methods": [method] if method else []},
+            )
+        )
+    return facts
+
+
+def parse_postman_collection(collection: dict[str, object]) -> list[ReconFact]:
+    """One fact per request in a Postman collection, recursively across nested folders.
+
+    ``collection`` is the raw collection JSON (v2.0/v2.1 schema: a top-level
+    ``item`` array of request and/or folder entries, folders nesting their
+    own ``item`` array). Folder nesting is capped at
+    :data:`_POSTMAN_MAX_FOLDER_DEPTH` against a pathological or adversarially
+    deep collection. Requests whose URL is not a concrete string — still
+    templated with an unresolved ``{{variable}}``, or missing entirely — are
+    silently skipped, never guessed at.
+    """
+    items = collection.get("item") if isinstance(collection, dict) else None
+    return _walk_postman_items(items, depth=0)

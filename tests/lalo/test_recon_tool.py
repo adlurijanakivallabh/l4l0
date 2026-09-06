@@ -82,6 +82,38 @@ def test_parse_graphql_requires_an_introspection_dict() -> None:
     assert result.ok is False
 
 
+def test_parse_postman_merges_in_scope_endpoints_into_the_graph() -> None:
+    graph = ReachabilityGraph()
+    tool = build_recon_tool(_firer(lambda r: httpx.Response(200)), graph, _scope())
+    collection = {
+        "item": [
+            {"request": {"method": "GET", "url": "https://app.example.com/users"}},
+            {
+                "name": "Auth",
+                "item": [{"request": {"method": "POST", "url": "https://app.example.com/login"}}],
+            },
+        ]
+    }
+    result = tool.run({"action": "parse_postman", "collection": collection})
+    assert result.ok is True
+    assert len(graph.nodes_of_kind(NodeKind.ENDPOINT)) == 2
+
+
+def test_parse_postman_requires_a_collection_dict() -> None:
+    tool = build_recon_tool(_firer(lambda r: httpx.Response(200)), ReachabilityGraph(), _scope())
+    result = tool.run({"action": "parse_postman"})
+    assert result.ok is False
+
+
+def test_parse_postman_out_of_scope_url_is_rejected_not_silently_dropped() -> None:
+    graph = ReachabilityGraph()
+    tool = build_recon_tool(_firer(lambda r: httpx.Response(200)), graph, _scope())
+    collection = {"item": [{"request": {"method": "GET", "url": "https://evil.example.org/steal"}}]}
+    result = tool.run({"action": "parse_postman", "collection": collection})
+    assert "rejected" in result.observation
+    assert graph.nodes_of_kind(NodeKind.ENDPOINT) == []
+
+
 def test_mine_js_merges_discovered_paths_as_endpoint_facts() -> None:
     graph = ReachabilityGraph()
     tool = build_recon_tool(_firer(lambda r: httpx.Response(200)), graph, _scope())
