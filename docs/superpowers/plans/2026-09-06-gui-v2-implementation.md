@@ -1481,30 +1481,177 @@ git add src/lalo/gui/static/app.css src/lalo/gui/static/app.js
 git commit -m "feat(L4L0): add a real light theme and a working toggle"
 ```
 
-### Task 10: Component and spacing polish
+### Task 10: Full craft pass — authored icons, motion, spacing, states
+
+Expanded from a spacing-only pass after grounding in the persisted design
+system (`design-system/l4l0/MASTER.md`) and the impeccable craft-floor
+checklist. Four concrete, verified-real gaps, not generic "add polish":
+(1) four buttons render an icon as a bare Unicode glyph, which the
+craft-floor explicitly names as a tell ("Unicode glyphs or emoji standing
+in for an icon system"); (2) the thread has exactly one authored motion
+moment (`.log-block .line-fresh`'s fade-in) and nothing else in the UI
+animates on append, despite the operator explicitly asking for animation;
+(3) text-input carets use the browser default color instead of the
+palette; (4) the spacing/border pass originally scoped for this task is
+still real and still needed. `prefers-reduced-motion` must be respected by
+every new animation, matching the existing guard already established for
+`.line-fresh`.
 
 **Files:**
+- Modify: `src/lalo/gui/static/index.html` (icon buttons)
+- Modify: `src/lalo/gui/static/app.js` (append the new "entering" class at each append site)
 - Modify: `src/lalo/gui/static/app.css`
 
-- [ ] **Step 1: Normalize the spacing scale**
+**Interfaces:**
+- Consumes: `newAgentTurn()`, `appendUserMessage()`, `buildFindingCard()`, `renderChain()`, `applyShellEvent()`'s `"start"` branch (all existing, from `app.js`) — each gains one line adding an `entering` class to the element it just created/appended.
+
+- [ ] **Step 1: Replace the four Unicode-glyph icon buttons with authored SVG icons**
+
+Match the existing send-button/finding-copy-button convention already in
+`index.html`: inline `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">`, one consistent stroke weight, `currentColor` so it inherits the button's existing text color and hover-color transitions with no CSS changes needed.
+
+In `index.html`, replace:
+
+```html
+<button type="button" id="open-settings" class="btn-icon" aria-label="Settings" title="Settings">⚙</button>
+```
+
+with (a standard gear glyph, 8-tooth, matching the existing icon viewBox convention):
+
+```html
+<button type="button" id="open-settings" class="btn-icon" aria-label="Settings" title="Settings">
+  <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+</button>
+```
+
+Replace `<button type="button" id="close-settings" class="btn-icon" aria-label="Close">✕</button>` with:
+
+```html
+<button type="button" id="close-settings" class="btn-icon" aria-label="Close">
+  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="M6 6l12 12"/></svg>
+</button>
+```
+
+Replace `<button type="button" id="refresh-runs" class="btn-icon" aria-label="Refresh run history" title="Refresh">↻</button>` with:
+
+```html
+<button type="button" id="refresh-runs" class="btn-icon" aria-label="Refresh run history" title="Refresh">
+  <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 2v6h-6"/><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M3 22v-6h6"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/></svg>
+</button>
+```
+
+Replace `<button type="button" id="jump-latest" class="jump-latest" hidden>↓ New activity</button>` with:
+
+```html
+<button type="button" id="jump-latest" class="jump-latest" hidden>
+  <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14"/><path d="m19 12-7 7-7-7"/></svg>
+  New activity
+</button>
+```
+
+`.btn-icon`/`.jump-latest` already center their content with flex (`.btn-icon` has no `display: flex` today — add it, since a bare glyph didn't need it but an inline SVG plus text does):
+
+```css
+.btn-icon { display: inline-flex; align-items: center; justify-content: center; }
+.jump-latest { display: inline-flex; align-items: center; gap: 6px; }
+```
+
+- [ ] **Step 2: Add one authored "entering" motion, applied at every append site**
+
+One motion vocabulary, reused everywhere something new appears in the
+thread or shell panel — not a different animation per component. Add
+next to the existing `@keyframes fade-in-line`:
+
+```css
+@keyframes turn-enter {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.entering { animation: turn-enter 220ms ease-out; }
+
+@media (prefers-reduced-motion: reduce) {
+  .entering { animation: none; }
+}
+```
+
+In `app.js`, add the class at each append site — one line per site,
+immediately after the element is appended to its parent:
+
+In `newAgentTurn()`, after `threadEl.appendChild(node);`:
+```js
+msg.classList.add("entering");
+```
+
+In `appendUserMessage()`, after `threadEl.appendChild(node);`:
+```js
+msg.classList.add("entering");
+```
+
+In `buildFindingCard()`, the caller `renderFinding()` already has the
+card local; add after `body.appendChild(card);` (in the "new finding"
+branch only — an in-place severity/confidence update via `replaceWith`
+should not re-animate, since that would misleadingly read as a brand new
+finding):
+```js
+card.classList.add("entering");
+```
+
+In `renderChain()`, after `body.appendChild(card);`:
+```js
+card.classList.add("entering");
+```
+
+In `applyShellEvent()`'s `"start"` branch, after `shellOutputListEl.appendChild(block);`:
+```js
+block.classList.add("entering");
+```
+
+This reuses the exact class-added-on-append idiom `.log-block .line-fresh`
+already established (`appendScrollback`'s `line.className = "line-fresh"`)
+— extending an existing pattern rather than inventing a second one.
+
+- [ ] **Step 3: Theme the input caret**
+
+```css
+#composer-input,
+#provider-key-input {
+  caret-color: var(--accent);
+}
+```
+
+- [ ] **Step 4: Normalize the spacing scale**
 
 Audit `app.css` for one-off padding/margin values and replace them with a consistent 4/8/12/16/24px rhythm (e.g. a `7px 6px` padding on `.run-item` becomes `8px`; a `24px 24px 0` on `.main` stays, since it already fits the scale). This is a values-only pass — no selectors change, so no rendering logic is at risk, only spacing consistency.
 
-- [ ] **Step 2: Add a subtle card border to finding/chain/shell-block elements**
+- [ ] **Step 5: Add a subtle card border to finding/chain/shell-block elements**
 
 ```css
 .finding-card, .chain-card, .shell-block { border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; }
 ```
 
-- [ ] **Step 3: Verify live, with Playwright, in both themes**
+- [ ] **Step 6: Fix the "exit null" display gap flagged in Task 8's review**
 
-Load the GUI in both dark and light mode, visually confirm consistent spacing and that the new border treatment reads correctly against both palettes (no invisible borders, no clashing contrast).
+In `applyShellEvent`'s `"end"` branch (`app.js`), `payload.exit_code` can
+genuinely be `null` (a timed-out command never gets a real exit code —
+see `runtime/tool.py`'s `getattr(result, "exit_code", None)`). Render `—`
+instead of the literal string `"null"`:
 
-- [ ] **Step 4: Commit**
+```js
+badge.textContent = payload.exit_code === null || payload.exit_code === undefined
+  ? "exit —"
+  : `exit ${payload.exit_code}`;
+```
+
+- [ ] **Step 7: Verify live, with Playwright, in both themes**
+
+Load the GUI in both dark and light mode (Task 9 must land first). Confirm: the four buttons render crisp SVG icons (not glyphs) that inherit hover color correctly; a new agent turn/finding/chain/shell block visibly fades and rises in on append, and does NOT re-animate on an in-place finding update; toggling the OS/browser's reduced-motion setting (or emulating it via Playwright) removes the animation entirely with content still appearing; the composer/provider-key input carets render in the accent color; spacing and card borders read correctly against both palettes (no invisible borders, no clashing contrast); a simulated timed-out shell command (exit_code omitted/null in a replayed run) shows "exit —", not "exit null".
+
+- [ ] **Step 8: Commit**
 
 ```bash
-git add src/lalo/gui/static/app.css
-git commit -m "style(L4L0): normalize spacing and add card borders across the GUI"
+git add src/lalo/gui/static/index.html src/lalo/gui/static/app.js src/lalo/gui/static/app.css
+git commit -m "style(L4L0): authored SVG icons, one motion vocabulary, spacing/border polish"
 ```
 
 ---
