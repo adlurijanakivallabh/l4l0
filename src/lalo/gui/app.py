@@ -73,6 +73,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from ..core.logging import get_logger
+from ..core.usage import DEFAULT_USAGE_PATH
 from ..scan import ScanConfig, ScanRunner
 from .events import EventLog
 
@@ -132,7 +133,9 @@ def build_app(event_log: EventLog, token: str, *, runs_dir: Path | None = None) 
             return JSONResponse({"error": "a scan is already running"}, status_code=409)
 
         run_dir = runs_dir / uuid.uuid4().hex[:12]
-        config = ScanConfig(mission=mission, target_specs=targets, run_dir=run_dir)
+        config = ScanConfig(
+            mission=mission, target_specs=targets, run_dir=run_dir, usage_path=DEFAULT_USAGE_PATH
+        )
         runner = ScanRunner(config, event_log=event_log)
         current_runner["runner"] = runner
 

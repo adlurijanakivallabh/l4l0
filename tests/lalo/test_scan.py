@@ -385,6 +385,45 @@ def test_resume_refuses_a_different_mission_against_the_same_run_dir(
         ScanRunner(escalated, env={"ANTHROPIC_API_KEY": "sk-test"}).run()
 
 
+def test_resume_allows_a_raised_budget_ceiling_after_budget_exhaustion(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The single most obvious reason to resume a budget-exhausted scan is to
+    # raise the ceiling that stopped it -- operational knobs (budget/steps/
+    # spawn depth) must stay resume-adjustable, unlike mission/targets.
+    monkeypatch.setattr(scan_module, "docker_available", lambda: True)
+    monkeypatch.setattr(scan_module, "RuntimeContainer", _FakeContainer)
+
+    router1 = ModelRouter(
+        providers={"fake": _ScriptedProvider(_respond)},
+        routes={"reasoning": ("fake",), "review": ("fake",)},
+        default_route=("fake",),
+    )
+    monkeypatch.setattr(scan_module, "build_router", lambda _settings: router1)
+
+    run_dir = tmp_path / "run"
+    tight = ScanConfig(
+        mission="find a bug", target_specs=["example.com"], run_dir=run_dir, budget_ceiling=1
+    )
+    outcome1 = ScanRunner(tight, env={"ANTHROPIC_API_KEY": "sk-test"}).run()
+    assert outcome1.status is RunStatus.BUDGET_EXHAUSTED
+
+    raised = ScanConfig(
+        mission="find a bug",
+        target_specs=["example.com"],
+        run_dir=run_dir,
+        budget_ceiling=100,  # different from the original -- must NOT be rejected
+    )
+    router2 = ModelRouter(
+        providers={"fake": _ScriptedProvider(lambda i, _p: _finish_call())},
+        routes={"reasoning": ("fake",), "review": ("fake",)},
+        default_route=("fake",),
+    )
+    monkeypatch.setattr(scan_module, "build_router", lambda _settings: router2)
+    outcome2 = ScanRunner(raised, env={"ANTHROPIC_API_KEY": "sk-test"}).run()
+    assert outcome2.status is RunStatus.COMPLETED
+
+
 # --- merge_finding_nodes ------------------------------------------------------
 
 

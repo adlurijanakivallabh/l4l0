@@ -121,6 +121,11 @@ class ScanConfig:
     identities: dict[str, Identity] = field(default_factory=dict)
     login_schemes: dict[str, LoginScheme] = field(default_factory=dict)
     container_config: RuntimeConfig | None = None
+    # None (the default) keeps a caller hermetic -- matching container_config's
+    # own opt-in shape. Pass DEFAULT_USAGE_PATH (or any path) to actually
+    # record real lifetime token/cost usage for this scan's completions; the
+    # GUI's own real scan-launch path opts in.
+    usage_path: Path | None = None
 
 
 @dataclass
@@ -135,14 +140,32 @@ class _ResumeManifest:
     """The subset of :class:`ScanConfig` that must stay IDENTICAL across a
     crash/resume for the resumed run to be resuming the same authorized
     engagement, not a silently different one — see
-    :class:`~lalo.core.errors.ResumeConfigMismatchError`."""
+    :class:`~lalo.core.errors.ResumeConfigMismatchError`.
+
+    Deliberately narrower than "every ScanConfig field", after reading a
+    reference agent's own real ``--resume`` implementation in full (not just
+    its comparison-doc summary): that CLI hard-rejects combining ``--resume``
+    with a new target list (targets are permanently locked to the persisted
+    run), but explicitly treats several OTHER fields as operator-adjustable
+    on resume, inheriting the persisted value only when the operator doesn't
+    re-specify one (``if args.instruction is None: args.instruction =
+    state.get("instruction")``). The same reference's own budget/turn
+    governance separately confirms *why* this distinction matters here:
+    ``BudgetExceededError``/reaching the scan budget limit cleanly stops the
+    scan (not a crash) specifically so the operator can resume it -- and the
+    single most obvious reason to resume a budget-stopped scan is to raise
+    the ceiling that stopped it. An earlier version of this manifest included
+    ``max_steps``/``spawn_max_depth``/``budget_ceiling``, which would have
+    made exactly that normal, expected resume flow impossible (any budget
+    increase would be rejected as a "different config"). Only fields that
+    actually define WHAT is authorized (mission, targets) or toggle a safety
+    control (egress_lock) are locked; operational tuning knobs are free to
+    change across a resume.
+    """
 
     mission: str
     target_specs: list[str]
     egress_lock: bool
-    max_steps: int
-    spawn_max_depth: int
-    budget_ceiling: int
 
     @classmethod
     def from_config(cls, config: ScanConfig) -> _ResumeManifest:
@@ -150,9 +173,6 @@ class _ResumeManifest:
             mission=config.mission,
             target_specs=list(config.target_specs),
             egress_lock=config.egress_lock,
-            max_steps=config.max_steps,
-            spawn_max_depth=config.spawn_max_depth,
-            budget_ceiling=config.budget_ceiling,
         )
 
 
@@ -370,6 +390,7 @@ class ScanRunner:
                     budget=budget,
                     on_event=lambda ev, pl: self._on_agent_event(child_id, ev, pl),
                     should_stop=self._should_stop,
+                    usage_path=self.config.usage_path,
                 )
                 result = child_loop.run(task)
                 after = set(child_graph.nodes_of_kind(NodeKind.FINDING))
@@ -411,6 +432,7 @@ class ScanRunner:
             budget=budget,
             on_event=lambda ev, pl: self._on_root_event(root_id, ev, pl, graph, graph_path),
             should_stop=self._should_stop,
+            usage_path=self.config.usage_path,
         )
         # Only the root agent's own steps are journaled/resumable -- a spawned
         # child still mid-execution at crash time simply restarts from scratch

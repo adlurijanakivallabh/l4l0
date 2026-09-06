@@ -18,6 +18,7 @@ from lalo.agent.loop import AgentConfig, AgentLoop
 from lalo.agent.tools import FunctionTool, ToolRegistry, ToolResult
 from lalo.core.errors import AllProvidersFailedError
 from lalo.core.model_router import CompletionRequest, CompletionResponse
+from lalo.core.usage import load_usage
 from lalo.orchestrator.budget import Budget
 from lalo.orchestrator.journal import DurableJournal
 
@@ -335,6 +336,43 @@ def test_two_agent_loops_do_not_share_a_tracer_by_default() -> None:
     loop2.run("m2")
     assert loop1.tracer.counters.get("tool_calls") == 1
     assert loop2.tracer.counters.get("tool_calls") == 1
+
+
+def test_usage_is_recorded_when_a_usage_path_is_provided(tmp_path) -> None:
+    tool, _ = _counting_tool("noop")
+    registry = ToolRegistry([tool])
+    router = _scripted(
+        ['{"tool": "noop", "args": {}}', '{"tool": "finish", "args": {"summary": "done"}}']
+    )
+    usage_path = tmp_path / "usage.json"
+    loop = AgentLoop(router, registry, system_prompt="", usage_path=usage_path)  # type: ignore[arg-type]
+    loop.run("mission")
+    stats = load_usage(usage_path)
+    assert stats.total_requests == 2  # one real record_usage call per completion
+    assert "fake" in stats.by_provider
+
+
+def test_usage_is_not_recorded_without_an_explicit_usage_path() -> None:
+    tool, _ = _counting_tool("noop")
+    registry = ToolRegistry([tool])
+    router = _scripted(['{"tool": "finish", "args": {"summary": "done"}}'])
+    loop = AgentLoop(router, registry, system_prompt="")  # type: ignore[arg-type]
+    assert loop.usage_path is None  # every caller stays hermetic unless it opts in
+    loop.run("mission")  # must not touch any real filesystem path
+
+
+def test_a_usage_recording_failure_never_crashes_the_agent_loop(tmp_path) -> None:
+    # usage_path's parent segment is itself an existing FILE, so the
+    # mkdir(parents=True) inside record_usage's atomic write is guaranteed to
+    # raise -- proving this is swallowed, not propagated into the loop.
+    not_a_directory = tmp_path / "not-a-directory"
+    not_a_directory.write_text("")
+    usage_path = not_a_directory / "usage.json"
+    registry = ToolRegistry([])
+    router = _scripted(['{"tool": "finish", "args": {"summary": "done"}}'])
+    loop = AgentLoop(router, registry, system_prompt="", usage_path=usage_path)  # type: ignore[arg-type]
+    result = loop.run("mission")
+    assert result.stop_reason == "finished"
 
 
 def test_provider_failure_returns_a_typed_stop_reason_not_a_crash() -> None:

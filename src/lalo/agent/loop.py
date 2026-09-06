@@ -63,10 +63,12 @@ from __future__ import annotations
 import json
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from ..core.errors import AllProvidersFailedError
 from ..core.logging import get_logger
 from ..core.model_router import CompletionRequest, CompletionResponse, ModelRouter
+from ..core.usage import record_usage
 from ..observability import Tracer
 from ..orchestrator.budget import (
     Budget,
@@ -179,6 +181,7 @@ class AgentLoop:
         budget: Budget | None = None,
         on_event: Callable[[str, dict[str, object]], None] | None = None,
         should_stop: Callable[[], bool] | None = None,
+        usage_path: Path | None = None,
     ) -> None:
         self.router = router
         self.registry = registry
@@ -192,6 +195,11 @@ class AgentLoop:
         self.budget = budget
         self.on_event = on_event
         self.should_stop = should_stop
+        # None (the default) means "don't record" -- every existing caller
+        # that doesn't opt in stays hermetic (no write to the real lifetime
+        # usage log). See _complete()'s own note for why this was dead code
+        # before this fix despite being fully built and tested in isolation.
+        self.usage_path = usage_path
 
     def _emit(self, event: str, payload: dict[str, object]) -> None:
         if self.on_event is not None:
@@ -204,13 +212,35 @@ class AgentLoop:
         an OUTER orchestrator) rather than retrying internally — ModelRouter
         has already exhausted its own failover chain by the time
         AllProvidersFailedError reaches here, so there is nothing left to
-        retry at this layer; a future orchestrator decides what to do next."""
+        retry at this layer; a future orchestrator decides what to do next.
+
+        Phase 2, strix pass (closes Phase 2): :func:`~lalo.core.usage.
+        record_usage` was built and unit-tested in the Phase 0 cai pass to
+        close a real gap ("an autonomous run's actual dollar cost is
+        invisible") but, like the durable journal earlier in this phase,
+        nothing ever actually called it from the live loop -- every real
+        completion's token usage was silently discarded. Recording happens
+        HERE (not per-role, not per-agent) since this is the one place every
+        real completion response, root or child, already passes through.
+        ``usage_path`` defaults to ``None`` (recording off) so every existing
+        caller that doesn't opt in stays hermetic; :class:`~lalo.scan.
+        ScanRunner` opts in for a real run. Never allowed to affect the
+        agent's own control flow: a usage-recording failure (a disk error, a
+        future cost-limit raise) is logged and swallowed, not propagated --
+        this is a best-effort side observation, not a correctness path.
+        """
         try:
-            return self.router.complete(
+            response = self.router.complete(
                 self.config.role, CompletionRequest(prompt=prompt, system=self.system_prompt)
             )
         except AllProvidersFailedError:
             return None
+        if self.usage_path is not None:
+            try:
+                record_usage(response, path=self.usage_path)
+            except Exception:
+                _log.exception("usage recording failed; continuing without it")
+        return response
 
     def _render_prompt(
         self, mission: str, transcript: list[dict[str, object]], directive: str | None
