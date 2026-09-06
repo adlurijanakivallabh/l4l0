@@ -52,12 +52,17 @@ class Checkpoint:
     key: str
     result: Any
     ts: float = field(default_factory=time.time)
+    # NOT what DurableJournal actually persists/reads -- it has zero real
+    # construction call sites anywhere in this codebase. The journal's own
+    # on-disk {"key", "result", "ts"} JSON lines (record()/_load() below) are
+    # the real timestamp source; use DurableJournal.ts_for(key) for that.
 
 
 class DurableJournal:
     def __init__(self, path: str | os.PathLike[str]) -> None:
         self.path = Path(path)
         self._entries: dict[str, Any] = {}
+        self._ts: dict[str, float] = {}
         self._load()
 
     def _load(self) -> None:
@@ -72,13 +77,26 @@ class DurableJournal:
             except (json.JSONDecodeError, ValueError):
                 continue  # torn final line from a crash mid-write -> skip, not fatal
             if isinstance(record, dict) and "key" in record:
-                self._entries[str(record["key"])] = record.get("result")
+                key = str(record["key"])
+                self._entries[key] = record.get("result")
+                # Older journal files predate the "ts" field -- fall back to
+                # not-recorded (None) for those lines rather than fabricating
+                # a false-now timestamp for a step that actually landed earlier.
+                ts = record.get("ts")
+                if isinstance(ts, int | float):
+                    self._ts[key] = float(ts)
 
     def has(self, key: str) -> bool:
         return key in self._entries
 
     def get(self, key: str) -> Any:
         return self._entries.get(key)
+
+    def ts_for(self, key: str) -> float | None:
+        """The wall-clock time ``key`` was recorded, or ``None`` if the key
+        doesn't exist (mirroring ``get()``'s own not-found behavior) or was
+        loaded from a pre-timestamp journal file."""
+        return self._ts.get(key)
 
     def record(self, key: str, result: Any) -> None:
         # Serialize and durably write FIRST, update in-memory state only after
@@ -89,9 +107,11 @@ class DurableJournal:
         # process wouldn't see the key at all, and within the same process the
         # step would never be retried. This ordering makes an unrecorded step
         # look exactly like it never ran, which is the truth.
-        line = json.dumps({"key": key, "result": result}, sort_keys=True)
+        ts = time.time()
+        line = json.dumps({"key": key, "result": result, "ts": ts}, sort_keys=True)
         append_owner_only_line(self.path, line)
         self._entries[key] = result
+        self._ts[key] = ts
 
     def run_once(self, key: str, fn: Callable[[], Any]) -> Any:
         """Execute ``fn`` once ever for ``key``; on resume return the cached result

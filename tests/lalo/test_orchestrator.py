@@ -123,6 +123,29 @@ def test_checkpoint_carries_a_wall_clock_timestamp() -> None:
     assert before <= checkpoint.ts <= after
 
 
+def test_journal_records_a_real_wall_clock_timestamp_retrievable_via_ts_for(tmp_path) -> None:
+    path = tmp_path / "j.jsonl"
+    journal = DurableJournal(path)
+    before = time.time()
+    journal.record("fire:1", {"fired": 1})
+    after = time.time()
+    assert before <= journal.ts_for("fire:1") <= after
+
+
+def test_journal_ts_for_an_unknown_key_is_none_not_an_error(tmp_path) -> None:
+    journal = DurableJournal(tmp_path / "j.jsonl")
+    assert journal.ts_for("nonexistent") is None
+
+
+def test_journal_ts_survives_a_reload_after_a_crash(tmp_path) -> None:
+    path = tmp_path / "j.jsonl"
+    first = DurableJournal(path)
+    first.record("fire:1", {"fired": 1})
+    original_ts = first.ts_for("fire:1")
+    reloaded = DurableJournal(path)  # simulate crash + restart
+    assert reloaded.ts_for("fire:1") == original_ts
+
+
 def test_highest_band_wins_not_first() -> None:
     # A sudden jump straight to 96% must read CRITICAL, not NOTICE.
     b = Budget(ceiling=100, spent=96)
