@@ -38,6 +38,16 @@ flag was captured — one toy vulnerability rather than a class matrix, but a
 real confirmation that a scripted-backend eval harness with genuine
 evidence-grounding is established practice, not a novel L4L0 invention.
 
+Re-verified this session by reading all three of the fourth reference's
+files above in full again (not re-trusting the prior citation unread): the
+description above is accurate as stated. Its own opt-in, env-gated real-
+model smoke test against the same local target
+(``PENTESTGPT_AGENT_LIVE=1``) has a direct structural parallel already
+built here — :mod:`tests.lalo.test_eval_live_vampi`'s ``@pytest.mark.live``
++ ``skipif(not reachable, ...)`` pattern — confirming this project's own
+opt-in-live-test convention independently matches established practice
+rather than being untested territory.
+
 A previous version of this docstring cited a different reference platform's
 own ``pipeline-testing`` prompt fixtures for that same "scripted provider"
 idea; that citation mischaracterized the actual mechanism, confirmed by
