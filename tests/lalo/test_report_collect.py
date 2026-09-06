@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from lalo.agent.tools import ToolRegistry
 from lalo.findings.tool import build_record_finding_tool
-from lalo.graph.model import NodeKind, ReachabilityGraph
-from lalo.report.collect import collect_findings, sort_findings
+from lalo.graph.model import Chain, EdgeKind, NodeKind, ReachabilityGraph
+from lalo.report.collect import build_chain_records, collect_findings, sort_findings
 
 _HIGH_CVSS = {
     "attack_vector": "N",
@@ -131,3 +131,33 @@ def test_a_persisted_review_verdict_is_read_back_onto_the_record() -> None:
     record = collect_findings(graph)[0]
     assert record.review_verdict == "confirmed"
     assert record.review_proof_level == "L3"
+
+
+# --- build_chain_records -------------------------------------------------
+
+
+def test_build_chain_records_resolves_ids_to_titles() -> None:
+    graph = ReachabilityGraph()
+    _file_finding(graph, target="https://x.example.com/a")
+    _file_finding(graph, target="https://x.example.com/b")
+    records = collect_findings(graph)
+    by_target = {r.target: r for r in records}
+    a_id, b_id = (
+        by_target["https://x.example.com/a"].finding_id,
+        by_target["https://x.example.com/b"].finding_id,
+    )
+    graph.add_edge(a_id, b_id, EdgeKind.ENABLES)
+
+    chains = build_chain_records(graph.all_enabling_chains(), records)
+    assert len(chains) == 1
+    assert chains[0].finding_ids == [a_id, b_id]
+    assert chains[0].titles == ["A finding", "A finding"]
+
+
+def test_build_chain_records_falls_back_to_the_bare_id_for_an_unknown_finding() -> None:
+    chains = build_chain_records([Chain(node_ids=["ghost-1", "ghost-2"])], [])
+    assert chains[0].titles == ["ghost-1", "ghost-2"]
+
+
+def test_build_chain_records_on_no_chains_is_empty() -> None:
+    assert build_chain_records([], []) == []

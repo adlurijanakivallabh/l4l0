@@ -151,6 +151,38 @@ class ReachabilityGraph:
             chains.append(Chain(node_ids=list(path)))
         return chains
 
+    def all_enabling_chains(self) -> list[Chain]:
+        """Every maximal :data:`EdgeKind.ENABLES` chain in the graph — from a
+        root (no incoming ENABLES edge) to a leaf (no outgoing one).
+
+        Closes a real gap :func:`find_chains` alone left open: that method
+        needs an explicit ``(source, target)`` pair, but nothing else in the
+        codebase ever picks one — this is the actual entry point a caller
+        wanting "every real attack chain right now" uses, built entirely on
+        top of the already-tested :func:`find_chains` (dedup of parallel
+        edges, the trivial-single-node exclusion, the empty-result-not-a-
+        crash guarantee all come along for free).
+        """
+        view: nx.MultiDiGraph[str] = nx.MultiDiGraph(
+            (u, v, d)
+            for u, v, d in self._g.edges(data=True)
+            if d.get("kind") == EdgeKind.ENABLES.value
+        )
+        if view.number_of_nodes() == 0:
+            return []
+        roots = [n for n in view.nodes if view.in_degree(n) == 0]
+        leaves = [n for n in view.nodes if view.out_degree(n) == 0]
+        chains: list[Chain] = []
+        seen: set[tuple[str, ...]] = set()
+        for root in roots:
+            for leaf in leaves:
+                for chain in self.find_chains(root, leaf):
+                    key = tuple(chain.node_ids)
+                    if key not in seen:
+                        seen.add(key)
+                        chains.append(chain)
+        return chains
+
     def to_json(self) -> bytes:
         data = nx.node_link_data(self._g, edges="edges")
         return json.dumps(data, sort_keys=True).encode("utf-8")

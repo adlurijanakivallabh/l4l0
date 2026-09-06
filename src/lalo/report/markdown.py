@@ -28,7 +28,9 @@ own failure note, never a reason to drop or blank the rest of the report.
 
 from __future__ import annotations
 
-from .collect import FindingRecord
+from collections.abc import Sequence
+
+from .collect import ChainRecord, FindingRecord
 from .coverage import CoverageSummary
 
 
@@ -102,6 +104,7 @@ def render_report_md(
     records: list[FindingRecord],
     coverage: CoverageSummary,
     *,
+    chains: Sequence[ChainRecord] = (),
     generated_at: str | None = None,
 ) -> str:
     lines = ["# L4L0 Security Assessment Report", ""]
@@ -119,6 +122,16 @@ def render_report_md(
         "does not distinguish 'tested and found clean' from 'never examined'._"
     )
     lines.append("")
+
+    if chains:
+        lines.append("## Attack Chains\n")
+        lines.append(
+            "_Each chain below was explicitly declared by the agent (record_finding's own "
+            "enabled_by_finding_id), not inferred - one finding's exploitation genuinely "
+            "enabled reaching the next._\n"
+        )
+        lines.extend(f"- {' → '.join(chain.titles)}" for chain in chains)
+        lines.append("")
 
     lines.append("## Findings\n")
     if not records:

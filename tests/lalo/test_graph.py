@@ -108,6 +108,49 @@ def test_find_chains_returns_empty_for_unknown_nodes_not_a_crash() -> None:
     assert g.find_chains("also-missing", "a") == []
 
 
+def test_all_enabling_chains_on_an_empty_graph_is_empty() -> None:
+    assert ReachabilityGraph().all_enabling_chains() == []
+
+
+def test_all_enabling_chains_finds_every_root_to_leaf_path() -> None:
+    g = ReachabilityGraph()
+    for node_id in ("idor", "admin", "upload", "rce"):
+        g.add_node(node_id, NodeKind.FINDING)
+    g.add_edge("idor", "admin", EdgeKind.ENABLES)
+    g.add_edge("admin", "upload", EdgeKind.ENABLES)
+    g.add_edge("upload", "rce", EdgeKind.ENABLES)
+    assert g.all_enabling_chains() == [Chain(node_ids=["idor", "admin", "upload", "rce"])]
+
+
+def test_all_enabling_chains_finds_multiple_independent_chains() -> None:
+    g = ReachabilityGraph()
+    for node_id in ("a1", "a2", "b1", "b2"):
+        g.add_node(node_id, NodeKind.FINDING)
+    g.add_edge("a1", "a2", EdgeKind.ENABLES)
+    g.add_edge("b1", "b2", EdgeKind.ENABLES)
+    chains = g.all_enabling_chains()
+    assert {tuple(c.node_ids) for c in chains} == {("a1", "a2"), ("b1", "b2")}
+
+
+def test_all_enabling_chains_ignores_findings_with_no_enables_edge() -> None:
+    g = ReachabilityGraph()
+    g.add_node("lonely", NodeKind.FINDING)
+    g.add_node("a", NodeKind.FINDING)
+    g.add_node("b", NodeKind.FINDING)
+    g.add_edge("a", "b", EdgeKind.ENABLES)
+    chains = g.all_enabling_chains()
+    assert len(chains) == 1
+    assert "lonely" not in chains[0].node_ids
+
+
+def test_all_enabling_chains_ignores_non_enables_edges() -> None:
+    g = ReachabilityGraph()
+    g.add_node("evidence-1", NodeKind.EVIDENCE)
+    g.add_node("finding-1", NodeKind.FINDING)
+    g.add_edge("evidence-1", "finding-1", EdgeKind.SUPPORTS)
+    assert g.all_enabling_chains() == []
+
+
 def test_save_and_load_round_trips_nodes_and_edges(tmp_path: Path) -> None:
     g = ReachabilityGraph()
     g.add_node("ep-1", NodeKind.ENDPOINT, path="/api/users/{id}")

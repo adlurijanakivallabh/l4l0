@@ -59,7 +59,7 @@ from ..core.atomic_io import atomic_write_verified
 from ..core.logging import get_logger
 from ..graph.model import ReachabilityGraph
 from ..skills.loader import Skill
-from .collect import collect_findings, sort_findings
+from .collect import build_chain_records, collect_findings, sort_findings
 from .coverage import build_coverage_summary
 from .docx import render_report_docx
 from .html import render_report_html
@@ -100,15 +100,17 @@ def write_report(
     # unrelated higher-severity finding in the delivered report.
     records = sort_findings(apply_overrides(collect_findings(graph), overrides or []))
     coverage = build_coverage_summary(skills, records)
+    chains = build_chain_records(graph.all_enabling_chains(), records)
 
-    markdown = render_report_md(records, coverage, generated_at=generated_at)
+    markdown = render_report_md(records, coverage, chains=chains, generated_at=generated_at)
     json_document = {
         "generated_at": generated_at,
         "findings": [asdict(record) for record in records],
         "coverage": asdict(coverage),
+        "chains": [asdict(chain) for chain in chains],
     }
     sarif_document = render_sarif(records)
-    html = render_report_html(records, coverage, generated_at=generated_at)
+    html = render_report_html(records, coverage, chains=chains, generated_at=generated_at)
 
     paths = {
         "markdown": run_dir / MARKDOWN_FILENAME,

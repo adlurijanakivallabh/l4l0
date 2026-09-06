@@ -27,9 +27,10 @@ independent layer in case an escaping bug ever let one through anyway.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from html import escape
 
-from .collect import FindingRecord
+from .collect import ChainRecord, FindingRecord
 from .coverage import CoverageSummary
 
 _STYLE = """
@@ -106,6 +107,7 @@ def render_report_html(
     records: list[FindingRecord],
     coverage: CoverageSummary,
     *,
+    chains: Sequence[ChainRecord] = (),
     generated_at: str | None = None,
 ) -> str:
     parts = [
@@ -128,6 +130,16 @@ def render_report_html(
         "<p><em>A class marked 'not assessed' means no finding was filed for it - this "
         "does not distinguish 'tested and found clean' from 'never examined'.</em></p>"
     )
+
+    if chains:
+        parts.append("<h2>Attack Chains</h2>")
+        parts.append(
+            "<p><em>Each chain below was explicitly declared by the agent "
+            "(record_finding's own enabled_by_finding_id), not inferred.</em></p>"
+        )
+        parts.append("<ul>")
+        parts += [f"<li>{' → '.join(_e(title) for title in chain.titles)}</li>" for chain in chains]
+        parts.append("</ul>")
 
     parts.append("<h2>Findings</h2>")
     if not records:

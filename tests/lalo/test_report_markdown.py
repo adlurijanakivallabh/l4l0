@@ -7,7 +7,7 @@ from dataclasses import replace
 from lalo.agent.tools import ToolRegistry
 from lalo.findings.tool import build_record_finding_tool
 from lalo.graph.model import ReachabilityGraph
-from lalo.report.collect import FindingRecord, collect_findings
+from lalo.report.collect import ChainRecord, FindingRecord, collect_findings
 from lalo.report.coverage import CoverageSummary
 from lalo.report.markdown import render_finding_md, render_report_md, safe_fence
 
@@ -117,3 +117,17 @@ def test_render_report_md_isolates_a_single_malformed_finding() -> None:
     assert good.finding_id in rendered
     assert "Failed to render this finding" in rendered
     assert "broken-1" in rendered
+
+
+def test_render_report_md_renders_an_attack_chains_section() -> None:
+    coverage = CoverageSummary(assessed=[], not_assessed=[])
+    chains = [ChainRecord(finding_ids=["f1", "f2"], titles=["IDOR in /api", "Admin RCE"])]
+    rendered = render_report_md([], coverage, chains=chains)
+    assert "## Attack Chains" in rendered
+    assert "IDOR in /api → Admin RCE" in rendered
+
+
+def test_render_report_md_with_no_chains_has_no_chains_section() -> None:
+    coverage = CoverageSummary(assessed=[], not_assessed=[])
+    rendered = render_report_md([], coverage)
+    assert "Attack Chains" not in rendered

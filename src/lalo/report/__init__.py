@@ -1,6 +1,13 @@
 """Deterministic report assembly: collect, dedupe-by-construction, sort, render."""
 
-from .collect import SEVERITY_ORDER, FindingRecord, collect_findings, sort_findings
+from .collect import (
+    SEVERITY_ORDER,
+    ChainRecord,
+    FindingRecord,
+    build_chain_records,
+    collect_findings,
+    sort_findings,
+)
 from .coverage import CoverageSummary, build_coverage_summary
 from .markdown import render_finding_md, render_report_md, safe_fence
 from .overrides import SeverityOverride, apply_overrides
@@ -9,10 +16,12 @@ from .writer import write_report
 
 __all__ = [
     "SEVERITY_ORDER",
+    "ChainRecord",
     "CoverageSummary",
     "FindingRecord",
     "SeverityOverride",
     "apply_overrides",
+    "build_chain_records",
     "build_coverage_summary",
     "collect_findings",
     "render_finding_md",

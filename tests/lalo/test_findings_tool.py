@@ -152,3 +152,77 @@ def test_record_finding_redacts_a_secret_embedded_in_param() -> None:
     )
     node = graph.node(graph.nodes_of_kind(NodeKind.FINDING)[0])
     assert "param-secret-marker-9f2c1" not in (node["param"] or "")
+
+
+# --- enabled_by_finding_id: the only place an ENABLES chain edge is created -
+
+
+def test_record_finding_links_a_declared_chain_predecessor() -> None:
+    graph = ReachabilityGraph()
+    registry = _registry(graph)
+    first = registry.dispatch("record_finding", _args(target="https://x.example.com/idor"))
+    first_id = graph.nodes_of_kind(NodeKind.FINDING)[0]
+    assert first.ok is True
+
+    second = registry.dispatch(
+        "record_finding",
+        _args(
+            target="https://x.example.com/admin",
+            vuln_class="access-control",
+            enabled_by_finding_id=first_id,
+        ),
+    )
+    assert second.ok is True
+    assert "chained: enabled by" in second.observation
+    second_id = next(fid for fid in graph.nodes_of_kind(NodeKind.FINDING) if fid != first_id)
+    assert graph.has_edge_of_kind(first_id, EdgeKind.ENABLES)
+    assert graph.all_enabling_chains()[0].node_ids == [first_id, second_id]
+
+
+def test_record_finding_warns_but_still_lands_on_an_unknown_chain_predecessor() -> None:
+    graph = ReachabilityGraph()
+    result = _registry(graph).dispatch(
+        "record_finding", _args(enabled_by_finding_id="finding-does-not-exist")
+    )
+    assert result.ok is True
+    assert "WARNING" in result.observation
+    assert "not a known finding" in result.observation
+    assert graph.all_enabling_chains() == []
+
+
+def test_record_finding_rejects_a_non_finding_node_as_a_chain_predecessor() -> None:
+    graph = ReachabilityGraph()
+    graph.add_node("note-1", NodeKind.NOTE, text="not a finding")
+    result = _registry(graph).dispatch("record_finding", _args(enabled_by_finding_id="note-1"))
+    assert result.ok is True
+    assert "WARNING" in result.observation
+    assert not graph.has_edge_of_kind("note-1", EdgeKind.ENABLES)
+
+
+def test_record_finding_without_enabled_by_finding_id_creates_no_chain_note() -> None:
+    graph = ReachabilityGraph()
+    result = _registry(graph).dispatch("record_finding", _args())
+    assert "chained" not in result.observation
+    assert "WARNING: enabled_by_finding_id" not in result.observation
+
+
+def test_record_finding_links_a_chain_predecessor_even_on_a_merge() -> None:
+    graph = ReachabilityGraph()
+    registry = _registry(graph)
+    registry.dispatch("record_finding", _args())
+    predecessor = registry.dispatch("record_finding", _args(target="https://x.example.com/other"))
+    assert predecessor.ok is True
+    predecessor_id = next(
+        fid
+        for fid in graph.nodes_of_kind(NodeKind.FINDING)
+        if graph.node(fid)["target"] == "https://x.example.com/other"
+    )
+
+    merged = registry.dispatch(
+        "record_finding",
+        _args(evidence=["a second capture of the same bug"], enabled_by_finding_id=predecessor_id),
+    )
+    assert merged.ok is True
+    assert "merged into existing finding" in merged.observation
+    assert "chained: enabled by" in merged.observation
+    assert graph.has_edge_of_kind(predecessor_id, EdgeKind.ENABLES)

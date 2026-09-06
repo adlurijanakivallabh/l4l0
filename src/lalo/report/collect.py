@@ -31,10 +31,11 @@ report ever reads it, not something this module has to re-derive.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 from ..findings.confidence import ConfidenceScore, compute_confidence
-from ..graph.model import NodeKind, ReachabilityGraph
+from ..graph.model import Chain, NodeKind, ReachabilityGraph
 
 SEVERITY_ORDER: dict[str, int] = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
 
@@ -113,3 +114,28 @@ def sort_findings(records: list[FindingRecord]) -> list[FindingRecord]:
             -r.confidence.score,
         ),
     )
+
+
+@dataclass(frozen=True)
+class ChainRecord:
+    """One resolved attack chain, ready to render — the graph's raw finding
+    ids (:data:`~lalo.graph.model.EdgeKind.ENABLES` order) plus their
+    human-readable titles, so a renderer never has to look anything up."""
+
+    finding_ids: list[str]
+    titles: list[str]
+
+
+def build_chain_records(chains: Sequence[Chain], records: list[FindingRecord]) -> list[ChainRecord]:
+    """Resolve each :class:`~lalo.graph.model.Chain`'s bare finding ids to
+    the matching :class:`FindingRecord`'s own title, falling back to the id
+    itself for a finding somehow absent from ``records`` (should not happen
+    in practice, but a report render must never crash over it)."""
+    title_by_id = {record.finding_id: (record.title or record.finding_id) for record in records}
+    return [
+        ChainRecord(
+            finding_ids=list(chain.node_ids),
+            titles=[title_by_id.get(node_id, node_id) for node_id in chain.node_ids],
+        )
+        for chain in chains
+    ]

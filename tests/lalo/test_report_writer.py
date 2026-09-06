@@ -245,6 +245,60 @@ def test_write_report_a_docx_renderer_failure_still_delivers_the_canonical_forma
     assert paths["pdf"].exists()
 
 
+def test_write_report_includes_a_populated_attack_chains_section_end_to_end(
+    tmp_path: Path,
+) -> None:
+    graph = ReachabilityGraph()
+    registry = ToolRegistry([build_record_finding_tool(graph)])
+    registry.dispatch(
+        "record_finding",
+        {
+            "title": "IDOR in /api/orders",
+            "description": "desc",
+            "vuln_class": "idor",
+            "target": "https://x.example.com/api/orders",
+            "evidence": ["e"],
+            "evidence_excerpt": "e",
+            "counterevidence": "none",
+            "severity_change_conditions": "x",
+            "remediation": "Apply input validation and least-privilege fixes.",
+            "cvss_breakdown": _VALID_CVSS,
+        },
+    )
+    enabler_id = graph.nodes_of_kind(NodeKind.FINDING)[0]
+    registry.dispatch(
+        "record_finding",
+        {
+            "title": "Admin RCE",
+            "description": "desc",
+            "vuln_class": "rce",
+            "target": "https://x.example.com/admin",
+            "evidence": ["e"],
+            "evidence_excerpt": "e",
+            "counterevidence": "none",
+            "severity_change_conditions": "x",
+            "remediation": "Apply input validation and least-privilege fixes.",
+            "cvss_breakdown": _VALID_CVSS,
+            "enabled_by_finding_id": enabler_id,
+        },
+    )
+    enabled_id = next(fid for fid in graph.nodes_of_kind(NodeKind.FINDING) if fid != enabler_id)
+
+    paths = write_report(tmp_path, graph, _SKILLS)
+
+    doc = json.loads(paths["json"].read_text(encoding="utf-8"))
+    assert doc["chains"] == [
+        {
+            "finding_ids": [enabler_id, enabled_id],
+            "titles": ["IDOR in /api/orders", "Admin RCE"],
+        }
+    ]
+
+    markdown = paths["markdown"].read_text(encoding="utf-8")
+    assert "## Attack Chains" in markdown
+    assert "IDOR in /api/orders → Admin RCE" in markdown
+
+
 def test_write_report_a_markdown_failure_still_propagates_uncaught(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

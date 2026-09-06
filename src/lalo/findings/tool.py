@@ -46,6 +46,42 @@ def _as_str_dict(raw: object) -> dict[str, str]:
     return {str(k): str(v) for k, v in raw.items()}
 
 
+def _link_enabling_finding(
+    graph: ReachabilityGraph, finding_id: str, args: dict[str, object]
+) -> str:
+    """Add an :data:`EdgeKind.ENABLES` edge from an already-recorded finding
+    to ``finding_id``, if ``args`` declares one via ``enabled_by_finding_id``.
+
+    This is the only place anything in the codebase ever creates an ENABLES
+    edge — without it, :meth:`~lalo.graph.model.ReachabilityGraph.
+    all_enabling_chains` and :mod:`~lalo.findings.confidence`'s own
+    ``chained_impact_success`` component (both already built and tested)
+    have no real data to ever act on. An agent declares this explicitly when
+    it recognizes a genuine attack-chain step (this IDOR's access is what
+    let it reach that RCE) — never inferred automatically, matching this
+    project's authoritative-filed-reports discipline elsewhere.
+
+    Returns a short suffix for the caller's own observation string — never
+    raises, and an unresolvable reference is a warning, not a failure: the
+    finding being recorded right now is real regardless of whether its
+    claimed chain predecessor can be verified.
+    """
+    raw = args.get("enabled_by_finding_id")
+    if not raw:
+        return ""
+    enabled_by_id = str(raw).strip()
+    if not enabled_by_id:
+        return ""
+    known = graph.has_node(enabled_by_id)
+    if not known or graph.node(enabled_by_id).get("kind") != NodeKind.FINDING.value:
+        return (
+            f" (WARNING: enabled_by_finding_id {enabled_by_id!r} is not a known "
+            "finding - no chain link recorded)"
+        )
+    graph.add_edge(enabled_by_id, finding_id, EdgeKind.ENABLES)
+    return f" (chained: enabled by {enabled_by_id})"
+
+
 def build_record_finding_tool(graph: ReachabilityGraph) -> FunctionTool:
     def _record_finding(args: dict[str, object]) -> ToolResult:
         evidence = _as_evidence_list(args.get("evidence"))
@@ -89,6 +125,7 @@ def build_record_finding_tool(graph: ReachabilityGraph) -> FunctionTool:
                 reproduced=existing.get("reproduced", False) or reproduced,
                 evidence_grounded=existing.get("evidence_grounded", False) or grounded,
             )
+            chain_note = _link_enabling_finding(graph, existing_id, args)
             return ToolResult(
                 observation=(
                     f"merged into existing finding {existing_id} "
@@ -96,6 +133,7 @@ def build_record_finding_tool(graph: ReachabilityGraph) -> FunctionTool:
                     + (f" param={param}" if param else "")
                     + f") - now {len(merged_evidence)} evidence item(s), "
                     f"grounded={existing.get('evidence_grounded', False) or grounded}"
+                    f"{chain_note}"
                 ),
                 ok=True,
             )
@@ -149,10 +187,11 @@ def build_record_finding_tool(graph: ReachabilityGraph) -> FunctionTool:
             graph.add_edge(evidence_id, finding_id, EdgeKind.SUPPORTS)
 
         grounding_note = "" if grounded else " (WARNING: evidence_excerpt not found in evidence)"
+        chain_note = _link_enabling_finding(graph, finding_id, args)
         return ToolResult(
             observation=(
                 f"recorded {finding_id}: {vuln_class} on {target} - "
-                f"cvss={cvss.score:.1f} ({cvss.severity}){grounding_note}"
+                f"cvss={cvss.score:.1f} ({cvss.severity}){grounding_note}{chain_note}"
             ),
             ok=True,
         )
@@ -175,7 +214,11 @@ def build_record_finding_tool(graph: ReachabilityGraph) -> FunctionTool:
             '"user_interaction": "N|R", "scope": "U|C", "confidentiality": "N|L|H", '
             '"integrity": "N|L|H", "availability": "N|L|H"}, "param": str (optional), '
             '"reproduced": bool (optional, default false), "identities_confirmed": '
-            "list[str] (optional, identity names this was reproduced under)}"
+            "list[str] (optional, identity names this was reproduced under), "
+            '"enabled_by_finding_id": str (optional - the id of an already-recorded '
+            "finding whose exploitation is what let you reach THIS one, e.g. an IDOR "
+            "that exposed the credentials used here. Only declare a real attack-chain "
+            "step you actually traced, never a guess.)}"
         ),
         func=_record_finding,
     )

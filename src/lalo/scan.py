@@ -541,6 +541,9 @@ class ScanRunner:
                 },
             )
 
+        for chain in graph.all_enabling_chains():
+            self._emit("chain", {"node_ids": chain.node_ids})
+
         report_paths = write_report(self.config.run_dir, graph, skills)
         graph.save(self.config.run_dir / "graph.json")
         status = _terminal_status(result.stop_reason)
