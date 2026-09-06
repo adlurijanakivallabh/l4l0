@@ -618,7 +618,11 @@ def test_get_settings_providers_reports_which_are_configured(
 def test_post_settings_providers_verifies_and_writes_env_and_updates_process_env(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    # setenv (not delenv(raising=False)) so monkeypatch records an undo even
+    # though this key isn't already set - the route mutates os.environ for
+    # real, and delenv(raising=False) on an absent key leaves no teardown,
+    # which leaked ANTHROPIC_API_KEY into every later test in this session.
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "placeholder")
     env_path = tmp_path / ".env"
     monkeypatch.setattr(app_module, "_SETTINGS_ENV_PATH", env_path)
     monkeypatch.setattr(app_module, "verify_router", lambda _router: {"anthropic": (True, "ok")})
@@ -658,3 +662,25 @@ def test_post_settings_providers_rejects_an_unknown_provider_id(
         json={"provider_id": "not-a-real-provider", "api_key": "x", "extra": {}},
     )
     assert response.status_code == 400
+
+
+def test_post_settings_providers_rejects_an_unexpected_extra_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`extra` is restricted to a provider's own `extra_required_envs` - it must
+    not be a way to set arbitrary environment variable names (an injection
+    point into both .env and this process's os.environ)."""
+    env_path = tmp_path / ".env"
+    monkeypatch.setattr(app_module, "_SETTINGS_ENV_PATH", env_path)
+    client, _ = _client(runs_dir=tmp_path)
+    response = client.post(
+        "/settings/providers",
+        json={
+            "provider_id": "anthropic",
+            "api_key": "sk-ant-real",
+            "extra": {"SOME_INJECTED_VAR": "evil"},
+        },
+    )
+    assert response.status_code == 400
+    assert not env_path.exists()
+    assert "SOME_INJECTED_VAR" not in os.environ

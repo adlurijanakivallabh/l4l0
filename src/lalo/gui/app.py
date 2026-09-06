@@ -411,6 +411,12 @@ def build_app(event_log: EventLog, *, runs_dir: Path | None = None) -> FastAPI:
         api_key = request.api_key.strip()
         if not api_key:
             return JSONResponse({"error": "'api_key' is required"}, status_code=400)
+        unknown_extras = set(request.extra) - set(spec.extra_required_envs)
+        if unknown_extras:
+            return JSONResponse(
+                {"error": f"unexpected 'extra' key(s) for {spec.id!r}: {sorted(unknown_extras)}"},
+                status_code=400,
+            )
         env = {spec.candidate_key_envs[0]: api_key, **request.extra}
         settings = load_settings(env)
         router = build_router(settings)
