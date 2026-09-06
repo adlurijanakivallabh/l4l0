@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from lalo.agent.tools import ToolRegistry
+from lalo.findings.dedup import dedup_key
 from lalo.findings.tool import build_record_finding_tool
 from lalo.graph.model import Chain, EdgeKind, NodeKind, ReachabilityGraph
 from lalo.report.collect import (
@@ -118,6 +119,21 @@ def test_a_never_reviewed_finding_has_no_review_verdict() -> None:
     record = collect_findings(graph)[0]
     assert record.review_verdict is None
     assert record.review_proof_level is None
+
+
+def test_collect_findings_populates_dedup_key_from_vuln_class_target_and_param() -> None:
+    graph = ReachabilityGraph()
+    _file_finding(graph)
+    record = collect_findings(graph)[0]
+    assert record.dedup_key == dedup_key(record.vuln_class, record.target, record.param)
+    assert record.dedup_key != ""
+
+
+def test_collect_findings_defaults_status_to_open() -> None:
+    graph = ReachabilityGraph()
+    _file_finding(graph)
+    record = collect_findings(graph)[0]
+    assert record.status == "open"
 
 
 def test_a_persisted_review_verdict_is_read_back_onto_the_record() -> None:

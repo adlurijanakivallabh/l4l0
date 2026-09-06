@@ -61,3 +61,35 @@ def apply_overrides(
         else record
         for record in records
     ]
+
+
+@dataclass(frozen=True)
+class StatusOverride:
+    """An operator-set lifecycle status for a finding - the same
+    display-only, non-mutating audit-trail shape as :class:`SeverityOverride`,
+    applied to a finding's disposition (open / false-positive / accepted-risk
+    / remediated / needs-retest) rather than its severity.
+    """
+
+    finding_id: str
+    status: str
+    reason: str
+    overridden_by: str
+
+
+def apply_status_overrides(
+    records: list[FindingRecord], overrides: list[StatusOverride]
+) -> list[FindingRecord]:
+    """Return new records with a lifecycle status applied - the originals are untouched.
+
+    Mirrors :func:`apply_overrides` exactly: an override for a finding_id
+    absent from ``records`` is silently ignored, and the last override for a
+    given ``finding_id`` wins.
+    """
+    by_finding: dict[str, StatusOverride] = {o.finding_id: o for o in overrides}
+    return [
+        replace(record, status=override.status)
+        if (override := by_finding.get(record.finding_id)) is not None
+        else record
+        for record in records
+    ]

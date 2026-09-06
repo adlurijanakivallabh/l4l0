@@ -36,6 +36,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 
 from ..findings.confidence import ConfidenceScore, compute_confidence
+from ..findings.dedup import dedup_key
 from ..graph.model import Chain, NodeKind, ReachabilityGraph
 
 SEVERITY_ORDER: dict[str, int] = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
@@ -67,6 +68,8 @@ class FindingRecord:
     override_reason: str | None = None
     review_verdict: str | None = None
     review_proof_level: str | None = None
+    dedup_key: str = ""
+    status: str = "open"
 
     @property
     def effective_severity(self) -> str:
@@ -79,14 +82,17 @@ def collect_findings(graph: ReachabilityGraph) -> list[FindingRecord]:
     for finding_id in graph.nodes_of_kind(NodeKind.FINDING):
         node = graph.node(finding_id)
         confidence = compute_confidence(graph, finding_id)
+        vuln_class = str(node.get("vuln_class", ""))
+        target = str(node.get("target", ""))
+        param = node.get("param")
         records.append(
             FindingRecord(
                 finding_id=finding_id,
                 title=str(node.get("title", "")),
                 description=str(node.get("description", "")),
-                vuln_class=str(node.get("vuln_class", "")),
-                target=str(node.get("target", "")),
-                param=node.get("param"),
+                vuln_class=vuln_class,
+                target=target,
+                param=param,
                 evidence=list(node.get("evidence", [])),
                 evidence_excerpt=str(node.get("evidence_excerpt", "")),
                 evidence_grounded=bool(node.get("evidence_grounded", False)),
@@ -101,6 +107,7 @@ def collect_findings(graph: ReachabilityGraph) -> list[FindingRecord]:
                 identities_confirmed=list(node.get("identities_confirmed", [])),
                 review_verdict=node.get("review_verdict"),
                 review_proof_level=node.get("review_proof_level"),
+                dedup_key=dedup_key(vuln_class, target, param),
             )
         )
     return records
