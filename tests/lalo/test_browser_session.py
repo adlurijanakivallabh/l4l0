@@ -35,9 +35,15 @@ class _FakePage:
     goto_calls: list[str] = field(default_factory=list)
     click_calls: list[str] = field(default_factory=list)
     fill_calls: list[tuple[str, str]] = field(default_factory=list)
+    hover_calls: list[str] = field(default_factory=list)
+    select_option_calls: list[tuple[str, str]] = field(default_factory=list)
+    press_calls: list[tuple[str, str]] = field(default_factory=list)
+    type_calls: list[tuple[str, str]] = field(default_factory=list)
     click_navigates_to: str | None = None
+    fill_navigates_to: str | None = None
     raise_on_click: Exception | None = None
     raise_on_goto: Exception | None = None
+    raise_on_hover: Exception | None = None
     redirect_to: str | None = None
     goto_response: _FakeResponse | None = None
 
@@ -57,6 +63,22 @@ class _FakePage:
 
     def fill(self, selector: str, value: str, timeout: float = 0) -> None:
         self.fill_calls.append((selector, value))
+        if self.fill_navigates_to is not None:
+            self.url = self.fill_navigates_to
+
+    def hover(self, selector: str, timeout: float = 0) -> None:
+        if self.raise_on_hover is not None:
+            raise self.raise_on_hover
+        self.hover_calls.append(selector)
+
+    def select_option(self, selector: str, value: str, timeout: float = 0) -> None:
+        self.select_option_calls.append((selector, value))
+
+    def press(self, selector: str, key: str, timeout: float = 0) -> None:
+        self.press_calls.append((selector, key))
+
+    def type(self, selector: str, text: str, timeout: float = 0) -> None:
+        self.type_calls.append((selector, text))
 
     def inner_text(self, selector: str) -> str:
         return self.body_text
@@ -190,11 +212,75 @@ def test_fill_before_any_navigation_is_a_failed_result() -> None:
 
 
 def test_fill_records_the_value_on_an_in_scope_page() -> None:
-    page = _FakePage()
+    page = _FakePage(url="https://app.example.com/")
     session = _session_with_fake_page(page)
     result = session.fill("#username", "admin")
     assert result.ok is True
+    assert result.observation == "filled '#username'"
     assert page.fill_calls == [("#username", "admin")]
+
+
+def test_fill_that_navigates_out_of_scope_is_reverted_and_refused() -> None:
+    """Closes a real asymmetry: an onchange/onkeyup handler can navigate off
+    -target exactly like an onclick one, but fill() previously had no
+    post-action re-check at all."""
+    page = _FakePage(url="https://app.example.com/", fill_navigates_to="https://evil.example.org/")
+    session = _session_with_fake_page(page)
+    result = session.fill("#promo-code", "REDIRECT")
+    assert result.ok is False
+    assert "out of scope" in result.observation
+    assert page.url == "about:blank"
+
+
+def test_hover_before_any_navigation_is_a_failed_result() -> None:
+    session = BrowserSession(_scope())
+    result = session.hover("#menu")
+    assert result.ok is False
+    assert "navigate somewhere first" in result.observation
+
+
+def test_hover_that_stays_in_scope_succeeds() -> None:
+    page = _FakePage(url="https://app.example.com/", body_text="menu revealed")
+    session = _session_with_fake_page(page)
+    result = session.hover("#menu")
+    assert result.ok is True
+    assert result.observation == "menu revealed"
+    assert page.hover_calls == ["#menu"]
+
+
+def test_hover_degrades_gracefully_when_the_selector_is_missing() -> None:
+    page = _FakePage(raise_on_hover=Exception("no such element"))
+    session = _session_with_fake_page(page)
+    result = session.hover("#nonexistent")
+    assert result.ok is False
+    assert "hover failed" in result.observation
+
+
+def test_select_option_on_an_in_scope_page_succeeds() -> None:
+    page = _FakePage(url="https://app.example.com/")
+    session = _session_with_fake_page(page)
+    result = session.select_option("#country", "US")
+    assert result.ok is True
+    assert result.observation == "selected 'US' in '#country'"
+    assert page.select_option_calls == [("#country", "US")]
+
+
+def test_press_on_an_in_scope_page_succeeds() -> None:
+    page = _FakePage(url="https://app.example.com/", body_text="submitted")
+    session = _session_with_fake_page(page)
+    result = session.press("#search", "Enter")
+    assert result.ok is True
+    assert result.observation == "submitted"
+    assert page.press_calls == [("#search", "Enter")]
+
+
+def test_type_text_on_an_in_scope_page_succeeds() -> None:
+    page = _FakePage(url="https://app.example.com/", body_text="autocomplete shown")
+    session = _session_with_fake_page(page)
+    result = session.type_text("#query", "sql")
+    assert result.ok is True
+    assert result.observation == "autocomplete shown"
+    assert page.type_calls == [("#query", "sql")]
 
 
 def test_visible_text_before_any_navigation_is_empty() -> None:

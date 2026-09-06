@@ -52,10 +52,36 @@ concurrent tool dispatch across agents to isolate against — a single lazily-
 started browser, closed once when the whole scan ends, is exactly as safe as
 per-agent isolation here would be, at a fraction of the cost (Chromium
 startup is not cheap, and most scans never need a real browser at all).
+
+Action surface and stealth (added after a live comparison run showed a
+reference agent completing a JS-heavy target this module could only partly
+drive): the reference agent's own browser tool drives Chromium via a
+generically-patched stealth profile and a much larger action set (type,
+press, hover, select, drag, upload) because it shells out to a full
+Playwright CLI. This module closes the two gaps that actually block reaching
+a target, without adopting the subprocess-CLI indirection: (1) every
+interactive action a form-driven target needs -``hover``/``select_option``/
+``press``/``type_text`` alongside the existing ``click``/``fill`` - each
+routed through the same post-action scope re-check ``click`` already had
+(closing a real asymmetry: ``fill`` previously had no such re-check at all,
+even though an ``onchange``/``onkeyup`` handler can navigate exactly like an
+``onclick`` one); and (2) a stealth launch profile
+(``--disable-blink-features=AutomationControlled`` plus an init script
+overriding ``navigator.webdriver``/``plugins``/``chrome.runtime``) so a
+basic bot-detection check doesn't block the agent from ever loading the page
+in the first place. Not adopted: session-state (cookie) persistence to
+disk - this module already shares one live session for the whole scan
+(see above), so cookies set by a browser-driven login already survive for
+every subsequent action in the same run with no extra code; persisting them
+*across* separate process runs would need a browser-driven login flow to
+produce them, and none exists today (the identity module logs in over plain
+HTTP, never through this browser). Building that persistence now would have
+no producer to call it - add it if/when a browser-driven login flow exists.
 """
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from playwright.sync_api import Playwright, Response, sync_playwright
@@ -64,6 +90,15 @@ from ..execution.scope import ScopeGuard, _in_metadata_range
 
 _DEFAULT_NAV_TIMEOUT_MS = 30_000
 _MAX_TEXT_CHARS = 8_000
+
+# Trims the most common headless-automation tells a basic bot-detection
+# check looks at before doing anything more sophisticated: the WebDriver
+# flag, an empty plugins list, and a missing `chrome.runtime`.
+_STEALTH_INIT_SCRIPT = """
+Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+window.chrome = window.chrome || { runtime: {} };
+"""
 
 
 @dataclass
@@ -84,8 +119,13 @@ class BrowserSession:
     def _ensure_started(self) -> object:
         if self._page is None:
             self._playwright = sync_playwright().start()
-            self._browser = self._playwright.chromium.launch(headless=True)
+            self._browser = self._playwright.chromium.launch(
+                headless=True,
+                args=["--disable-blink-features=AutomationControlled"],
+                ignore_default_args=["--enable-automation"],
+            )
             self._page = self._browser.new_page()
+            self._page.add_init_script(_STEALTH_INIT_SCRIPT)
         return self._page
 
     def _check(self, url: str) -> str | None:
@@ -140,42 +180,82 @@ class BrowserSession:
             )
         return None
 
-    def click(self, selector: str) -> BrowserActionResult:
+    def _run_interactive(
+        self,
+        action_desc: str,
+        fn: Callable[[object], None],
+        *,
+        on_success: Callable[[], str] | None = None,
+    ) -> BrowserActionResult:
+        """Run one interactive action, then apply the same post-action scope
+        re-check ``click`` originally had: any of these actions can trigger a
+        page's own JS handler (``onclick``/``onchange``/``onkeyup``/...) that
+        navigates off-target, exactly the "a page instructed navigation" risk
+        the module docstring names - not just clicks.
+        """
         if self._page is None:
             return BrowserActionResult(ok=False, observation="error: navigate somewhere first")
         page = self._page
         try:
-            page.click(selector, timeout=_DEFAULT_NAV_TIMEOUT_MS)  # type: ignore[attr-defined]
+            fn(page)
         except Exception as exc:  # noqa: BLE001 - a missing/detached selector or a slow
             # page must degrade to a failed result, not crash the turn.
-            return BrowserActionResult(ok=False, observation=f"error: click failed: {exc}")
-        # A click can trigger navigation (a link, a JS redirect) to anywhere -
-        # exactly the "a page instructed navigation" risk the reference
-        # project's own skill file names but only guards against by
-        # instruction. Re-check the resulting URL and back out if it drifted
-        # out of scope, rather than trusting that a click can only ever stay
-        # on an already-authorized page.
-        current_url = page.url  # type: ignore[attr-defined]
-        reason = self._check(current_url)
-        if reason is not None:
+            return BrowserActionResult(ok=False, observation=f"error: {action_desc} failed: {exc}")
+        violation = self._post_action_scope_violation(page)
+        if violation is not None:
             page.go_back()  # type: ignore[attr-defined]
             return BrowserActionResult(
-                ok=False,
-                observation=(
-                    f"error: click navigated out of scope ({reason}: {current_url}) - reverted"
-                ),
+                ok=False, observation=f"error: {action_desc} {violation} - reverted"
             )
-        return BrowserActionResult(ok=True, observation=self._render_text())
+        return BrowserActionResult(ok=True, observation=(on_success or self._render_text)())
+
+    def _post_action_scope_violation(self, page: object) -> str | None:
+        """``None`` if the page's current URL is still in scope; otherwise why not."""
+        current_url = page.url  # type: ignore[attr-defined]
+        reason = self._check(current_url)
+        if reason is None:
+            return None
+        return f"navigated out of scope ({reason}: {current_url})"
+
+    def click(self, selector: str) -> BrowserActionResult:
+        return self._run_interactive(
+            "click",
+            lambda page: page.click(selector, timeout=_DEFAULT_NAV_TIMEOUT_MS),  # type: ignore[attr-defined]
+        )
 
     def fill(self, selector: str, value: str) -> BrowserActionResult:
-        if self._page is None:
-            return BrowserActionResult(ok=False, observation="error: navigate somewhere first")
-        page = self._page
-        try:
-            page.fill(selector, value, timeout=_DEFAULT_NAV_TIMEOUT_MS)  # type: ignore[attr-defined]
-        except Exception as exc:  # noqa: BLE001 - same degrade-not-crash contract as click/navigate.
-            return BrowserActionResult(ok=False, observation=f"error: fill failed: {exc}")
-        return BrowserActionResult(ok=True, observation=f"filled {selector!r}")
+        return self._run_interactive(
+            "fill",
+            lambda page: page.fill(selector, value, timeout=_DEFAULT_NAV_TIMEOUT_MS),  # type: ignore[attr-defined]
+            on_success=lambda: f"filled {selector!r}",
+        )
+
+    def hover(self, selector: str) -> BrowserActionResult:
+        return self._run_interactive(
+            "hover",
+            lambda page: page.hover(selector, timeout=_DEFAULT_NAV_TIMEOUT_MS),  # type: ignore[attr-defined]
+        )
+
+    def select_option(self, selector: str, value: str) -> BrowserActionResult:
+        return self._run_interactive(
+            "select_option",
+            lambda page: page.select_option(  # type: ignore[attr-defined]
+                selector, value, timeout=_DEFAULT_NAV_TIMEOUT_MS
+            ),
+            on_success=lambda: f"selected {value!r} in {selector!r}",
+        )
+
+    def press(self, selector: str, key: str) -> BrowserActionResult:
+        return self._run_interactive(
+            "press",
+            lambda page: page.press(selector, key, timeout=_DEFAULT_NAV_TIMEOUT_MS),  # type: ignore[attr-defined]
+        )
+
+    def type_text(self, selector: str, text: str) -> BrowserActionResult:
+        return self._run_interactive(
+            "type",
+            lambda page: page.type(selector, text, timeout=_DEFAULT_NAV_TIMEOUT_MS),  # type: ignore[attr-defined]
+        )
 
     def visible_text(self) -> str:
         """The current page's visible text, truncated - the ``get_text`` tool action."""

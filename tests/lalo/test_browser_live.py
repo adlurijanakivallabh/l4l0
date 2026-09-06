@@ -97,6 +97,21 @@ def test_a_real_chromium_session_navigates_and_reads_a_real_page(local_server: s
 
 
 @pytest.mark.integration
+def test_a_real_chromium_session_hides_the_webdriver_automation_flag(local_server: str) -> None:
+    """The stealth launch profile's actual point: navigator.webdriver must
+    read as undefined, matching an ordinary browser, not True."""
+    engagement = Engagement.from_specs(["127.0.0.1"])
+    scope = ScopeGuard(engagement)
+    session = BrowserSession(scope)
+    try:
+        session.navigate(local_server)
+        webdriver_flag = session._page.evaluate("navigator.webdriver")  # type: ignore[attr-defined]
+        assert webdriver_flag is None
+    finally:
+        session.close()
+
+
+@pytest.mark.integration
 def test_a_real_click_that_navigates_off_engagement_is_reverted(
     local_server_pair: tuple[str, str],
 ) -> None:
