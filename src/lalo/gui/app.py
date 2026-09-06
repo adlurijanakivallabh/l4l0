@@ -72,6 +72,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from ..core.errors import AllProvidersFailedError
 from ..core.logging import get_logger
 from ..core.usage import DEFAULT_USAGE_PATH
 from ..scan import ScanConfig, ScanRunner
@@ -155,7 +156,18 @@ def build_app(event_log: EventLog, token: str, *, runs_dir: Path | None = None) 
                 # only place this failure can surface, so it must be a status
                 # event, never a silently dead thread.
                 _log.exception("scan failed")
-                event_log.append("status", {"event": "scan_failed", "error": str(exc)})
+                payload: dict[str, object] = {"event": "scan_failed", "error": str(exc)}
+                # AllProvidersFailedError already carries its per-provider
+                # detail as real attributes (see core/errors.py) - str(exc)
+                # alone flattens them into one line the frontend can't
+                # re-segment, so surface role/failures as their own fields
+                # too for a structured, per-provider rendering in the GUI.
+                if isinstance(exc, AllProvidersFailedError):
+                    payload["role"] = exc.role
+                    payload["failures"] = [
+                        {"provider": name, "reason": reason} for name, reason in exc.failures
+                    ]
+                event_log.append("status", payload)
             finally:
                 current_runner["runner"] = None
 

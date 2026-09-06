@@ -201,15 +201,29 @@ def test_write_report_survives_a_leftover_crashed_temp_file(tmp_path: Path) -> N
 
 def test_write_report_threads_the_scan_status_into_every_format(tmp_path: Path) -> None:
     graph, _ = _graph_with_finding()
-    paths = write_report(tmp_path, graph, _SKILLS, status=RunStatus.BUDGET_EXHAUSTED)
+    paths = write_report(tmp_path, graph, _SKILLS, status=RunStatus.COMPLETED)
 
     doc = json.loads(paths["json"].read_text(encoding="utf-8"))
-    assert doc["status"] == "budget_exhausted"
-    assert "**Scan Status:** budget_exhausted" in paths["markdown"].read_text(encoding="utf-8")
+    assert doc["status"] == "completed"
+    assert "**Scan Status:** completed" in paths["markdown"].read_text(encoding="utf-8")
 
     sarif = json.loads(paths["sarif"].read_text(encoding="utf-8"))
     assert sarif["runs"][0]["invocations"] == [{"executionSuccessful": True}]
     assert sarif["runs"][0]["automationDetails"] == {"id": tmp_path.name}
+
+
+@pytest.mark.parametrize("status", [RunStatus.BUDGET_EXHAUSTED, RunStatus.UNVERIFIED_STOP])
+def test_write_report_a_cut_off_run_reports_an_unsuccessful_sarif_execution(
+    tmp_path: Path, status: RunStatus
+) -> None:
+    """A budget-exhausted or unverified-stop run genuinely stopped before it
+    finished - a CI consumer reading executionSuccessful needs to know these
+    results may only be a fraction of what a completed scan would report,
+    same as an outright crash."""
+    graph, _ = _graph_with_finding()
+    paths = write_report(tmp_path, graph, _SKILLS, status=status)
+    sarif = json.loads(paths["sarif"].read_text(encoding="utf-8"))
+    assert sarif["runs"][0]["invocations"] == [{"executionSuccessful": False}]
 
 
 def test_write_report_a_run_status_of_error_reports_an_unsuccessful_sarif_execution(

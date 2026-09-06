@@ -121,9 +121,18 @@ def write_report(
         "coverage": asdict(coverage),
         "chains": [asdict(chain) for chain in chains],
     }
+    # Only a genuinely COMPLETED run is a successful execution for SARIF's
+    # purposes here - BUDGET_EXHAUSTED/UNVERIFIED_STOP/ERROR (and RUNNING,
+    # never actually passed in) are all "the tool was cut off before it
+    # finished," which is exactly the case a CI consumer of
+    # executionSuccessful needs to know not to treat as a clean, complete
+    # scan. Checking specifically for RunStatus.ERROR here would be a no-op
+    # in practice: nothing in this codebase ever produces that status - a
+    # scan.py run that raises never reaches write_report() at all (the GUI's
+    # own except-block emits scan_failed and skips reporting entirely).
     sarif_document = render_sarif(
         records,
-        execution_successful=status is None or status != RunStatus.ERROR,
+        execution_successful=status is None or status == RunStatus.COMPLETED,
         automation_id=run_dir.name,
     )
     html = render_report_html(

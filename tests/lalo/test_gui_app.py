@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
 import lalo.gui.app as app_module
+from lalo.core.errors import AllProvidersFailedError
 from lalo.gui.app import build_app, generate_token
 from lalo.gui.events import EventLog
 from lalo.scan import ScanConfig
@@ -372,5 +373,65 @@ def test_a_failed_scan_emits_a_status_event_instead_of_dying_silently(
             )
 
         assert _wait_until(_failed_event_landed)
+    finally:
+        _FakeScanRunner.raises = None
+
+
+def test_a_failed_scan_with_all_providers_failed_surfaces_structured_per_provider_detail(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _FakeScanRunner.raises = AllProvidersFailedError(
+        role="reasoning",
+        failures=[("anthropic", "401 unauthorized"), ("openai", "timeout")],
+    )
+    monkeypatch.setattr(app_module, "ScanRunner", _FakeScanRunner)
+    try:
+        client, event_log = _client(runs_dir=tmp_path)
+        client.post(
+            "/scan?token=test-token", json={"mission": "find a bug", "targets": ["example.com"]}
+        )
+
+        def _failed_event() -> dict | None:
+            _cursor, events = event_log.snapshot()
+            for e in events:
+                if e.category == "status" and e.payload.get("event") == "scan_failed":
+                    return e.payload
+            return None
+
+        assert _wait_until(lambda: _failed_event() is not None)
+        payload = _failed_event()
+        assert payload is not None
+        assert payload["role"] == "reasoning"
+        assert payload["failures"] == [
+            {"provider": "anthropic", "reason": "401 unauthorized"},
+            {"provider": "openai", "reason": "timeout"},
+        ]
+    finally:
+        _FakeScanRunner.raises = None
+
+
+def test_a_failed_scan_with_a_plain_error_has_no_role_or_failures_fields(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _FakeScanRunner.raises = RuntimeError("boom")
+    monkeypatch.setattr(app_module, "ScanRunner", _FakeScanRunner)
+    try:
+        client, event_log = _client(runs_dir=tmp_path)
+        client.post(
+            "/scan?token=test-token", json={"mission": "find a bug", "targets": ["example.com"]}
+        )
+
+        def _failed_event() -> dict | None:
+            _cursor, events = event_log.snapshot()
+            for e in events:
+                if e.category == "status" and e.payload.get("event") == "scan_failed":
+                    return e.payload
+            return None
+
+        assert _wait_until(lambda: _failed_event() is not None)
+        payload = _failed_event()
+        assert payload is not None
+        assert "role" not in payload
+        assert "failures" not in payload
     finally:
         _FakeScanRunner.raises = None
