@@ -77,10 +77,95 @@ def test_anthropic_5xx_maps_to_unavailable() -> None:
         return httpx.Response(503, json={})
 
     provider = AnthropicProvider(
-        "k", model="m", client=httpx.Client(transport=httpx.MockTransport(bad))
+        "k",
+        model="m",
+        client=httpx.Client(transport=httpx.MockTransport(bad)),
+        sleep=lambda _: None,
     )
     with pytest.raises(ProviderUnavailableError):
         provider.complete(CompletionRequest(prompt="x"))
+
+
+def test_a_retryable_status_is_retried_and_can_still_succeed() -> None:
+    calls = []
+
+    def flaky(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        if len(calls) < 2:
+            return httpx.Response(503, json={})
+        return httpx.Response(
+            200, json={"stop_reason": "end_turn", "content": [{"type": "text", "text": "hi"}]}
+        )
+
+    provider = AnthropicProvider(
+        "k",
+        model="m",
+        client=httpx.Client(transport=httpx.MockTransport(flaky)),
+        sleep=lambda _: None,
+    )
+    response = provider.complete(CompletionRequest(prompt="x"))
+    assert response.text == "hi"
+    assert len(calls) == 2
+
+
+def test_retries_are_bounded_then_raise() -> None:
+    calls = []
+
+    def always_bad(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        return httpx.Response(503, json={})
+
+    provider = AnthropicProvider(
+        "k",
+        model="m",
+        client=httpx.Client(transport=httpx.MockTransport(always_bad)),
+        sleep=lambda _: None,
+    )
+    with pytest.raises(ProviderUnavailableError):
+        provider.complete(CompletionRequest(prompt="x"))
+    assert len(calls) == 3
+
+
+def test_a_definitive_4xx_is_never_retried() -> None:
+    calls = []
+
+    def unauthorized(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        return httpx.Response(401, json={})
+
+    provider = AnthropicProvider(
+        "k",
+        model="m",
+        client=httpx.Client(transport=httpx.MockTransport(unauthorized)),
+        sleep=lambda _: None,
+    )
+    with pytest.raises(ProviderUnavailableError):
+        provider.complete(CompletionRequest(prompt="x"))
+    assert len(calls) == 1
+
+
+def test_openai_compatible_retries_a_retryable_status_before_failing_over() -> None:
+    calls = []
+
+    def flaky(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        if len(calls) < 3:
+            return httpx.Response(429, json={})
+        return httpx.Response(
+            200, json={"choices": [{"finish_reason": "stop", "message": {"content": "hi"}}]}
+        )
+
+    provider = OpenAICompatibleProvider(
+        "gw",
+        "k",
+        model="m",
+        base_url="http://x",
+        client=httpx.Client(transport=httpx.MockTransport(flaky)),
+        sleep=lambda _: None,
+    )
+    response = provider.complete(CompletionRequest(prompt="x"))
+    assert response.text == "hi"
+    assert len(calls) == 3
 
 
 def test_openai_compatible_success_and_content_filter() -> None:

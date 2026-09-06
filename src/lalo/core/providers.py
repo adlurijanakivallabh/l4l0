@@ -16,9 +16,27 @@ test CLI, read in full) — see their own docstrings for what was adopted
 (a real completion call confirming credentials actually work, not just that
 an env var is set) versus what wasn't (a separate CLI tool, since L4L0 has
 none by design).
+
+:func:`_post_with_retry` closes a real gap found in the Phase 0 strix pass:
+that reference's own agent-execution-loop tests (``test_execution_transient_
+retry.py``/``test_model_retry.py``, read via its comparison doc since the
+retry classifier itself lives deep inside its third-party agent-SDK
+integration) validate a transient-vs-permanent split — network/timeout/5xx/
+429 errors are retried with backoff on the SAME model/connection, while a
+definitive 4xx or safety-refusal fails fast, never retried. Each adapter here
+already built ``_RETRYABLE_STATUS`` but never actually retried on it — a
+single transient blip on the first (often free, local) provider in the
+router's chain escalated straight to a paid hosted fallback with zero
+retries at all. The retry loop lives here, at the single HTTP call each
+adapter makes, so :class:`~lalo.core.model_router.ModelRouter` only considers
+failing over to a *different* provider after this one has genuinely
+exhausted its own chances — not on the first transient hiccup.
 """
 
 from __future__ import annotations
+
+import time
+from collections.abc import Callable
 
 import httpx
 
@@ -28,6 +46,41 @@ from .model_router import CompletionRequest, CompletionResponse, ModelRouter, Pr
 from .redaction import shared_redactor
 
 _RETRYABLE_STATUS = frozenset({408, 409, 425, 429, 500, 502, 503, 504, 529})
+_MAX_ATTEMPTS = 3
+_BASE_DELAY_S = 0.5
+
+
+def _post_with_retry(
+    client: httpx.Client,
+    url: str,
+    *,
+    json: dict[str, object],
+    headers: dict[str, str],
+    sleep: Callable[[float], None] = time.sleep,
+) -> httpx.Response:
+    """POST with bounded retry-with-backoff, but ONLY for transient failures.
+
+    A transport error (``httpx.HTTPError`` — DNS/connection/timeout) or a
+    response in ``_RETRYABLE_STATUS`` is retried up to ``_MAX_ATTEMPTS`` times
+    with exponential backoff; any other response (success or a definitive
+    4xx) is returned immediately on the first attempt, unretried. The final
+    attempt's exception/response is what the caller sees either way, so
+    existing raise-on-failure logic in each adapter's ``complete`` needs no
+    change beyond calling this instead of ``client.post`` directly.
+    """
+    for attempt in range(_MAX_ATTEMPTS):
+        last_attempt = attempt == _MAX_ATTEMPTS - 1
+        try:
+            resp = client.post(url, json=json, headers=headers)
+        except httpx.HTTPError:
+            if last_attempt:
+                raise
+            sleep(_BASE_DELAY_S * (2**attempt))
+            continue
+        if resp.status_code not in _RETRYABLE_STATUS or last_attempt:
+            return resp
+        sleep(_BASE_DELAY_S * (2**attempt))
+    raise AssertionError("unreachable")  # pragma: no cover
 
 
 class AnthropicProvider:
@@ -42,11 +95,13 @@ class AnthropicProvider:
         model: str,
         client: httpx.Client | None = None,
         base_url: str = "https://api.anthropic.com",
+        sleep: Callable[[float], None] = time.sleep,
     ) -> None:
         self._api_key = api_key
         self.model = model
         self._base_url = base_url.rstrip("/")
         self._client = client or httpx.Client(timeout=120.0)
+        self._sleep = sleep
 
     def complete(self, request: CompletionRequest) -> CompletionResponse:
         payload: dict[str, object] = {
@@ -58,7 +113,8 @@ class AnthropicProvider:
         if request.system:
             payload["system"] = request.system
         try:
-            resp = self._client.post(
+            resp = _post_with_retry(
+                self._client,
                 f"{self._base_url}/v1/messages",
                 json=payload,
                 headers={
@@ -66,6 +122,7 @@ class AnthropicProvider:
                     "anthropic-version": "2023-06-01",
                     "content-type": "application/json",
                 },
+                sleep=self._sleep,
             )
         except httpx.HTTPError as exc:
             raise ProviderUnavailableError(type(exc).__name__, provider=self.name) from exc
@@ -109,6 +166,7 @@ class OpenAICompatibleProvider:
         auth_header: str = "Authorization",
         auth_prefix: str = "Bearer ",
         client: httpx.Client | None = None,
+        sleep: Callable[[float], None] = time.sleep,
     ) -> None:
         self.name = name
         self._api_key = api_key
@@ -117,6 +175,7 @@ class OpenAICompatibleProvider:
         self._auth_header = auth_header
         self._auth_prefix = auth_prefix
         self._client = client or httpx.Client(timeout=120.0)
+        self._sleep = sleep
 
     def complete(self, request: CompletionRequest) -> CompletionResponse:
         messages: list[dict[str, str]] = []
@@ -130,13 +189,15 @@ class OpenAICompatibleProvider:
             "temperature": request.temperature,
         }
         try:
-            resp = self._client.post(
+            resp = _post_with_retry(
+                self._client,
                 f"{self._base_url}/v1/chat/completions",
                 json=payload,
                 headers={
                     self._auth_header: f"{self._auth_prefix}{self._api_key}",
                     "content-type": "application/json",
                 },
+                sleep=self._sleep,
             )
         except httpx.HTTPError as exc:
             raise ProviderUnavailableError(type(exc).__name__, provider=self.name) from exc
