@@ -21,6 +21,8 @@ working on before improvising a technique from memory - it holds this
 project's own attack-surface, recon, and technique guidance, escalating from
 the quietest confirmation step to the most invasive proof step, plus the
 proof ladder that defines what counts as a reportable finding for that class.
+Wordlists ship pre-installed at /usr/share/wordlists and /usr/share/seclists
+- check there before assuming one needs to be downloaded.
 
 CLOSURE DISCIPLINE:
 Every candidate you investigate ends in exactly one state: confirmed (a

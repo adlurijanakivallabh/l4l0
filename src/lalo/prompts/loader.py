@@ -58,6 +58,25 @@ prompt (originally a hardcoded string in :mod:`lalo.findings.review`),
 pulled out here so it gets the same operator-override path as every other
 role — no new reference reading needed for its content, since that content
 was already reference-informed when Phase 12c built it.
+
+A fresh re-read of the first reference's real ``core/system_master_template.md``
+(this project's own Phase 14 reference-pass cycle) surfaced its mandatory
+per-turn ``TRACE`` structure (Trace context → Reason → Act → Check → Explain,
+7 required headings, a Decision Log appended to literally every response).
+Examined and deliberately NOT adopted: it is a heavy, purely LLM-compliance-
+enforced formatting mandate with real per-turn token/verbosity cost, and its
+substantive content — plan before acting, escalate only with justification —
+already exists here without the formatting overhead, independently
+converged (``THOROUGHNESS`` above, and every skill's own "start quiet,
+escalate only as needed" heading). One genuinely actionable, previously-
+missing idea from that same template: it tells the model up front which
+wordlists are pre-installed rather than making it discover this by
+exploring the filesystem. L4L0's own runtime image (``docker/lalo-runtime.
+Dockerfile``) installs the same ``seclists``/``wordlists`` apt packages but
+never told the agent so — added as a one-line, static addition to
+``agent.txt``'s ``METHODOLOGY`` section (the exact paths are fixed by the
+Dockerfile, so this needed no dynamic environment-probing machinery the way
+that reference's own Mako-templated version does).
 """
 
 from __future__ import annotations
