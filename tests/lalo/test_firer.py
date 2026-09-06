@@ -163,3 +163,29 @@ def test_dns_resolution_failure_does_not_fire_blind() -> None:
     result = firer.fire("GET", "http://nowhere.invalid/")
     assert result.fired is False
     assert result.error == "dns_resolution_failed"
+
+
+def test_response_body_is_capped_at_max_response_bytes() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=b"A" * 10_000)
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    firer = HttpFirer(_scope(), client=client, max_response_bytes=100)
+    result = firer.fire("GET", "https://app.example.com/")
+    assert result.fired is True
+    assert result.truncated is True
+    # A mocked transport delivers the whole body as one chunk, well past the
+    # cap on its own -- proving the final slice, not just "stop reading
+    # further chunks", is what actually enforces the ceiling.
+    assert len(result.body) == 100
+
+
+def test_a_small_response_is_not_marked_truncated() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=b"hello")
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    firer = HttpFirer(_scope(), client=client, max_response_bytes=10_485_760)
+    result = firer.fire("GET", "https://app.example.com/")
+    assert result.truncated is False
+    assert result.body == b"hello"

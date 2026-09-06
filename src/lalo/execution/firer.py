@@ -15,6 +15,18 @@ Redirects are followed manually (:meth:`fire_redirects`), re-checking scope
 (and re-pinning) on every hop — the concrete defense against a reference
 proxy tool's own gap (a scope filter that only narrows what's *displayed*,
 never something that blocks an out-of-scope replay from actually firing).
+
+Phase 3, cai pass: that same reference's own fetch tool (read in full, not
+just its comparison-doc summary) streams the response body and stops reading
+once a configurable byte ceiling is hit, rather than reading an unbounded
+body into memory. This firer's ``fire()`` had no such cap at all — a large or
+adversarial in-engagement target response (a deliberate memory-exhaustion
+attempt, or just a large file legitimately being served) would be read to
+completion unconditionally. Adopted here as ``max_response_bytes`` (a firer-
+wide default, not per-call, since every ``fire()`` caller shares the same
+memory-safety concern); a capped response sets ``FireResult.truncated`` so a
+cut-off body is never silently mistaken for a complete capture — evidence
+grounding and reporting both need to know the difference.
 """
 
 from __future__ import annotations
@@ -43,6 +55,12 @@ class FireResult:
     elapsed_ms: float | None = None
     error: str | None = None
     http_version: str | None = None
+    # True when `body` was cut off at max_response_bytes -- a real, complete
+    # response is never silently indistinguishable from a truncated one.
+    truncated: bool = False
+
+
+_DEFAULT_MAX_RESPONSE_BYTES = 10_485_760  # 10 MiB
 
 
 @dataclass
@@ -100,11 +118,13 @@ class HttpFirer:
         *,
         breaker_threshold: int = 5,
         breaker_reset_after_s: float = 30.0,
+        max_response_bytes: int = _DEFAULT_MAX_RESPONSE_BYTES,
     ) -> None:
         self.scope = scope
         self._client = client or httpx.Client(http2=True, timeout=20.0, follow_redirects=False)
         self._breaker_threshold = breaker_threshold
         self._breaker_reset_after_s = breaker_reset_after_s
+        self._max_response_bytes = max_response_bytes
         self._breakers: dict[str, _Breaker] = {}
 
     def _breaker(self, host: str) -> _Breaker:
@@ -153,7 +173,30 @@ class HttpFirer:
             if parts.scheme == "https" and parts.hostname:
                 # Dial the pinned IP, but still validate TLS against the real name.
                 request.extensions["sni_hostname"] = parts.hostname
-            resp = self._client.send(request)
+            # Streamed, not `send(request)` -- a naive full-body read has no
+            # ceiling at all, so an adversarial or just-large in-engagement
+            # response can exhaust memory. Read is capped at
+            # max_response_bytes; anything beyond that is never pulled off
+            # the wire, not just discarded after the fact.
+            resp = self._client.send(request, stream=True)
+            try:
+                chunks: list[bytes] = []
+                received = 0
+                truncated = False
+                for chunk in resp.iter_bytes():
+                    chunks.append(chunk)
+                    received += len(chunk)
+                    if received >= self._max_response_bytes:
+                        truncated = True
+                        break
+                # A single chunk (e.g. a mocked transport, or just a generous
+                # read-buffer size) can overshoot the cap on its own -- stopping
+                # further reads isn't enough; the joined result must be sliced
+                # too, or `truncated=True` would be paired with a body that's
+                # actually larger than max_response_bytes.
+                body = b"".join(chunks)[: self._max_response_bytes]
+            finally:
+                resp.close()
         except httpx.InvalidURL as exc:
             # Raised by build_request() itself, before any network I/O --
             # httpx.InvalidURL is NOT a subclass of httpx.HTTPError, so this
@@ -182,20 +225,21 @@ class HttpFirer:
                 error=type(exc).__name__,
                 elapsed_ms=(time.monotonic() - start) * 1000.0,
             )
-
-        breaker.failures = 0
-        breaker.is_open = False  # a successful request (incl. a half-open probe) closes it
-        return FireResult(
-            method=method,
-            url=url,
-            fired=True,
-            scope_reason=decision.reason,
-            status=resp.status_code,
-            headers=dict(resp.headers),
-            body=resp.content,
-            elapsed_ms=(time.monotonic() - start) * 1000.0,
-            http_version=resp.http_version,
-        )
+        else:
+            breaker.failures = 0
+            breaker.is_open = False  # a successful request (incl. a half-open probe) closes it
+            return FireResult(
+                method=method,
+                url=url,
+                fired=True,
+                scope_reason=decision.reason,
+                truncated=truncated,
+                status=resp.status_code,
+                headers=dict(resp.headers),
+                body=body,
+                elapsed_ms=(time.monotonic() - start) * 1000.0,
+                http_version=resp.http_version,
+            )
 
     def fire_redirects(
         self,
