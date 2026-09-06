@@ -585,6 +585,65 @@ button, input, textarea {
   margin: 8px 0 14px;
 }
 
+/* ---------- advanced options (composer area) ---------- */
+
+.advanced-options {
+  padding: 4px 12px;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+}
+.advanced-options label { display: block; margin: 4px 0; }
+
+/* ---------- settings drawer ---------- */
+
+.settings-drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  width: 320px;
+  height: 100vh;
+  background: var(--bg-rail);
+  border-left: 1px solid var(--border);
+  padding: 16px;
+  overflow-y: auto;
+  z-index: 20;
+}
+/* `display: flex` on .settings-drawer-header (a descendant) doesn't need this
+   override, but the drawer's own [hidden] toggle does - same reasoning as
+   .history-banner[hidden] above: a positioned/sized element beats the UA
+   stylesheet's `[hidden] { display: none }` at equal specificity otherwise. */
+.settings-drawer[hidden] { display: none; }
+.settings-drawer-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+.settings-section { margin-bottom: 20px; }
+.settings-section h3 {
+  margin: 0 0 8px;
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--text-faint);
+}
+.provider-list { list-style: none; padding: 0; margin: 0 0 8px; font-size: 0.8rem; color: var(--text-muted); }
+.provider-list li { padding: 4px 0; }
+.provider-form { display: flex; gap: 6px; }
+.provider-form select {
+  background: var(--surface);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  padding: 6px 8px;
+}
+.provider-form input {
+  flex: 1;
+  min-width: 0;
+  background: var(--surface);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  padding: 6px 8px;
+}
+.provider-form .btn-send { width: auto; height: auto; border-radius: var(--radius-sm); padding: 6px 12px; }
+.provider-form-status { margin: 8px 0 0; font-size: 0.76rem; color: var(--text-muted); }
+
 /* ---------- scrollbars ---------- */
 
 * {

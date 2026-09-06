@@ -13,6 +13,7 @@
     <div class="brand">
       <span class="brand-name">L4L0</span>
     </div>
+    <button type="button" id="open-settings" class="btn-icon" aria-label="Settings" title="Settings">⚙</button>
     <div id="conn-status" class="conn-pill" role="status">standby</div>
     <button type="button" id="stop-scan" class="btn btn-ghost btn-stop" hidden>Stop scan</button>
     <dl class="rail-stats" aria-label="Scan summary">
@@ -49,6 +50,14 @@
       </div>
 
       <button type="button" id="jump-latest" class="jump-latest" hidden>↓ New activity</button>
+
+      <details id="advanced-options" class="advanced-options">
+        <summary>Advanced options</summary>
+        <label>Max steps <input id="opt-max-steps" type="number" min="1" placeholder="25" /></label>
+        <label>Budget ceiling <input id="opt-budget-ceiling" type="number" min="1" placeholder="300" /></label>
+        <label><input id="opt-egress-lock" type="checkbox" /> Egress lock</label>
+        <label><input id="opt-redact-findings" type="checkbox" /> Redact secrets in report/logs</label>
+      </details>
 
       <form id="composer-form" class="composer-bar">
         <input id="composer-input" type="text" placeholder="Tell me what to test…" autocomplete="off" />
@@ -111,6 +120,27 @@
     <button type="button" class="run-resume-btn" hidden>Resume</button>
   </li>
 </template>
+
+<div id="settings-drawer" class="settings-drawer" hidden>
+  <div class="settings-drawer-header">
+    <span>Settings</span>
+    <button type="button" id="close-settings" class="btn-icon" aria-label="Close">✕</button>
+  </div>
+  <section class="settings-section">
+    <h3>Providers</h3>
+    <ul id="provider-list" class="provider-list"></ul>
+    <form id="provider-form" class="provider-form">
+      <select id="provider-select"></select>
+      <input id="provider-key-input" type="password" placeholder="API key" autocomplete="off" />
+      <button type="submit" class="btn btn-send">Save &amp; verify</button>
+    </form>
+    <p id="provider-form-status" class="provider-form-status"></p>
+  </section>
+  <section class="settings-section">
+    <h3>Appearance</h3>
+    <button type="button" id="theme-toggle" class="btn btn-ghost">Toggle theme</button>
+  </section>
+</div>
 
 <script src="/static/app.js"></script>
 </body>

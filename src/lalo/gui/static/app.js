@@ -33,6 +33,15 @@
   const historyBannerText = document.getElementById("history-banner-text");
   const historyBackToLiveBtn = document.getElementById("history-back-to-live");
 
+  const openSettingsBtn = document.getElementById("open-settings");
+  const closeSettingsBtn = document.getElementById("close-settings");
+  const settingsDrawer = document.getElementById("settings-drawer");
+  const providerListEl = document.getElementById("provider-list");
+  const providerSelectEl = document.getElementById("provider-select");
+  const providerForm = document.getElementById("provider-form");
+  const providerKeyInput = document.getElementById("provider-key-input");
+  const providerFormStatus = document.getElementById("provider-form-status");
+
   const tplMsgAgent = document.getElementById("tpl-msg-agent");
   const tplMsgUser = document.getElementById("tpl-msg-user");
   const tplAgentStatus = document.getElementById("tpl-agent-status");
@@ -337,6 +346,59 @@
 
   historyBackToLiveBtn.addEventListener("click", returnToLive);
 
+  // ---------- settings drawer (providers) ----------
+
+  async function loadProviderSettings() {
+    try {
+      const response = await fetch("/settings/providers");
+      if (!response.ok) return;
+      const body = await response.json();
+      providerListEl.replaceChildren();
+      providerSelectEl.replaceChildren();
+      for (const p of body.providers) {
+        const li = document.createElement("li");
+        li.textContent = `${p.id} — ${p.configured ? "configured" : "not configured"}`;
+        providerListEl.appendChild(li);
+        const opt = document.createElement("option");
+        opt.value = p.id;
+        opt.textContent = p.id;
+        providerSelectEl.appendChild(opt);
+      }
+    } catch {
+      // best-effort - settings drawer content, never blocks the live console
+    }
+  }
+
+  openSettingsBtn.addEventListener("click", () => {
+    settingsDrawer.hidden = false;
+    loadProviderSettings();
+  });
+  closeSettingsBtn.addEventListener("click", () => {
+    settingsDrawer.hidden = true;
+  });
+
+  providerForm.addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    const providerId = providerSelectEl.value;
+    const apiKey = providerKeyInput.value.trim();
+    if (!apiKey) return;
+    providerFormStatus.textContent = "Verifying…";
+    try {
+      const response = await fetch("/settings/providers", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ provider_id: providerId, api_key: apiKey, extra: {} }),
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body.error || `request failed (${response.status})`);
+      providerFormStatus.textContent = `${providerId} verified and saved.`;
+      providerKeyInput.value = "";
+      loadProviderSettings();
+    } catch (err) {
+      providerFormStatus.textContent = `Failed: ${err.message}`;
+    }
+  });
+
   function appendUserMessage(text, { error = false } = {}) {
     const wasNear = isNearBottom();
     const node = tplMsgUser.content.cloneNode(true);
@@ -532,10 +594,21 @@
     composerSendBtn.disabled = true;
     composerInput.disabled = true;
     try {
+      const maxSteps = document.getElementById("opt-max-steps").value;
+      const budgetCeiling = document.getElementById("opt-budget-ceiling").value;
+      const egressLock = document.getElementById("opt-egress-lock").checked;
+      const redactFindings = document.getElementById("opt-redact-findings").checked;
       const response = await fetch("/scan", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ mission: text, targets }),
+        body: JSON.stringify({
+          mission: text,
+          targets,
+          ...(maxSteps ? { max_steps: Number(maxSteps) } : {}),
+          ...(budgetCeiling ? { budget_ceiling: Number(budgetCeiling) } : {}),
+          egress_lock: egressLock,
+          redact_findings: redactFindings,
+        }),
       });
       const body = await response.json().catch(() => ({}));
       if (!response.ok) {
