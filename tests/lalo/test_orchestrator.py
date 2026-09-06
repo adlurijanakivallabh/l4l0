@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import os
+import stat
+
 import pytest
 
 from lalo.orchestrator import (
@@ -75,6 +78,24 @@ def test_a_failed_durable_write_never_updates_in_memory_state(tmp_path) -> None:
     assert journal.run_once("k", now_serializable) == {"data": 1}
     assert calls["n"] == 2
     assert journal.has("k") is True
+
+
+def test_journal_file_is_owner_only_regardless_of_a_permissive_umask(tmp_path) -> None:
+    path = tmp_path / "j.jsonl"
+    old_umask = os.umask(0o000)
+    try:
+        DurableJournal(path).run_once("k", lambda: {"ok": True})
+    finally:
+        os.umask(old_umask)
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+
+
+def test_journal_tightens_permissions_even_on_a_pre_existing_looser_file(tmp_path) -> None:
+    path = tmp_path / "j.jsonl"
+    path.write_text("")
+    path.chmod(0o644)
+    DurableJournal(path).run_once("k", lambda: {"ok": True})
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
 
 
 def test_torn_last_line_is_ignored(tmp_path) -> None:

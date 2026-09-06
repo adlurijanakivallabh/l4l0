@@ -18,10 +18,15 @@ informed by a different reference agent's own real ``config/resolver.ts``/
 ``writer.ts`` (read in full): its CLI config file is always written ``0o600``
 and its loader outright *refuses to read* the file if its permissions are
 looser than that. This function reuses the idea for a broader reason than
-that reference's own single config file: EVERY persisted L4L0 artifact
-(the reachability graph, all five report formats, the durable journal, the
-lifetime usage log) flows through this one shared primitive, and every one
-of them can carry confidential engagement/target/finding data even after
+that reference's own single config file: every persisted L4L0 artifact whose
+own natural shape is a whole-file replace (the reachability graph, all five
+report formats, the lifetime usage log) flows through this one shared
+primitive — the durable journal is the one exception, since it's an
+append-only log for which a replace-the-whole-file primitive is the wrong
+shape (see :mod:`lalo.orchestrator.journal`'s own Phase 2 note for how it
+gets the same 0600 property without that mismatch). Every artifact that DOES
+route through here can carry confidential engagement/target/finding data even
+after
 :mod:`lalo.core.redaction` has stripped literal secrets out of it — "what
 target was tested and what was found on it" is itself sensitive regardless
 of whether a raw credential string survives inside it. Fixed once here,

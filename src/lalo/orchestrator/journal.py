@@ -11,6 +11,27 @@ recorded finding), regardless of exactly when the crash happened. The same
 reference's own re-drive-safety idea (detect that a declared state was already
 achieved and adopt it, rather than redoing or erroring) is what ``run_once``
 implements for every individual key.
+
+Phase 2, cai pass: reading ``docs/running_agents.md``'s note on
+``RunConfig.trace_include_sensitive_data`` (an opt-out for whether LLM/tool
+I/O — potentially including credentials scraped mid-scan — gets written into
+a persisted trace) surfaced a real gap here, not there: this journal is
+plausibly the single most sensitive artifact L4L0 produces (a raw, complete
+record of every side-effecting step's actual result, arguably more detailed
+than the final report), yet unlike every OTHER persisted artifact it does not
+route through :func:`~lalo.core.atomic_io.atomic_write_verified` (a whole-
+file replace primitive is the wrong shape for an append-only log growing over
+a long-running scan — read-modify-write-the-whole-file on every step would be
+quadratic) and so never picked up that primitive's owner-only (0600) file
+permissions. Fixed narrowly here instead: the file is created (and, on an
+existing file from before this fix, re-tightened) at 0600 directly, without
+giving up true O(1)-per-record append behavior. Redaction is deliberately
+NOT applied to journaled values themselves (only display/report paths redact)
+— a resumed step may legitimately need to reuse an exact prior result (e.g. a
+session token from a journaled login step); silently substituting a
+redaction placeholder into operational state the system depends on for
+correctness would be worse than the exposure this file-permission fix
+addresses.
 """
 
 from __future__ import annotations
@@ -21,6 +42,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+_OWNER_ONLY = 0o600
 
 
 @dataclass(frozen=True)
@@ -66,7 +89,9 @@ class DurableJournal:
         # look exactly like it never ran, which is the truth.
         self.path.parent.mkdir(parents=True, exist_ok=True)
         line = json.dumps({"key": key, "result": result}, sort_keys=True) + "\n"
-        with self.path.open("a", encoding="utf-8") as handle:
+        fd = os.open(self.path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, _OWNER_ONLY)
+        os.fchmod(fd, _OWNER_ONLY)  # tighten even if the file pre-existed looser
+        with os.fdopen(fd, "a", encoding="utf-8") as handle:
             handle.write(line)
             handle.flush()
             os.fsync(handle.fileno())
