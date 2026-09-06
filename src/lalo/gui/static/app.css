@@ -95,7 +95,7 @@ button, input, textarea {
 .rail {
   background: var(--bg-rail);
   border-right: 1px solid var(--border-soft);
-  padding: 18px 14px;
+  padding: 16px 12px;
   display: flex;
   flex-direction: column;
   gap: 18px;
@@ -104,7 +104,7 @@ button, input, textarea {
 .brand {
   display: flex;
   align-items: center;
-  padding: 4px 6px;
+  padding: 4px;
 }
 
 .brand-name {
@@ -126,7 +126,7 @@ button, input, textarea {
   background: var(--surface);
   border: 1px solid var(--border-soft);
   border-radius: 999px;
-  padding: 5px 11px 5px 8px;
+  padding: 4px 12px 4px 8px;
 }
 
 .conn-pill::before {
@@ -156,7 +156,7 @@ button, input, textarea {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
-  padding: 0 6px;
+  padding: 0 4px;
 }
 
 .rail-stats dt {
@@ -186,19 +186,22 @@ button, input, textarea {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0 6px;
+  padding: 0 4px;
   font-size: 0.78rem;
   color: var(--text-muted);
 }
 
 .btn-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   background: transparent;
   border: none;
   color: var(--text-faint);
   cursor: pointer;
   font-size: 0.95rem;
   line-height: 1;
-  padding: 2px 4px;
+  padding: 4px;
   border-radius: var(--radius-sm);
 }
 .btn-icon:hover { color: var(--text); background: var(--surface-muted); }
@@ -214,7 +217,7 @@ button, input, textarea {
 }
 
 .run-history-empty {
-  padding: 6px;
+  padding: 4px;
   font-size: 0.78rem;
   color: var(--text-faint);
 }
@@ -223,7 +226,7 @@ button, input, textarea {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 7px 6px;
+  padding: 8px;
   border-radius: var(--radius-sm);
 }
 .run-item:hover { background: var(--surface); }
@@ -234,7 +237,7 @@ button, input, textarea {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  padding: 6px 12px;
+  padding: 4px 12px;
   background: var(--surface-muted);
   border-bottom: 1px solid var(--border);
   font-size: 0.78rem;
@@ -330,8 +333,8 @@ button, input, textarea {
   font-family: ui-monospace, "SF Mono", Consolas, monospace;
   font-size: 0.72rem;
 }
-.shell-block { margin-bottom: 10px; white-space: pre-wrap; word-break: break-word; }
-.shell-block-header { color: var(--text-muted); margin-bottom: 2px; }
+.shell-block { margin-bottom: 8px; white-space: pre-wrap; word-break: break-word; }
+.shell-block-header { color: var(--text-muted); margin-bottom: 4px; }
 .shell-line-stdout { color: var(--text); display: block; }
 .shell-line-stderr { color: var(--danger); display: block; }
 .shell-exit-ok { color: var(--accent); margin-left: 8px; }
@@ -354,7 +357,7 @@ button, input, textarea {
   display: flex;
   flex-direction: column;
   gap: 16px;
-  padding: 8px 2px 24px;
+  padding: 8px 4px 24px;
 }
 
 .thread:focus-visible {
@@ -365,7 +368,7 @@ button, input, textarea {
   font-weight: 600;
   font-size: 0.86rem;
   border-radius: 999px;
-  padding: 9px 18px;
+  padding: 8px 16px;
   border: 1px solid transparent;
   cursor: pointer;
   transition: background-color 120ms ease-out, border-color 120ms ease-out, opacity 120ms ease-out;
@@ -418,7 +421,7 @@ button, input, textarea {
   background: var(--accent);
   color: var(--accent-ink);
   border-radius: var(--radius-md) var(--radius-md) 4px var(--radius-md);
-  padding: 9px 14px;
+  padding: 8px 12px;
   font-size: 0.92rem;
 }
 
@@ -452,7 +455,7 @@ button, input, textarea {
   color: var(--accent);
   background: rgba(34, 197, 94, 0.14);
   border-radius: var(--radius-sm);
-  padding: 2px 7px;
+  padding: 4px 8px;
 }
 
 .agent-task {
@@ -476,7 +479,7 @@ button, input, textarea {
   font-size: 0.66rem;
   font-weight: 800;
   letter-spacing: 0.03em;
-  padding: 3px 9px;
+  padding: 4px 8px;
   border-radius: 999px;
   color: var(--accent-ink);
   background: var(--text-faint);
@@ -539,6 +542,11 @@ button, input, textarea {
   padding: 0 0.35em;
 }
 
+/* Shared card treatment: a subtle border reads correctly against both the
+   dark surface and the light-theme white card, on top of whatever
+   background/border-radius each of these three already carries above. */
+.finding-card, .chain-card, .shell-block { border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; }
+
 /* log block — a single growing terminal readout per contiguous run of
    output, not one message per line (the volume would drown the thread) */
 
@@ -549,7 +557,7 @@ button, input, textarea {
   background: var(--bg);
   border: 1px solid var(--border-soft);
   border-radius: var(--radius-md);
-  padding: 10px 12px;
+  padding: 8px 12px;
   font-family: var(--font-mono);
   font-size: 0.82rem;
   line-height: 1.55;
@@ -568,9 +576,27 @@ button, input, textarea {
   to { opacity: 1; }
 }
 
+/* One motion vocabulary, reused everywhere something new appears in the
+   thread or shell panel (a fresh agent turn, user message, finding, chain,
+   or shell block) - not a different animation per component. Applied by
+   app.js at each append site; never re-applied on an in-place update. */
+@keyframes turn-enter {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.entering { animation: turn-enter 220ms ease-out; }
+
+@media (prefers-reduced-motion: reduce) {
+  .entering { animation: none; }
+}
+
 /* ---------- jump-to-latest ---------- */
 
 .jump-latest {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   align-self: center;
   margin-top: -8px;
   margin-bottom: 4px;
@@ -580,7 +606,7 @@ button, input, textarea {
   background: var(--surface-muted);
   border: 1px solid var(--border);
   border-radius: 999px;
-  padding: 6px 14px;
+  padding: 4px 12px;
   cursor: pointer;
 }
 .jump-latest:hover { border-color: var(--accent); color: var(--accent); }
@@ -594,7 +620,7 @@ button, input, textarea {
   background: var(--surface);
   border: 1px solid var(--border-soft);
   border-radius: 999px;
-  padding: 8px 8px 8px 18px;
+  padding: 8px 8px 8px 16px;
   margin-top: 12px;
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
 }
@@ -613,6 +639,11 @@ button, input, textarea {
 #composer-input::placeholder { color: var(--text-faint); }
 #composer-input:focus-visible { outline: none; }
 #composer-input:disabled { color: var(--text-faint); }
+
+#composer-input,
+#provider-key-input {
+  caret-color: var(--accent);
+}
 
 .btn-send {
   flex: none;
@@ -634,7 +665,7 @@ button, input, textarea {
   text-align: center;
   font-size: 0.875rem;
   color: var(--text-faint);
-  margin: 8px 0 14px;
+  margin: 8px 0 12px;
 }
 
 /* ---------- advanced options (composer area) ---------- */
@@ -666,7 +697,7 @@ button, input, textarea {
    stylesheet's `[hidden] { display: none }` at equal specificity otherwise. */
 .settings-drawer[hidden] { display: none; }
 .settings-drawer-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
-.settings-section { margin-bottom: 20px; }
+.settings-section { margin-bottom: 16px; }
 .settings-section h3 {
   margin: 0 0 8px;
   font-size: 0.78rem;
@@ -682,7 +713,7 @@ button, input, textarea {
   border: 1px solid var(--border-soft);
   border-radius: var(--radius-sm);
   color: var(--text);
-  padding: 6px 8px;
+  padding: 4px 8px;
 }
 .provider-form input {
   flex: 1;
@@ -691,9 +722,9 @@ button, input, textarea {
   border: 1px solid var(--border-soft);
   border-radius: var(--radius-sm);
   color: var(--text);
-  padding: 6px 8px;
+  padding: 4px 8px;
 }
-.provider-form .btn-send { width: auto; height: auto; border-radius: var(--radius-sm); padding: 6px 12px; }
+.provider-form .btn-send { width: auto; height: auto; border-radius: var(--radius-sm); padding: 4px 12px; }
 .provider-form-status { margin: 8px 0 0; font-size: 0.76rem; color: var(--text-muted); }
 
 /* ---------- scrollbars ---------- */

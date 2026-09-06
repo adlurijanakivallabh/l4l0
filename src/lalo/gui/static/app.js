@@ -99,6 +99,7 @@
     const node = tplMsgAgent.content.cloneNode(true);
     const msg = node.querySelector(".msg-agent");
     threadEl.appendChild(node);
+    msg.classList.add("entering");
     openLogBlock = null;
     afterAppend(wasNear);
     return msg.querySelector(".msg-body");
@@ -213,6 +214,7 @@
     const body = newAgentTurn();
     const card = buildFindingCard(finding, findingId);
     body.appendChild(card);
+    card.classList.add("entering");
     findingCards.set(findingId, card);
     findingCount += 1;
     statFindingsEl.textContent = String(findingCount);
@@ -233,6 +235,7 @@
       card.appendChild(document.createTextNode(nodeId));
     });
     body.appendChild(card);
+    card.classList.add("entering");
     chainCount += 1;
     statChainsEl.textContent = String(chainCount);
   }
@@ -255,6 +258,7 @@
       block.appendChild(header);
       block.appendChild(body);
       shellOutputListEl.appendChild(block);
+      block.classList.add("entering");
       shellBlocks.set(commandId, block);
       block.scrollIntoView({ block: "end" });
     } else if (payload.event === "chunk") {
@@ -270,7 +274,10 @@
       if (!block) return;
       const badge = document.createElement("span");
       badge.className = payload.exit_code === 0 ? "shell-exit-ok" : "shell-exit-fail";
-      badge.textContent = `exit ${payload.exit_code}`;
+      badge.textContent =
+        payload.exit_code === null || payload.exit_code === undefined
+          ? "exit —"
+          : `exit ${payload.exit_code}`;
       block.querySelector(".shell-block-header").appendChild(badge);
     }
   }
@@ -478,6 +485,7 @@
     if (error) msg.classList.add("msg-error");
     msg.querySelector(".bubble").textContent = text;
     threadEl.appendChild(node);
+    msg.classList.add("entering");
     openLogBlock = null;
     afterAppend(wasNear);
   }
