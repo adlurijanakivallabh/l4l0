@@ -53,13 +53,20 @@ position is the whole point of exploiting it.
    establish this before anything else, since it also tells you whether
    the fetch happens at all (versus being entirely client-side, which would
    make this whole class inapplicable).
-2. **Internal addressing.** Once egress is confirmed, pivot to loopback and
+2. **Semi-blind differential baseline, when OOB is unavailable or blocked.**
+   Compare the response (status, error class, and timing) across three
+   requests: a known-dead internal address, a known-fast external host,
+   and the actual internal target — a real difference between the three
+   (not just between two) is a strong signal the server genuinely
+   attempted the internal connection, even with no direct response
+   content to read.
+3. **Internal addressing.** Once egress is confirmed, pivot to loopback and
    private-range addresses (including less obvious encodings — decimal,
    hex, or octal IP forms, and IPv6/IPv4-mapped variants a naive filter
    may not normalize) to test whether the fetcher's allowlist, if any,
    actually blocks internal destinations or only blocks the literal
    `localhost` string.
-3. **Cloud metadata, if the environment suggests a cloud deployment.**
+4. **Cloud metadata, if the environment suggests a cloud deployment.**
    Each major provider's instance-metadata service lives at a
    well-known link-local address or hostname and returns credentials or
    instance identity data with no authentication beyond network reachability
@@ -67,11 +74,11 @@ position is the whole point of exploiting it.
    prior request — check whether your fetcher can be made to set headers,
    since that gates whether the newer, harder-to-reach metadata API
    versions are in scope at all).
-4. **Redirect abuse.** If the fetcher validates only the initially-supplied
+5. **Redirect abuse.** If the fetcher validates only the initially-supplied
    URL, host a redirect that passes validation and points to an internal
    target on the next hop — and test whether a protocol switch survives the
    redirect too, not just a host change.
-5. **Protocol abuse, only once HTTP-level access is exhausted.** Where a
+6. **Protocol abuse, only once HTTP-level access is exhausted.** Where a
    non-HTTP scheme is honored, speaking a raw text protocol (to a cache, a
    message broker, or an internal admin API) can escalate a read primitive
    into a write or execution primitive — this is a deliberate escalation
