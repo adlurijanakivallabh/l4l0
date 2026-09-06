@@ -27,6 +27,21 @@ wide default, not per-call, since every ``fire()`` caller shares the same
 memory-safety concern); a capped response sets ``FireResult.truncated`` so a
 cut-off body is never silently mistaken for a complete capture — evidence
 grounding and reporting both need to know the difference.
+
+Phase 4, shannon pass: :func:`probe_reachability` is informed by that
+reference's own ``services/preflight.ts`` (read in full), which runs
+cheap-to-expensive checks before any pipeline agent executes, including a
+target-URL reachability probe with the SAME resolve-once-pin-IP/metadata-
+denylist hardening this module already implements for real traffic — reusing
+:class:`HttpFirer` here means the probe gets that hardening for free, no
+second, unvetted HTTP client to keep in sync. Deliberately NOT adopted as a
+hard precondition the way that reference treats it: its own scans are always
+plain-HTTP-reachable web targets by definition, but L4L0's own engagements
+cover network/infra and raw-TCP services too (per this project's own stated
+scope), where an HTTP HEAD probe reporting "unreachable" would be a false
+alarm, not a real misconfiguration. This stays advisory — surfaced to the
+operator, never used to abort a scan whose actual target may simply not
+speak HTTP at all.
 """
 
 from __future__ import annotations
@@ -39,6 +54,7 @@ import httpx
 
 from ..core.logging import get_logger
 from .scope import ScopeGuard
+from .target import Engagement
 
 _log = get_logger("lalo.firer")
 
@@ -273,3 +289,47 @@ class HttpFirer:
 
     def close(self) -> None:
         self._client.close()
+
+
+_GLOB_CHARS = frozenset("*?[")
+
+
+def probe_reachability(engagement: Engagement, firer: HttpFirer) -> dict[str, tuple[bool, str]]:
+    """Best-effort HEAD-request reachability probe for every CONCRETE
+    (non-glob) host declared in ``engagement``, via ``firer`` — so the probe
+    gets the exact same scope/pin/metadata hardening real traffic gets, not a
+    second, separately-maintained HTTP client. A ``*.example.com``-style rule
+    has no single host to probe and is skipped.
+
+    Returns ``{host: (reachable, reason)}``. Advisory only — see the module
+    docstring's Phase 4 shannon-pass note for why an "unreachable" result is
+    never treated as fatal: an in-engagement network/infra or raw-TCP target
+    may simply not speak HTTP at all, which isn't a misconfiguration.
+    """
+    results: dict[str, tuple[bool, str]] = {}
+    for rule in engagement.rules:
+        if rule.host in results or any(char in rule.host for char in _GLOB_CHARS):
+            continue
+        scheme = next(iter(rule.schemes)) if rule.schemes else "https"
+        port = next(iter(rule.ports)) if rule.ports else None
+        netloc = rule.host if port is None else f"{rule.host}:{port}"
+        result = firer.fire("HEAD", f"{scheme}://{netloc}/")
+        # `fired` alone isn't "got a response" -- it's also True for a
+        # transport-level failure (e.g. ConnectError) that never produced a
+        # status code, so `status is not None` is the only reliable signal
+        # that something on the other end actually answered.
+        if result.status is not None:
+            results[rule.host] = (True, f"responded {result.status}")
+            continue
+        if scheme == "https" and not rule.schemes:
+            # The operator didn't restrict this rule to https specifically --
+            # try http once before reporting unreachable (a plain-http-only
+            # internal service is a routine, legitimate shape).
+            fallback = firer.fire("HEAD", f"http://{netloc}/")
+            if fallback.status is not None:
+                results[rule.host] = (True, f"responded {fallback.status} (http)")
+                continue
+            results[rule.host] = (False, fallback.error or fallback.scope_reason)
+            continue
+        results[rule.host] = (False, result.error or result.scope_reason)
+    return results

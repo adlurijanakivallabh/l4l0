@@ -35,6 +35,19 @@ from lalo.gui.events import EventLog
 from lalo.orchestrator.budget import RunStatus
 from lalo.scan import ScanConfig, ScanRunner, _terminal_status
 
+
+@pytest.fixture(autouse=True)
+def _no_real_network_reachability_probe(monkeypatch: pytest.MonkeyPatch) -> None:
+    """ScanRunner's preflight target-reachability probe (Phase 4, shannon
+    pass) fires a REAL outbound HTTP request via an unmocked HttpFirer --
+    every test in this file must stay hermetic (see the module docstring's
+    own guarantee), so this is disabled globally here rather than repeated
+    per test. Its own behavior is covered by execution/firer.py's unit tests,
+    not here.
+    """
+    monkeypatch.setattr(scan_module, "probe_reachability", lambda *_a, **_k: {})
+
+
 _HIGH_CVSS = {
     "attack_vector": "N",
     "attack_complexity": "L",
@@ -153,7 +166,15 @@ def _finish_call() -> str:
 def _respond(call_index: int, prompt: str) -> str:
     if "FINDING TO REVIEW" in prompt:
         return '{"verdict": "confirmed", "proof_level": "L3", "reasoning": "grounded"}'
-    return _record_finding_call() if call_index == 0 else _finish_call()
+    if "MISSION:" not in prompt:
+        # The preflight verify_router() health-check call (Phase 4, shannon
+        # pass) -- content-based, not call_index-based, since exactly how
+        # many of these precede the real agent loop is an implementation
+        # detail this test shouldn't need to track.
+        return "ok"
+    if "HISTORY (most recent last):" not in prompt:
+        return _record_finding_call()  # the first real mission turn
+    return _finish_call()
 
 
 def test_scan_runner_wires_every_phase_into_one_completed_run(
@@ -226,7 +247,10 @@ def test_cancel_before_run_stops_on_the_first_step(
     outcome = runner.run()
 
     assert outcome.status is RunStatus.UNVERIFIED_STOP
-    assert provider.calls == 0
+    # 1, not 0: the preflight provider health-check (Phase 4, shannon pass)
+    # runs regardless of a pre-set cancel flag -- the agent loop itself still
+    # never took a real step, which is the actual property this test checks.
+    assert provider.calls == 1
 
 
 # --- Phase 2, shannon pass: cancel force-stops the container, not just a flag -
@@ -306,8 +330,10 @@ def test_resume_after_a_crash_does_not_redispatch_the_completed_step(
     monkeypatch.setattr(scan_module, "docker_available", lambda: True)
     monkeypatch.setattr(scan_module, "RuntimeContainer", _FakeContainer)
 
-    def _crash_after_one_step(call_index: int, _prompt: str) -> str:
-        return _record_finding_call() if call_index == 0 else "CRASH"
+    def _crash_after_one_step(_call_index: int, prompt: str) -> str:
+        if "MISSION:" not in prompt:
+            return "ok"  # the preflight verify_router() health-check call
+        return _record_finding_call() if "HISTORY" not in prompt else "CRASH"
 
     crashing_provider = _CrashingProvider(_crash_after_one_step)
     router1 = ModelRouter(
@@ -348,10 +374,11 @@ def test_resume_after_a_crash_does_not_redispatch_the_completed_step(
     outcome = ScanRunner(config, env={"ANTHROPIC_API_KEY": "sk-test"}).run()
 
     assert outcome.status is RunStatus.COMPLETED
-    # Only ONE new agent-loop turn happened on resume (the already-completed
-    # record_finding step was replayed from the journal, never re-dispatched)
-    # plus the one adversarial-review call every finding always gets.
-    assert resumed_provider.calls == 2
+    # 3: the preflight verify_router() health-check, the one new agent-loop
+    # turn (the already-completed record_finding step was replayed from the
+    # journal, never re-dispatched), and the one adversarial-review call
+    # every finding always gets.
+    assert resumed_provider.calls == 3
     assert len(ReachabilityGraph.load(run_dir / "graph.json").nodes_of_kind(NodeKind.FINDING)) == 1
 
 

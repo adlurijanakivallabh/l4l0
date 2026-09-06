@@ -72,10 +72,15 @@ from .browser.session import BrowserSession
 from .browser.tool import build_browser_tool
 from .core.atomic_io import atomic_write_verified
 from .core.config import load_settings
-from .core.errors import ConfigError, ContainerError, ResumeConfigMismatchError
+from .core.errors import (
+    AllProvidersFailedError,
+    ConfigError,
+    ContainerError,
+    ResumeConfigMismatchError,
+)
 from .core.model_router import ModelRouter
-from .core.providers import build_router
-from .execution.firer import HttpFirer
+from .core.providers import build_router, verify_router
+from .execution.firer import HttpFirer, probe_reachability
 from .execution.scope import ScopeGuard
 from .execution.target import Engagement
 from .execution.tool import build_http_tool
@@ -315,14 +320,44 @@ class ScanRunner:
             )
         router = build_router(settings)
 
-        engagement = Engagement.from_specs(self.config.target_specs)
-        scope = ScopeGuard(engagement, egress_lock=self.config.egress_lock)
-
         if not docker_available():
             raise ContainerError(
                 "docker is not reachable - the disposable runtime container "
                 "cannot start, and L4L0 never runs the free shell without it"
             )
+
+        # Preflight, cheap-to-expensive, before any container/OAST/browser
+        # resource starts -- informed by a reference agent's own real
+        # preflight validator (see core/providers.py's verify_router and
+        # execution/firer.py's probe_reachability docstrings for the full
+        # citations). docker_available() above is the cheapest check (no
+        # network at all) and stays first; these two make real network calls
+        # (an LLM completion, a target probe), so they run after it, still
+        # before the actually-expensive container/OAST/browser startup. A
+        # totally-broken provider chain is a hard precondition failure (this
+        # would fail on the very first completion call regardless, just
+        # wastefully late); target reachability stays advisory-only and never
+        # blocks the scan.
+        provider_health = verify_router(router)
+        if provider_health and not any(healthy for healthy, _ in provider_health.values()):
+            raise AllProvidersFailedError(
+                "every configured provider failed preflight verification",
+                failures=[(name, reason) for name, (_, reason) in provider_health.items()],
+            )
+
+        engagement = Engagement.from_specs(self.config.target_specs)
+        scope = ScopeGuard(engagement, egress_lock=self.config.egress_lock)
+        preflight_firer = HttpFirer(scope)
+        try:
+            reachability = probe_reachability(engagement, preflight_firer)
+        finally:
+            preflight_firer.close()
+        for host, (reachable, reason) in reachability.items():
+            if not reachable:
+                self._emit(
+                    "status",
+                    {"event": "target_unreachable_preflight", "host": host, "reason": reason},
+                )
 
         container = RuntimeContainer(self.config.container_config)
         self._container = container

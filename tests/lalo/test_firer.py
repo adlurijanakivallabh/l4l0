@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import httpx
 
-from lalo.execution.firer import HttpFirer
+from lalo.execution.firer import HttpFirer, probe_reachability
 from lalo.execution.scope import ScopeGuard
 from lalo.execution.target import Engagement
 
@@ -189,3 +189,50 @@ def test_a_small_response_is_not_marked_truncated() -> None:
     result = firer.fire("GET", "https://app.example.com/")
     assert result.truncated is False
     assert result.body == b"hello"
+
+
+def test_probe_reachability_reports_a_responding_concrete_host() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "HEAD"
+        return httpx.Response(200)
+
+    eng = Engagement.from_specs(["app.example.com"])
+    scope = ScopeGuard(engagement=eng, resolver=lambda h: frozenset({_PINNED_IP}))
+    firer = HttpFirer(scope, client=httpx.Client(transport=httpx.MockTransport(handler)))
+    results = probe_reachability(eng, firer)
+    assert results["app.example.com"] == (True, "responded 200")
+
+
+def test_probe_reachability_skips_glob_hosts() -> None:
+    eng = Engagement.from_specs(["*.example.com"])
+    scope = ScopeGuard(engagement=eng, resolver=lambda h: frozenset({_PINNED_IP}))
+
+    def handler(request: httpx.Request) -> httpx.Response:  # pragma: no cover
+        raise AssertionError("a glob rule has no single host to probe")
+
+    firer = HttpFirer(scope, client=httpx.Client(transport=httpx.MockTransport(handler)))
+    assert probe_reachability(eng, firer) == {}
+
+
+def test_probe_reachability_falls_back_to_http_when_https_is_not_restricted() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.scheme == "https":
+            raise httpx.ConnectError("refused")
+        return httpx.Response(200)
+
+    eng = Engagement.from_specs(["app.example.com"])
+    scope = ScopeGuard(engagement=eng, resolver=lambda h: frozenset({_PINNED_IP}))
+    firer = HttpFirer(scope, client=httpx.Client(transport=httpx.MockTransport(handler)))
+    results = probe_reachability(eng, firer)
+    assert results["app.example.com"] == (True, "responded 200 (http)")
+
+
+def test_probe_reachability_reports_unreachable_when_nothing_responds() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("refused")
+
+    eng = Engagement.from_specs(["app.example.com"])
+    scope = ScopeGuard(engagement=eng, resolver=lambda h: frozenset({_PINNED_IP}))
+    firer = HttpFirer(scope, client=httpx.Client(transport=httpx.MockTransport(handler)))
+    reachable, _reason = probe_reachability(eng, firer)["app.example.com"]
+    assert reachable is False
