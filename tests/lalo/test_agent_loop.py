@@ -615,6 +615,49 @@ def test_provider_outage_retry_exhausts_every_attempt_before_giving_up() -> None
     assert router.calls == 4
 
 
+def test_provider_outage_retry_count_is_configurable() -> None:
+    """AgentConfig.provider_outage_max_retries raises (or lowers) the
+    default ~3.5-minute horizon for a scan whose own wall-clock budget can
+    afford it - a positive, not just an accidental, change in behavior."""
+    registry = ToolRegistry([])
+    router = _scripted([AllProvidersFailedError("permanently down", role="reasoning", failures=[])])
+    loop = AgentLoop(
+        router,  # type: ignore[arg-type]
+        registry,
+        system_prompt="",
+        config=AgentConfig(provider_outage_max_retries=1),
+        sleep=lambda _s: None,
+    )
+    result = loop.run("mission")
+    assert result.stop_reason == "provider_failed"
+    assert router.calls == 2  # 1 initial attempt + 1 retry, not the default 3
+
+
+def test_provider_outage_retry_base_delay_is_configurable() -> None:
+    registry = ToolRegistry([])
+    router = _scripted([AllProvidersFailedError("down", role="reasoning", failures=[])])
+    sleeps: list[float] = []
+    loop = AgentLoop(
+        router,  # type: ignore[arg-type]
+        registry,
+        system_prompt="",
+        config=AgentConfig(provider_outage_max_retries=1, provider_outage_base_delay_s=5.0),
+        sleep=sleeps.append,
+    )
+    loop.run("mission")
+    assert sum(sleeps) == 5.0  # one attempt at the configured 5.0s base delay
+
+
+def test_agent_config_rejects_a_negative_provider_outage_max_retries() -> None:
+    with pytest.raises(ValueError, match="provider_outage_max_retries"):
+        AgentConfig(provider_outage_max_retries=-1)
+
+
+def test_agent_config_rejects_a_negative_provider_outage_base_delay() -> None:
+    with pytest.raises(ValueError, match="provider_outage_base_delay_s"):
+        AgentConfig(provider_outage_base_delay_s=-1.0)
+
+
 def test_provider_outage_retry_is_cancellable_mid_backoff() -> None:
     """should_stop firing during the wait must return None promptly rather
     than completing the whole backoff schedule regardless."""

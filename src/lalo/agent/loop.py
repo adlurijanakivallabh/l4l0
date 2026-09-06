@@ -152,10 +152,12 @@ _COMPACTION_SYSTEM_PROMPT = (
 # None is not necessarily permanent - it might be a transient multi-minute
 # incident (a hosted provider's own outage, a network blip hitting every
 # configured endpoint at once). Waited out here, once per step, before
-# finally giving up: 30s, 60s, 120s (210s total worst case) rather than
-# ending the whole run on the very first exhausted chain.
-_PROVIDER_OUTAGE_MAX_RETRIES = 3
-_PROVIDER_OUTAGE_BASE_DELAY_S = 30.0
+# finally giving up: 30s, 60s, 120s (210s total worst case) at
+# AgentConfig's own default provider_outage_max_retries/
+# provider_outage_base_delay_s, raisable per-agent for a scan whose own
+# wall-clock budget can afford a longer horizon, rather than ending the
+# whole run on the very first exhausted chain.
+#
 # Sleeps in chunks this large so a cooperative-cancellation request (a manual
 # stop, or ScanRunner's own wall-clock kill) is honored within roughly one
 # chunk rather than only after the full backoff delay elapses.
@@ -176,6 +178,15 @@ class AgentConfig:
     # A turn with no parseable tool call gets this many corrective retries
     # before the loop gives up.
     max_no_tool_call_retries: int = 2
+    # Long-horizon provider-outage retry: how many times _retry_through_
+    # provider_outage waits out a total provider-chain failure, and the base
+    # delay its exponential backoff starts from (30s/60s/120s at the
+    # defaults - see that method's own docstring for the full rationale).
+    # A scan whose own wall-clock budget (ScanConfig.max_duration_s) can
+    # afford a longer horizon can raise these past the default ~3.5-minute
+    # ceiling instead of giving up there unconditionally.
+    provider_outage_max_retries: int = 3
+    provider_outage_base_delay_s: float = 30.0
 
     def __post_init__(self) -> None:
         # A reference agent's own turn-budget constructor validates a minimum
@@ -192,6 +203,10 @@ class AgentConfig:
             raise ValueError("repeat_abort_threshold must be > repeat_soft_threshold")
         if self.max_no_tool_call_retries < 0:
             raise ValueError("max_no_tool_call_retries must be >= 0")
+        if self.provider_outage_max_retries < 0:
+            raise ValueError("provider_outage_max_retries must be >= 0")
+        if self.provider_outage_base_delay_s < 0:
+            raise ValueError("provider_outage_base_delay_s must be >= 0")
 
 
 @dataclass
@@ -357,15 +372,17 @@ class AgentLoop:
     def _retry_through_provider_outage(self, prompt: str) -> CompletionResponse | None:
         """Wait out a total provider-chain failure, in case it's a transient
         multi-minute outage rather than a permanent one - see this module's
-        own constants for the exact backoff schedule and rationale. Emits a
-        status event per attempt (and on recovery) so a live GUI shows
-        genuine retry progress instead of looking hung. Returns ``None``
-        (never raises) if every retry in the schedule also failed, or if
-        cancelled partway through - either way ``run()``'s own caller treats
-        that identically to the original, unretried failure.
+        own module docstring for the rationale, and ``AgentConfig.
+        provider_outage_max_retries``/``provider_outage_base_delay_s`` for
+        the (raisable) backoff schedule. Emits a status event per attempt
+        (and on recovery) so a live GUI shows genuine retry progress instead
+        of looking hung. Returns ``None`` (never raises) if every retry in
+        the schedule also failed, or if cancelled partway through - either
+        way ``run()``'s own caller treats that identically to the original,
+        unretried failure.
         """
-        for attempt in range(_PROVIDER_OUTAGE_MAX_RETRIES):
-            delay = _PROVIDER_OUTAGE_BASE_DELAY_S * (2**attempt)
+        for attempt in range(self.config.provider_outage_max_retries):
+            delay = self.config.provider_outage_base_delay_s * (2**attempt)
             self._emit("provider_outage_retry", {"attempt": attempt + 1, "delay_s": delay})
             if not self._interruptible_sleep(delay):
                 return None
