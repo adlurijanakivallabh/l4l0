@@ -54,6 +54,14 @@ actually matches. Kept here, corrected, rather than silently dropped, so
 the earlier inaccurate citation isn't just replaced without a record that
 it was wrong.
 
+The fifth reference (a Go/TypeScript pentest-automation platform) has no
+benchmark/eval harness of any kind — confirmed via its own real source tree
+(no ``benchmark``/``ground_truth``/fixture directory beyond its frontend's
+own unrelated E2E UI-test fixtures) in addition to its comparison doc's
+own silence on the topic across everything already read for every other
+phase. A genuine, clean null result, recorded explicitly here rather than
+left as an unstated gap in this docstring's own citation record.
+
 Findings are already graph nodes (Phase 7/12) with a computed confidence
 score (Phase 12b), so scoring a case is a read over already-existing data —
 :func:`run_case` reuses :func:`~lalo.report.collect.collect_findings`
