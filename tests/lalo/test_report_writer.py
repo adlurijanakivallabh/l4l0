@@ -5,6 +5,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
+import lalo.report.writer as writer_module
 from lalo.agent.tools import ToolRegistry
 from lalo.findings.tool import build_record_finding_tool
 from lalo.graph.model import NodeKind, ReachabilityGraph
@@ -200,3 +203,60 @@ def test_write_report_creates_missing_run_directory(tmp_path: Path) -> None:
     nested = tmp_path / "runs" / "scan-1"
     write_report(nested, graph, _SKILLS)
     assert (nested / MARKDOWN_FILENAME).exists()
+
+
+# --- PDF/DOCX are secondary re-renders: a renderer bug must never cost the
+# operator the canonical markdown/json/sarif they already have -----------
+
+
+def test_write_report_a_pdf_renderer_failure_still_delivers_the_canonical_formats(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def _broken_pdf(_html: str) -> bytes:
+        msg = "WeasyPrint blew up"
+        raise RuntimeError(msg)
+
+    monkeypatch.setattr(writer_module, "render_report_pdf", _broken_pdf)
+    graph, _ = _graph_with_finding()
+    paths = write_report(tmp_path, graph, _SKILLS, generated_at="2026-01-01")
+
+    assert "pdf" not in paths
+    assert paths["markdown"].exists()
+    assert paths["json"].exists()
+    assert paths["sarif"].exists()
+    assert paths["docx"].exists()
+
+
+def test_write_report_a_docx_renderer_failure_still_delivers_the_canonical_formats(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def _broken_docx(_html: str) -> bytes:
+        msg = "html2docx blew up"
+        raise RuntimeError(msg)
+
+    monkeypatch.setattr(writer_module, "render_report_docx", _broken_docx)
+    graph, _ = _graph_with_finding()
+    paths = write_report(tmp_path, graph, _SKILLS, generated_at="2026-01-01")
+
+    assert "docx" not in paths
+    assert paths["markdown"].exists()
+    assert paths["json"].exists()
+    assert paths["sarif"].exists()
+    assert paths["pdf"].exists()
+
+
+def test_write_report_a_markdown_failure_still_propagates_uncaught(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The canonical formats are NOT given the same soft-failure treatment as
+    PDF/DOCX - a bug rendering the record of truth itself must stay terminal,
+    not silently produce a partial report."""
+
+    def _broken_md(*_args: object, **_kwargs: object) -> str:
+        msg = "markdown renderer blew up"
+        raise RuntimeError(msg)
+
+    monkeypatch.setattr(writer_module, "render_report_md", _broken_md)
+    graph, _ = _graph_with_finding()
+    with pytest.raises(RuntimeError, match="markdown renderer blew up"):
+        write_report(tmp_path, graph, _SKILLS)

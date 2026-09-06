@@ -31,6 +31,22 @@ PDF and DOCX are both rendered from the SAME intermediate HTML
 Markdown/JSON/SARIF outputs — one escaped, deterministic source of truth for
 every human-facing rendering, matching this module's own "assemble once,
 write many formats" shape rather than re-deriving report content per format.
+
+**Severity-graded failure, not uniform failure** (a fresh finding from this
+project's own Phase 16 reference-pass cycle): a second reference's own
+report-finalization design (``report-output-surface.ts``, read via its
+comparison doc) deliberately downgrades a PDF-generation failure to a
+warning while treating canonical-data corruption as always terminal —
+"these are secondary artifacts," a customer-facing re-render of already-
+canonical data, not the record of truth itself. :func:`write_report`
+previously had no such distinction: a WeasyPrint or html2docx bug on either
+export would raise straight out of this function and leave the operator
+with NO report at all, even though Markdown/JSON/SARIF — the actual
+canonical, structured record — had already rendered successfully. PDF and
+DOCX generation are now each independently wrapped: a failure there is
+logged and that format is simply absent from the returned mapping, while a
+Markdown/JSON/SARIF failure still propagates uncaught, exactly matching
+that reference's own canonical-vs-secondary distinction.
 """
 
 from __future__ import annotations
@@ -40,6 +56,7 @@ from dataclasses import asdict
 from pathlib import Path
 
 from ..core.atomic_io import atomic_write_verified
+from ..core.logging import get_logger
 from ..graph.model import ReachabilityGraph
 from ..skills.loader import Skill
 from .collect import collect_findings, sort_findings
@@ -50,6 +67,8 @@ from .markdown import render_report_md
 from .overrides import SeverityOverride, apply_overrides
 from .pdf import render_report_pdf
 from .sarif import render_sarif
+
+_log = get_logger("lalo.report")
 
 MARKDOWN_FILENAME = "report.md"
 JSON_FILENAME = "report.json"
@@ -69,7 +88,10 @@ def write_report(
     """Assemble every format from ``graph`` and write them, byte-verified.
 
     Returns the written path for each format, keyed by ``"markdown"``,
-    ``"json"``, ``"sarif"``, ``"pdf"``, and ``"docx"``.
+    ``"json"``, and ``"sarif"`` (always present - a failure here propagates
+    uncaught), plus ``"pdf"`` and ``"docx"`` (present only if that specific
+    export succeeded; a renderer failure there is logged and the key is
+    simply absent, never fatal to this call).
     """
     # Overrides before sort, not after: sort_findings reads effective_severity
     # (display_severity if set, else cvss_severity) - sorting first would rank
@@ -87,15 +109,11 @@ def write_report(
     }
     sarif_document = render_sarif(records)
     html = render_report_html(records, coverage, generated_at=generated_at)
-    pdf_bytes = render_report_pdf(html)
-    docx_bytes = render_report_docx(html)
 
     paths = {
         "markdown": run_dir / MARKDOWN_FILENAME,
         "json": run_dir / JSON_FILENAME,
         "sarif": run_dir / SARIF_FILENAME,
-        "pdf": run_dir / PDF_FILENAME,
-        "docx": run_dir / DOCX_FILENAME,
     }
     atomic_write_verified(paths["markdown"], markdown.encode("utf-8"))
     atomic_write_verified(
@@ -104,6 +122,24 @@ def write_report(
     atomic_write_verified(
         paths["sarif"], json.dumps(sarif_document, ensure_ascii=False, indent=2).encode("utf-8")
     )
-    atomic_write_verified(paths["pdf"], pdf_bytes)
-    atomic_write_verified(paths["docx"], docx_bytes)
+
+    # PDF/DOCX are secondary, customer-convenience re-renders of the SAME
+    # canonical data already durably written above - a renderer bug (a
+    # WeasyPrint/html2docx edge case) must never cost the operator the
+    # report they already have. Each is independently best-effort: logged
+    # and simply absent from the result, never fatal to this call.
+    try:
+        atomic_write_verified(run_dir / PDF_FILENAME, render_report_pdf(html))
+    except Exception:
+        _log.warning("PDF report export failed; other formats were still written", exc_info=True)
+    else:
+        paths["pdf"] = run_dir / PDF_FILENAME
+
+    try:
+        atomic_write_verified(run_dir / DOCX_FILENAME, render_report_docx(html))
+    except Exception:
+        _log.warning("DOCX report export failed; other formats were still written", exc_info=True)
+    else:
+        paths["docx"] = run_dir / DOCX_FILENAME
+
     return paths
