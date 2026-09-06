@@ -54,6 +54,8 @@
 
   const agents = new Map();
   const findingCards = new Map(); // finding_id -> the .finding-card element, for in-place updates
+  const shellBlocks = new Map(); // command_id -> the .shell-block element
+  const shellOutputListEl = document.getElementById("shell-output-list");
   let findingCount = 0;
   let chainCount = 0;
   let openLogBlock = null; // the currently-growing <pre>, or null if the last thread entry isn't a log run
@@ -234,6 +236,44 @@
     statChainsEl.textContent = String(chainCount);
   }
 
+  // Live shell panel: one growing .shell-block per command_id, independent
+  // of the conversation thread - a command's start/chunk/end events arrive
+  // as their own "shell" category rather than interleaving into the
+  // narration log, so run_command output gets a dedicated always-visible
+  // readout instead of competing with agent turns for thread space.
+  function applyShellEvent(payload) {
+    const commandId = payload.command_id;
+    if (payload.event === "start") {
+      const block = document.createElement("pre");
+      block.className = "shell-block";
+      const header = document.createElement("div");
+      header.className = "shell-block-header";
+      header.textContent = `$ ${payload.command}`;
+      const body = document.createElement("div");
+      body.className = "shell-block-body";
+      block.appendChild(header);
+      block.appendChild(body);
+      shellOutputListEl.appendChild(block);
+      shellBlocks.set(commandId, block);
+      block.scrollIntoView({ block: "end" });
+    } else if (payload.event === "chunk") {
+      const block = shellBlocks.get(commandId);
+      if (!block) return;
+      const line = document.createElement("span");
+      line.className = payload.stream === "stderr" ? "shell-line-stderr" : "shell-line-stdout";
+      line.textContent = payload.text;
+      block.querySelector(".shell-block-body").appendChild(line);
+      shellOutputListEl.scrollTop = shellOutputListEl.scrollHeight;
+    } else if (payload.event === "end") {
+      const block = shellBlocks.get(commandId);
+      if (!block) return;
+      const badge = document.createElement("span");
+      badge.className = payload.exit_code === 0 ? "shell-exit-ok" : "shell-exit-fail";
+      badge.textContent = `exit ${payload.exit_code}`;
+      block.querySelector(".shell-block-header").appendChild(badge);
+    }
+  }
+
   // Preference order, not alphabetical: pdf (best presentation) first, then
   // the always-present canonical markdown, then whatever else exists - a
   // narrow rail item links to exactly one format rather than cluttering
@@ -310,6 +350,8 @@
       threadEl.replaceChildren();
       agents.clear();
       findingCards.clear();
+      shellOutputListEl.replaceChildren();
+      shellBlocks.clear();
       findingCount = 0;
       chainCount = 0;
       statFindingsEl.textContent = "0";
@@ -337,6 +379,8 @@
     threadEl.replaceChildren();
     agents.clear();
     findingCards.clear();
+    shellOutputListEl.replaceChildren();
+    shellBlocks.clear();
     findingCount = 0;
     chainCount = 0;
     openLogBlock = null;
@@ -519,6 +563,9 @@
         break;
       case "chain":
         renderChain(event.payload);
+        break;
+      case "shell":
+        applyShellEvent(event.payload);
         break;
       default:
       // EventCategory (events.py) is a closed set - an unrecognized
