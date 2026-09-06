@@ -18,6 +18,7 @@ from lalo.agent.loop import AgentConfig, AgentLoop, _truncate_observation
 from lalo.agent.tools import FunctionTool, ToolRegistry, ToolResult
 from lalo.core.errors import AllProvidersFailedError
 from lalo.core.model_router import CompletionRequest, CompletionResponse
+from lalo.core.redaction import REDACTION_PLACEHOLDER
 from lalo.core.usage import load_usage
 from lalo.orchestrator.budget import Budget
 from lalo.orchestrator.journal import DurableJournal
@@ -372,6 +373,30 @@ def test_a_long_tool_observation_is_head_and_tail_truncated_not_cut() -> None:
     observation = str(router.prompts[-1])  # the finish-turn prompt includes rendered history
     assert "END-MARKER-WITH-VERDICT" in observation
     assert "truncated" in observation
+
+
+def test_a_secret_discovered_in_a_tool_observation_never_reaches_the_prompt() -> None:
+    """Closes a real gap: a tool observation went straight from
+    registry.dispatch into transcript, and from there into the literal
+    outbound prompt, with no redact() call anywhere on that path - only an
+    operator's own pre-registered credentials were ever incidentally caught,
+    and only via log lines. A secret discovered mid-scan (an AWS key in a
+    response body here) must never flow into the LLM-provider request."""
+    leaked_key = "AKIAABCDEFGHIJKLMNOP"
+    tool = FunctionTool(
+        name="http",
+        description="t",
+        func=lambda _args: ToolResult(observation=f"response body: aws_key={leaked_key}"),
+    )
+    registry = ToolRegistry([tool])
+    router = _scripted(
+        ['{"tool": "http", "args": {}}', '{"tool": "finish", "args": {"summary": "done"}}']
+    )
+    loop = AgentLoop(router, registry, system_prompt="")  # type: ignore[arg-type]
+    loop.run("mission")
+    final_prompt = router.prompts[-1]
+    assert leaked_key not in final_prompt
+    assert REDACTION_PLACEHOLDER in final_prompt
 
 
 def test_usage_is_recorded_when_a_usage_path_is_provided(tmp_path) -> None:

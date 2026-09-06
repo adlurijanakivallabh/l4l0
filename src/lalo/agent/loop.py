@@ -74,6 +74,21 @@ never expands what the agent can do or touches the confirmation-authority
 boundary — it only ever influences what the agent chooses to prioritize
 within its own ordinary think-act-observe loop, the same read-only design
 the steering endpoint itself already established.
+
+A follow-up audit of that same live comparison found a real gap in
+:mod:`lalo.core.redaction`'s own stated design ("every subsystem that
+renders text... routes through" the shared redactor): true for logging and
+for a submitted finding's own fields, but not for this loop — a tool
+observation went straight from ``registry.dispatch`` into ``transcript``,
+and from there into the literal prompt string sent to the provider, with no
+call to ``redact()`` anywhere on that path. A secret discovered mid-scan (a
+leaked token in a response body, another identity's password) flowed
+straight into the outbound LLM request; only an operator's own
+pre-registered credentials were ever incidentally caught, and only via log
+lines, not this path. Closed at the one choke point every tool observation
+already funnels through — ``_dispatch_once``, immediately before
+``_truncate_observation`` (before, not after: a secret straddling the
+truncation boundary would otherwise be split into two unmatchable halves).
 """
 
 from __future__ import annotations
@@ -87,6 +102,7 @@ from pathlib import Path
 from ..core.errors import AllProvidersFailedError
 from ..core.logging import get_logger
 from ..core.model_router import CompletionRequest, CompletionResponse, ModelRouter
+from ..core.redaction import redact
 from ..core.usage import record_usage
 from ..observability import Tracer
 from ..orchestrator.budget import (
@@ -603,7 +619,7 @@ class AgentLoop:
                             "tool": _name,
                             "args": _args,
                             "observation": _truncate_observation(
-                                result.observation, self.config.max_observation_chars
+                                redact(result.observation), self.config.max_observation_chars
                             ),
                             "ok": result.ok,
                         }
