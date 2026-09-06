@@ -7,7 +7,7 @@ from dataclasses import replace
 from lalo.agent.tools import ToolRegistry
 from lalo.findings.tool import build_record_finding_tool
 from lalo.graph.model import ReachabilityGraph
-from lalo.report.collect import ChainRecord, FindingRecord, collect_findings
+from lalo.report.collect import ChainRecord, ExecutiveSummary, FindingRecord, collect_findings
 from lalo.report.coverage import CoverageSummary
 from lalo.report.markdown import render_finding_md, render_report_md, safe_fence
 
@@ -143,3 +143,24 @@ def test_render_report_md_with_no_status_has_no_status_line() -> None:
     coverage = CoverageSummary(assessed=[], not_assessed=[])
     rendered = render_report_md([], coverage)
     assert "Scan Status" not in rendered
+
+
+def test_render_report_md_renders_the_executive_summary_when_given() -> None:
+    coverage = CoverageSummary(assessed=[], not_assessed=[])
+    summary = ExecutiveSummary(
+        total_findings=2,
+        by_severity={"high": 1, "low": 1},
+        by_vuln_class={"sql-injection": 1, "xss": 1},
+        highest_severity="high",
+    )
+    rendered = render_report_md([], coverage, summary=summary)
+    assert "## Executive Summary" in rendered
+    assert "**By severity:** high: 1, low: 1" in rendered
+    assert "**By category:** sql-injection: 1, xss: 1" in rendered
+    assert "**Highest severity:** HIGH" in rendered
+
+
+def test_render_report_md_with_no_summary_has_no_executive_summary_section() -> None:
+    coverage = CoverageSummary(assessed=[], not_assessed=[])
+    rendered = render_report_md([], coverage)
+    assert "Executive Summary" not in rendered

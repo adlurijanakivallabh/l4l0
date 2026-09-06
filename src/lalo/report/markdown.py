@@ -30,7 +30,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from .collect import ChainRecord, FindingRecord
+from .collect import ChainRecord, ExecutiveSummary, FindingRecord
 from .coverage import CoverageSummary
 
 
@@ -107,6 +107,7 @@ def render_report_md(
     chains: Sequence[ChainRecord] = (),
     generated_at: str | None = None,
     status: str | None = None,
+    summary: ExecutiveSummary | None = None,
 ) -> str:
     lines = ["# L4L0 Security Assessment Report", ""]
     if generated_at:
@@ -117,6 +118,20 @@ def render_report_md(
         lines.append("")
     lines.append(f"**Findings:** {len(records)}")
     lines.append("")
+
+    if summary is not None:
+        lines.append("## Executive Summary\n")
+        severity_line = (
+            ", ".join(f"{sev}: {count}" for sev, count in summary.by_severity.items()) or "(none)"
+        )
+        category_line = (
+            ", ".join(f"{cls}: {count}" for cls, count in summary.by_vuln_class.items()) or "(none)"
+        )
+        lines.append(f"**By severity:** {severity_line}")
+        lines.append(f"**By category:** {category_line}")
+        if summary.highest_severity:
+            lines.append(f"**Highest severity:** {summary.highest_severity.upper()}")
+        lines.append("")
 
     lines.append("## Coverage\n")
     lines.append(f"**Assessed:** {', '.join(coverage.assessed) or '(none)'}")

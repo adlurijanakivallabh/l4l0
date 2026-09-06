@@ -31,6 +31,7 @@ report ever reads it, not something this module has to re-derive.
 
 from __future__ import annotations
 
+from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass
 
@@ -113,6 +114,35 @@ def sort_findings(records: list[FindingRecord]) -> list[FindingRecord]:
             SEVERITY_ORDER.get(r.effective_severity, len(SEVERITY_ORDER)),
             -r.confidence.score,
         ),
+    )
+
+
+@dataclass(frozen=True)
+class ExecutiveSummary:
+    """A pure roll-up of already-collected records - counts only, never an
+    LLM decision point, matching this module's own "no LLM in the loop"
+    principle for every other report-assembly step."""
+
+    total_findings: int
+    by_severity: dict[str, int]
+    by_vuln_class: dict[str, int]
+    highest_severity: str | None
+
+
+def build_executive_summary(records: list[FindingRecord]) -> ExecutiveSummary:
+    severity_counts = Counter(record.effective_severity for record in records)
+    by_severity = dict(
+        sorted(
+            severity_counts.items(),
+            key=lambda kv: SEVERITY_ORDER.get(kv[0], len(SEVERITY_ORDER)),
+        )
+    )
+    by_vuln_class = dict(sorted(Counter(record.vuln_class for record in records).items()))
+    return ExecutiveSummary(
+        total_findings=len(records),
+        by_severity=by_severity,
+        by_vuln_class=by_vuln_class,
+        highest_severity=next(iter(by_severity), None),
     )
 
 

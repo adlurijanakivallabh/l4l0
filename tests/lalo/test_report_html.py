@@ -7,7 +7,7 @@ from dataclasses import replace
 from lalo.agent.tools import ToolRegistry
 from lalo.findings.tool import build_record_finding_tool
 from lalo.graph.model import ReachabilityGraph
-from lalo.report.collect import ChainRecord, FindingRecord, collect_findings
+from lalo.report.collect import ChainRecord, ExecutiveSummary, FindingRecord, collect_findings
 from lalo.report.coverage import CoverageSummary
 from lalo.report.html import render_finding_html, render_report_html
 
@@ -164,3 +164,37 @@ def test_render_report_html_with_no_status_has_no_status_line() -> None:
     coverage = CoverageSummary(assessed=[], not_assessed=[])
     rendered = render_report_html([], coverage)
     assert "Scan Status" not in rendered
+
+
+def test_render_report_html_renders_the_executive_summary_when_given() -> None:
+    coverage = CoverageSummary(assessed=[], not_assessed=[])
+    summary = ExecutiveSummary(
+        total_findings=2,
+        by_severity={"high": 1, "low": 1},
+        by_vuln_class={"sql-injection": 1, "xss": 1},
+        highest_severity="high",
+    )
+    rendered = render_report_html([], coverage, summary=summary)
+    assert "<h2>Executive Summary</h2>" in rendered
+    assert "high: 1, low: 1" in rendered
+    assert "sql-injection: 1, xss: 1" in rendered
+    assert "<strong>Highest severity:</strong> HIGH" in rendered
+
+
+def test_render_report_html_escapes_the_vuln_class_in_the_executive_summary() -> None:
+    coverage = CoverageSummary(assessed=[], not_assessed=[])
+    summary = ExecutiveSummary(
+        total_findings=1,
+        by_severity={"high": 1},
+        by_vuln_class={"<script>alert(1)</script>": 1},
+        highest_severity="high",
+    )
+    rendered = render_report_html([], coverage, summary=summary)
+    assert "<script>alert(1)</script>" not in rendered
+    assert "&lt;script&gt;" in rendered
+
+
+def test_render_report_html_with_no_summary_has_no_executive_summary_section() -> None:
+    coverage = CoverageSummary(assessed=[], not_assessed=[])
+    rendered = render_report_html([], coverage)
+    assert "Executive Summary" not in rendered

@@ -5,7 +5,12 @@ from __future__ import annotations
 from lalo.agent.tools import ToolRegistry
 from lalo.findings.tool import build_record_finding_tool
 from lalo.graph.model import Chain, EdgeKind, NodeKind, ReachabilityGraph
-from lalo.report.collect import build_chain_records, collect_findings, sort_findings
+from lalo.report.collect import (
+    build_chain_records,
+    build_executive_summary,
+    collect_findings,
+    sort_findings,
+)
 
 _HIGH_CVSS = {
     "attack_vector": "N",
@@ -131,6 +136,39 @@ def test_a_persisted_review_verdict_is_read_back_onto_the_record() -> None:
     record = collect_findings(graph)[0]
     assert record.review_verdict == "confirmed"
     assert record.review_proof_level == "L3"
+
+
+# --- build_executive_summary ----------------------------------------------
+
+
+def test_build_executive_summary_counts_by_severity_and_category() -> None:
+    graph = ReachabilityGraph()
+    _file_finding(graph, target="https://x.example.com/a", cvss_breakdown=_HIGH_CVSS)
+    _file_finding(
+        graph, target="https://x.example.com/b", cvss_breakdown=_LOW_CVSS, vuln_class="xss"
+    )
+    _file_finding(graph, target="https://x.example.com/c", cvss_breakdown=_HIGH_CVSS)
+    summary = build_executive_summary(collect_findings(graph))
+    assert summary.total_findings == 3
+    assert summary.by_severity["high"] == 2
+    assert summary.by_vuln_class == {"sql-injection": 2, "xss": 1}
+    assert summary.highest_severity == "high"
+
+
+def test_build_executive_summary_orders_severities_worst_first() -> None:
+    graph = ReachabilityGraph()
+    _file_finding(graph, target="https://x.example.com/low", cvss_breakdown=_LOW_CVSS)
+    _file_finding(graph, target="https://x.example.com/high", cvss_breakdown=_HIGH_CVSS)
+    summary = build_executive_summary(collect_findings(graph))
+    assert list(summary.by_severity) == ["high", "low"]
+
+
+def test_build_executive_summary_on_no_findings_is_all_empty() -> None:
+    summary = build_executive_summary([])
+    assert summary.total_findings == 0
+    assert summary.by_severity == {}
+    assert summary.by_vuln_class == {}
+    assert summary.highest_severity is None
 
 
 # --- build_chain_records -------------------------------------------------

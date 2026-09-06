@@ -30,7 +30,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from html import escape
 
-from .collect import ChainRecord, FindingRecord
+from .collect import ChainRecord, ExecutiveSummary, FindingRecord
 from .coverage import CoverageSummary
 
 _STYLE = """
@@ -110,6 +110,7 @@ def render_report_html(
     chains: Sequence[ChainRecord] = (),
     generated_at: str | None = None,
     status: str | None = None,
+    summary: ExecutiveSummary | None = None,
 ) -> str:
     parts = [
         "<!doctype html>",
@@ -121,6 +122,23 @@ def render_report_html(
     if status:
         parts.append(f"<p><strong>Scan Status:</strong> {_e(status)}</p>")
     parts.append(f"<p><strong>Findings:</strong> {len(records)}</p>")
+
+    if summary is not None:
+        parts.append("<h2>Executive Summary</h2>")
+        severity_line = (
+            ", ".join(f"{_e(sev)}: {count}" for sev, count in summary.by_severity.items())
+            or "(none)"
+        )
+        category_line = (
+            ", ".join(f"{_e(cls)}: {count}" for cls, count in summary.by_vuln_class.items())
+            or "(none)"
+        )
+        parts.append(f"<p><strong>By severity:</strong> {severity_line}</p>")
+        parts.append(f"<p><strong>By category:</strong> {category_line}</p>")
+        if summary.highest_severity:
+            parts.append(
+                f"<p><strong>Highest severity:</strong> {_e(summary.highest_severity.upper())}</p>"
+            )
 
     parts.append("<h2>Coverage</h2>")
     parts.append(

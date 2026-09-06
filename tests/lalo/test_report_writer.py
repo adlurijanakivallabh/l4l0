@@ -235,6 +235,20 @@ def test_write_report_a_run_status_of_error_reports_an_unsuccessful_sarif_execut
     assert sarif["runs"][0]["invocations"] == [{"executionSuccessful": False}]
 
 
+def test_write_report_includes_an_executive_summary_in_every_format(tmp_path: Path) -> None:
+    graph, _ = _graph_with_finding()
+    paths = write_report(tmp_path, graph, _SKILLS)
+
+    doc = json.loads(paths["json"].read_text(encoding="utf-8"))
+    assert doc["executive_summary"] == {
+        "total_findings": 1,
+        "by_severity": {"high": 1},
+        "by_vuln_class": {"sql-injection": 1},
+        "highest_severity": "high",
+    }
+    assert "## Executive Summary" in paths["markdown"].read_text(encoding="utf-8")
+
+
 def test_write_report_with_no_status_omits_it_from_json_and_markdown(tmp_path: Path) -> None:
     graph, _ = _graph_with_finding()
     paths = write_report(tmp_path, graph, _SKILLS)

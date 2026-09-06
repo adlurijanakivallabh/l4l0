@@ -60,7 +60,7 @@ from ..core.logging import get_logger
 from ..graph.model import ReachabilityGraph
 from ..orchestrator.budget import RunStatus
 from ..skills.loader import Skill
-from .collect import build_chain_records, collect_findings, sort_findings
+from .collect import build_chain_records, build_executive_summary, collect_findings, sort_findings
 from .coverage import build_coverage_summary
 from .docx import render_report_docx
 from .html import render_report_html
@@ -109,14 +109,21 @@ def write_report(
     records = sort_findings(apply_overrides(collect_findings(graph), overrides or []))
     coverage = build_coverage_summary(skills, records)
     chains = build_chain_records(graph.all_enabling_chains(), records)
+    summary = build_executive_summary(records)
     status_value = status.value if status is not None else None
 
     markdown = render_report_md(
-        records, coverage, chains=chains, generated_at=generated_at, status=status_value
+        records,
+        coverage,
+        chains=chains,
+        generated_at=generated_at,
+        status=status_value,
+        summary=summary,
     )
     json_document = {
         "generated_at": generated_at,
         "status": status_value,
+        "executive_summary": asdict(summary),
         "findings": [asdict(record) for record in records],
         "coverage": asdict(coverage),
         "chains": [asdict(chain) for chain in chains],
@@ -136,7 +143,12 @@ def write_report(
         automation_id=run_dir.name,
     )
     html = render_report_html(
-        records, coverage, chains=chains, generated_at=generated_at, status=status_value
+        records,
+        coverage,
+        chains=chains,
+        generated_at=generated_at,
+        status=status_value,
+        summary=summary,
     )
 
     paths = {
