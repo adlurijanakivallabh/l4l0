@@ -68,6 +68,25 @@ def _build_rule(record: FindingRecord) -> dict[str, Any]:
     }
 
 
+def _result_markdown(record: FindingRecord) -> str:
+    """A richer, formatted counterpart to the result's own plain ``text``
+    message - SARIF viewers that support ``message.markdown`` (GitHub code
+    scanning among them) render this instead, falling back to ``text``
+    otherwise. Built entirely from fields already on the record - no new
+    data, no LLM call, matching this whole module's own deterministic,
+    pure-string-assembly discipline."""
+    parts = [f"## {record.title or record.finding_id}"]
+    if record.description:
+        parts.append(record.description)
+    parts.append(
+        f"**CVSS:** {record.cvss_score:.1f} ({record.cvss_severity}) — `{record.cvss_vector}`  \n"
+        f"**Confidence:** {record.confidence.score}/100"
+    )
+    if record.remediation:
+        parts.append(f"### Remediation\n\n{record.remediation}")
+    return "\n\n".join(parts)
+
+
 def _build_result(record: FindingRecord, rule_index: int) -> dict[str, Any]:
     logical_name = record.target + (f"#{record.param}" if record.param else "")
     message = f"{record.title}\n\n{record.description}" if record.description else record.title
@@ -75,7 +94,7 @@ def _build_result(record: FindingRecord, rule_index: int) -> dict[str, Any]:
         "ruleId": _rule_id(record),
         "ruleIndex": rule_index,
         "level": _sarif_level(record),
-        "message": {"text": message or record.finding_id},
+        "message": {"text": message or record.finding_id, "markdown": _result_markdown(record)},
         "locations": [
             {"logicalLocations": [{"fullyQualifiedName": logical_name, "kind": "target"}]}
         ],

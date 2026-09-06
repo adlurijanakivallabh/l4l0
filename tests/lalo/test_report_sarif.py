@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 from lalo.agent.tools import ToolRegistry
 from lalo.findings.dedup import dedup_key
 from lalo.findings.tool import build_record_finding_tool
@@ -95,6 +97,31 @@ def test_render_sarif_result_carries_the_logical_location() -> None:
     result = doc["runs"][0]["results"][0]
     logical = result["locations"][0]["logicalLocations"][0]
     assert logical["fullyQualifiedName"] == "https://x.example.com/search#q"
+
+
+def test_render_sarif_result_includes_a_richer_markdown_message() -> None:
+    graph = ReachabilityGraph()
+    _file(graph, description="the query param is concatenated raw into SQL")
+    doc = render_sarif(_records(graph))
+    result = doc["runs"][0]["results"][0]
+    markdown = result["message"]["markdown"]
+    assert "## SQLi in /search" in markdown
+    assert "the query param is concatenated raw into SQL" in markdown
+    assert "**CVSS:**" in markdown
+    assert "**Confidence:**" in markdown
+    assert "### Remediation" in markdown
+    assert "Apply input validation and least-privilege fixes." in markdown
+    # the plain text message is unchanged - markdown is additive, not a replacement
+    assert result["message"]["text"].startswith("SQLi in /search")
+
+
+def test_render_sarif_markdown_omits_remediation_section_when_none_stated() -> None:
+    graph = ReachabilityGraph()
+    _file(graph)
+    record = replace(_records(graph)[0], remediation="")
+    doc = render_sarif([record])
+    markdown = doc["runs"][0]["results"][0]["message"]["markdown"]
+    assert "Remediation" not in markdown
 
 
 def test_render_sarif_fingerprint_matches_the_real_dedup_key() -> None:
