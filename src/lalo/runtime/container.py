@@ -32,6 +32,29 @@ rather than through ``cap_add``, since the agent's free-shell model means any
 tool in the arsenal can be invoked unpredictably at any point in a scan — there
 is no natural "this specific call needs debugging" moment for a caller to opt
 in at.
+
+Phase 1, strix pass (closes Phase 1): that reference unconditionally appends
+``NET_ADMIN``/``NET_RAW`` to every sandbox's caps, "required for `nmap -sS`
+and other raw-socket recon tools" — its own comparison notes this as broad
+and *not scoped or gated by target/scope config*, a fair critique of granting
+it with no complementary control. L4L0 doesn't have that weakness: a scope
+guard (:mod:`lalo.core.scope`, built in Phase 3) already governs what network
+destinations any tool may actually reach regardless of raw-socket access
+(:mod:`lalo.execution.scope`, built in Phase 3), so granting ``NET_RAW`` here
+adds no new way to reach an out-of-engagement host — only a faster/stealthier
+way to probe an already-in-scope one. Adopted
+``NET_RAW`` alone (not ``NET_ADMIN`` — routing/interface manipulation is
+unrelated to what any curated recon tool needs and is reserved for the
+narrower, explicit :attr:`RuntimeConfig.enable_vpn` opt-in instead) as a
+second baseline capability alongside ``SYS_PTRACE``: unlike VPN connectivity
+(a rare, engagement-specific need), raw-socket recon (SYN scans, OS
+fingerprinting) is routine for nearly every network-facing engagement, and —
+like ptrace — never crosses the container's own network namespace. Before
+this, :mod:`lalo.recon.scan`'s nmap invocation silently downgraded to a
+connect scan (nmap auto-detects missing ``CAP_NET_RAW`` and falls back) even
+though nothing in that module claimed to want one; no recon-module code
+change was needed to fix this — nmap opportunistically upgrades to a SYN scan
+on its own once the capability is actually present.
 """
 
 from __future__ import annotations
@@ -55,10 +78,12 @@ _KEEPALIVE = ("tail", "-f", "/dev/null")
 _FORBIDDEN_CAPS = frozenset({"SYS_ADMIN", "SYS_MODULE", "SYS_RAWIO", "SYS_BOOT"})
 
 # Granted unconditionally to every sandbox, never opt-in via `cap_add` — see
-# the module docstring's Phase 1 pentagi-pass note for why SYS_PTRACE alone
-# gets this treatment (never crosses the container's own PID namespace; the
-# arsenal's own gdb/radare2 need it for anything beyond static analysis).
-_BASELINE_CAPS = ("SYS_PTRACE",)
+# the module docstring's Phase 1 pentagi/strix-pass notes: SYS_PTRACE (the
+# arsenal's gdb/radare2 need it for anything beyond static analysis) and
+# NET_RAW (routine raw-socket recon like nmap SYN scans) never cross the
+# container's own PID/network namespace, and NET_RAW is further backstopped
+# by the separate scope guard governing what any tool may actually reach.
+_BASELINE_CAPS = ("SYS_PTRACE", "NET_RAW")
 
 
 def _normalize_cap(cap: str) -> str:

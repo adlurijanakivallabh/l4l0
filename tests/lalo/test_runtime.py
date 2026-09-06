@@ -105,6 +105,24 @@ def test_sys_ptrace_baseline_is_present_even_with_an_empty_cap_add() -> None:
     assert args[ptrace_index - 1] == "--cap-add"
 
 
+def test_net_raw_is_granted_unconditionally_for_raw_socket_recon() -> None:
+    # Without CAP_NET_RAW, nmap silently downgrades a SYN scan to a connect
+    # scan -- this proves the capability is actually effective, not just requested.
+    with RuntimeContainer(RuntimeConfig(image=_IMAGE)) as c:
+        cap_eff = c.exec("grep CapEff /proc/self/status").stdout
+        assert cap_eff, "could not read /proc/self/status inside the sandbox"
+        # bit 13 (0x2000) is CAP_NET_RAW.
+        hex_value = cap_eff.split()[-1]
+        assert int(hex_value, 16) & 0x2000, f"CAP_NET_RAW not effective: {cap_eff!r}"
+
+
+def test_net_raw_baseline_is_present_even_with_an_empty_cap_add() -> None:
+    container = RuntimeContainer(RuntimeConfig(image=_IMAGE))
+    args = container._run_args()
+    net_raw_index = args.index("NET_RAW")
+    assert args[net_raw_index - 1] == "--cap-add"
+
+
 def test_vpn_is_off_by_default() -> None:
     args = RuntimeContainer(RuntimeConfig(image=_IMAGE))._run_args()
     assert "NET_ADMIN" not in args
