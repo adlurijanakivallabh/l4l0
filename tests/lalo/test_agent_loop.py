@@ -388,6 +388,93 @@ def test_usage_is_recorded_when_a_usage_path_is_provided(tmp_path) -> None:
     assert "fake" in stats.by_provider
 
 
+# --- real semantic history compaction ---------------------------------------
+
+
+def test_short_run_never_triggers_compaction() -> None:
+    """Below _VISIBLE_HISTORY_WINDOW + _COMPACTION_BATCH steps, the loop's
+    behavior must be byte-for-byte the same as before compaction existed -
+    no extra completion call, no summary section in any rendered prompt."""
+    tool, _ = _counting_tool("noop")
+    registry = ToolRegistry([tool])
+    router = _scripted(
+        ['{"tool": "noop", "args": {}}', '{"tool": "finish", "args": {"summary": "done"}}']
+    )
+    loop = AgentLoop(router, registry, system_prompt="sys", config=AgentConfig(max_steps=10))
+    result = loop.run("mission")
+    assert result.stop_reason == "finished"
+    assert not any("NEWLY COMPLETED STEPS TO FOLD IN:" in p for p in router.prompts)
+    assert not any("SUMMARY OF EARLIER STEPS" in p for p in router.prompts)
+
+
+def test_history_compacts_once_enough_steps_scroll_past_the_visible_window() -> None:
+    tool, _ = _counting_tool("noop")
+    registry = ToolRegistry([tool])
+    step_count = {"n": 0}
+
+    def respond(_call_index: int, prompt: str) -> str:
+        if "NEWLY COMPLETED STEPS TO FOLD IN:" in prompt:
+            return "earlier steps: ran noop repeatedly, nothing notable"
+        if step_count["n"] >= 22:
+            return '{"tool": "finish", "args": {"summary": "done"}}'
+        step_count["n"] += 1
+        return f'{{"tool": "noop", "args": {{"i": {step_count["n"]}}}}}'
+
+    router = _FakeRouter(respond)
+    loop = AgentLoop(router, registry, system_prompt="sys", config=AgentConfig(max_steps=30))
+    result = loop.run("mission")
+
+    assert result.stop_reason == "finished"
+    assert any("NEWLY COMPLETED STEPS TO FOLD IN:" in p for p in router.prompts)
+    assert any("SUMMARY OF EARLIER STEPS" in p for p in router.prompts)
+    assert "earlier steps: ran noop repeatedly" in loop._history_summary  # noqa: SLF001
+
+
+def test_a_failed_compaction_call_never_crashes_the_loop() -> None:
+    tool, _ = _counting_tool("noop")
+    registry = ToolRegistry([tool])
+    step_count = {"n": 0}
+
+    def respond(_call_index: int, prompt: str) -> str | BaseException:
+        if "NEWLY COMPLETED STEPS TO FOLD IN:" in prompt:
+            return AllProvidersFailedError("compaction role down", role="reasoning", failures=[])
+        if step_count["n"] >= 22:
+            return '{"tool": "finish", "args": {"summary": "done"}}'
+        step_count["n"] += 1
+        return f'{{"tool": "noop", "args": {{"i": {step_count["n"]}}}}}'
+
+    router = _FakeRouter(respond)  # type: ignore[arg-type]
+    loop = AgentLoop(router, registry, system_prompt="sys", config=AgentConfig(max_steps=30))
+    result = loop.run("mission")
+
+    assert result.stop_reason == "finished"  # the loop's own control flow is untouched
+    assert loop._history_summary == ""  # noqa: SLF001 - every compaction attempt failed
+    # bookkeeping still advanced - a persistently failing role must not make
+    # the to-be-summarized batch grow without bound on every later attempt
+    assert loop._summarized_through > 0  # noqa: SLF001
+
+
+def test_compact_history_folds_the_prior_summary_in_with_new_entries() -> None:
+    router = _scripted(["updated summary text"])
+    loop = AgentLoop(router, ToolRegistry([]), system_prompt="sys")
+    loop._history_summary = "existing summary"  # noqa: SLF001
+    result = loop._compact_history(  # noqa: SLF001
+        [{"tool": "noop", "args": {}, "observation": "ran"}]
+    )
+    assert result == "updated summary text"
+    assert "EXISTING SUMMARY:\nexisting summary" in router.prompts[0]
+    assert "NEWLY COMPLETED STEPS TO FOLD IN:" in router.prompts[0]
+
+
+def test_maybe_compact_history_advances_bookkeeping_even_on_a_failed_compaction() -> None:
+    router = _scripted([AllProvidersFailedError("down", role="reasoning", failures=[])])
+    loop = AgentLoop(router, ToolRegistry([]), system_prompt="sys")
+    transcript = [{"tool": "noop", "args": {}, "observation": "ran"} for _ in range(20)]
+    loop._maybe_compact_history(transcript)  # noqa: SLF001
+    assert loop._history_summary == ""  # noqa: SLF001
+    assert loop._summarized_through == 8  # noqa: SLF001 - still advanced despite the failure
+
+
 def test_usage_is_attributed_to_the_loops_own_agent_id(tmp_path) -> None:
     tool, _ = _counting_tool("noop")
     registry = ToolRegistry([tool])

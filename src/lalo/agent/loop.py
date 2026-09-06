@@ -124,6 +124,27 @@ _SUBAGENT_DIRECTIVES: dict[BudgetBand, str] = {
     "finish — you may be cut off before your parent receives anything else.",
 }
 
+# How many of the most recent transcript entries always render verbatim in
+# full, unchanged from before real compaction existed.
+_VISIBLE_HISTORY_WINDOW = 12
+# Compaction only fires once at least this many entries have scrolled past
+# the visible window since the last compaction call - amortizes the extra
+# LLM call's cost over a batch of steps rather than paying it every single
+# step once a transcript is long (compaction is a real, billable completion,
+# recorded through the same usage ledger as every other one).
+_COMPACTION_BATCH = 8
+
+_COMPACTION_SYSTEM_PROMPT = (
+    "You compact an autonomous security-testing agent's own step history into "
+    "a dense working-memory summary for that SAME agent's continued reasoning. "
+    "Preserve concrete facts only: targets tested, tools run, findings filed, "
+    "approaches that failed and why, anything the agent should not repeat. "
+    "Never state a verdict on whether anything is a real vulnerability - this "
+    "summary is orientation for the agent, never evidence for a finding. "
+    "A few dense bullet points, terse - fold any existing summary shown in "
+    "with the newly completed steps into one updated summary."
+)
+
 
 @dataclass
 class AgentConfig:
@@ -229,12 +250,25 @@ class AgentLoop:
         # "record lifetime/by_provider totals but attribute nothing to a
         # specific agent."
         self.agent_id = agent_id
+        # Real semantic history compaction, not just a hard truncation
+        # window: transcript[-_VISIBLE_HISTORY_WINDOW:] alone (the prior
+        # behavior) makes every step before that boundary vanish from the
+        # prompt entirely once a mission runs long - a multi-step attack
+        # chain built up earlier, or a failed approach already tried, is
+        # gone with no trace. _history_summary is a running LLM-authored
+        # digest of everything that has scrolled past the visible window;
+        # _summarized_through is how much of transcript is already folded
+        # into it (advanced in _maybe_compact_history() even on a failed
+        # compaction attempt, so a persistently failing summarizer role
+        # can't make the batch-to-summarize grow without bound forever).
+        self._history_summary = ""
+        self._summarized_through = 0
 
     def _emit(self, event: str, payload: dict[str, object]) -> None:
         if self.on_event is not None:
             self.on_event(event, payload)
 
-    def _complete(self, prompt: str) -> CompletionResponse | None:
+    def _complete(self, prompt: str, *, system: str | None = None) -> CompletionResponse | None:
         """Call the router; classify a total provider failure instead of
         letting it crash the run uncaught. Mirrors a reference agent
         executor's own result shape (a `retryable` classification returned to
@@ -242,6 +276,12 @@ class AgentLoop:
         has already exhausted its own failover chain by the time
         AllProvidersFailedError reaches here, so there is nothing left to
         retry at this layer; a future orchestrator decides what to do next.
+
+        ``system`` defaults to this agent's own ``system_prompt`` — every
+        real mission-turn caller relies on that default; :meth:`_compact_history`
+        is the one caller that overrides it, since compacting the transcript
+        is a different task from advancing the mission and needs its own
+        instructions, not this agent's own persona/scope prompt.
 
         Phase 2, strix pass (closes Phase 2): :func:`~lalo.core.usage.
         record_usage` was built and unit-tested in the Phase 0 cai pass to
@@ -258,9 +298,10 @@ class AgentLoop:
         future cost-limit raise) is logged and swallowed, not propagated --
         this is a best-effort side observation, not a correctness path.
         """
+        effective_system = system if system is not None else self.system_prompt
         try:
             response = self.router.complete(
-                self.config.role, CompletionRequest(prompt=prompt, system=self.system_prompt)
+                self.config.role, CompletionRequest(prompt=prompt, system=effective_system)
             )
         except AllProvidersFailedError:
             return None
@@ -271,9 +312,41 @@ class AgentLoop:
                 _log.exception("usage recording failed; continuing without it")
         return response
 
+    def _compact_history(self, entries: list[dict[str, object]]) -> str:
+        """One best-effort completion folding ``entries`` (steps about to
+        scroll past the visible HISTORY window) into an updated running
+        summary. Never raises and never blocks the step loop on a bad
+        response — a compaction failure just means this batch's gist is
+        dropped rather than folded in; the verbatim window still covers the
+        genuinely recent steps regardless, and the NEXT compaction call
+        starts fresh from wherever ``_summarized_through`` already is.
+        """
+        lines = "\n".join(
+            f"- called {e['tool']}({e['args']}) -> {e['observation']}" for e in entries
+        )
+        prior = f"EXISTING SUMMARY:\n{self._history_summary}\n\n" if self._history_summary else ""
+        prompt = f"{prior}NEWLY COMPLETED STEPS TO FOLD IN:\n{lines}"
+        response = self._complete(prompt, system=_COMPACTION_SYSTEM_PROMPT)
+        if response is None:
+            return self._history_summary
+        return response.text.strip() or self._history_summary
+
+    def _maybe_compact_history(self, transcript: list[dict[str, object]]) -> None:
+        hidden_boundary = max(0, len(transcript) - _VISIBLE_HISTORY_WINDOW)
+        if hidden_boundary - self._summarized_through < _COMPACTION_BATCH:
+            return
+        newly_hidden = transcript[self._summarized_through : hidden_boundary]
+        self._history_summary = self._compact_history(newly_hidden)
+        # Advanced regardless of whether that compaction call actually
+        # succeeded - see _compact_history's own docstring for why retrying
+        # the same batch forever on a persistently failing role is worse
+        # than dropping one batch's gist.
+        self._summarized_through = hidden_boundary
+
     def _render_prompt(
         self, mission: str, transcript: list[dict[str, object]], directive: str | None
     ) -> str:
+        self._maybe_compact_history(transcript)
         parts = [
             f"MISSION:\n{mission}",
             f"\nAVAILABLE TOOLS:\n{self.registry.describe()}",
@@ -281,9 +354,14 @@ class AgentLoop:
         ]
         if directive:
             parts.append(f"\n[{directive}]")
+        if self._history_summary:
+            parts.append(
+                "\nSUMMARY OF EARLIER STEPS (compacted working memory, not evidence):\n"
+                + self._history_summary
+            )
         if transcript:
             parts.append("\nHISTORY (most recent last):")
-            for entry in transcript[-12:]:
+            for entry in transcript[-_VISIBLE_HISTORY_WINDOW:]:
                 parts.append(f"  called {entry['tool']}({entry['args']}) -> {entry['observation']}")
         parts.append("\nWhat is your next action? Reply with one JSON tool call.")
         return "\n".join(parts)
