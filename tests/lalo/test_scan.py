@@ -43,6 +43,7 @@ from lalo.orchestrator.budget import RunStatus
 from lalo.scan import (
     ScanConfig,
     ScanRunner,
+    _diff_by_agent,
     _terminal_status,
     load_run_events,
     read_resume_manifest,
@@ -74,6 +75,33 @@ _HIGH_CVSS = {
 
 
 # --- _terminal_status: pure mapping ------------------------------------------
+
+
+def test_diff_by_agent_handles_an_agent_present_in_only_one_snapshot() -> None:
+    """An agent gone by "after" (unlikely in practice) or absent from
+    "before" (the common case: a child spawned mid-run) must diff against a
+    plain 0 baseline on the missing side, never raise a KeyError."""
+    before = {
+        "agent-1": {"requests": 3.0, "input_tokens": 100.0, "output_tokens": 20.0, "cost_usd": 0.1}
+    }
+    after = {
+        "agent-1": {"requests": 5.0, "input_tokens": 150.0, "output_tokens": 30.0, "cost_usd": 0.2},
+        "agent-2": {"requests": 2.0, "input_tokens": 40.0, "output_tokens": 10.0, "cost_usd": 0.05},
+    }
+    diff = _diff_by_agent(before, after)
+    assert diff["agent-1"] == {
+        "requests": 2.0,
+        "input_tokens": 50.0,
+        "output_tokens": 10.0,
+        "cost_usd": pytest.approx(0.1),
+    }
+    # agent-2 has no "before" entry at all -- diffs against an implicit 0.
+    assert diff["agent-2"] == {
+        "requests": 2.0,
+        "input_tokens": 40.0,
+        "output_tokens": 10.0,
+        "cost_usd": 0.05,
+    }
 
 
 def test_terminal_status_maps_finish_reasons_to_completed() -> None:
@@ -643,11 +671,26 @@ def test_scan_runner_emits_usage_delta_when_usage_path_is_configured(
     _cursor, events = event_log.snapshot()
     completed = next(e for e in events if e.payload.get("event") == "scan_completed")
     usage_delta = completed.payload["usage_delta"]
-    assert set(usage_delta) == {"requests", "input_tokens", "output_tokens"}
+    assert set(usage_delta) == {"requests", "input_tokens", "output_tokens", "by_agent"}
     # The scripted provider's completions carry no real usage figures, so the
     # token deltas are honestly 0 -- but real completions did happen this run,
     # so the request count must reflect that, not also default to 0.
     assert usage_delta["requests"] > 0
+    # AgentCoordinator hands out ids as "agent-N" starting from 1 - the root
+    # agent registered by ScanRunner.run() is always the first one.
+    assert usage_delta["by_agent"]["agent-1"]["requests"] > 0
+    assert set(usage_delta["by_agent"]) == {"agent-1"}  # a single-agent scan; no children spawned
+    # A multi-agent variant (scripting a spawn_agents call, like
+    # test_scan_runner_dispatches_spawn_agents_and_merges_both_childrens_findings
+    # does) would additionally prove per-child attribution, but two children's
+    # AgentLoops call record_usage against the SAME usage_path concurrently on
+    # real OS threads, and core/usage.py's own module docstring already
+    # documents that read-modify-write as deliberately unlocked across
+    # concurrent writers ("a real but low-probability edge case, not worth
+    # the complexity of process-level file locking") - a multi-agent version
+    # of this test was tried and observed flaky (a losing write silently
+    # dropped one child's contribution) for exactly that pre-existing,
+    # already-accepted reason, unrelated to the diffing added here.
 
 
 def test_scan_runner_estimates_cost_when_a_pricing_table_is_configured(

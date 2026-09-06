@@ -627,7 +627,7 @@ class AgentLoop:
                 self._emit("budget_exhausted", {"step": step})
                 return AgentResult(stop_reason, step, transcript)
 
-            with self.tracer.span("agent_step", step=step, agent_id=self.agent_id):
+            with self.tracer.span("agent_step", step=step, agent_id=self.agent_id) as span:
                 directive = self._budget_directive()
                 prompt = self._render_prompt(mission, transcript, directive)
                 with self.tracer.span("llm_completion", step=step, agent_id=self.agent_id):
@@ -723,6 +723,15 @@ class AgentLoop:
                 self.tracer.counter(f"tool_calls:{call.name}")
                 if self.budget is not None:
                     self.budget.spend(1)
+                    # A walkable burn curve for free: any consumer can filter
+                    # tracer.spans by name == "agent_step" and read
+                    # (wall_start, budget_fraction, budget_band) in order - no
+                    # new data structure needed, reusing exactly what the
+                    # agent_id/wall_start span tagging already made queryable.
+                    span.attributes["budget_fraction"] = self.budget.fraction()
+                    span.attributes["budget_band"] = self.budget.band(
+                        is_root=self.config.is_root
+                    ).name
 
         return self._final_turn(mission, transcript)
 

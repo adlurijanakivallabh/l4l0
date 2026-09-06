@@ -421,6 +421,42 @@ def test_agent_step_span_is_tagged_and_split_into_llm_and_tool_dispatch_spans() 
     assert loop.tracer.counters["tool_calls:probe"] == 1
 
 
+def test_agent_step_span_records_a_budget_fraction_and_band_reading() -> None:
+    """Each agent_step span records the current budget spend directly onto
+    its own mutable attributes dict right after that step's spend - a
+    walkable burn-rate curve falls out of the existing span timeline with no
+    new data structure (filter tracer.spans by name == "agent_step" and read
+    (wall_start, budget_fraction, budget_band) in order)."""
+    tool, _ = _counting_tool("probe")
+    registry = ToolRegistry([tool])
+    router = _scripted(
+        [
+            '{"tool": "probe", "args": {"x": 1}}',
+            '{"tool": "probe", "args": {"x": 2}}',
+            '{"tool": "finish", "args": {"summary": "done"}}',
+        ]
+    )
+    budget = Budget(ceiling=10)
+    loop = AgentLoop(
+        router,  # type: ignore[arg-type]
+        registry,
+        system_prompt="",
+        config=AgentConfig(is_root=True),
+        budget=budget,
+    )
+    loop.run("mission")
+
+    step_spans = [s for s in loop.tracer.spans if s.name == "agent_step"]
+    assert len(step_spans) >= 2
+    # Only the two real dispatch steps ever reach the budget.spend() call -
+    # "finish" returns before that point and carries no reading, by design.
+    dispatch_spans = step_spans[:2]
+    fractions = [s.attributes["budget_fraction"] for s in dispatch_spans]
+    assert fractions == sorted(fractions)  # non-decreasing: spend only grows
+    assert fractions[0] > 0
+    assert all(isinstance(s.attributes["budget_band"], str) for s in dispatch_spans)
+
+
 def test_two_agent_loops_do_not_share_a_tracer_by_default() -> None:
     tool, _ = _counting_tool("probe")
     router1 = _scripted(['{"tool": "probe", "args": {}}', '{"tool": "finish", "args": {}}'])

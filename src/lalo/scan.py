@@ -481,6 +481,26 @@ def _terminal_status(stop_reason: str) -> RunStatus:
     return RunStatus.UNVERIFIED_STOP
 
 
+def _diff_by_agent(
+    before: dict[str, dict[str, float]], after: dict[str, dict[str, float]]
+) -> dict[str, dict[str, float]]:
+    """Diff two ``UsageStats.by_agent`` maps key-for-key, the same way the
+    flat lifetime totals just above are already diffed - the data was
+    already computed and thrown away; this just stops throwing it away. An
+    agent present in only one of the two snapshots (a child spawned during
+    this run has no "before" entry at all) reads as a plain 0 baseline on
+    the missing side, not a KeyError.
+    """
+    result: dict[str, dict[str, float]] = {}
+    for agent_id in set(before) | set(after):
+        b, a = before.get(agent_id, {}), after.get(agent_id, {})
+        result[agent_id] = {
+            field: a.get(field, 0) - b.get(field, 0)
+            for field in ("requests", "input_tokens", "output_tokens", "cost_usd")
+        }
+    return result
+
+
 class ScanRunner:
     """Runs one scan to completion. Call :meth:`run` from a background thread
     (it blocks for the whole scan) and :meth:`cancel` from any other thread to
@@ -987,8 +1007,10 @@ class ScanRunner:
         # exactly the subtraction the GUI's own usage_delta event already
         # does below, computed once here and reused for both.
         report_usage: ReportUsage | None = None
+        usage_delta_by_agent: dict[str, dict[str, float]] | None = None
         if usage_path is not None and usage_before is not None:
             usage_after = load_usage(usage_path)
+            usage_delta_by_agent = _diff_by_agent(usage_before.by_agent, usage_after.by_agent)
             report_usage = ReportUsage(
                 total_requests=usage_after.total_requests - usage_before.total_requests,
                 total_input_tokens=usage_after.total_input_tokens - usage_before.total_input_tokens,
@@ -1016,6 +1038,7 @@ class ScanRunner:
                 "requests": report_usage.total_requests,
                 "input_tokens": report_usage.total_input_tokens,
                 "output_tokens": report_usage.total_output_tokens,
+                "by_agent": usage_delta_by_agent,
             }
         self._emit("status", completed_payload)
         return ScanOutcome(status=status, result=result, report_paths=report_paths)
