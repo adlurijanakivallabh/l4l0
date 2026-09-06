@@ -207,6 +207,23 @@ button, input, textarea {
   border-radius: var(--radius-sm);
 }
 .run-item:hover { background: var(--surface); }
+.run-item.viewing { background: var(--surface-muted); }
+
+.history-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 12px;
+  background: var(--surface-muted);
+  border-bottom: 1px solid var(--border);
+  font-size: 0.78rem;
+  color: var(--text-muted);
+}
+/* Author `display: flex` above otherwise beats the UA stylesheet's own
+   `[hidden] { display: none }` at equal specificity - toggling the
+   `hidden` attribute via JS would silently stop working without this. */
+.history-banner[hidden] { display: none; }
 
 .run-status-dot {
   flex: none;
@@ -215,7 +232,8 @@ button, input, textarea {
   border-radius: 50%;
   background: var(--text-faint);
 }
-.run-item.running .run-status-dot { background: var(--accent); }
+.run-item.running .run-status-dot,
+.run-item.viewing .run-status-dot { background: var(--accent); }
 
 .run-info {
   flex: 1;

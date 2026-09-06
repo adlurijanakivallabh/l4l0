@@ -165,10 +165,19 @@ socket.addEventListener("message", (ev) => {
 
 - [ ] **Step 6: Add CSS for the banner and viewing state**
 
-In `app.css`, near `.run-item` rules:
+In `app.css`, near `.run-item` rules. Deliberately no accent-colored
+side-border for the `.viewing` state — a thick colored border on one side
+of a card is one of the most recognizable AI-generated-UI tells (flagged
+during actual implementation by this project's own design-review hook);
+reuse the SAME idiom `.run-item.running` already establishes for its own
+active-state indicator instead (an accent-colored `.run-status-dot`),
+rather than inventing a second, different visual pattern for a
+conceptually similar "this row is active" state:
 
 ```css
-.run-item.viewing { background: var(--surface-muted); border-left: 2px solid var(--accent); }
+.run-item.viewing { background: var(--surface-muted); }
+.run-item.running .run-status-dot,
+.run-item.viewing .run-status-dot { background: var(--accent); }
 
 .history-banner {
   display: flex;
@@ -181,6 +190,11 @@ In `app.css`, near `.run-item` rules:
   font-size: 0.78rem;
   color: var(--text-muted);
 }
+/* Author `display: flex` above otherwise beats the UA stylesheet's own
+   `[hidden] { display: none }` at equal specificity - toggling the
+   `hidden` attribute via JS would silently stop working without this
+   (a real bug caught during actual implementation, not a hypothetical). */
+.history-banner[hidden] { display: none; }
 ```
 
 - [ ] **Step 7: Verify live, with Playwright**

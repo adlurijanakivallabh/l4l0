@@ -29,6 +29,9 @@
 
   const runHistoryListEl = document.getElementById("run-history-list");
   const refreshRunsBtn = document.getElementById("refresh-runs");
+  const historyBanner = document.getElementById("history-banner");
+  const historyBannerText = document.getElementById("history-banner-text");
+  const historyBackToLiveBtn = document.getElementById("history-back-to-live");
 
   const tplMsgAgent = document.getElementById("tpl-msg-agent");
   const tplMsgUser = document.getElementById("tpl-msg-user");
@@ -48,6 +51,8 @@
   let lastCursor = null;
   let socket = null;
   let reconnectDelayMs = 500;
+  let viewingRunId = null; // null = live; otherwise the run_id currently displayed
+  let pendingLiveCount = 0;
 
   function isNearBottom() {
     return threadEl.scrollHeight - threadEl.scrollTop - threadEl.clientHeight < 80;
@@ -247,6 +252,8 @@
     item.querySelector(".run-mission").textContent = run.mission || "(no mission recorded)";
     const parts = [run.running ? "running" : "completed", formatRunTimestamp(run.modified_at)];
     item.querySelector(".run-meta").textContent = parts.filter(Boolean).join(" · ");
+    item.dataset.runId = run.run_id;
+    item.dataset.missionText = run.mission || "(no mission recorded)";
     const link = item.querySelector(".run-report-link");
     const fmt = preferredReportFormat(run.report_formats || []);
     if (fmt) {
@@ -285,6 +292,50 @@
       // network hiccup fetching history - the live scan itself is unaffected
     }
   }
+
+  async function openRun(runId, missionText) {
+    try {
+      const response = await fetch(`/runs/${encodeURIComponent(runId)}/events`);
+      if (!response.ok) return;
+      const body = await response.json();
+      threadEl.replaceChildren();
+      agents.clear();
+      findingCards.clear();
+      findingCount = 0;
+      chainCount = 0;
+      statFindingsEl.textContent = "0";
+      statChainsEl.textContent = "0";
+      statAgentsEl.textContent = "0";
+      openLogBlock = null;
+      for (const event of body.events || []) {
+        applyEvent(event);
+      }
+      viewingRunId = runId;
+      pendingLiveCount = 0;
+      historyBannerText.textContent = `Viewing: ${missionText || runId}`;
+      historyBanner.hidden = false;
+      composerInput.placeholder = "Continue this run…";
+    } catch {
+      // best-effort - the live view is unaffected by a failed history fetch
+    }
+  }
+
+  function returnToLive() {
+    viewingRunId = null;
+    pendingLiveCount = 0;
+    historyBanner.hidden = true;
+    composerInput.placeholder = scanActive ? "Message this run…" : "Tell me what to test…";
+    threadEl.replaceChildren();
+    agents.clear();
+    findingCards.clear();
+    findingCount = 0;
+    chainCount = 0;
+    openLogBlock = null;
+    lastCursor = null;
+    socket.close(); // triggers the existing reconnect-with-no-cursor full snapshot
+  }
+
+  historyBackToLiveBtn.addEventListener("click", returnToLive);
 
   function appendUserMessage(text, { error = false } = {}) {
     const wasNear = isNearBottom();
@@ -430,7 +481,15 @@
     socket.addEventListener("message", (ev) => {
       const data = JSON.parse(ev.data);
       lastCursor = data.cursor;
-      for (const event of data.events || []) {
+      const events = data.events || [];
+      if (viewingRunId !== null) {
+        pendingLiveCount += events.length;
+        if (pendingLiveCount > 0) {
+          historyBannerText.textContent = `${pendingLiveCount} new live event(s) — `;
+        }
+        return;
+      }
+      for (const event of events) {
         applyEvent(event);
       }
     });
@@ -494,23 +553,48 @@
     }
   }
 
+  async function launchResume(runId) {
+    const response = await fetch("/scan", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ resume_run_id: runId }),
+    });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(body.error || `request failed (${response.status})`);
+    }
+  }
+
   async function resumeRun(runId, button) {
     button.disabled = true;
     try {
-      const response = await fetch("/scan", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ resume_run_id: runId }),
-      });
-      const body = await response.json().catch(() => ({}));
-      if (!response.ok) {
-        throw new Error(body.error || `request failed (${response.status})`);
-      }
+      await launchResume(runId);
       appendAgentText(`Resuming run ${runId}…`);
       onScanStarted();
     } catch (err) {
       appendAgentText(`[resume failed: ${err.message}]`);
       button.disabled = false;
+    }
+  }
+
+  async function continueViewedRun(text) {
+    const runId = viewingRunId;
+    composerSendBtn.disabled = true;
+    composerInput.disabled = true;
+    try {
+      if (!scanActive) {
+        await launchResume(runId);
+      }
+      viewingRunId = null;
+      historyBanner.hidden = true;
+      onScanStarted();
+      await sendSteering(text);
+    } catch (err) {
+      appendAgentText(`[continue failed: ${err.message}]`);
+    } finally {
+      composerSendBtn.disabled = false;
+      composerInput.disabled = false;
+      composerInput.focus();
     }
   }
 
@@ -543,7 +627,10 @@
     ev.preventDefault();
     const text = composerInput.value.trim();
     if (!text) return;
-    if (scanActive) {
+    if (viewingRunId !== null) {
+      composerInput.value = "";
+      await continueViewedRun(text);
+    } else if (scanActive) {
       await sendSteering(text);
     } else {
       await launchFromPrompt(text);
@@ -600,6 +687,15 @@
     const btn = ev.target.closest(".run-resume-btn");
     if (!btn) return;
     resumeRun(btn.dataset.runId, btn);
+  });
+
+  runHistoryListEl.addEventListener("click", (ev) => {
+    if (ev.target.closest(".run-resume-btn") || ev.target.closest(".run-report-link")) return;
+    const item = ev.target.closest(".run-item");
+    if (!item) return;
+    document.querySelectorAll(".run-item.viewing").forEach((el) => el.classList.remove("viewing"));
+    item.classList.add("viewing");
+    openRun(item.dataset.runId, item.dataset.missionText);
   });
 
   connect();
