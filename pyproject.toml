@@ -33,6 +33,10 @@ dependencies = [
 [project.scripts]
 # Web GUI — the primary entry point (no CLI, no TUI).
 lalo-gui = "lalo.gui.app:main"
+# A tiny, one-shot interactive credential wizard - not a competing
+# interface to the GUI, just gets a verified provider credential into a
+# .env file before the GUI's first real launch.
+lalo-setup = "lalo.setup:main"
 
 [dependency-groups]
 dev = [
