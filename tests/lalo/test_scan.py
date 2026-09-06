@@ -514,9 +514,18 @@ def test_scan_runner_dispatches_a_real_browser_tool_call(
     monkeypatch.setattr(scan_module, "RuntimeContainer", _FakeContainer)
 
     def respond(call_index: int, prompt: str) -> str:
+        # ScanRunner.run()'s own preflight (Phase 4) calls verify_router()
+        # before the agent loop ever starts, which fires exactly this literal
+        # completion against this same scripted provider - consuming
+        # call_index 0 for every provider the router has (one, here) before
+        # the loop's own first real decision. Matched by prompt content, not
+        # position, so this stays correct regardless of how many preflight
+        # calls precede the loop.
+        if prompt == "reply with exactly: ok":
+            return "ok"
         if "FINDING TO REVIEW" in prompt:
             return '{"verdict": "confirmed", "proof_level": "L1", "reasoning": "n/a"}'
-        if call_index == 0:
+        if call_index == 1:
             return json.dumps(
                 {"tool": "browser", "args": {"action": "navigate", "url": local_page_server}}
             )
