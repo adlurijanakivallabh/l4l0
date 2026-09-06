@@ -1656,8 +1656,920 @@ git commit -m "style(L4L0): authored SVG icons, one motion vocabulary, spacing/b
 
 ---
 
-## Final check (after all 10 tasks)
+## Phase 5 — Capability-gap features
+
+Sourced from a multi-lens brainstorm workflow grounded in real code reads
+across agent-methodology, report-findings-richness, operator-productivity,
+and observability-debugging. Every cheap/medium-effort idea from that pass
+is folded in below (the one large-effort idea — a verbatim closure-decision
+ledger surviving history compaction — is explicitly excluded, per an
+earlier "cheap and medium everything" scoping decision). Grouped into 9
+tasks by code locality rather than 19 separate task-loops, since most of
+these are small, independent, file-disjoint features better reviewed
+together than ceremony-per-idea.
+
+**A note on precision for this phase:** the exact current signatures below
+were gathered via direct source research this session (not guessed), but a
+few specifics (an exact returned-dict shape, an exact accessor name on
+`AgentCoordinator`, `FireResult`'s exact fields, `FindingRecord`'s exact
+field list, whether `AgentLoop` already tracks root-vs-child) were not
+independently confirmed and are flagged inline as "verify against the live
+file" — this is the same discipline every earlier task in this plan already
+used when a brief's snapshot might have drifted from the current file; here
+it's flagged because the research pass didn't reach 100% instead of because
+time passed, but the resolution is identical: the real file wins.
+
+### Task 11: Observability core — wall-clock timestamps, agent-id tagging, split step span
+
+**Files:**
+- Modify: `src/lalo/gui/events.py`
+- Modify: `src/lalo/orchestrator/journal.py`
+- Modify: `src/lalo/observability/tracing.py`
+- Modify: `src/lalo/agent/loop.py`
+- Test: `tests/lalo/test_events.py`, `tests/lalo/test_journal.py`, `tests/lalo/test_tracing.py` (create if they don't already exist, mirroring this project's `tests/lalo/test_<module>.py` convention), plus whichever existing test file already exercises `AgentLoop` directly (find it — likely `tests/lalo/test_loop.py` or `tests/lalo/test_agent_loop.py`)
+
+**Interfaces:**
+- Produces: `Event.ts: float` (wall-clock, `time.time()`-based), `Checkpoint.ts: float`, `Span.wall_start: float` — all additive fields with `field(default_factory=time.time)` defaults, so every existing construction call site keeps working unchanged.
+- Consumes: `Tracer.span(name, **attributes) -> Iterator[Span]` (existing, `src/lalo/observability/tracing.py`) — confirmed the yielded `Span`'s `.attributes` dict is mutable inside the `with` block, so tagging can happen via attribute assignment, not a new constructor argument.
+
+- [ ] **Step 1: Add `ts` to `Event`**
+
+In `src/lalo/gui/events.py`, add `import time` if not already present, and add a `ts` field to the `Event` dataclass:
+
+```python
+@dataclass
+class Event:
+    id: str
+    category: EventCategory
+    payload: dict[str, Any]
+    version: int = 1
+    ts: float = field(default_factory=time.time)
+```
+
+(Read the file first to confirm the exact current field list and whether `field` is already imported from `dataclasses`.)
+
+Test:
+```python
+def test_event_carries_a_wall_clock_timestamp() -> None:
+    before = time.time()
+    log = EventLog()
+    event = log.append("status", {"event": "x"})
+    after = time.time()
+    assert before <= event.ts <= after
+```
+
+- [ ] **Step 2: Add `ts` to `Checkpoint`**
+
+In `src/lalo/orchestrator/journal.py`:
+```python
+@dataclass(frozen=True)
+class Checkpoint:
+    key: str
+    result: Any
+    ts: float = field(default_factory=time.time)
+```
+`DurableJournal.record(key, result)`'s signature is unchanged — it just picks up the new field's default.
+
+Test: record a checkpoint, confirm `.get(key).ts` is a real wall-clock time within a tight window of the call.
+
+- [ ] **Step 3: Add `wall_start` to `Span`**
+
+In `src/lalo/observability/tracing.py` (the `Span` dataclass currently has `name: str`, `start: float`, `end: float | None = None`, `attributes: dict[str, Any]` — `start`/`end` are `time.monotonic()`-based, correct for duration math, and must stay that way):
+```python
+@dataclass
+class Span:
+    name: str
+    start: float
+    end: float | None = None
+    attributes: dict[str, Any] = field(default_factory=dict)
+    wall_start: float = field(default_factory=time.time)
+```
+
+Test: create a span via `Tracer().span("x")`, confirm `.wall_start` is within a tight window of `time.time()` at creation.
+
+- [ ] **Step 4: Tag `agent_step` with `agent_id`, split into nested `llm_completion`/`tool_dispatch` spans, add a per-tool-name counter**
+
+Read `src/lalo/agent/loop.py` around its `agent_step` span (currently `with self.tracer.span("agent_step", step=step):`, wrapping both the LLM completion call and the tool-dispatch call together — this is why "slow because the LLM took 40s" can never be told apart from "slow because a tool took 40s") and its `tool_calls` counter (currently `self.tracer.counter("tool_calls")`, one global counter with no per-tool breakdown). `AgentLoop.__init__` already takes `agent_id: str | None = None` and stores `self.agent_id`.
+
+Change the outer span to carry identity:
+```python
+with self.tracer.span("agent_step", step=step, agent_id=self.agent_id):
+```
+
+Wrap the LLM completion call in its own nested span, and the tool-dispatch call in its own nested span carrying the tool name:
+```python
+with self.tracer.span("llm_completion", step=step, agent_id=self.agent_id):
+    # ... the existing completion call, unchanged ...
+
+with self.tracer.span("tool_dispatch", step=step, agent_id=self.agent_id, tool=call.name):
+    # ... the existing dispatch call, unchanged ...
+```
+
+Add a per-tool-name counter alongside the existing aggregate (keep the aggregate — nothing should stop incrementing what it already increments):
+```python
+self.tracer.counter("tool_calls")
+self.tracer.counter(f"tool_calls:{call.name}")
+```
+
+- [ ] **Step 5: Write the `AgentLoop`-level test**
+
+Find the existing test file that already constructs a real `AgentLoop` and drives one `.run()` call against a scripted/fake provider (there should be one, given `AgentLoop` is the core execution primitive). Add a test asserting, after one run with at least one tool call:
+- `loop.tracer.spans` contains a span named `"llm_completion"` and one named `"tool_dispatch"` (not just the outer `"agent_step"`), both carrying `attributes["agent_id"] == loop.agent_id`.
+- `loop.tracer.counters` contains both `"tool_calls"` and a `f"tool_calls:{<the tool actually called>}"` key.
+
+Match whatever scripted-provider/fake-tool convention that existing test file already uses — do not invent a new one.
+
+- [ ] **Step 6: Run tests, full suite, commit**
+
+Run the new/modified test files, then `uv run ruff check src/lalo tests/lalo --fix && uv run ruff format src/lalo tests/lalo && uv run mypy && uv run pytest -q -m "not integration and not live"`.
+
+```bash
+git add src/lalo/gui/events.py src/lalo/orchestrator/journal.py src/lalo/observability/tracing.py src/lalo/agent/loop.py tests/lalo/test_events.py tests/lalo/test_journal.py tests/lalo/test_tracing.py
+git commit -m "feat(L4L0): wall-clock timestamps, agent-id span tagging, per-tool counters"
+```
+
+### Task 12: Per-agent usage-delta surfacing + budget burn-rate
+
+**Files:**
+- Modify: `src/lalo/scan.py` (the usage-diffing block, currently doing flat-total diffs only; the `scan_completed` event's `usage_delta` payload)
+- Modify: `src/lalo/agent/loop.py` (record budget fraction/band into the `agent_step` span each step)
+- Test: `tests/lalo/test_scan.py`, `tests/lalo/test_usage.py` (if it exists)
+
+**Interfaces:**
+- Consumes: `UsageStats.by_agent: dict[str, dict[str, float]]` (existing, already populated per-agent via `record_usage(..., agent_id=...)`), `Budget.fraction() -> float`, `Budget.band(is_root: bool) -> BudgetBand` (existing, `src/lalo/orchestrator/budget.py`).
+
+- [ ] **Step 1: Write a `_diff_by_agent` helper and wire it into the usage-delta block**
+
+In `src/lalo/scan.py`, near the existing flat-total usage diffing (`usage_after.<field> - usage_before.<field>` for requests/input_tokens/output_tokens/cost_usd — find this block, it currently computes `report_usage`/feeds `scan_completed`'s `usage_delta`), add:
+
+```python
+def _diff_by_agent(
+    before: dict[str, dict[str, float]], after: dict[str, dict[str, float]]
+) -> dict[str, dict[str, float]]:
+    """Diff two UsageStats.by_agent maps key-for-key, the same way flat
+    totals are already diffed - the data was already computed and thrown
+    away; this just stops throwing it away."""
+    result: dict[str, dict[str, float]] = {}
+    for agent_id in set(before) | set(after):
+        b, a = before.get(agent_id, {}), after.get(agent_id, {})
+        result[agent_id] = {
+            field: a.get(field, 0) - b.get(field, 0)
+            for field in ("requests", "input_tokens", "output_tokens", "cost_usd")
+        }
+    return result
+```
+
+Call it alongside the existing flat diff and add the result under a `"by_agent"` key in the `scan_completed` event's `usage_delta` payload (find where that payload dict is built and add one key — don't restructure the existing flat fields).
+
+- [ ] **Step 2: Write the test**
+
+Follow `test_scan.py`'s existing `_ScriptedProvider`/`_respond`-style convention. Construct a scan whose script causes at least one `spawn_agent` call (so a second `agent_id` besides `"root"` records usage), run it, and assert:
+
+```python
+_cursor, events = event_log.snapshot()
+completed = next(e for e in events if e.category == "status" and e.payload.get("event") == "scan_completed")
+by_agent = completed.payload["usage_delta"]["by_agent"]
+assert by_agent["root"]["requests"] >= 1
+```
+
+(If constructing a real spawned child in this test is heavier than a single-agent test, a single-agent scan is still a valid test of the mechanism — assert `by_agent["root"]["requests"] >= 1` and that no other keys appear, and note in a comment that a multi-agent variant would additionally prove per-child attribution.)
+
+- [ ] **Step 3: Record a budget burn-rate reading into each `agent_step` span**
+
+In `src/lalo/agent/loop.py`, inside the (now-outer, per Task 11) `with self.tracer.span("agent_step", ...) as span:` block, after the budget is spent for that step, record the current reading directly onto the span's mutable `attributes` dict:
+
+```python
+span.attributes["budget_fraction"] = self.budget.fraction()
+span.attributes["budget_band"] = self.budget.band(is_root=<is this loop the root?>).name
+```
+
+`Budget.band()` takes an `is_root: bool` — determine how `AgentLoop` currently knows whether it IS the root (read the constructor/`.run()` call sites; the root is invoked via `root_loop.run(mission, journal=journal, agent_key="root")` elsewhere, so there may already be an `agent_key`/`is_root`-shaped signal on the loop, or you may need to add one explicitly — if none exists, add a simple `is_root: bool = False` constructor parameter, defaulting to `False` so every existing (child) construction site is unaffected, and set it `True` only at the one root-loop construction site in `scan.py`).
+
+This gives a walkable burn curve for free: any consumer can filter `tracer.spans` by `name == "agent_step"` and read `(span.wall_start, attributes["budget_fraction"], attributes["budget_band"])` in order — no new data structure needed, reusing exactly what Task 11 already made queryable.
+
+- [ ] **Step 4: Write the test**
+
+Assert, after a run with at least 2 steps, that at least 2 `"agent_step"` spans exist and each has `attributes["budget_fraction"]` present and monotonically non-decreasing across steps (spend only grows).
+
+- [ ] **Step 5: Full check and commit**
+
+```bash
+uv run ruff check src/lalo tests/lalo --fix && uv run ruff format src/lalo tests/lalo && uv run mypy && uv run pytest -q -m "not integration and not live"
+git add src/lalo/scan.py src/lalo/agent/loop.py tests/lalo/test_scan.py
+git commit -m "feat(L4L0): surface per-agent usage deltas and a budget burn-rate reading per step"
+```
+
+### Task 13: Persist full tool observations for spawned children
+
+**Files:**
+- Modify: `src/lalo/agent/loop.py`
+- Test: `tests/lalo/test_scan.py` or wherever `AgentLoop`'s `tool_result` emission is already tested
+
+**Context:** Today, `self._emit("tool_result", {"tool": call.name, "ok": ok})` (confirmed at the point right after the journal-entry-building code, so `observation` is already a local variable in scope there) carries only `{tool, ok}` for every agent, root and child alike. The FULL `{tool, args, observation, ok}` shape only ever lands in the root's own local transcript list and, when journaled, `DurableJournal`'s persisted entry (root-only, since only the root loop is ever constructed with `journal=<a real DurableJournal>`; a spawned child always gets `journal=None`). Since `EventLog` (unlike the journal) already durably persists every event for the WHOLE run regardless of which agent emitted it, the simplest, lowest-risk fix is adding `observation` to the `tool_result` payload itself — no new journal/checkpoint plumbing, and critically, no change to the journal's root-only *resume* semantics (children still correctly restart from scratch on resume; this task is about post-hoc debugging visibility, not resumability).
+
+**Interfaces:**
+- Produces: every `"tool_result"`-category event's payload gains an `observation` key (truncated) alongside the existing `tool`/`ok` keys.
+
+- [ ] **Step 1: Add a truncated observation to every `tool_result` emit**
+
+In `src/lalo/agent/loop.py`, add a module-level constant near the top (following the existing convention of a `_MAX_..._CHARS`-style constant elsewhere in this codebase, e.g. `runtime/tool.py`'s `_MAX_OBSERVATION_CHARS`):
+
+```python
+_MAX_EMITTED_OBSERVATION_CHARS = 2000
+```
+
+Change the `_emit("tool_result", ...)` call to:
+```python
+self._emit(
+    "tool_result",
+    {"tool": call.name, "ok": ok, "observation": observation[:_MAX_EMITTED_OBSERVATION_CHARS]},
+)
+```
+
+- [ ] **Step 2: Write the failing test, then verify it passes**
+
+Using `test_scan.py`'s existing conventions, drive a scan whose scripted response causes at least one real tool call (e.g. `run_command`, following `_respond_run_command_then_finish`'s existing pattern from an earlier task in this plan), then:
+
+```python
+_cursor, events = event_log.snapshot()
+tool_result_events = [e for e in events if e.category == "log" and e.payload.get("tool") is not None]
+assert any("observation" in e.payload and e.payload["observation"] for e in tool_result_events)
+```
+
+(Confirm the actual event `category` the `tool_result` payload lands under by reading `AgentLoop._emit`'s call — it may be `"log"` or a different category; use whatever the real code shows, don't assume.)
+
+If feasible without excessive new scaffolding, extend this test (or add a second one) to prove the SAME behavior for a spawned child's tool call specifically, since that's the actual gap this task closes — if constructing a child in this test file requires substantially more scaffolding than a root-only test, a root-only test that proves the mechanism plus a one-line comment noting "the same `_emit` call path is used for every `AgentLoop` instance, root or child, so this applies identically to spawned children" is an acceptable, honestly-scoped substitute — say which you did in your report.
+
+- [ ] **Step 3: Full check and commit**
+
+```bash
+uv run ruff check src/lalo tests/lalo --fix && uv run ruff format src/lalo tests/lalo && uv run mypy && uv run pytest -q -m "not integration and not live"
+git add src/lalo/agent/loop.py tests/lalo/test_scan.py
+git commit -m "feat(L4L0): persist a truncated tool observation for every agent, not just the root"
+```
+
+### Task 14: Report enrichment — CWE/OWASP mapping, CSV export, Mermaid attack-chain diagrams
+
+**Files:**
+- Create: `src/lalo/report/taxonomy.py`
+- Modify: `src/lalo/report/sarif.py`
+- Modify: `src/lalo/report/markdown.py`
+- Modify: `src/lalo/report/html.py`
+- Create: `src/lalo/report/csv_export.py`
+- Modify: wherever report formats are dispatched/written (find it — the GUI's `REPORT_LINK_PREFERENCE = ["pdf", "md", "json", "sarif", "docx"]` in `app.js` names the existing formats; find the corresponding Python-side format dispatch, likely in `src/lalo/report/collect.py` or `scan.py`'s report-writing call, and add `"csv"` alongside the existing ones)
+- Test: `tests/lalo/test_sarif.py`, `tests/lalo/test_markdown.py`, `tests/lalo/test_html.py` (extend if they exist), `tests/lalo/test_csv_export.py` (create)
+
+**Interfaces:**
+- Produces: `cwe_for(vuln_class: str) -> str | None` (`taxonomy.py`), `csv_safe(value: str) -> str` and `build_csv(records: list[FindingRecord]) -> str` (`csv_export.py`).
+- Consumes: `FindingRecord` (`src/lalo/report/collect.py:45`) — read its exact current field list before writing `build_csv`; it is NOT the same dataclass as the agent-facing `Finding` in `findings/model.py` (which has `title`/`vuln_class`/`target`/`remediation`/etc.) — `FindingRecord` is the report-layer shape and may have a different/overlapping field set. Verify directly.
+- Consumes: `build_chain_records(chains, records) -> list[ChainRecord]` where `ChainRecord = {finding_ids: list[str], titles: list[str]}` (`src/lalo/report/collect.py:177`, existing).
+
+- [ ] **Step 1: Write the curated CWE mapping**
+
+```python
+# src/lalo/report/taxonomy.py
+"""Curated vuln_class -> CWE mapping for compliance-oriented report
+consumers (SARIF viewers, OWASP-mapped dashboards). Intentionally small
+and curated, not exhaustive - an unmapped vuln_class degrades to no CWE
+line, never an error."""
+
+from __future__ import annotations
+
+CWE_BY_VULN_CLASS: dict[str, str] = {
+    "sql-injection": "CWE-89",
+    "command-injection": "CWE-78",
+    "ssti": "CWE-1336",
+    "xxe": "CWE-611",
+    "ssrf": "CWE-918",
+    "idor": "CWE-639",
+    "broken-access-control": "CWE-284",
+    "xss": "CWE-79",
+    "path-traversal": "CWE-22",
+    "insecure-deserialization": "CWE-502",
+    "authentication-bypass": "CWE-287",
+    "cors-misconfiguration": "CWE-942",
+    "prototype-pollution": "CWE-1321",
+    "cache-poisoning": "CWE-444",
+    "web-cache-deception": "CWE-524",
+    "race-conditions": "CWE-362",
+    "http-request-smuggling": "CWE-444",
+}
+
+
+def cwe_for(vuln_class: str) -> str | None:
+    """Best-effort CWE ID for a vuln_class slug, or None if unmapped."""
+    return CWE_BY_VULN_CLASS.get(vuln_class.strip().lower())
+```
+
+Before finalizing, enumerate the actual `name:`/vuln-class-shaped frontmatter values across every file in `src/lalo/skills/content/vulnerabilities/*.md` (30+ files, one per vuln class) and extend this dict to cover as many as you reasonably can — the list above is a floor, not the final answer. Test:
+
+```python
+def test_cwe_for_known_vuln_class_returns_mapped_id() -> None:
+    assert cwe_for("sql-injection") == "CWE-89"
+
+def test_cwe_for_unknown_vuln_class_returns_none() -> None:
+    assert cwe_for("not-a-real-class") is None
+```
+
+- [ ] **Step 2: Wire CWE into SARIF's rule relationships**
+
+In `src/lalo/report/sarif.py`, find `_build_rule(record: FindingRecord) -> dict[str, Any]` and add a `relationships` entry when a mapping exists:
+
+```python
+cwe = cwe_for(record.vuln_class)
+if cwe:
+    rule["relationships"] = [
+        {"target": {"id": cwe, "toolComponent": {"name": "CWE"}}, "kinds": ["relevant"]}
+    ]
+```
+
+Test: build a rule for a `FindingRecord` with a mapped `vuln_class`, assert `relationships` is present with the right CWE id; build one for an unmapped class, assert no `relationships` key (never an empty list — absent).
+
+- [ ] **Step 3: Add a CWE line to Markdown and HTML, per finding**
+
+In `src/lalo/report/markdown.py` and `src/lalo/report/html.py`, find wherever each finding's `vuln_class` is currently rendered per-finding and add a CWE line right after it when `cwe_for(record.vuln_class)` returns a value (skip the line entirely when unmapped — never print "CWE: None").
+
+- [ ] **Step 4: Mermaid attack-chain diagrams alongside the existing bullet**
+
+In `src/lalo/report/markdown.py`, the existing chain rendering is `f"- {' → '.join(chain.titles)}"` per `ChainRecord`. Keep that bullet (explicit plain-text fallback) and add a Mermaid block after the full list of chains:
+
+```python
+def _render_chains_mermaid(chains: list[ChainRecord]) -> str:
+    if not chains:
+        return ""
+    lines = ["```mermaid", "flowchart LR"]
+    for i, chain in enumerate(chains):
+        node_ids = [f"c{i}n{j}" for j in range(len(chain.titles))]
+        for node_id, title in zip(node_ids, chain.titles, strict=True):
+            lines.append(f'    {node_id}["{title.replace(chr(34), chr(39))}"]')
+        for a, b in zip(node_ids, node_ids[1:], strict=True):
+            lines.append(f"    {a} --> {b}")
+    lines.append("```")
+    return "\n".join(lines)
+```
+
+Call this once, after the existing bullet list, and include its output in the rendered Markdown report. (HTML report: Mermaid needs a JS renderer in a browser context that a static `.html` report file may or may not already load — check whether `html.py`'s output already includes a `<script>` tag anywhere; if not, skip the Mermaid addition for HTML and note in a comment why, rather than shipping an inert `\`\`\`mermaid` code fence with no renderer.)
+
+Test: build `_render_chains_mermaid` output for 2 chains sharing one node, assert both `flowchart LR` and the expected `-->` edges appear, and that a chain title containing a `"` character doesn't break the Mermaid node syntax (gets converted to `'`).
+
+- [ ] **Step 5: CSV export with a formula-injection guard**
+
+First, read `FindingRecord`'s exact field list at `src/lalo/report/collect.py:45` directly — do not guess field names.
+
+```python
+# src/lalo/report/csv_export.py
+"""CSV export of findings - flat, spreadsheet-friendly, with
+formula-injection escaping since finding fields are attacker-influenced
+text flowing into a spreadsheet formula-injection sink (a cell starting
+with =, +, -, @, tab, or CR is interpreted by Excel/Sheets as a formula,
+not literal text)."""
+
+from __future__ import annotations
+
+import csv
+import io
+
+from .collect import FindingRecord
+
+_FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
+
+
+def csv_safe(value: str) -> str:
+    """Prefix a leading apostrophe if value would otherwise be interpreted
+    as a spreadsheet formula by Excel/Sheets."""
+    return "'" + value if value and value[0] in _FORMULA_PREFIXES else value
+
+
+def build_csv(records: list[FindingRecord]) -> str:
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    # Use FindingRecord's real field names here, at minimum: a finding
+    # identifier, title, severity, vuln_class, target, confidence, remediation.
+    writer.writerow([...])
+    for record in records:
+        writer.writerow([csv_safe(str(v)) for v in [...]])
+    return buf.getvalue()
+```
+
+Test:
+```python
+def test_csv_safe_prefixes_a_leading_formula_character() -> None:
+    assert csv_safe("=cmd|' /C calc'!A1").startswith("'=")
+
+def test_csv_safe_leaves_ordinary_text_unchanged() -> None:
+    assert csv_safe("ordinary title") == "ordinary title"
+
+def test_build_csv_includes_a_header_and_one_row_per_finding() -> None:
+    csv_text = build_csv([<one real FindingRecord>])
+    rows = csv_text.strip().splitlines()
+    assert len(rows) == 2  # header + one data row
+```
+
+- [ ] **Step 6: Wire `"csv"` into the report-format dispatch**
+
+Find where `"pdf"`/`"md"`/`"json"`/`"sarif"`/`"docx"` are dispatched to their writer functions (report-writing orchestration, likely `scan.py` or `report/collect.py`) and add `"csv": build_csv` (or the equivalent call) alongside them, so a scan's `report_paths`/GUI report-download options gain a `csv` entry the same way every other format already does.
+
+- [ ] **Step 7: Full check and commit**
+
+```bash
+uv run ruff check src/lalo tests/lalo --fix && uv run ruff format src/lalo tests/lalo && uv run mypy && uv run pytest -q -m "not integration and not live"
+git add src/lalo/report/taxonomy.py src/lalo/report/sarif.py src/lalo/report/markdown.py src/lalo/report/html.py src/lalo/report/csv_export.py tests/lalo/test_sarif.py tests/lalo/test_markdown.py tests/lalo/test_html.py tests/lalo/test_csv_export.py
+git commit -m "feat(L4L0): CWE/OWASP mapping, CSV export, Mermaid attack-chain diagrams in reports"
+```
+
+### Task 15: Cross-run finding diff + operator-settable finding lifecycle status
+
+**Files:**
+- Modify: `src/lalo/report/collect.py` (`FindingRecord` gains `dedup_key: str = ""` and `status: str = "open"` fields)
+- Create: `src/lalo/report/history.py`
+- Modify: `src/lalo/report/overrides.py` (add a `StatusOverride` dataclass + `apply_status_overrides`, mirroring the existing `SeverityOverride`/`apply_overrides` pattern exactly)
+- Test: `tests/lalo/test_history.py` (create), `tests/lalo/test_overrides.py` (extend)
+
+**Scope note:** this task covers the backend mechanism only (diff + status-override dataclass/apply function, both non-destructive per the existing `overrides.py` pattern — never mutates the graph, always returns new records). A GUI affordance to actually set a status from the console is a natural follow-on, not part of this task's scope.
+
+**Interfaces:**
+- Consumes: `dedup_key(vuln_class, target, param) -> str` (existing, `src/lalo/findings/dedup.py:23`, deterministic).
+- Produces: `FindingDiff(new: list[FindingRecord], resolved: list[FindingRecord], persisting: list[tuple[FindingRecord, FindingRecord]])` and `diff_findings(previous, current) -> FindingDiff` (`history.py`); `StatusOverride(finding_id, status, reason, overridden_by)` and `apply_status_overrides(records, overrides) -> list[FindingRecord]` (`overrides.py`).
+
+- [ ] **Step 1: Add `dedup_key` and `status` fields to `FindingRecord`**
+
+Read `src/lalo/report/collect.py:45`'s exact current `FindingRecord` fields first. Add:
+```python
+    dedup_key: str = ""
+    status: str = "open"
+```
+Find wherever `FindingRecord` is actually constructed (grep `FindingRecord(`) and populate `dedup_key=dedup_key(record.vuln_class, record.target, record.param)` at that call site, reusing the existing `dedup_key()` function — every other existing construction site (if there's more than one) keeps working since both new fields default.
+
+- [ ] **Step 2: Write `diff_findings`**
+
+```python
+# src/lalo/report/history.py
+"""Diff findings across two runs of the same target by dedup_key - lets an
+operator re-scanning a target see what's new/resolved/persisting instead
+of eyeballing two report.json files by hand."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+from .collect import FindingRecord
+
+
+@dataclass(frozen=True)
+class FindingDiff:
+    new: list[FindingRecord]
+    resolved: list[FindingRecord]
+    persisting: list[tuple[FindingRecord, FindingRecord]]
+
+
+def diff_findings(previous: list[FindingRecord], current: list[FindingRecord]) -> FindingDiff:
+    previous_by_key = {r.dedup_key: r for r in previous if r.dedup_key}
+    current_by_key = {r.dedup_key: r for r in current if r.dedup_key}
+    new = [r for key, r in current_by_key.items() if key not in previous_by_key]
+    resolved = [r for key, r in previous_by_key.items() if key not in current_by_key]
+    persisting = [
+        (previous_by_key[key], current_by_key[key]) for key in current_by_key if key in previous_by_key
+    ]
+    return FindingDiff(new=new, resolved=resolved, persisting=persisting)
+```
+
+Test:
+```python
+def test_diff_findings_buckets_new_resolved_and_persisting() -> None:
+    shared = _finding(dedup_key="k1")
+    only_previous = _finding(dedup_key="k2")
+    only_current = _finding(dedup_key="k3")
+    diff = diff_findings(previous=[shared, only_previous], current=[shared, only_current])
+    assert diff.new == [only_current]
+    assert diff.resolved == [only_previous]
+    assert diff.persisting == [(shared, shared)]
+```
+(Write a small `_finding(dedup_key=...)` test helper constructing a minimal valid `FindingRecord` with the other required fields filled with placeholder-but-valid test values.)
+
+- [ ] **Step 3: Add `StatusOverride`, mirroring `SeverityOverride` exactly**
+
+Read `src/lalo/report/overrides.py`'s existing `SeverityOverride`/`apply_overrides` first, then add the parallel pair:
+
+```python
+@dataclass(frozen=True)
+class StatusOverride:
+    finding_id: str
+    status: str  # "open" | "false_positive" | "accepted_risk" | "remediated" | "needs_retest"
+    reason: str
+    overridden_by: str
+
+
+def apply_status_overrides(
+    records: list[FindingRecord], overrides: list[StatusOverride]
+) -> list[FindingRecord]:
+    latest_by_id = {o.finding_id: o for o in overrides}  # last-one-wins, matching apply_overrides
+    return [
+        dataclasses.replace(record, status=latest_by_id[record.finding_id].status)
+        if record.finding_id in latest_by_id
+        else record
+        for record in records
+    ]
+```
+
+Test (mirror whatever test already exists for `apply_overrides`): applying a `StatusOverride` changes only the targeted record's `status`, never mutates the input list, and a finding not present in `records` is silently ignored rather than raising.
+
+- [ ] **Step 4: Full check and commit**
+
+```bash
+uv run ruff check src/lalo tests/lalo --fix && uv run ruff format src/lalo tests/lalo && uv run mypy && uv run pytest -q -m "not integration and not live"
+git add src/lalo/report/collect.py src/lalo/report/history.py src/lalo/report/overrides.py tests/lalo/test_history.py tests/lalo/test_overrides.py
+git commit -m "feat(L4L0): cross-run finding diff and an operator-settable finding lifecycle status"
+```
+
+### Task 16: New agent tools — `fire_concurrent` and `diff_responses`
+
+**Files:**
+- Modify: `src/lalo/execution/tool.py` (add `build_fire_concurrent_tool`, `build_diff_responses_tool`, alongside the existing `build_http_tool`)
+- Modify: `src/lalo/scan.py` (register both new tools in the tool registry list, alongside the existing `build_http_tool(firer)` call)
+- Test: whichever test file already exercises `build_http_tool` (find it — likely `tests/lalo/test_execution_tool.py`)
+
+**Context:** `HttpFirer.fire(method, url, *, headers=None, content=None) -> FireResult` is the only single-request firer; no concurrent-fire method exists anywhere, and the only `ThreadPoolExecutor` in the codebase drives `spawn_agents`' child agent loops, not wire-level request simultaneity. `race-conditions.md`'s core technique ("fire 5-20 identical requests as close to simultaneously as possible") is architecturally unreachable without this tool. Before writing either tool, read `FireResult`'s exact dataclass fields (status code, body, timing — the exact attribute names weren't independently confirmed) directly from its definition, and read `build_http_tool`'s exact existing implementation in `src/lalo/execution/tool.py` to match its argument-parsing idioms (`str_arg` from `agent/tools.py`, `_MAX_BODY_CHARS` truncation) exactly.
+
+**Interfaces:**
+- Produces: `build_fire_concurrent_tool(firer: HttpFirer) -> FunctionTool`, `build_diff_responses_tool(firer: HttpFirer) -> FunctionTool`.
+
+- [ ] **Step 1: `fire_concurrent`**
+
+```python
+def build_fire_concurrent_tool(firer: HttpFirer) -> FunctionTool:
+    """Fire N near-identical requests as close to simultaneously as
+    possible, for race-condition testing - the one wire-level-simultaneity
+    gap the agent's single-request-per-tool-call loop can't otherwise reach."""
+
+    def _fire_concurrent(args: dict[str, object]) -> ToolResult:
+        method = str_arg(args, "method", "GET")
+        url = str_arg(args, "url", "")
+        if not url:
+            return ToolResult(observation="error: 'url' is required", ok=False)
+        count = max(1, min(int(args.get("count", 10) or 10), 50))
+        headers = args.get("headers") if isinstance(args.get("headers"), dict) else None
+        content_str = str_arg(args, "content", "")
+        content = content_str.encode() if content_str else None
+
+        results: list[object] = [None] * count
+        with ThreadPoolExecutor(max_workers=count) as pool:
+            futures = {pool.submit(firer.fire, method, url, headers=headers, content=content): i for i in range(count)}
+            for future, i in futures.items():
+                try:
+                    results[i] = future.result()
+                except Exception as exc:  # noqa: BLE001 - report every failure, never drop one
+                    results[i] = exc
+
+        # Use FireResult's real field names (status code / timing) here once confirmed.
+        lines = [f"[{i}] {r}" for i, r in enumerate(results)]
+        ok = any(not isinstance(r, Exception) for r in results)
+        return ToolResult(observation="\n".join(lines)[:_MAX_BODY_CHARS], ok=ok)
+
+    return FunctionTool(
+        name="fire_concurrent",
+        description=(
+            "Fire the same request N times (default 10, max 50) as close to simultaneously "
+            "as possible via a thread pool, for race-condition testing. args: "
+            '{"method": str, "url": str, "count": int (optional), "headers": dict (optional), '
+            '"content": str (optional)}'
+        ),
+        func=_fire_concurrent,
+    )
+```
+
+Test: mock `firer.fire` to return distinct results per call (or raise for some), assert all `count` results appear in the observation (in index order), and that a mix of successes/failures still returns `ok=True` if at least one succeeded.
+
+- [ ] **Step 2: `diff_responses`**
+
+```python
+def build_diff_responses_tool(firer: HttpFirer) -> FunctionTool:
+    """Fire two requests (e.g. as user A vs user B) and return a real line
+    diff of status + body, instead of eyeballing two independently
+    head+tail-truncated observations where the one differing field can
+    fall inside the dropped middle of one but not the other."""
+
+    def _diff(args: dict[str, object]) -> ToolResult:
+        url_a = str_arg(args, "url_a", "")
+        url_b = str_arg(args, "url_b", "")
+        if not url_a or not url_b:
+            return ToolResult(observation="error: 'url_a' and 'url_b' are required", ok=False)
+        method_a = str_arg(args, "method_a", "GET")
+        method_b = str_arg(args, "method_b", method_a)
+        headers_a = args.get("headers_a") if isinstance(args.get("headers_a"), dict) else None
+        headers_b = args.get("headers_b") if isinstance(args.get("headers_b"), dict) else None
+
+        result_a = firer.fire(method_a, url_a, headers=headers_a)
+        result_b = firer.fire(method_b, url_b, headers=headers_b)
+
+        # Use FireResult's real status/body field names here once confirmed.
+        body_a = getattr(result_a, "body", "")
+        body_b = getattr(result_b, "body", "")
+        body_a_text = body_a.decode(errors="replace") if isinstance(body_a, bytes) else str(body_a)
+        body_b_text = body_b.decode(errors="replace") if isinstance(body_b, bytes) else str(body_b)
+        diff = list(
+            difflib.unified_diff(body_a_text.splitlines(), body_b_text.splitlines(), lineterm="", n=1)
+        )
+        lines = [f"body diff ({len(diff)} changed line(s)):", *diff[:200]]
+        return ToolResult(observation="\n".join(lines)[:_MAX_BODY_CHARS], ok=True)
+
+    return FunctionTool(
+        name="diff_responses",
+        description=(
+            "Fire two requests and return a structural diff of status + body - a real "
+            "line diff, not truncated eyeballing. args: "
+            '{"method_a": str, "url_a": str, "headers_a": dict (optional), '
+            '"method_b": str (optional, defaults to method_a), "url_b": str, '
+            '"headers_b": dict (optional)}'
+        ),
+        func=_diff,
+    )
+```
+
+Test: mock `firer.fire` to return two results with different bodies, assert the diff observation contains lines from both, and that identical bodies produce a "0 changed line(s)" result.
+
+- [ ] **Step 3: Register both tools in `scan.py`**
+
+Alongside the existing `build_http_tool(firer)` registration (~`scan.py:894`), add:
+```python
+build_fire_concurrent_tool(firer),
+build_diff_responses_tool(firer),
+```
+
+- [ ] **Step 4: Full check and commit**
+
+```bash
+uv run ruff check src/lalo tests/lalo --fix && uv run ruff format src/lalo tests/lalo && uv run mypy && uv run pytest -q -m "not integration and not live"
+git add src/lalo/execution/tool.py src/lalo/scan.py tests/lalo/test_execution_tool.py
+git commit -m "feat(L4L0): fire_concurrent and diff_responses agent tools"
+```
+
+### Task 17: New agent tools — `access_control_matrix` and `raw_tcp`
+
+**Files:**
+- Modify: `src/lalo/execution/tool.py` or a new small module alongside it (add `build_access_control_matrix_tool`, `build_raw_tcp_tool`)
+- Modify: `src/lalo/scan.py` (register both)
+- Test: alongside Task 16's test file
+
+**Interfaces:**
+- Consumes: `build_role_matrix(identity_ids, endpoint_ids) -> list[RoleMatrixEntry]` (existing, `src/lalo/identity/role_matrix.py`, zero prior callers), `tcp_send_recv(scope, host, port, payload=b"", *, timeout=5.0, recv_bytes=65535) -> RawResult` (existing, `src/lalo/execution/rawsock.py`, zero prior callers, already scope-checked + pinned-IP internally — the tool wrapper does NOT need to re-implement scope checking, just surface `result.scope_reason` when `result.fired` is `False`).
+
+- [ ] **Step 1: `access_control_matrix` — a stateful coverage-tracking tool**
+
+`build_role_matrix` produces immutable `RoleMatrixEntry` cells with no mutable "tested" state — the tool wrapper owns that state, closed over per-tool-instance (one matrix per scan, matching how `firer`/`scope` are already single-instances-per-scan):
+
+```python
+@dataclass
+class _MatrixCell:
+    entry: RoleMatrixEntry
+    tested: bool = False
+    observed_status: str | None = None
+
+
+def build_access_control_matrix_tool() -> FunctionTool:
+    """Track access-control test coverage as an identity x endpoint matrix,
+    so coverage is machine-observed (queryable untested cells) rather than
+    the agent's own self-reported todo list."""
+    state: dict[tuple[str, str], _MatrixCell] = {}
+
+    def _run(args: dict[str, object]) -> ToolResult:
+        action = str_arg(args, "action", "")
+        if action == "build":
+            identity_ids = args.get("identity_ids")
+            endpoint_ids = args.get("endpoint_ids")
+            if not isinstance(identity_ids, list) or not isinstance(endpoint_ids, list):
+                return ToolResult(observation="error: 'identity_ids' and 'endpoint_ids' must be lists", ok=False)
+            state.clear()
+            for entry in build_role_matrix([str(i) for i in identity_ids], [str(e) for e in endpoint_ids]):
+                state[(entry.identity_id, entry.endpoint_id)] = _MatrixCell(entry=entry)
+            return ToolResult(observation=f"built {len(state)} cells", ok=True)
+        if action == "mark_tested":
+            key = (str_arg(args, "identity_id", ""), str_arg(args, "endpoint_id", ""))
+            cell = state.get(key)
+            if cell is None:
+                return ToolResult(observation=f"error: no cell for {key} - call action=build first", ok=False)
+            cell.tested = True
+            cell.observed_status = str_arg(args, "observed_status", "")
+            return ToolResult(observation="marked", ok=True)
+        if action == "query_untested":
+            untested = [f"{c.entry.identity_id} x {c.entry.endpoint_id}" for c in state.values() if not c.tested]
+            return ToolResult(observation="\n".join(untested) if untested else "all cells tested", ok=True)
+        return ToolResult(observation=f"error: unknown action {action!r} - use build|mark_tested|query_untested", ok=False)
+
+    return FunctionTool(
+        name="access_control_matrix",
+        description=(
+            'Track access-control test coverage as an identity x endpoint matrix. args: '
+            '{"action": "build"|"mark_tested"|"query_untested", ...}. build: '
+            '{"identity_ids": [str], "endpoint_ids": [str]}. mark_tested: {"identity_id": str, '
+            '"endpoint_id": str, "observed_status": str}. query_untested: {}.'
+        ),
+        func=_run,
+    )
+```
+
+Test: build a 2x2 matrix (4 cells), query untested (expect all 4), mark one tested, query untested again (expect 3), and confirm `mark_tested` on a cell that was never built returns an error without raising.
+
+- [ ] **Step 2: `raw_tcp`**
+
+```python
+def build_raw_tcp_tool(scope: ScopeGuard) -> FunctionTool:
+    def _raw_tcp(args: dict[str, object]) -> ToolResult:
+        host = str_arg(args, "host", "")
+        port_raw = args.get("port")
+        if not host or port_raw is None:
+            return ToolResult(observation="error: 'host' and 'port' are required", ok=False)
+        try:
+            port = int(port_raw)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return ToolResult(observation="error: 'port' must be an integer", ok=False)
+        payload = str_arg(args, "payload", "").encode()
+        timeout = float(args.get("timeout", 5.0) or 5.0)  # type: ignore[arg-type]
+
+        result = tcp_send_recv(scope, host, port, payload, timeout=timeout)
+        if not result.fired:
+            return ToolResult(observation=f"error: {result.scope_reason}", ok=False)
+        observation = f"received {len(result.data)} bytes in {result.elapsed_ms}ms\n{result.data[:_MAX_BODY_CHARS]!r}"
+        return ToolResult(observation=observation, ok=result.error is None)
+
+    return FunctionTool(
+        name="raw_tcp",
+        description=(
+            "Send raw bytes over a scope-checked, pinned-IP TCP connection and return "
+            'whatever comes back. args: {"host": str, "port": int, "payload": str '
+            '(optional, sent as raw bytes), "timeout": number (optional, seconds, default 5.0)}'
+        ),
+        func=_raw_tcp,
+    )
+```
+
+Test: mock `tcp_send_recv` to return a `RawResult` with `fired=True` and some `data`, assert the observation includes the byte count and data; mock it to return `fired=False, scope_reason="out of scope"`, assert the tool returns `ok=False` with that reason surfaced.
+
+- [ ] **Step 3: Register both tools in `scan.py`, alongside Task 16's registrations**
+
+- [ ] **Step 4: Full check and commit**
+
+```bash
+uv run ruff check src/lalo tests/lalo --fix && uv run ruff format src/lalo tests/lalo && uv run mypy && uv run pytest -q -m "not integration and not live"
+git add src/lalo/execution/tool.py src/lalo/scan.py tests/lalo/test_execution_tool.py
+git commit -m "feat(L4L0): wire role_matrix and rawsock into live access_control_matrix/raw_tcp tools"
+```
+
+### Task 18: Three missing skill playbooks + duplicate-spawn similarity guard
+
+**Files:**
+- Create: `src/lalo/skills/content/vulnerabilities/cors-misconfiguration.md`
+- Create: `src/lalo/skills/content/vulnerabilities/prototype-pollution.md`
+- Create: `src/lalo/skills/content/vulnerabilities/cache-poisoning.md`
+- Modify: `src/lalo/skills/recall.py` (export a reusable plain-string similarity helper)
+- Modify: `src/lalo/agent/spawn.py` (`_spawn`'s duplicate-check warning)
+- Test: `tests/lalo/test_recall.py` (extend), `tests/lalo/test_spawn.py` (extend)
+
+**Interfaces:**
+- Produces: `token_overlap_ratio(a: str, b: str) -> float` (`recall.py`) — a plain two-string similarity function reusing `recall()`'s existing `_TOKEN` tokenizer, distinct from `_score` (which compares a query against a `Skill` object, not two arbitrary strings).
+
+- [ ] **Step 1: Write the three playbooks**
+
+Read one existing playbook in full first — `src/lalo/skills/content/vulnerabilities/race-conditions.md` — to match its exact structure: YAML frontmatter (`name`, `category: vulnerability`, `description`, `keywords`), then `# Title`, a framing paragraph, `## Attack Surface`, `## Recon`, `## Techniques (start quiet, escalate only as needed)` (numbered, cheapest/quietest first, explicit escalation gating), `## Proof Ladder` (L1-L4, ending with a `[[severity-calibration]]` pointer), `## Validation and False-Positive Discipline` (opens with "Apply `[[closure-discipline]]` before recording anything," then class-specific false-positive traps), `## Impact`, `## Summary`. Cross-references use `[[wiki-link]]` syntax.
+
+Write real, substantive content for each of the three files — this is genuine methodology the agent will follow, not filler:
+- `cors-misconfiguration.md`: reflected-origin ACAO, null-origin acceptance, subdomain-wildcard trust, credentials+wildcard combination, preflight bypass patterns.
+- `prototype-pollution.md`: `__proto__`/`constructor.prototype` injection via JSON merge/deep-clone/query-string-parsing sinks, client-side (DOM XSS via polluted prototype) vs server-side (RCE/auth-bypass via polluted config) impact paths, gadget-finding technique.
+- `cache-poisoning.md`: distinct from the existing `web-cache-deception.md` (which is about tricking a cache into storing a *private* response at a *public* URL) — this one is about injecting a *malicious* response into a *shared* cache via unkeyed inputs (unkeyed headers like `X-Forwarded-Host`, cache-key normalization discrepancies, fat GET/param cloaking).
+
+- [ ] **Step 2: Verify retrievability**
+
+Extend `tests/lalo/test_recall.py` (or the equivalent existing test file for `recall()`) with a query per new playbook proving it's actually retrieved for a representative real-world query, e.g.:
+
+```python
+def test_recall_surfaces_the_cors_playbook_for_a_relevant_query() -> None:
+    skills = load_skills(...)  # however the existing test file already loads real skill content
+    results = recall("reflected origin ACAO wildcard credentials", skills, top_k=3)
+    assert any(r.skill.name == "cors-misconfiguration" for r in results)
+```
+(Match whatever fixture/loading convention the existing `recall()` tests already use — do not invent a new one.)
+
+- [ ] **Step 3: Add `token_overlap_ratio` to `recall.py`**
+
+```python
+def token_overlap_ratio(a: str, b: str) -> float:
+    """Fraction of shared tokens between two plain strings - the same
+    [a-z0-9]+ tokenizer recall() uses for query/skill scoring, reused here
+    to compare two task descriptions instead of a query against a Skill."""
+    tokens_a = set(_TOKEN.findall(a.lower()))
+    tokens_b = set(_TOKEN.findall(b.lower()))
+    if not tokens_a or not tokens_b:
+        return 0.0
+    return len(tokens_a & tokens_b) / len(tokens_a | tokens_b)
+```
+
+Test: two near-identical task strings score high (>0.5), two unrelated ones score low, an empty string scores 0.0 without raising.
+
+- [ ] **Step 4: Wire a duplicate-spawn warning into `_spawn`**
+
+Read `src/lalo/agent/spawn.py`'s `_spawn` (currently goes straight to `coordinator.spawn(...)` with zero cross-check, despite the tool's own description already telling the model to call `view_agent_graph` first) and find how the coordinator exposes currently-running agents' tasks (whatever `view_agent_graph`'s own implementation reads from — reuse that same accessor, don't add a second one). Before spawning, compare the new task string against each running sibling's task via `token_overlap_ratio`; above a threshold, prepend a warning to the tool's returned observation rather than blocking the spawn (this is a warning, never a hard block — per this project's own confidence-not-gates philosophy, nothing here should prevent an agent from proceeding if it has good reason to):
+
+```python
+_DUPLICATE_TASK_SIMILARITY_THRESHOLD = 0.6
+```
+
+```python
+warning = ""
+for other_id, other_task in <running siblings' (id, task) pairs>:
+    if token_overlap_ratio(task, other_task) >= _DUPLICATE_TASK_SIMILARITY_THRESHOLD:
+        warning = (
+            f"warning: this task looks similar to running agent {other_id}'s task "
+            f"({other_task!r}) - confirm this isn't a duplicate before proceeding.\n"
+        )
+        break
+# ... proceed with the existing coordinator.spawn(...) call unchanged, then prefix
+# the tool's returned observation with `warning` (empty string is a no-op prefix).
+```
+
+Test: spawn two agents with near-identical task strings in the same test, assert the second spawn's returned observation contains the warning text and the spawn itself still succeeds (never blocked).
+
+- [ ] **Step 5: Full check and commit**
+
+```bash
+uv run ruff check src/lalo tests/lalo --fix && uv run ruff format src/lalo tests/lalo && uv run mypy && uv run pytest -q -m "not integration and not live"
+git add src/lalo/skills/content/vulnerabilities/cors-misconfiguration.md src/lalo/skills/content/vulnerabilities/prototype-pollution.md src/lalo/skills/content/vulnerabilities/cache-poisoning.md src/lalo/skills/recall.py src/lalo/agent/spawn.py tests/lalo/test_recall.py tests/lalo/test_spawn.py
+git commit -m "feat(L4L0): 3 new skill playbooks (CORS, prototype pollution, cache poisoning) + a duplicate-spawn similarity warning"
+```
+
+### Task 19: GUI operator productivity — duplicate-as-new-scan, bulk target import
+
+**Files:**
+- Modify: `src/lalo/gui/static/index.html` (a `.run-duplicate-btn` in `tpl-run-item`; a "paste scope list" `<details>` near the composer, matching Task 5's `#advanced-options` idiom)
+- Modify: `src/lalo/gui/static/app.js`
+- Modify: `src/lalo/gui/static/app.css`
+
+**Context:** `GET /runs` already returns each run's `mission` (the operator's original free-form text, which already contains the target substrings `extractTargets` re-parses on resubmit) — so "duplicate as new scan" needs zero backend changes: pre-filling the composer with a past run's `mission` text and letting the operator edit/resubmit it through the exact same `launchFromPrompt` path every fresh scan already uses is the whole feature. Before wiring the button, read `src/lalo/gui/app.py`'s actual `GET /runs` response-building code to confirm `mission` is genuinely present in the per-run dict it returns (a prior research pass flagged this as needing direct confirmation — the source value is confirmed read from `resume_manifest.json`, but the final returned-dict literal a few lines further down wasn't independently re-checked).
+
+- [ ] **Step 1: Add a "Duplicate" button to the run-item template**
+
+In `index.html`'s `tpl-run-item` template, add a new button alongside the existing `.run-resume-btn`/`.run-report-link` (shown for every run, unlike Resume which is running-state-gated — duplicating is valid for a running OR completed run since it launches an independent new scan):
+
+```html
+<button type="button" class="run-duplicate-btn" title="Start a new scan with this run's mission">Duplicate</button>
+```
+
+- [ ] **Step 2: Wire the click handler**
+
+In `app.js`, add a new delegated listener (do not disturb the two existing `runHistoryListEl` click listeners from Tasks 1/2):
+
+```js
+runHistoryListEl.addEventListener("click", (ev) => {
+  const btn = ev.target.closest(".run-duplicate-btn");
+  if (!btn) return;
+  const item = btn.closest(".run-item");
+  composerInput.value = item.dataset.missionText || "";
+  composerInput.focus();
+});
+```
+
+(`item.dataset.missionText` already exists from Task 1's `buildRunItem` — confirm the value it holds is the full original mission text, not a truncated display string, before relying on it here.)
+
+- [ ] **Step 3: Bulk target import**
+
+Add a collapsible "paste scope list" control near the composer, matching Task 5's `#advanced-options` `<details>` styling:
+
+```html
+<details id="bulk-import" class="advanced-options">
+  <summary>Paste scope list</summary>
+  <textarea id="bulk-import-textarea" rows="4" placeholder="one target per line"></textarea>
+  <button type="button" id="bulk-import-add-btn" class="btn btn-ghost">Add to message</button>
+</details>
+```
+
+```js
+const bulkImportTextarea = document.getElementById("bulk-import-textarea");
+const bulkImportAddBtn = document.getElementById("bulk-import-add-btn");
+
+bulkImportAddBtn.addEventListener("click", () => {
+  const lines = bulkImportTextarea.value.split("\n").map((l) => l.trim()).filter(Boolean);
+  if (!lines.length) return;
+  composerInput.value = [composerInput.value.trim(), ...lines].filter(Boolean).join(" ");
+  bulkImportTextarea.value = "";
+  composerInput.focus();
+});
+```
+
+This reuses `extractTargets`'s existing regex unchanged — pasted lines just become more text in the same composer box a normal scan launch already parses, so no backend/endpoint change is needed here either.
+
+- [ ] **Step 4: Verify live, with Playwright**
+
+Confirm clicking "Duplicate" on a past run pre-fills the composer with that run's mission text (editable, not launched automatically); confirm pasting a multi-line scope list into the bulk-import textarea and clicking "Add to message" appends all lines into the composer, and that submitting afterward correctly extracts all pasted targets via the existing `extractTargets` regex.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/lalo/gui/static/index.html src/lalo/gui/static/app.js src/lalo/gui/static/app.css
+git commit -m "feat(L4L0): duplicate a past run as a new scan; paste a scope list into the composer"
+```
+
+---
+
+## Final check (after all 19 tasks)
 
 Run: `uv run ruff check src/lalo tests/lalo && uv run ruff format --check src/lalo tests/lalo && uv run mypy && uv run pytest -q -m "not integration and not live"`
 
-Then a full live Playwright walkthrough covering everything in one pass: open a past run, continue it, open settings and add/verify a provider key, set an advanced option and launch a scan, watch the live shell panel fill in, toggle the theme.
+Then a full live Playwright walkthrough covering everything in one pass: open a past run, continue it, open settings and add/verify a provider key, set an advanced option and launch a scan, watch the live shell panel fill in, toggle the theme, confirm the new icons/entrance animation/reduced-motion behavior, duplicate a past run and paste a scope list into the composer.
