@@ -31,7 +31,8 @@ uv run pytest tests/lalo -q -m "not integration"   # test suite (fast; needs no 
 # recon/exploitation toolkit; only needed before your first live scan):
 docker build -t lalo-runtime:latest -f docker/lalo-runtime.Dockerfile .
 
-uv run lalo-gui   # web GUI — always at http://127.0.0.1:8000/
+uv run lalo-setup   # one-time: pick a provider, enter its key, verified for real
+uv run --env-file .env lalo-gui   # web GUI — always at http://127.0.0.1:8000/
 ```
 
 Open the printed URL, fill in a mission and one or more targets in the launch
@@ -39,12 +40,17 @@ form, and start a scan. The GUI is unauthenticated by design (no token,
 local-machine convenience over same-machine drive-by/CSRF hardening) - it
 binds only to 127.0.0.1, so it is never reachable from the network, but
 another browser tab or local process on the same machine could still reach
-it. Provide an LLM via a provider key (e.g.
-`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, or a local
-`OPENCODEX_API_KEY`/`LALO_CUSTOM_*` gateway) — the multi-provider router fails
-over between whichever of these are actually configured. A working `docker`
-daemon is required: the agent's free shell only ever runs inside the disposable
+it. `lalo-setup` writes its verified credential to a local `.env`; skip it
+and set the env vars yourself if you prefer (`ANTHROPIC_API_KEY`,
+`OPENAI_API_KEY`, `GEMINI_API_KEY`, or a local `OPENCODEX_API_KEY`/
+`LALO_CUSTOM_*` gateway) — the multi-provider router fails over between
+whichever of these are actually configured; see `docs/OPERATING.md` for the
+exact failover order and how to override it. A working `docker` daemon is
+required: the agent's free shell only ever runs inside the disposable
 container built above, never on your host.
+
+More operational notes (provider precedence, resuming a crashed/stopped
+scan, reaching a target on your own machine) live in `docs/OPERATING.md`.
 
 ## Development
 
