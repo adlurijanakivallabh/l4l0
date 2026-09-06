@@ -61,6 +61,25 @@ def test_render_report_pdf_never_lets_an_external_image_reach_the_fetcher_unbloc
     assert "http://attacker.example/pixel.png" in seen_urls
 
 
+def test_render_report_pdf_adds_a_branded_header_and_page_number_footer() -> None:
+    html = (
+        "<!doctype html><html><head><style>body{color:#000;}</style></head>"
+        "<body><h1>Report</h1></body></html>"
+    )
+    pdf_bytes = render_report_pdf(html)
+    reader = PdfReader(BytesIO(pdf_bytes))
+    text = reader.pages[0].extract_text()
+    assert "L4L0 Security Assessment Report" in text
+    assert "Page 1 of 1" in text
+
+
+def test_render_report_pdf_with_no_style_tag_skips_branding_without_failing() -> None:
+    pdf_bytes = render_report_pdf(_MINIMAL_HTML)  # no <style> tag to inject into
+    assert pdf_bytes.startswith(b"%PDF-")
+    reader = PdfReader(BytesIO(pdf_bytes))
+    assert "L4L0 Security Assessment Report" not in reader.pages[0].extract_text()
+
+
 # --- generate_password / encrypt_pdf: protecting sensitive report content --
 
 

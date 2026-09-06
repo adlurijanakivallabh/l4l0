@@ -57,9 +57,37 @@ def _deny_all_external_resources(url: str, **_kwargs: object) -> None:
     )
 
 
+# WeasyPrint-only Paged Media CSS (a running header/footer with real page
+# numbers) - PDF-specific, not folded into report/html.py's shared _STYLE:
+# html2docx has no notion of CSS pagination, and this rule would be dead
+# weight (at best) in the on-screen/DOCX renderings. Injected into the
+# already-rendered HTML's own <style> tag rather than requiring
+# render_report_html to know anything about PDF-only concerns.
+_PAGE_STYLE = """
+@page {
+  size: A4;
+  margin: 2.4cm 1.6cm 2.2cm 1.6cm;
+  @top-center {
+    content: "L4L0 Security Assessment Report"; font-size: 8pt; color: #888;
+  }
+  @bottom-center {
+    content: "Page " counter(page) " of " counter(pages); font-size: 8pt; color: #888;
+  }
+}
+"""
+
+
 def render_report_pdf(html: str) -> bytes:
-    """Render ``html`` (from :func:`lalo.report.html.render_report_html`) to PDF bytes."""
-    document = HTML(string=html, url_fetcher=_deny_all_external_resources)
+    """Render ``html`` (from :func:`lalo.report.html.render_report_html`) to PDF bytes.
+
+    Adds a running header/footer with real page numbers via WeasyPrint's
+    native ``@page`` support - if ``html`` has no ``<style>`` tag to inject
+    into (never true for real report output, only possible for a
+    hand-crafted caller), the branding is silently skipped rather than
+    failing the render.
+    """
+    branded_html = html.replace("</style>", f"{_PAGE_STYLE}</style>", 1)
+    document = HTML(string=branded_html, url_fetcher=_deny_all_external_resources)
     pdf_bytes: bytes = document.write_pdf()
     return pdf_bytes
 
