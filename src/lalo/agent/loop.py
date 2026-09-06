@@ -36,6 +36,26 @@ project's reference-first mandate), not any single one:
   the runtime reserves one additional transport turn." This was read (Phase
   5) but not actually adopted at the time; added retroactively after an
   audit flagged the gap between what was read and what was built.
+
+Phase 2, pentagi pass: :mod:`lalo.orchestrator.journal` was built and
+independently tested to satisfy the original plan's own Phase 2 acceptance
+criterion ("kill-mid-run -> resume replays to the exact next action with no
+duplicated side effect"), but nothing ever actually wired it into the live
+loop — an agent process killed mid-scan had no path to resume at all, despite
+that module's own unit tests passing. Fixed here: ``run`` accepts an optional
+``journal``/``agent_key``; on entry it replays every already-completed step
+for that key straight into ``transcript`` (and reconstructs ``budget.spent``
+to match) without calling the model or dispatching a single tool, then
+continues live from the first step that was never journaled. Each new live
+dispatch is wrapped in ``journal.run_once`` so a subsequent crash can resume
+past it too. Scoped deliberately to ONE agent's own steps, not the whole
+spawn tree: a spawned child that was still mid-execution when the crash
+happened is not resumed granularly and simply restarts from scratch on the
+next ``spawn_agent`` call — matching a different reference's own actual
+resume granularity (its coarser task/subtask units are reset to "Created"
+and restarted from the top on reload, not resumed mid-unit either), and
+avoiding the much larger scope of threading a live journal down through
+every spawned descendant for a proportionally small additional benefit.
 """
 
 from __future__ import annotations
@@ -54,6 +74,7 @@ from ..orchestrator.budget import (
     BudgetExceededError,
     SubagentReserveExceededError,
 )
+from ..orchestrator.journal import DurableJournal
 from .tools import ToolRegistry, parse_tool_call, str_arg
 
 _log = get_logger("lalo.agent")
@@ -232,13 +253,38 @@ class AgentLoop:
             return "subagent_reserve_exhausted"
         return None
 
-    def run(self, mission: str) -> AgentResult:
+    def run(
+        self,
+        mission: str,
+        *,
+        journal: DurableJournal | None = None,
+        agent_key: str = "root",
+    ) -> AgentResult:
         transcript: list[dict[str, object]] = []
         last_signature: str | None = None
         repeat_count = 0
         no_tool_call_retries = 0
 
-        for step in range(self.config.max_steps):
+        start_step = 0
+        if journal is not None:
+            # Replay already-completed steps for this key with no model call
+            # and no re-dispatch -- this is the actual resume, not just a log.
+            while journal.has(f"{agent_key}:{start_step}"):
+                entry = journal.get(f"{agent_key}:{start_step}")
+                transcript.append(
+                    {
+                        "tool": entry["tool"],
+                        "args": entry["args"],
+                        "observation": entry["observation"],
+                    }
+                )
+                if self.budget is not None:
+                    self.budget.spend(1)
+                start_step += 1
+            if start_step:
+                self._emit("resumed", {"replayed_steps": start_step})
+
+        for step in range(start_step, self.config.max_steps):
             if self.should_stop is not None and self.should_stop():
                 return AgentResult("cancelled", step, transcript)
 
@@ -296,9 +342,25 @@ class AgentLoop:
                     ok = False
                 else:
                     self._emit("tool_call", {"tool": call.name, "args": call.args})
-                    result = self.registry.dispatch(call.name, call.args)
-                    observation = result.observation[: self.config.max_observation_chars]
-                    ok = result.ok
+                    tool_name, tool_args = call.name, call.args
+
+                    def _dispatch_once(
+                        _name: str = tool_name, _args: dict[str, object] = tool_args
+                    ) -> dict[str, object]:
+                        result = self.registry.dispatch(_name, _args)
+                        return {
+                            "tool": _name,
+                            "args": _args,
+                            "observation": result.observation[: self.config.max_observation_chars],
+                            "ok": result.ok,
+                        }
+
+                    if journal is not None:
+                        entry = journal.run_once(f"{agent_key}:{step}", _dispatch_once)
+                    else:
+                        entry = _dispatch_once()
+                    observation = str(entry["observation"])
+                    ok = bool(entry["ok"])
                     self._emit("tool_result", {"tool": call.name, "ok": ok})
 
                 transcript.append(

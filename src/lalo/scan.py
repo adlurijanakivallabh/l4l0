@@ -59,8 +59,9 @@ change this without touching anything else here.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -69,8 +70,9 @@ from .agent.spawn import AgentCoordinator, build_spawn_tools, isolate_for_child,
 from .agent.tools import Tool, ToolRegistry
 from .browser.session import BrowserSession
 from .browser.tool import build_browser_tool
+from .core.atomic_io import atomic_write_verified
 from .core.config import load_settings
-from .core.errors import ConfigError, ContainerError
+from .core.errors import ConfigError, ContainerError, ResumeConfigMismatchError
 from .core.model_router import ModelRouter
 from .core.providers import build_router
 from .execution.firer import HttpFirer
@@ -89,6 +91,7 @@ from .oast.server import OASTServer
 from .oast.tool import build_oast_tools
 from .observability.tracing import Tracer
 from .orchestrator.budget import Budget, RunStatus
+from .orchestrator.journal import DurableJournal
 from .prompts import render_prompt
 from .recon.tool import build_recon_tool
 from .report.writer import write_report
@@ -125,6 +128,59 @@ class ScanOutcome:
     status: RunStatus
     result: AgentResult
     report_paths: dict[str, Path]
+
+
+@dataclass(frozen=True)
+class _ResumeManifest:
+    """The subset of :class:`ScanConfig` that must stay IDENTICAL across a
+    crash/resume for the resumed run to be resuming the same authorized
+    engagement, not a silently different one — see
+    :class:`~lalo.core.errors.ResumeConfigMismatchError`."""
+
+    mission: str
+    target_specs: list[str]
+    egress_lock: bool
+    max_steps: int
+    spawn_max_depth: int
+    budget_ceiling: int
+
+    @classmethod
+    def from_config(cls, config: ScanConfig) -> _ResumeManifest:
+        return cls(
+            mission=config.mission,
+            target_specs=list(config.target_specs),
+            egress_lock=config.egress_lock,
+            max_steps=config.max_steps,
+            spawn_max_depth=config.spawn_max_depth,
+            budget_ceiling=config.budget_ceiling,
+        )
+
+
+def _manifest_path(run_dir: Path) -> Path:
+    return run_dir / "resume_manifest.json"
+
+
+def _journal_path(run_dir: Path) -> Path:
+    return run_dir / "journal.jsonl"
+
+
+def _load_or_write_manifest(config: ScanConfig) -> None:
+    """Enforce config-identity across a resume, then ensure a manifest exists
+    for THIS run either way (a first run writes one so a later crash has
+    something to check against; a resumed run that matches leaves it alone).
+    """
+    current = _ResumeManifest.from_config(config)
+    path = _manifest_path(config.run_dir)
+    if path.exists():
+        persisted = _ResumeManifest(**json.loads(path.read_bytes()))
+        if persisted != current:
+            raise ResumeConfigMismatchError(
+                f"run_dir {config.run_dir} holds a scan started with different "
+                "config (mission/targets/budget/steps) -- refusing to resume "
+                "under different parameters than what was originally authorized"
+            )
+        return
+    atomic_write_verified(path, json.dumps(asdict(current), sort_keys=True).encode("utf-8"))
 
 
 def _terminal_status(stop_reason: str) -> RunStatus:
@@ -172,7 +228,40 @@ class ScanRunner:
         else:
             self._emit("status", {"agent_id": agent_id, "event": event, **payload})
 
+    def _on_root_event(
+        self,
+        agent_id: str,
+        event: str,
+        payload: dict[str, object],
+        graph: ReachabilityGraph,
+        graph_path: Path,
+    ) -> None:
+        """Like :meth:`_on_agent_event`, but for the root agent only: also
+        persists the graph after every completed step.
+
+        Replaying the journal on resume restores the root's own transcript,
+        but does nothing to restore what those original tool calls did to the
+        graph (record_finding/note/recon facts, or a completed spawn_agent
+        call's merged child findings) -- dispatch is deliberately never
+        re-run during replay. Without this, a crash mid-scan would resume the
+        CONVERSATION but silently lose every finding/fact the graph held at
+        crash time, since the only other graph.save() call in this class runs
+        once, at the very end of a fully completed scan. A save after every
+        root-level step keeps the two artifacts (journal, graph) at the same
+        durability granularity, mirroring this journal's own "every
+        individual side-effecting step, not a periodic snapshot" principle.
+        """
+        self._on_agent_event(agent_id, event, payload)
+        if event == "tool_result":
+            graph.save(graph_path)
+
     def run(self) -> ScanOutcome:
+        # Cheap, local, no-resource-started-yet check: refuse to (re)start
+        # against a run_dir that already belongs to a different config before
+        # a single provider/container/OAST resource is touched.
+        self.config.run_dir.mkdir(parents=True, exist_ok=True)
+        _load_or_write_manifest(self.config)
+
         settings = load_settings(self._env)
         if not settings.resolved:
             raise ConfigError(
@@ -222,7 +311,13 @@ class ScanRunner:
         oast: OASTServer,
         browser: BrowserSession,
     ) -> ScanOutcome:
-        graph = ReachabilityGraph()
+        graph_path = self.config.run_dir / "graph.json"
+        # A graph.json left behind by a prior crashed attempt at this SAME
+        # run_dir (manifest-verified above to be the same authorized config)
+        # means this is a resume, not a fresh start -- load what was already
+        # found rather than discarding it.
+        graph = ReachabilityGraph.load(graph_path) if graph_path.exists() else ReachabilityGraph()
+        journal = DurableJournal(_journal_path(self.config.run_dir))
         skills = load_skills()
         firer = HttpFirer(scope)
         identities = IdentityStore()
@@ -287,10 +382,15 @@ class ScanRunner:
             config=AgentConfig(max_steps=self.config.max_steps, is_root=True),
             tracer=tracer,
             budget=budget,
-            on_event=lambda ev, pl: self._on_agent_event(root_id, ev, pl),
+            on_event=lambda ev, pl: self._on_root_event(root_id, ev, pl, graph, graph_path),
             should_stop=self._should_stop,
         )
-        result = root_loop.run(self.config.mission)
+        # Only the root agent's own steps are journaled/resumable -- a spawned
+        # child still mid-execution at crash time simply restarts from scratch
+        # on the next spawn_agent call (see agent/loop.py's own Phase 2 note
+        # for why this granularity was chosen over threading a live journal
+        # down through every descendant).
+        result = root_loop.run(self.config.mission, journal=journal, agent_key="root")
         coordinator.record_result(
             root_id,
             summary=result.summary,

@@ -19,6 +19,7 @@ from lalo.agent.tools import FunctionTool, ToolRegistry, ToolResult
 from lalo.core.errors import AllProvidersFailedError
 from lalo.core.model_router import CompletionRequest, CompletionResponse
 from lalo.orchestrator.budget import Budget
+from lalo.orchestrator.journal import DurableJournal
 
 
 class _FakeRouter:
@@ -343,3 +344,111 @@ def test_provider_failure_returns_a_typed_stop_reason_not_a_crash() -> None:
     result = loop.run("mission")
     assert result.stop_reason == "provider_failed"
     assert result.steps == 0
+
+
+def test_resume_replays_completed_steps_without_redispatching_or_recalling_the_model(
+    tmp_path,
+) -> None:
+    tool, calls = _counting_tool("probe")
+    registry = ToolRegistry([tool])
+    journal = DurableJournal(tmp_path / "j.jsonl")
+
+    # "First attempt": a should_stop check trips after 2 real steps, simulating
+    # a crash mid-run (the loop returns "cancelled" with only 2 dispatches done).
+    router1 = _scripted(
+        [
+            '{"tool": "probe", "args": {"x": 1}}',
+            '{"tool": "probe", "args": {"x": 2}}',
+            '{"tool": "probe", "args": {"x": 3}}',
+        ]
+    )
+    checks = {"n": 0}
+
+    def _stop_after_two_steps() -> bool:
+        checks["n"] += 1
+        return checks["n"] > 2
+
+    budget1 = Budget(ceiling=100)
+    loop1 = AgentLoop(
+        router1,  # type: ignore[arg-type]
+        registry,
+        system_prompt="",
+        budget=budget1,
+        should_stop=_stop_after_two_steps,
+    )
+    result1 = loop1.run("mission", journal=journal, agent_key="root")
+    assert result1.stop_reason == "cancelled"
+    assert calls["n"] == 2  # exactly 2 real dispatches happened before the "crash"
+    assert budget1.spent == 2
+
+    # "Resume": a brand-new AgentLoop/router/budget, same journal + agent_key.
+    router2 = _scripted(
+        ['{"tool": "probe", "args": {"x": 3}}', '{"tool": "finish", "args": {"summary": "done"}}']
+    )
+    budget2 = Budget(ceiling=100)
+    events: list[str] = []
+    loop2 = AgentLoop(
+        router2,  # type: ignore[arg-type]
+        registry,
+        system_prompt="",
+        budget=budget2,
+        on_event=lambda name, _payload: events.append(name),
+    )
+    result2 = loop2.run("mission", journal=journal, agent_key="root")
+
+    assert result2.stop_reason == "finished"
+    assert calls["n"] == 3  # only the ONE genuinely-new step actually dispatched
+    assert router2.calls == 2  # the model was never re-asked about replayed steps
+    assert budget2.spent == 3  # 2 replayed + 1 new -- resume does not zero the spend
+    assert len(result2.transcript) == 3  # 2 replayed probe entries + 1 new one
+    assert events[0] == "resumed"
+
+
+def test_resume_with_an_empty_journal_behaves_exactly_like_a_fresh_run(tmp_path) -> None:
+    tool, calls = _counting_tool("probe")
+    registry = ToolRegistry([tool])
+    journal = DurableJournal(tmp_path / "j.jsonl")
+    router = _scripted(
+        ['{"tool": "probe", "args": {}}', '{"tool": "finish", "args": {"summary": "done"}}']
+    )
+    events: list[str] = []
+    loop = AgentLoop(
+        router,  # type: ignore[arg-type]
+        registry,
+        system_prompt="",
+        on_event=lambda name, _payload: events.append(name),
+    )
+    result = loop.run("mission", journal=journal, agent_key="root")
+    assert result.stop_reason == "finished"
+    assert calls["n"] == 1
+    assert "resumed" not in events  # nothing to replay -- no resumed event at all
+
+
+def test_a_crash_after_journaling_but_mid_step_still_resumes_correctly(tmp_path) -> None:
+    # journal.run_once() durably records the step BEFORE the caller's own
+    # bookkeeping (budget.spend, transcript.append, the tool_result event) can
+    # run -- this proves a "crash" landing in that exact narrow window still
+    # resumes with the tool never re-fired, matching the journal's own
+    # record-before-anything-else durability guarantee.
+    tool, calls = _counting_tool("probe")
+    registry = ToolRegistry([tool])
+    journal = DurableJournal(tmp_path / "j.jsonl")
+    router = _scripted(['{"tool": "probe", "args": {}}'])
+    checks = {"n": 0}
+
+    def _stop_after_one_step() -> bool:
+        checks["n"] += 1
+        return checks["n"] > 1
+
+    loop = AgentLoop(router, registry, system_prompt="", should_stop=_stop_after_one_step)  # type: ignore[arg-type]
+    # Simulate the crash by stopping cooperative processing right after the
+    # one real step lands in the journal (should_stop only re-checked at the
+    # TOP of the next iteration, i.e. after this step's dispatch+record).
+    loop.run("mission", journal=journal, agent_key="root")
+    assert calls["n"] == 1
+
+    resumed_router = _scripted(['{"tool": "finish", "args": {"summary": "done"}}'])
+    resumed_loop = AgentLoop(resumed_router, registry, system_prompt="")  # type: ignore[arg-type]
+    result = resumed_loop.run("mission", journal=journal, agent_key="root")
+    assert result.stop_reason == "finished"
+    assert calls["n"] == 1  # the already-journaled step was never re-dispatched

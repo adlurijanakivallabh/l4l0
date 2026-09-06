@@ -229,6 +229,114 @@ def test_cancel_before_run_stops_on_the_first_step(
     assert provider.calls == 0
 
 
+# --- Phase 2, pentagi/PentestGPT pass: crash-mid-scan resume -----------------
+
+
+class _CrashingProvider:
+    """Like _ScriptedProvider, but a scripted response of "CRASH" raises
+    instead of completing -- simulates the whole process dying mid-scan
+    (an uncaught exception unwinding out of ScanRunner.run()), not a clean
+    should_stop()-cooperative cancellation."""
+
+    name = "fake"
+
+    def __init__(self, respond: object) -> None:
+        self._respond = respond
+        self.calls = 0
+
+    def complete(self, request: object) -> CompletionResponse:
+        text = self._respond(self.calls, request.prompt)  # type: ignore[attr-defined]
+        self.calls += 1
+        if text == "CRASH":
+            raise RuntimeError("simulated crash")
+        return CompletionResponse(text=text, provider="fake", model="fake-model")
+
+
+def test_resume_after_a_crash_does_not_redispatch_the_completed_step(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(scan_module, "docker_available", lambda: True)
+    monkeypatch.setattr(scan_module, "RuntimeContainer", _FakeContainer)
+
+    def _crash_after_one_step(call_index: int, _prompt: str) -> str:
+        return _record_finding_call() if call_index == 0 else "CRASH"
+
+    crashing_provider = _CrashingProvider(_crash_after_one_step)
+    router1 = ModelRouter(
+        providers={"fake": crashing_provider},
+        routes={"reasoning": ("fake",)},
+        default_route=("fake",),
+    )
+    monkeypatch.setattr(scan_module, "build_router", lambda _settings: router1)
+
+    run_dir = tmp_path / "run"
+    config = ScanConfig(mission="find a bug", target_specs=["example.com"], run_dir=run_dir)
+    with pytest.raises(RuntimeError, match="simulated crash"):
+        ScanRunner(config, env={"ANTHROPIC_API_KEY": "sk-test"}).run()
+
+    # The finding from the one completed step survived the crash -- this is
+    # exactly the incremental graph-save this pass added; without it, the
+    # journal's transcript replay alone would resume the CONVERSATION but the
+    # graph itself would come back empty.
+    assert (run_dir / "graph.json").exists()
+    crashed_graph = ReachabilityGraph.load(run_dir / "graph.json")
+    assert len(crashed_graph.nodes_of_kind(NodeKind.FINDING)) == 1
+
+    def _respond_after_resume(_call_index: int, prompt: str) -> str:
+        if "FINDING TO REVIEW" in prompt:
+            return '{"verdict": "confirmed", "proof_level": "L3", "reasoning": "grounded"}'
+        return _finish_call()
+
+    resumed_provider = _ScriptedProvider(_respond_after_resume)
+    router2 = ModelRouter(
+        providers={"fake": resumed_provider},
+        routes={"reasoning": ("fake",), "review": ("fake",)},
+        default_route=("fake",),
+    )
+    monkeypatch.setattr(scan_module, "build_router", lambda _settings: router2)
+
+    # SAME config/run_dir -- ScanRunner auto-detects the existing journal +
+    # manifest and resumes rather than starting fresh.
+    outcome = ScanRunner(config, env={"ANTHROPIC_API_KEY": "sk-test"}).run()
+
+    assert outcome.status is RunStatus.COMPLETED
+    # Only ONE new agent-loop turn happened on resume (the already-completed
+    # record_finding step was replayed from the journal, never re-dispatched)
+    # plus the one adversarial-review call every finding always gets.
+    assert resumed_provider.calls == 2
+    assert len(ReachabilityGraph.load(run_dir / "graph.json").nodes_of_kind(NodeKind.FINDING)) == 1
+
+
+def test_resume_refuses_a_different_mission_against_the_same_run_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(scan_module, "docker_available", lambda: True)
+    monkeypatch.setattr(scan_module, "RuntimeContainer", _FakeContainer)
+
+    def _crash_immediately(_call_index: int, _prompt: str) -> str:
+        return "CRASH"
+
+    router1 = ModelRouter(
+        providers={"fake": _CrashingProvider(_crash_immediately)},
+        routes={"reasoning": ("fake",)},
+        default_route=("fake",),
+    )
+    monkeypatch.setattr(scan_module, "build_router", lambda _settings: router1)
+
+    run_dir = tmp_path / "run"
+    original = ScanConfig(mission="find a bug", target_specs=["example.com"], run_dir=run_dir)
+    with pytest.raises(RuntimeError, match="simulated crash"):
+        ScanRunner(original, env={"ANTHROPIC_API_KEY": "sk-test"}).run()
+
+    escalated = ScanConfig(
+        mission="find a bug AND exfiltrate the database",  # silently different mission
+        target_specs=["example.com"],
+        run_dir=run_dir,  # same run_dir as the crashed attempt above
+    )
+    with pytest.raises(scan_module.ResumeConfigMismatchError):
+        ScanRunner(escalated, env={"ANTHROPIC_API_KEY": "sk-test"}).run()
+
+
 # --- merge_finding_nodes ------------------------------------------------------
 
 

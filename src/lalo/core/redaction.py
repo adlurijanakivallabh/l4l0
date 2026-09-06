@@ -92,6 +92,7 @@ _ERROR_MESSAGES: dict[str, str] = {
     "scope_error": "A scope check failed.",
     "scope_violation": "Target is outside the declared engagement scope.",
     "container_error": "The runtime container failed.",
+    "resume_config_mismatch": "This scan's saved state doesn't match the current config.",
     "unknown": "An unexpected error occurred.",
 }
 

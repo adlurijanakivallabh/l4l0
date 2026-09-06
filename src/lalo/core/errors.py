@@ -113,6 +113,21 @@ class JwtMalformedError(LaloError):
     code = "jwt_malformed"
 
 
+class ResumeConfigMismatchError(LaloError):
+    """A resumed scan's config doesn't match the manifest recorded on first start.
+
+    Informed by a reference agent's own ``--resume`` identity contract (hashes
+    both roles' full prompt+schema, plus target list/effort, and refuses to
+    resume on a mismatch): resuming a crashed scan against a *different*
+    mission, target list, or budget ceiling than the one originally
+    authorized would let scope/policy silently drift across a crash, exactly
+    the risk that reference's own check exists to rule out. Raised before any
+    step is replayed or any new work starts.
+    """
+
+    code = "resume_config_mismatch"
+
+
 class CostLimitExceededError(LaloError):
     """A run's cumulative estimated spend has crossed an operator-set ceiling.
 
