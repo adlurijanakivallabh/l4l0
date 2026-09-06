@@ -223,12 +223,24 @@
     startElapsedClock();
   }
 
-  function onScanEnded() {
+  function onScanEnded(payload) {
     scanActive = false;
     stopScanBtn.hidden = true;
     composerInput.placeholder = "Tell me what to test…";
     stopElapsedClock();
-    appendAgentText("Scan finished — send another target and objective anytime.");
+    let text = "Scan finished — send another target and objective anytime.";
+    if (payload && payload.usage_delta) {
+      const u = payload.usage_delta;
+      const reqWord = u.requests === 1 ? "request" : "requests";
+      text += ` Tokens this run: ${u.input_tokens} in / ${u.output_tokens} out (${u.requests} ${reqWord}).`;
+    }
+    if (payload && payload.report_paths) {
+      const paths = Object.entries(payload.report_paths)
+        .map(([fmt, p]) => `${fmt}: ${p}`)
+        .join(", ");
+      text += ` Report: ${paths}`;
+    }
+    appendAgentText(text);
   }
 
   function applyEvent(event) {
@@ -239,7 +251,7 @@
           if (event.payload.event === "scan_started") {
             if (!scanActive) onScanStarted();
           } else if (scanActive) {
-            onScanEnded();
+            onScanEnded(event.payload);
           }
         }
         break;

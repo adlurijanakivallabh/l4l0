@@ -80,6 +80,7 @@ from .core.errors import (
 )
 from .core.model_router import ModelRouter
 from .core.providers import build_router, verify_router
+from .core.usage import load_usage
 from .execution.firer import HttpFirer, probe_reachability
 from .execution.scope import ScopeGuard
 from .execution.target import Engagement
@@ -401,6 +402,15 @@ class ScanRunner:
         oast: OASTServer,
         browser: BrowserSession,
     ) -> ScanOutcome:
+        # ponytail: snapshot-then-diff against the lifetime usage ledger is
+        # this-run's token count on a fresh start; a resumed run only counts
+        # the resumed portion (the crashed attempt's own usage was already
+        # persisted before this process started) -- exact cross-resume
+        # accounting would need the snapshot itself persisted into the run
+        # manifest, not worth it for a single display number.
+        usage_path = self.config.usage_path
+        usage_before = load_usage(usage_path) if usage_path is not None else None
+
         graph_path = self.config.run_dir / "graph.json"
         # A graph.json left behind by a prior crashed attempt at this SAME
         # run_dir (manifest-verified above to be the same authorized config)
@@ -509,5 +519,17 @@ class ScanRunner:
         report_paths = write_report(self.config.run_dir, graph, skills)
         graph.save(self.config.run_dir / "graph.json")
         status = _terminal_status(result.stop_reason)
-        self._emit("status", {"event": "scan_completed", "status": status.value})
+        completed_payload: dict[str, object] = {
+            "event": "scan_completed",
+            "status": status.value,
+            "report_paths": {fmt: str(path) for fmt, path in report_paths.items()},
+        }
+        if usage_path is not None and usage_before is not None:
+            usage_after = load_usage(usage_path)
+            completed_payload["usage_delta"] = {
+                "requests": usage_after.total_requests - usage_before.total_requests,
+                "input_tokens": usage_after.total_input_tokens - usage_before.total_input_tokens,
+                "output_tokens": usage_after.total_output_tokens - usage_before.total_output_tokens,
+            }
+        self._emit("status", completed_payload)
         return ScanOutcome(status=status, result=result, report_paths=report_paths)

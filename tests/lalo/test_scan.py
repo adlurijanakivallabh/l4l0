@@ -226,7 +226,42 @@ def test_scan_runner_emits_events_for_a_real_run(
     categories = [e.category for e in events]
     assert "finding" in categories
     assert any(e.payload.get("event") == "scan_started" for e in events)
-    assert any(e.payload.get("event") == "scan_completed" for e in events)
+    completed = next(e for e in events if e.payload.get("event") == "scan_completed")
+    assert set(completed.payload["report_paths"]) == {"markdown", "json", "sarif", "pdf", "docx"}
+    # usage_path was never configured on this ScanConfig -- usage_delta must be
+    # absent, never a fabricated zero.
+    assert "usage_delta" not in completed.payload
+
+
+def test_scan_runner_emits_usage_delta_when_usage_path_is_configured(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(scan_module, "docker_available", lambda: True)
+    monkeypatch.setattr(scan_module, "RuntimeContainer", _FakeContainer)
+    router = ModelRouter(
+        providers={"fake": _ScriptedProvider(_respond)},
+        routes={"reasoning": ("fake",), "review": ("fake",)},
+        default_route=("fake",),
+    )
+    monkeypatch.setattr(scan_module, "build_router", lambda _settings: router)
+
+    event_log = EventLog()
+    config = ScanConfig(
+        mission="find a bug",
+        target_specs=["example.com"],
+        run_dir=tmp_path / "run",
+        usage_path=tmp_path / "usage.json",
+    )
+    ScanRunner(config, env={"ANTHROPIC_API_KEY": "sk-test"}, event_log=event_log).run()
+
+    _cursor, events = event_log.snapshot()
+    completed = next(e for e in events if e.payload.get("event") == "scan_completed")
+    usage_delta = completed.payload["usage_delta"]
+    assert set(usage_delta) == {"requests", "input_tokens", "output_tokens"}
+    # The scripted provider's completions carry no real usage figures, so the
+    # token deltas are honestly 0 -- but real completions did happen this run,
+    # so the request count must reflect that, not also default to 0.
+    assert usage_delta["requests"] > 0
 
 
 def test_cancel_before_run_stops_on_the_first_step(
