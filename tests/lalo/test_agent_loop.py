@@ -388,6 +388,97 @@ def test_usage_is_recorded_when_a_usage_path_is_provided(tmp_path) -> None:
     assert "fake" in stats.by_provider
 
 
+# --- live operator steering --------------------------------------------------
+
+
+def test_with_no_get_steering_renders_no_steering_section() -> None:
+    tool, _ = _counting_tool("noop")
+    registry = ToolRegistry([tool])
+    router = _scripted(['{"tool": "finish", "args": {"summary": "done"}}'])
+    loop = AgentLoop(router, registry, system_prompt="")  # type: ignore[arg-type]
+    loop.run("mission")
+    assert "OPERATOR STEERING" not in router.prompts[0]
+
+
+def test_get_steering_with_no_pending_messages_renders_no_section() -> None:
+    tool, _ = _counting_tool("noop")
+    registry = ToolRegistry([tool])
+    router = _scripted(['{"tool": "finish", "args": {"summary": "done"}}'])
+    loop = AgentLoop(
+        router,  # type: ignore[arg-type]
+        registry,
+        system_prompt="",
+        get_steering=lambda: [],
+    )
+    loop.run("mission")
+    assert "OPERATOR STEERING" not in router.prompts[0]
+
+
+def test_get_steering_renders_pending_messages_into_the_prompt() -> None:
+    tool, _ = _counting_tool("noop")
+    registry = ToolRegistry([tool])
+    router = _scripted(['{"tool": "finish", "args": {"summary": "done"}}'])
+    loop = AgentLoop(
+        router,  # type: ignore[arg-type]
+        registry,
+        system_prompt="",
+        get_steering=lambda: ["focus on the API endpoints"],
+    )
+    loop.run("mission")
+    assert "OPERATOR STEERING" in router.prompts[0]
+    assert "focus on the API endpoints" in router.prompts[0]
+
+
+def test_get_steering_persists_across_multiple_steps() -> None:
+    """ "focus on API areas" is meant to shift priority for the rest of the
+    mission, not just the one turn it arrived on - every later prompt must
+    still carry it, not just the first render after it arrived."""
+    tool, _ = _counting_tool("noop")
+    registry = ToolRegistry([tool])
+    router = _scripted(
+        [
+            '{"tool": "noop", "args": {}}',
+            '{"tool": "noop", "args": {}}',
+            '{"tool": "finish", "args": {"summary": "done"}}',
+        ]
+    )
+    loop = AgentLoop(
+        router,  # type: ignore[arg-type]
+        registry,
+        system_prompt="",
+        get_steering=lambda: ["focus on the API endpoints"],
+    )
+    loop.run("mission")
+    assert len(router.prompts) == 3
+    assert all("focus on the API endpoints" in p for p in router.prompts)
+
+
+def test_get_steering_reflects_new_messages_that_arrive_mid_run() -> None:
+    pending = ["first message"]
+
+    def _noop(_args: dict[str, object]) -> ToolResult:
+        # simulates a second steering message arriving between this step
+        # (whose prompt was already rendered) and the next one
+        pending.append("second message")
+        return ToolResult(observation="ran")
+
+    registry = ToolRegistry([FunctionTool(name="noop", description="d", func=_noop)])
+    router = _scripted(
+        ['{"tool": "noop", "args": {}}', '{"tool": "finish", "args": {"summary": "done"}}']
+    )
+    loop = AgentLoop(
+        router,  # type: ignore[arg-type]
+        registry,
+        system_prompt="",
+        get_steering=lambda: list(pending),
+    )
+    loop.run("mission")
+    assert "first message" in router.prompts[0]
+    assert "second message" not in router.prompts[0]  # hadn't arrived yet
+    assert "first message" in router.prompts[1]
+    assert "second message" in router.prompts[1]  # arrived before this render
+
+
 # --- real semantic history compaction ---------------------------------------
 
 

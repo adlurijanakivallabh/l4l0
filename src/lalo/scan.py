@@ -405,6 +405,41 @@ class ScanRunner:
             return True
         return False
 
+    def _pending_steering(self) -> list[str]:
+        """Every operator steering message received so far this run, in
+        order - closes a real, previously dead-on-arrival wire: POST /steer
+        already appended a "steering" event to the GUI's own EventLog
+        (gui/app.py's own module docstring even says "a human OR AGENT may
+        later read" it), but nothing anywhere ever actually read it back
+        into a running AgentLoop - an operator typing "focus on the API
+        endpoints" mid-scan had ZERO effect on the agent, only a cosmetic
+        line in the GUI thread.
+
+        Deliberately NON-consuming (returns the full history every call,
+        never advances a cursor): multi-lane concurrent sub-agents
+        (spawn_agents) mean several AgentLoops - the root and any number of
+        children - may call this independently or concurrently, and a
+        single shared "already consumed" cursor would mean only whichever
+        one happened to read first ever saw a given message. Each caller
+        (AgentLoop._render_prompt) instead just re-renders the current full
+        list every time, which is cheap (a bounded, in-memory filter) and
+        gives every agent in the spawn tree the same persistent view.
+
+        Read-only in the same sense the /steer endpoint's own design
+        already establishes: this only ever influences what the agent
+        chooses to prioritize within its own normal think-act-observe
+        loop - it has no path to record_finding or any other tool, and
+        cannot expand the operator-declared engagement.
+        """
+        if self.event_log is None:
+            return []
+        _cursor, events = self.event_log.snapshot()
+        return [
+            str(e.payload["text"])
+            for e in events
+            if e.category == "steering" and "text" in e.payload
+        ]
+
     def _emit(self, category: EventCategory, payload: dict[str, object]) -> None:
         # Durably persisted regardless of whether a live EventLog is attached
         # (EventLog itself is process-lifetime, not run-scoped - it outlives
@@ -617,6 +652,7 @@ class ScanRunner:
                     should_stop=self._should_stop,
                     usage_path=self.config.usage_path,
                     agent_id=child_id,
+                    get_steering=self._pending_steering,
                 )
                 result = child_loop.run(task)
                 after = set(child_graph.nodes_of_kind(NodeKind.FINDING))
@@ -666,6 +702,7 @@ class ScanRunner:
             should_stop=self._should_stop,
             usage_path=self.config.usage_path,
             agent_id=root_id,
+            get_steering=self._pending_steering,
         )
         # Only the root agent's own steps are journaled/resumable -- a spawned
         # child still mid-execution at crash time simply restarts from scratch

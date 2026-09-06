@@ -713,6 +713,77 @@ def test_should_stop_is_false_before_run_has_ever_started(tmp_path: Path) -> Non
     assert runner._should_stop() is False
 
 
+# --- live operator steering: closes a real dead-on-arrival wire (POST /steer
+# already logged these, nothing ever read them back into a running agent) ---
+
+
+def test_pending_steering_with_no_event_log_is_empty(tmp_path: Path) -> None:
+    config = ScanConfig(mission="m", target_specs=["example.com"], run_dir=tmp_path / "run")
+    runner = ScanRunner(config, env={"ANTHROPIC_API_KEY": "sk-test"})
+    assert runner._pending_steering() == []
+
+
+def test_pending_steering_returns_every_steering_message_in_order(tmp_path: Path) -> None:
+    config = ScanConfig(mission="m", target_specs=["example.com"], run_dir=tmp_path / "run")
+    event_log = EventLog()
+    runner = ScanRunner(config, env={"ANTHROPIC_API_KEY": "sk-test"}, event_log=event_log)
+    event_log.append("steering", {"text": "focus on the API endpoints"})
+    event_log.append("status", {"event": "scan_started"})  # non-steering, must be ignored
+    event_log.append("steering", {"text": "check the admin panel"})
+    assert runner._pending_steering() == ["focus on the API endpoints", "check the admin panel"]
+
+
+def test_pending_steering_is_non_consuming(tmp_path: Path) -> None:
+    """Multiple concurrently-running agents (spawn_agents children) each
+    call this independently - a consuming cursor would mean only whichever
+    one reads first ever sees a given message."""
+    config = ScanConfig(mission="m", target_specs=["example.com"], run_dir=tmp_path / "run")
+    event_log = EventLog()
+    runner = ScanRunner(config, env={"ANTHROPIC_API_KEY": "sk-test"}, event_log=event_log)
+    event_log.append("steering", {"text": "focus on the API endpoints"})
+    first_read = runner._pending_steering()
+    second_read = runner._pending_steering()
+    assert first_read == second_read == ["focus on the API endpoints"]
+
+
+def test_scan_runner_wires_live_steering_into_the_agents_prompt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(scan_module, "docker_available", lambda: True)
+    monkeypatch.setattr(scan_module, "RuntimeContainer", _FakeContainer)
+
+    seen_prompts: list[str] = []
+
+    class _RecordingProvider:
+        name = "fake"
+
+        def complete(self, request: object) -> CompletionResponse:
+            seen_prompts.append(request.prompt)  # type: ignore[attr-defined]
+            return CompletionResponse(
+                text=_respond(len(seen_prompts) - 1, request.prompt),  # type: ignore[attr-defined]
+                provider="fake",
+                model="fake-model",
+            )
+
+    router = ModelRouter(
+        providers={"fake": _RecordingProvider()},
+        routes={"reasoning": ("fake",), "review": ("fake",)},
+        default_route=("fake",),
+    )
+    monkeypatch.setattr(scan_module, "build_router", lambda _settings: router)
+
+    event_log = EventLog()
+    event_log.append("steering", {"text": "focus on the API endpoints"})
+    config = ScanConfig(
+        mission="find a bug", target_specs=["example.com"], run_dir=tmp_path / "run"
+    )
+    ScanRunner(config, env={"ANTHROPIC_API_KEY": "sk-test"}, event_log=event_log).run()
+
+    mission_prompts = [p for p in seen_prompts if "MISSION:" in p]
+    assert mission_prompts  # sanity: the agent actually ran real steps
+    assert all("focus on the API endpoints" in p for p in mission_prompts)
+
+
 # --- Phase 2, shannon pass: cancel force-stops the container, not just a flag -
 
 

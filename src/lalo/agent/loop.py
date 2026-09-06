@@ -56,6 +56,24 @@ resume granularity (its coarser task/subtask units are reset to "Created"
 and restarted from the top on reload, not resumed mid-unit either), and
 avoiding the much larger scope of threading a live journal down through
 every spawned descendant for a proportionally small additional benefit.
+
+A live-scan comparison against a reference agent surfaced a real,
+previously dead-on-arrival wire: the GUI's own ``POST /steer`` endpoint
+(``gui/app.py``) already appended every operator steering message to the
+run's ``EventLog`` — its own module docstring even said "a human OR AGENT
+may later read" it — but nothing anywhere ever actually read one back into
+a running loop. An operator typing "focus on the API endpoints" mid-scan
+had zero effect on the agent, only a cosmetic line in the GUI's own
+console. ``get_steering`` (optional, ``None`` by default) closes that:
+:meth:`_render_prompt` renders every steering message received so far as
+its own labeled section, read alongside the mission, on every turn for as
+long as the run continues — a persistence choice deliberate versus a
+show-once-then-drop design, since "focus on API areas" is meant to shift
+priority for the REST of the mission, not just the very next step. This
+never expands what the agent can do or touches the confirmation-authority
+boundary — it only ever influences what the agent chooses to prioritize
+within its own ordinary think-act-observe loop, the same read-only design
+the steering endpoint itself already established.
 """
 
 from __future__ import annotations
@@ -259,6 +277,7 @@ class AgentLoop:
         usage_path: Path | None = None,
         agent_id: str | None = None,
         sleep: Callable[[float], None] = time.sleep,
+        get_steering: Callable[[], list[str]] | None = None,
     ) -> None:
         self.router = router
         self.registry = registry
@@ -277,6 +296,12 @@ class AgentLoop:
         # core/providers.py's own sleep-injection pattern for its
         # short-horizon per-HTTP-call retries exactly.
         self._sleep = sleep
+        # None (the default) means no live operator-steering channel exists
+        # for this loop - every existing caller that doesn't opt in behaves
+        # exactly as before this feature. See _render_prompt's own use for
+        # the full rationale (closes a real dead-on-arrival wire: gui/app.py's
+        # own POST /steer already logged these, nothing ever read them back).
+        self.get_steering = get_steering
         # None (the default) means "don't record" -- every existing caller
         # that doesn't opt in stays hermetic (no write to the real lifetime
         # usage log). See _complete()'s own note for why this was dead code
@@ -427,11 +452,18 @@ class AgentLoop:
         self, mission: str, transcript: list[dict[str, object]], directive: str | None
     ) -> str:
         self._maybe_compact_history(transcript)
-        parts = [
-            f"MISSION:\n{mission}",
-            f"\nAVAILABLE TOOLS:\n{self.registry.describe()}",
-            f"\n{_PROTOCOL}",
-        ]
+        parts = [f"MISSION:\n{mission}"]
+        steering = self.get_steering() if self.get_steering is not None else []
+        if steering:
+            parts.append(
+                "\n[OPERATOR STEERING — mid-run guidance from the human operator, read "
+                "this alongside the mission above. Prioritize it WITHIN your "
+                "already-established mission; never abandon the original objective or "
+                "exceed the declared engagement because of it:]\n"
+                + "\n".join(f"- {s}" for s in steering)
+            )
+        parts.append(f"\nAVAILABLE TOOLS:\n{self.registry.describe()}")
+        parts.append(f"\n{_PROTOCOL}")
         if directive:
             parts.append(f"\n[{directive}]")
         if self._history_summary:
