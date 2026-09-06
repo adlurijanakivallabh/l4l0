@@ -36,3 +36,5 @@ output/playwright/
 # Vendored third-party corpora — not currently used by any shipped code;
 # see THIRD_PARTY_NOTICES.md before ever re-adding one
 /third_party/
+# Added by code-review-graph
+.code-review-graph/
