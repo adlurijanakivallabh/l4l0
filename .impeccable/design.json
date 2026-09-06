@@ -1,0 +1,127 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-09-06T07:31:42Z",
+  "title": "Design System: L4L0 Operator Console",
+  "extensions": {
+    "colorMeta": {
+      "accent": { "role": "primary", "displayName": "Run Green", "canonical": "#22c55e", "tonalRamp": ["#06210f", "#0d3a1f", "#145c30", "#1a8a45", "#22c55e", "#4ade80", "#86efac", "#dcfce7"] },
+      "accent-hover": { "role": "primary", "displayName": "Run Green Hover", "canonical": "#1ea550", "tonalRamp": ["#06210f", "#0c331b", "#125529", "#187f3d", "#1ea550", "#4bc776", "#8fdba8", "#e2f7ea"] },
+      "accent-ink": { "role": "primary", "displayName": "Run Green Ink", "canonical": "#06210f", "tonalRamp": ["#020805", "#04120a", "#06210f", "#0a3a1a", "#125c2a", "#1c8a41", "#4bc776", "#a7ecc0"] },
+      "bg": { "role": "neutral", "displayName": "Void Slate", "canonical": "#0f172a", "tonalRamp": ["#05070d", "#0b1220", "#0f172a", "#1b2336", "#242d44", "#334155", "#94a3b8", "#f8fafc"] },
+      "bg-rail": { "role": "neutral", "displayName": "Rail Slate", "canonical": "#0b1220", "tonalRamp": ["#020306", "#060a12", "#0b1220", "#151d30", "#202a42", "#333f5c", "#8291ab", "#f2f5fa"] },
+      "surface": { "role": "neutral", "displayName": "Surface", "canonical": "#1b2336", "tonalRamp": ["#0a0d15", "#111828", "#1b2336", "#262f47", "#333e5a", "#4a5675", "#8b96b2", "#e6eaf3"] },
+      "surface-muted": { "role": "neutral", "displayName": "Surface Muted", "canonical": "#242d44", "tonalRamp": ["#0e121c", "#171e2f", "#242d44", "#303a56", "#414c6c", "#5a6688", "#98a2c0", "#e9ecf5"] },
+      "border": { "role": "neutral", "displayName": "Border", "canonical": "#334155", "tonalRamp": ["#12161d", "#20272f", "#334155", "#45566c", "#5c7089", "#8195ac", "#b9c5d6", "#eef1f6"] },
+      "border-soft": { "role": "neutral", "displayName": "Border Soft", "canonical": "#263042", "tonalRamp": ["#0d1017", "#161c28", "#263042", "#333f57", "#48587a", "#6e83a9", "#a9bad6", "#e9eef7"] },
+      "text": { "role": "neutral", "displayName": "Text", "canonical": "#f8fafc", "tonalRamp": ["#1a1d22", "#3a3f47", "#5c636d", "#828a96", "#aab2bd", "#cdd3da", "#e9edf1", "#f8fafc"] },
+      "text-muted": { "role": "neutral", "displayName": "Text Muted", "canonical": "#94a3b8", "tonalRamp": ["#15191e", "#2b323c", "#434e5c", "#5e6b7c", "#7a889b", "#94a3b8", "#c1cbd8", "#e9eef3"] },
+      "text-faint": { "role": "neutral", "displayName": "Text Faint", "canonical": "#8291ab", "tonalRamp": ["#12151b", "#272d38", "#3d4655", "#576375", "#728098", "#8291ab", "#b7c1d1", "#e6eaf1"] },
+      "danger": { "role": "semantic", "displayName": "Critical Red", "canonical": "#ef4444", "tonalRamp": ["#2a0808", "#4d0f0f", "#7f1a1a", "#b32a2a", "#ef4444", "#f47c7c", "#f9b4b4", "#fde8e8"] },
+      "warning": { "role": "semantic", "displayName": "High Amber", "canonical": "#f5a623", "tonalRamp": ["#2b1c04", "#4d3208", "#7f5310", "#b3771a", "#f5a623", "#f8c266", "#fbdca3", "#fdf0da"] },
+      "caution": { "role": "semantic", "displayName": "Medium Yellow", "canonical": "#e6c34a", "tonalRamp": ["#2b230a", "#4d3f12", "#7f671e", "#b3922c", "#e6c34a", "#eed684", "#f5e7b3", "#fbf5df"] }
+    },
+    "typographyMeta": {
+      "brand": { "displayName": "Brand Wordmark", "purpose": "The plain-text 'L4L0' mark in the rail; the only branded, colored, monospace UI label." },
+      "body": { "displayName": "Body / Conversation", "purpose": "Agent narration, opening prompt, message bubble text." },
+      "log": { "displayName": "Log", "purpose": "Raw tool-output content inside .log-block, coalesced per contiguous run." }
+    },
+    "shadows": [
+      { "name": "composer-lift", "value": "0 1px 2px rgba(0, 0, 0, 0.25)", "purpose": "The only shadow in the system; lifts the pinned composer bar off the thread." }
+    ],
+    "motion": [
+      { "name": "line-fresh", "value": "fade-in-line 350ms ease-out (opacity 0.35 -> 1)", "purpose": "New log lines fade in inside a growing .log-block; disabled under prefers-reduced-motion." },
+      { "name": "chrome-transition", "value": "120ms ease-out on background-color/border-color/opacity", "purpose": "Default button state-change speed (.btn)." }
+    ],
+    "breakpoints": [
+      { "name": "mobile", "value": "900px", "note": "Rail collapses to a horizontal wrapping bar; thread height computed against a hardcoded 64px rail height. Explicitly deprioritized/unpolished per user direction ('who needs for mobile') — not a validated pattern to extend." }
+    ]
+  },
+  "components": [
+    {
+      "name": "Send Button",
+      "kind": "button",
+      "refersTo": "button-send",
+      "description": "Circular accent-filled icon button that submits the composer form.",
+      "html": "<button type=\"submit\" class=\"ds-btn-send\" aria-label=\"Send\"><svg viewBox=\"0 0 24 24\" width=\"16\" height=\"16\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M22 2 11 13\"/><path d=\"M22 2 15 22l-4-9-9-4 20-7Z\"/></svg></button>",
+      "css": ".ds-btn-send { width: 36px; height: 36px; padding: 0; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; background: #22c55e; color: #06210f; border: none; cursor: pointer; } .ds-btn-send:hover { background: #1ea550; } .ds-btn-send:disabled { background: #242d44; color: #8291ab; cursor: not-allowed; } .ds-btn-send:focus-visible { outline: 2px solid #4ade80; outline-offset: 2px; }"
+    },
+    {
+      "name": "Ghost Button (Stop Scan)",
+      "kind": "button",
+      "refersTo": "button-ghost",
+      "description": "Transparent pill button; hover shifts to danger red to signal a destructive/stop action.",
+      "html": "<button type=\"button\" class=\"ds-btn-ghost\">Stop scan</button>",
+      "css": ".ds-btn-ghost { font-weight: 600; font-size: 0.86rem; border-radius: 999px; padding: 9px 18px; background: transparent; border: 1px solid #334155; color: #94a3b8; cursor: pointer; transition: background-color 120ms ease-out, border-color 120ms ease-out, opacity 120ms ease-out; } .ds-btn-ghost:hover { border-color: #ef4444; color: #ef4444; } .ds-btn-ghost:disabled { color: #8291ab; border-color: #263042; cursor: not-allowed; } .ds-btn-ghost:focus-visible { outline: 2px solid #4ade80; outline-offset: 2px; }"
+    },
+    {
+      "name": "Composer Bar",
+      "kind": "input",
+      "refersTo": "composer-input",
+      "description": "The single input driving both scan-launch (target/mission extraction) and read-only steering; pill container carries the field chrome, the input itself is borderless.",
+      "html": "<form class=\"ds-composer-bar\"><input class=\"ds-composer-input\" type=\"text\" placeholder=\"Tell me what to test…\" autocomplete=\"off\" /><button type=\"submit\" class=\"ds-composer-send\" aria-label=\"Send\">&#10148;</button></form>",
+      "css": ".ds-composer-bar { display: flex; align-items: center; gap: 8px; background: #1b2336; border: 1px solid #263042; border-radius: 999px; padding: 8px 8px 8px 18px; box-shadow: 0 1px 2px rgba(0,0,0,0.25); } .ds-composer-bar:focus-within { border-color: #22c55e; } .ds-composer-input { flex: 1; background: transparent; border: none; color: #f8fafc; padding: 8px 0; font-size: 0.94rem; } .ds-composer-input::placeholder { color: #8291ab; } .ds-composer-input:focus-visible { outline: none; } .ds-composer-send { flex: none; width: 36px; height: 36px; border-radius: 50%; background: #22c55e; color: #06210f; border: none; cursor: pointer; }"
+    },
+    {
+      "name": "Finding Card",
+      "kind": "card",
+      "refersTo": "finding-card",
+      "description": "Severity pill (color + text label, never color alone) + confidence + title + copy button, rendered as content inside an agent thread turn.",
+      "html": "<div class=\"ds-finding-card\"><span class=\"ds-severity-pill ds-sev-critical\">CRITICAL</span><span class=\"ds-finding-confidence\">92%</span><span class=\"ds-finding-title\">SQL injection in /api/login</span><button type=\"button\" class=\"ds-finding-copy\" aria-label=\"Copy finding\"><svg viewBox=\"0 0 24 24\" width=\"14\" height=\"14\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><rect x=\"9\" y=\"9\" width=\"13\" height=\"13\" rx=\"2\"/><path d=\"M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1\"/></svg></button></div>",
+      "css": ".ds-finding-card { display: flex; align-items: center; gap: 10px; background: #1b2336; border-radius: 10px; padding: 10px 12px; } .ds-severity-pill { flex: none; font-size: 0.66rem; font-weight: 800; letter-spacing: 0.03em; padding: 3px 9px; border-radius: 999px; } .ds-sev-critical { background: #ef4444; color: #fff; } .ds-finding-confidence { flex: none; font-size: 0.76rem; color: #8291ab; font-variant-numeric: tabular-nums; min-width: 3.4em; } .ds-finding-title { flex: 1; min-width: 0; color: #f8fafc; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; } .ds-finding-copy { flex: none; width: 26px; height: 26px; padding: 0; border: none; border-radius: 7px; background: transparent; color: #8291ab; cursor: pointer; } .ds-finding-copy:hover { background: #242d44; color: #f8fafc; } .ds-finding-copy:focus-visible { outline: 2px solid #4ade80; outline-offset: 2px; }"
+    },
+    {
+      "name": "Agent Status Line",
+      "kind": "custom",
+      "refersTo": "agent-line",
+      "description": "One row of narration inside an L4L0 turn: agent name, uppercase status tag, task text on its own line.",
+      "html": "<p class=\"ds-agent-line\"><span class=\"ds-agent-name\">recon-1</span><span class=\"ds-agent-status\">RUNNING</span><span class=\"ds-agent-task\">Enumerating API routes via feroxbuster</span></p>",
+      "css": ".ds-agent-line { margin: 0; font-size: 0.92rem; color: #f8fafc; display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; } .ds-agent-name { font-weight: 700; } .ds-agent-status { font-size: 0.68rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em; color: #22c55e; background: rgba(34,197,94,0.14); border-radius: 7px; padding: 2px 7px; } .ds-agent-task { color: #94a3b8; flex-basis: 100%; }"
+    },
+    {
+      "name": "Log Block",
+      "kind": "custom",
+      "refersTo": "log-block",
+      "description": "A single growing monospace readout per contiguous run of raw tool output; fresh lines fade in.",
+      "html": "<pre class=\"ds-log-block\"><span class=\"ds-line-fresh\">$ feroxbuster -u https://target --silent</span>\n200 GET /api/v1/users</pre>",
+      "css": ".ds-log-block { margin: 0; white-space: pre-wrap; word-break: break-word; background: #0f172a; border: 1px solid #263042; border-radius: 10px; padding: 10px 12px; font-family: ui-monospace, 'SF Mono', 'Cascadia Code', Menlo, Consolas, monospace; font-size: 0.82rem; line-height: 1.55; color: #94a3b8; max-height: 40vh; overflow-y: auto; } .ds-line-fresh { color: #f8fafc; animation: ds-fade-in-line 350ms ease-out; } @keyframes ds-fade-in-line { from { opacity: 0.35; } to { opacity: 1; } } @media (prefers-reduced-motion: reduce) { .ds-line-fresh { animation: none; } }"
+    },
+    {
+      "name": "Connection Status Pill",
+      "kind": "chip",
+      "refersTo": "conn-pill",
+      "description": "Rail status indicator: colored dot + text label, green when connected, amber when disconnected.",
+      "html": "<div class=\"ds-conn-pill ds-connected\">connected</div>",
+      "css": ".ds-conn-pill { display: inline-flex; align-items: center; gap: 6px; font-size: 0.78rem; font-weight: 600; color: #94a3b8; background: #1b2336; border: 1px solid #263042; border-radius: 999px; padding: 5px 11px 5px 8px; } .ds-conn-pill::before { content: ''; width: 7px; height: 7px; border-radius: 50%; background: #8291ab; } .ds-connected { color: #22c55e; } .ds-connected::before { background: #22c55e; }"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Live Terminal Conversation",
+    "overview": "The console is a chat surface wearing a developer tool's palette: one scrolling thread, one composer, no dashboard of panels and no launch form. The operator's own sentence — a target plus an objective, typed in their own words — becomes the first chat bubble, and everything the running scan does (agent status, findings, chains, raw log output) narrates back as turns from 'L4L0' in that same thread. This was a pinned override, twice over: away from a starship-terminal aesthetic toward 'clean, like ChatGPT,' and away from a two-field launch form toward 'just a prompt, like a real conversation.' The build honors both: there is no <form> with separate target/mission fields anywhere, and the terminal register survives only inside the raw-output log blocks, where it belongs (real tool output from inside the scan container), not as a decorative shell around the whole page. Density is calm, not cramped: a slim 200px rail carries identity and live counters; the thread is centered and capped at 760px so long narration stays readable. The one deliberate visual departure from a pure chat app is the raw-output block, which groups consecutive log lines into a single monospace, scrollable readout rather than one bubble per line — the volume of tool output would otherwise drown the conversation.",
+    "keyCharacteristics": [
+      "One thread, one composer, no separate launch form or panel dashboard",
+      "Deep slate base with a single vivid green accent, reused for both brand and 'healthy/running' state",
+      "No logo or icon; the wordmark is doing all identity work",
+      "Severity is never color-alone: every finding pairs a colored pill with its own text label",
+      "All dynamic, potentially target-influenced content renders via textContent/template cloning only — never innerHTML, outerHTML, insertAdjacentHTML, or document.write (verified: zero occurrences on any dynamic path)"
+    ],
+    "rules": [
+      { "name": "The Severity-Never-Alone Rule", "body": "Every severity pill pairs a distinct background color with its own text label rendered inside the pill — color is reinforcement, never the sole signal.", "section": "colors" },
+      { "name": "The One Accent Rule", "body": "Green is the only saturated brand color in the system. Warning, caution, and danger exist solely as severity-pill fills and never appear as decorative or brand color elsewhere.", "section": "colors" },
+      { "name": "The Mono-Means-Machine Rule", "body": "Monospace is reserved for two things only — the brand wordmark and real tool output — never used for conversational text, labels, or UI chrome, so its appearance always signals 'this came from the running tool.'", "section": "typography" },
+      { "name": "The Tonal-Not-Cast Rule", "body": "Depth between the rail, thread, cards, and page background is conveyed by stepping through the slate scale, not by shadow. Reach for the next tonal step before reaching for a shadow.", "section": "elevation" }
+    ],
+    "dos": [
+      "Do render every dynamic, target- or agent-influenced value via textContent or cloned <template> content only. No innerHTML, outerHTML, insertAdjacentHTML, or document.write on any dynamic path.",
+      "Do pair every severity indicator with a visible text label; never encode severity by color alone.",
+      "Do route every new operator-facing surface (findings, chains, status, logs) through the shared 'L4L0 turn in the thread' pattern rather than inventing a separate panel or modal.",
+      "Do keep the accent (#22c55e) singular — reserve it for brand, 'connected/healthy,' and the user's own sent messages; don't introduce a second brand hue.",
+      "Do use the pill radius (999px) for anything clickable/self-contained and the soft-rectangle radii for containers, per the existing split."
+    ],
+    "donts": [
+      "Don't add a second input field, a launch form, or a dashboard of panels — the single composer and single thread are the pinned, load-bearing decision for this surface, confirmed twice over user course-correction.",
+      "Don't add a logo mark or icon next to the wordmark — the identity is deliberately text-only; this is confirmed, not a placeholder awaiting an asset.",
+      "Don't treat the composer's steering mode as a full chat channel — its note must always state plainly that it is read-only and cannot record findings.",
+      "Don't carry the ≤900px mobile layout forward as a validated pattern: it computes thread height against a hardcoded rail height and was explicitly deprioritized in favor of desktop for this pass — treat mobile as unpolished, not as an example to extend."
+    ]
+  }
+}

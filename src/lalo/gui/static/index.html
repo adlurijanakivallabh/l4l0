@@ -2,58 +2,90 @@
 <html lang="en">
 <head>
 <meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>L4L0</title>
 <link rel="stylesheet" href="/static/app.css" />
 </head>
 <body>
-<header>
-  <h1>L4L0</h1>
-  <span id="conn-status">connecting...</span>
-</header>
+<div class="shell">
 
-<main>
-  <section id="launch">
-    <h2>Scan</h2>
-    <form id="launch-form">
-      <label for="launch-targets">Targets (one per line)</label>
-      <textarea id="launch-targets" rows="3" placeholder="https://example.com&#10;10.0.0.0/24"></textarea>
-      <label for="launch-mission">Mission</label>
-      <textarea id="launch-mission" rows="3" placeholder="Find and prove any exploitable vulnerability in scope."></textarea>
-      <button type="submit">Start scan</button>
-      <button type="button" id="stop-scan">Stop</button>
-    </form>
-    <div id="launch-status"></div>
-  </section>
+  <aside class="rail">
+    <div class="brand">
+      <span class="brand-name">L4L0</span>
+    </div>
+    <div id="conn-status" class="conn-pill" role="status">standby</div>
+    <button type="button" id="stop-scan" class="btn btn-ghost btn-stop" hidden>Stop scan</button>
+    <dl class="rail-stats" aria-label="Scan summary">
+      <div><dt>Agents</dt><dd id="stat-agents">0</dd></div>
+      <div><dt>Findings</dt><dd id="stat-findings">0</dd></div>
+      <div><dt>Chains</dt><dd id="stat-chains">0</dd></div>
+      <div><dt>Elapsed</dt><dd id="stat-elapsed">--:--</dd></div>
+    </dl>
+  </aside>
 
-  <section id="agents">
-    <h2>Agents</h2>
-    <ul id="agent-list"></ul>
-  </section>
+  <main class="main">
+    <div class="thread-wrap">
 
-  <section id="findings">
-    <h2>Findings</h2>
-    <ul id="finding-list"></ul>
-  </section>
+      <div class="thread" id="thread" aria-live="polite">
+        <div class="msg msg-agent">
+          <div class="msg-avatar" aria-hidden="true">L4L0</div>
+          <div class="msg-body">
+            <p class="agent-line">Where should I point this scan, and what's the objective? Just tell me — e.g. "test https://example.com, find and prove any exploitable vulnerability."</p>
+          </div>
+        </div>
+      </div>
 
-  <section id="chains">
-    <h2>Attack Chains</h2>
-    <ul id="chain-list"></ul>
-  </section>
+      <button type="button" id="jump-latest" class="jump-latest" hidden>↓ New activity</button>
 
-  <section id="output">
-    <h2>Output</h2>
-    <pre id="scrollback"></pre>
-  </section>
+      <form id="composer-form" class="composer-bar">
+        <input id="composer-input" type="text" placeholder="Tell me what to test…" autocomplete="off" />
+        <button type="submit" class="btn btn-send" aria-label="Send">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 2 11 13"/><path d="M22 2 15 22l-4-9-9-4 20-7Z"/></svg>
+        </button>
+      </form>
+      <p class="composer-note" id="composer-note">Once a scan starts, this box is read-only steering — it cannot record findings or affect confirmation.</p>
 
-  <section id="steer">
-    <h2>Steering (read-only Q&amp;A - cannot record findings or affect confirmation)</h2>
-    <div id="steer-log"></div>
-    <form id="steer-form">
-      <input id="steer-input" type="text" placeholder="Ask or suggest something..." autocomplete="off" />
-      <button type="submit">Send</button>
-    </form>
-  </section>
-</main>
+    </div>
+  </main>
+</div>
+
+<!-- Templates: cloned by app.js, never built from string concatenation, so
+     every dynamic value still lands via textContent, not innerHTML. -->
+<template id="tpl-msg-agent">
+  <div class="msg msg-agent">
+    <div class="msg-avatar" aria-hidden="true">L4L0</div>
+    <div class="msg-body"></div>
+  </div>
+</template>
+
+<template id="tpl-msg-user">
+  <div class="msg msg-user">
+    <div class="bubble"></div>
+  </div>
+</template>
+
+<template id="tpl-agent-status">
+  <p class="agent-line">
+    <span class="agent-name"></span>
+    <span class="agent-status"></span>
+    <span class="agent-task"></span>
+  </p>
+</template>
+
+<template id="tpl-finding-card">
+  <div class="finding-card">
+    <span class="severity-pill"></span>
+    <span class="finding-confidence"></span>
+    <span class="finding-title"></span>
+    <button type="button" class="finding-copy" aria-label="Copy finding" title="Copy finding">
+      <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+    </button>
+  </div>
+</template>
+
+<template id="tpl-chain-card">
+  <div class="chain-card"></div>
+</template>
 
 <script src="/static/app.js"></script>
 </body>

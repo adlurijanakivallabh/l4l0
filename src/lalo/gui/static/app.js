@@ -1,70 +1,234 @@
 // L4L0 live-scan console. No build step, no framework - plain DOM updates
 // driven by the cursor-resumable WebSocket protocol served by app.py.
+//
+// Rendered as a single conversation thread (agent narration, findings,
+// chains, and log output all appear as messages from "L4L0"; the
+// operator's own messages are interleaved as their own turns) - not a
+// dashboard of separate panels, and not a form sitting above one either.
+// One composer box does double duty: before a scan is running, submitting
+// it parses a target (URL/IP) out of the typed text and launches a scan
+// with the whole message as the mission; once a scan is active, the same
+// box sends read-only steering instead. Every dynamic value still reaches
+// the DOM via textContent/template cloning, never innerHTML or string
+// concatenation - a target- or agent-influenced string is never parsed as
+// markup.
 (() => {
   "use strict";
 
   const token = new URLSearchParams(window.location.search).get("token") || "";
   const statusEl = document.getElementById("conn-status");
-  const agentListEl = document.getElementById("agent-list");
-  const findingListEl = document.getElementById("finding-list");
-  const chainListEl = document.getElementById("chain-list");
-  const scrollbackEl = document.getElementById("scrollback");
-  const steerLogEl = document.getElementById("steer-log");
-  const steerForm = document.getElementById("steer-form");
-  const steerInput = document.getElementById("steer-input");
-  const launchForm = document.getElementById("launch-form");
-  const launchTargetsEl = document.getElementById("launch-targets");
-  const launchMissionEl = document.getElementById("launch-mission");
+  const threadEl = document.getElementById("thread");
+  const statAgentsEl = document.getElementById("stat-agents");
+  const statFindingsEl = document.getElementById("stat-findings");
+  const statChainsEl = document.getElementById("stat-chains");
+  const statElapsedEl = document.getElementById("stat-elapsed");
+  const jumpLatestBtn = document.getElementById("jump-latest");
+  const composerForm = document.getElementById("composer-form");
+  const composerInput = document.getElementById("composer-input");
+  const composerSendBtn = composerForm.querySelector(".btn-send");
   const stopScanBtn = document.getElementById("stop-scan");
-  const launchStatusEl = document.getElementById("launch-status");
+
+  const tplMsgAgent = document.getElementById("tpl-msg-agent");
+  const tplMsgUser = document.getElementById("tpl-msg-user");
+  const tplAgentStatus = document.getElementById("tpl-agent-status");
+  const tplFindingCard = document.getElementById("tpl-finding-card");
+  const tplChainCard = document.getElementById("tpl-chain-card");
 
   const SCAN_STATUS_EVENTS = new Set(["scan_started", "scan_completed", "scan_failed"]);
+  const KNOWN_SEVERITIES = new Set(["critical", "high", "medium", "low", "info"]);
 
   const agents = new Map();
-  const findings = new Map();
-  const chains = new Map();
+  const findingCards = new Map(); // finding_id -> the .finding-card element, for in-place updates
+  let findingCount = 0;
+  let chainCount = 0;
+  let openLogBlock = null; // the currently-growing <pre>, or null if the last thread entry isn't a log run
   let lastCursor = null;
   let socket = null;
   let reconnectDelayMs = 500;
 
+  function isNearBottom() {
+    return threadEl.scrollHeight - threadEl.scrollTop - threadEl.clientHeight < 80;
+  }
+
+  // Shared by every append site: scroll along only if the operator was
+  // already at the bottom (real chat UX never yanks a reader's scroll
+  // position), otherwise surface the jump-to-latest pill instead of
+  // silently growing the thread off-screen.
+  function afterAppend(wasNear) {
+    if (wasNear) {
+      threadEl.scrollTop = threadEl.scrollHeight;
+    } else {
+      jumpLatestBtn.hidden = false;
+    }
+  }
+
+  function scrollToBottomIfNear() {
+    afterAppend(isNearBottom());
+  }
+
   function setStatus(connected) {
     statusEl.textContent = connected ? "connected" : "reconnecting...";
-    statusEl.className = connected ? "connected" : "disconnected";
+    statusEl.className = connected ? "conn-pill connected" : "conn-pill disconnected";
+  }
+
+  // Every new "L4L0" turn (a status line, a finding, a chain) closes any
+  // currently-open log block, so raw output and narration never interleave
+  // inside the same growing element.
+  function newAgentTurn() {
+    const wasNear = isNearBottom();
+    const node = tplMsgAgent.content.cloneNode(true);
+    const msg = node.querySelector(".msg-agent");
+    threadEl.appendChild(node);
+    openLogBlock = null;
+    afterAppend(wasNear);
+    return msg.querySelector(".msg-body");
   }
 
   function appendScrollback(text) {
-    scrollbackEl.textContent += text + "\n";
-    scrollbackEl.scrollTop = scrollbackEl.scrollHeight;
+    if (!openLogBlock) {
+      const body = newAgentTurn();
+      openLogBlock = document.createElement("pre");
+      openLogBlock.className = "log-block";
+      body.appendChild(openLogBlock);
+    }
+    const line = document.createElement("span");
+    line.className = "line-fresh";
+    line.textContent = text + "\n";
+    openLogBlock.appendChild(line);
+    openLogBlock.scrollTop = openLogBlock.scrollHeight;
+    scrollToBottomIfNear();
   }
 
-  function renderAgents() {
-    agentListEl.replaceChildren();
-    for (const agent of agents.values()) {
-      const li = document.createElement("li");
-      li.textContent = `[${agent.status || "unknown"}] ${agent.name || agent.agent_id} - ${agent.task || ""}`;
-      agentListEl.appendChild(li);
+  function renderAgentLine(agent) {
+    const body = newAgentTurn();
+    const node = tplAgentStatus.content.cloneNode(true);
+    node.querySelector(".agent-name").textContent = agent.name || agent.agent_id || "?";
+    node.querySelector(".agent-status").textContent = agent.status || "unknown";
+    const taskEl = node.querySelector(".agent-task");
+    if (agent.task) {
+      taskEl.textContent = agent.task;
+    } else {
+      taskEl.remove();
     }
+    body.appendChild(node);
+    statAgentsEl.textContent = String(agents.size);
   }
 
-  function renderFindings() {
-    const sorted = [...findings.values()].sort(
-      (a, b) => (b.confidence || 0) - (a.confidence || 0)
-    );
-    findingListEl.replaceChildren();
-    for (const finding of sorted) {
-      const li = document.createElement("li");
-      li.textContent = `[${finding.severity || "?"}] (${finding.confidence ?? "?"}/100) ${finding.title || finding.finding_id}`;
-      findingListEl.appendChild(li);
-    }
+  function buildFindingCard(finding, findingId) {
+    const node = tplFindingCard.content.cloneNode(true);
+    const card = node.querySelector(".finding-card");
+    card.dataset.findingId = findingId;
+    const severityWord = String(finding.severity || "unknown").toLowerCase();
+    const plateClass = KNOWN_SEVERITIES.has(severityWord) ? severityWord : "unknown";
+    const pill = card.querySelector(".severity-pill");
+    pill.className = `severity-pill sev-${plateClass}`;
+    // Severity is never color alone: the pill's own text is the primary
+    // signal, the color is reinforcement.
+    pill.textContent = severityWord.toUpperCase().slice(0, 4);
+    card.querySelector(".finding-confidence").textContent = `${finding.confidence ?? "?"}/100`;
+    card.querySelector(".finding-title").textContent = finding.title || finding.finding_id || "";
+    return card;
   }
 
-  function renderChains() {
-    chainListEl.replaceChildren();
-    for (const chain of chains.values()) {
-      const li = document.createElement("li");
-      li.textContent = (chain.node_ids || []).join(" -> ");
-      chainListEl.appendChild(li);
+  function renderFinding(findingId, finding) {
+    const existing = findingCards.get(findingId);
+    if (existing) {
+      // An update to an already-shown finding (e.g. a revised confidence
+      // score) replaces that finding's own card in place - it does not
+      // reopen the conversation as a second, duplicate finding turn.
+      const replacement = buildFindingCard(finding, findingId);
+      existing.replaceWith(replacement);
+      findingCards.set(findingId, replacement);
+      return;
     }
+    const body = newAgentTurn();
+    const card = buildFindingCard(finding, findingId);
+    body.appendChild(card);
+    findingCards.set(findingId, card);
+    findingCount += 1;
+    statFindingsEl.textContent = String(findingCount);
+  }
+
+  function renderChain(chain) {
+    const body = newAgentTurn();
+    const node = tplChainCard.content.cloneNode(true);
+    const card = node.querySelector(".chain-card");
+    const nodeIds = chain.node_ids || [];
+    nodeIds.forEach((nodeId, index) => {
+      if (index > 0) {
+        const link = document.createElement("span");
+        link.className = "chain-link";
+        link.textContent = "→";
+        card.appendChild(link);
+      }
+      card.appendChild(document.createTextNode(nodeId));
+    });
+    body.appendChild(card);
+    chainCount += 1;
+    statChainsEl.textContent = String(chainCount);
+  }
+
+  function appendUserMessage(text, { error = false } = {}) {
+    const wasNear = isNearBottom();
+    const node = tplMsgUser.content.cloneNode(true);
+    const msg = node.querySelector(".msg-user");
+    if (error) msg.classList.add("msg-error");
+    msg.querySelector(".bubble").textContent = text;
+    threadEl.appendChild(node);
+    openLogBlock = null;
+    afterAppend(wasNear);
+  }
+
+  function appendAgentText(text) {
+    const body = newAgentTurn();
+    const p = document.createElement("p");
+    p.className = "agent-line";
+    p.textContent = text;
+    body.appendChild(p);
+  }
+
+  function formatElapsed(ms) {
+    const totalSeconds = Math.max(0, Math.floor(ms / 1000));
+    const m = Math.floor(totalSeconds / 60);
+    const s = totalSeconds % 60;
+    return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+  }
+
+  let elapsedTimer = null;
+
+  function startElapsedClock() {
+    // ponytail: restarts from 00:00 on every reconnect rather than showing
+    // the scan's true elapsed time, since the status event carries no
+    // server-side timestamp yet - add one to Event if a reconnect mid-scan
+    // showing the real elapsed time ever matters.
+    const startMs = Date.now();
+    statElapsedEl.textContent = "00:00";
+    clearInterval(elapsedTimer);
+    elapsedTimer = setInterval(() => {
+      statElapsedEl.textContent = formatElapsed(Date.now() - startMs);
+    }, 1000);
+  }
+
+  function stopElapsedClock() {
+    clearInterval(elapsedTimer);
+    elapsedTimer = null;
+  }
+
+  let scanActive = false;
+
+  function onScanStarted() {
+    scanActive = true;
+    stopScanBtn.hidden = false;
+    composerInput.placeholder = "Message this run…";
+    startElapsedClock();
+  }
+
+  function onScanEnded() {
+    scanActive = false;
+    stopScanBtn.hidden = true;
+    composerInput.placeholder = "Tell me what to test…";
+    stopElapsedClock();
+    appendAgentText("Scan finished — send another target and objective anytime.");
   }
 
   function applyEvent(event) {
@@ -72,7 +236,11 @@
       case "status":
         appendScrollback(`[status] ${JSON.stringify(event.payload)}`);
         if (SCAN_STATUS_EVENTS.has(event.payload.event)) {
-          launchStatusEl.textContent = JSON.stringify(event.payload);
+          if (event.payload.event === "scan_started") {
+            if (!scanActive) onScanStarted();
+          } else if (scanActive) {
+            onScanEnded();
+          }
         }
         break;
       case "log":
@@ -83,30 +251,25 @@
           // Key by the domain id in the payload, not the event's own id: a
           // caller may reasonably append() a fresh event for every status
           // change of the SAME agent rather than tracking and update()-ing
-          // the original event id - the dashboard must still consolidate
-          // those into one row per agent, not one row per event.
+          // the original event id - each such change becomes its own
+          // narration line in the thread, using the fully merged agent state.
           const key = event.payload.agent_id || event.id;
-          agents.set(key, { ...agents.get(key), ...event.payload });
-          renderAgents();
+          const merged = { ...agents.get(key), ...event.payload };
+          agents.set(key, merged);
+          renderAgentLine(merged);
         }
         break;
       case "finding":
         {
           const key = event.payload.finding_id || event.id;
-          findings.set(key, { ...findings.get(key), ...event.payload });
-          renderFindings();
+          renderFinding(key, event.payload);
         }
         break;
       case "steering":
-        {
-          const div = document.createElement("div");
-          div.textContent = event.payload.text || "";
-          steerLogEl.appendChild(div);
-        }
+        appendUserMessage(event.payload.text || "");
         break;
       case "chain":
-        chains.set(event.id, event.payload);
-        renderChains();
+        renderChain(event.payload);
         break;
       default:
       // EventCategory (events.py) is a closed set - an unrecognized
@@ -145,7 +308,7 @@
         // "reconnecting..." forever with no way to recover short of
         // knowing to reload.
         statusEl.textContent = "session invalid - reload the page for a new link";
-        statusEl.className = "disconnected";
+        statusEl.className = "conn-pill disconnected";
         return;
       }
       if (ev.code === 4400) {
@@ -163,10 +326,52 @@
     socket.addEventListener("error", () => socket.close());
   }
 
-  steerForm.addEventListener("submit", async (ev) => {
-    ev.preventDefault();
-    const text = steerInput.value.trim();
-    if (!text) return;
+  // A URL (scheme required) or an IPv4/CIDR - a bare hostname with no
+  // scheme isn't recognized. ponytail: narrower than what an operator might
+  // type, but a bare word is too easily confused with ordinary mission
+  // prose to guess at reliably; broaden this if bare hostnames turn out to
+  // be the common case in practice.
+  const TARGET_PATTERN = /\bhttps?:\/\/\S+|\b(?:\d{1,3}\.){3}\d{1,3}(?:\/\d{1,2})?\b/g;
+
+  function extractTargets(text) {
+    const matches = text.match(TARGET_PATTERN) || [];
+    return [...new Set(matches.map((t) => t.replace(/[.,;:)]+$/, "")))];
+  }
+
+  async function launchFromPrompt(text) {
+    const targets = extractTargets(text);
+    if (!targets.length) {
+      appendUserMessage(text, { error: true });
+      appendAgentText('I need a target to scope this to — include a URL or IP, e.g. "https://example.com".');
+      return;
+    }
+    composerSendBtn.disabled = true;
+    composerInput.disabled = true;
+    try {
+      const response = await fetch(`/scan?token=${encodeURIComponent(token)}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mission: text, targets }),
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(body.error || `request failed (${response.status})`);
+      }
+      appendUserMessage(text);
+      composerInput.value = "";
+      onScanStarted();
+    } catch (err) {
+      appendUserMessage(`[scan not started: ${err.message}] ${text}`, { error: true });
+    } finally {
+      composerSendBtn.disabled = false;
+      composerInput.disabled = false;
+      composerInput.focus();
+    }
+  }
+
+  async function sendSteering(text) {
+    composerSendBtn.disabled = true;
+    composerInput.disabled = true;
     try {
       const response = await fetch(`/steer?token=${encodeURIComponent(token)}`, {
         method: "POST",
@@ -179,42 +384,29 @@
       }
       // only cleared on confirmed delivery - the operator can otherwise
       // still see and retry what they typed
-      steerInput.value = "";
+      composerInput.value = "";
     } catch (err) {
-      const div = document.createElement("div");
-      div.textContent = `[not delivered: ${err.message}] ${text}`;
-      steerLogEl.appendChild(div);
+      appendUserMessage(`[not delivered: ${err.message}] ${text}`, { error: true });
+    } finally {
+      composerSendBtn.disabled = false;
+      composerInput.disabled = false;
+      composerInput.focus();
     }
-  });
+  }
 
-  launchForm.addEventListener("submit", async (ev) => {
+  composerForm.addEventListener("submit", async (ev) => {
     ev.preventDefault();
-    const targets = launchTargetsEl.value
-      .split("\n")
-      .map((t) => t.trim())
-      .filter(Boolean);
-    const mission = launchMissionEl.value.trim();
-    if (!targets.length || !mission) {
-      launchStatusEl.textContent = "error: at least one target and a mission are required";
-      return;
-    }
-    try {
-      const response = await fetch(`/scan?token=${encodeURIComponent(token)}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ mission, targets }),
-      });
-      const body = await response.json().catch(() => ({}));
-      if (!response.ok) {
-        throw new Error(body.error || `request failed (${response.status})`);
-      }
-      launchStatusEl.textContent = `scan launched (${body.run_dir || "?"})`;
-    } catch (err) {
-      launchStatusEl.textContent = `error: ${err.message}`;
+    const text = composerInput.value.trim();
+    if (!text) return;
+    if (scanActive) {
+      await sendSteering(text);
+    } else {
+      await launchFromPrompt(text);
     }
   });
 
   stopScanBtn.addEventListener("click", async () => {
+    stopScanBtn.disabled = true;
     try {
       const response = await fetch(`/scan/stop?token=${encodeURIComponent(token)}`, {
         method: "POST",
@@ -223,9 +415,37 @@
       if (!response.ok) {
         throw new Error(body.error || `request failed (${response.status})`);
       }
-      launchStatusEl.textContent = "stop requested";
+      appendUserMessage("Stop requested.");
     } catch (err) {
-      launchStatusEl.textContent = `error: ${err.message}`;
+      appendUserMessage(`[stop failed: ${err.message}]`, { error: true });
+    } finally {
+      stopScanBtn.disabled = false;
+    }
+  });
+
+  jumpLatestBtn.addEventListener("click", () => {
+    threadEl.scrollTop = threadEl.scrollHeight;
+    jumpLatestBtn.hidden = true;
+  });
+
+  threadEl.addEventListener("scroll", () => {
+    if (isNearBottom()) jumpLatestBtn.hidden = true;
+  });
+
+  threadEl.addEventListener("click", async (ev) => {
+    const btn = ev.target.closest(".finding-copy");
+    if (!btn) return;
+    const card = btn.closest(".finding-card");
+    const parts = [".severity-pill", ".finding-confidence", ".finding-title"]
+      .map((sel) => card.querySelector(sel)?.textContent.trim())
+      .filter(Boolean);
+    try {
+      await navigator.clipboard.writeText(parts.join(" · "));
+      btn.classList.add("copied");
+      setTimeout(() => btn.classList.remove("copied"), 1200);
+    } catch {
+      // clipboard permission denied/unavailable - the finding text is still
+      // visible and selectable manually, nothing else to do here
     }
   });
 
