@@ -680,17 +680,87 @@ def test_scan_runner_emits_usage_delta_when_usage_path_is_configured(
     # agent registered by ScanRunner.run() is always the first one.
     assert usage_delta["by_agent"]["agent-1"]["requests"] > 0
     assert set(usage_delta["by_agent"]) == {"agent-1"}  # a single-agent scan; no children spawned
-    # A multi-agent variant (scripting a spawn_agents call, like
-    # test_scan_runner_dispatches_spawn_agents_and_merges_both_childrens_findings
-    # does) would additionally prove per-child attribution, but two children's
-    # AgentLoops call record_usage against the SAME usage_path concurrently on
-    # real OS threads, and core/usage.py's own module docstring already
-    # documents that read-modify-write as deliberately unlocked across
-    # concurrent writers ("a real but low-probability edge case, not worth
-    # the complexity of process-level file locking") - a multi-agent version
-    # of this test was tried and observed flaky (a losing write silently
-    # dropped one child's contribution) for exactly that pre-existing,
-    # already-accepted reason, unrelated to the diffing added here.
+    # A multi-agent variant proving real per-child attribution lives below as
+    # test_scan_runner_emits_usage_delta_by_agent_for_a_sequentially_spawned_child,
+    # using the sequential spawn_agent path (single in-thread child, no
+    # concurrent writers). A PARALLEL spawn_agents variant was tried first and
+    # was flaky: two children's AgentLoops run on real OS threads and both
+    # call record_usage against the SAME usage_path concurrently, which
+    # core/usage.py's own module docstring already documents as a deliberately
+    # unlocked read-modify-write ("a real but low-probability edge case, not
+    # worth the complexity of process-level file locking") - that race is real
+    # for the parallel path, but does not apply to the sequential one below.
+
+
+def _spawn_agent_call() -> str:
+    # The SINGULAR spawn tool (build_spawn_tools/_spawn in agent/spawn.py)
+    # takes {"name": str, "task": str} and runs the child to completion
+    # synchronously, in-thread, before returning - unlike spawn_agents'
+    # {"tasks": [...]} (build_parallel_spawn_tool), which fans out over a
+    # ThreadPoolExecutor. No concurrent record_usage writers here.
+    return json.dumps(
+        {
+            "tool": "spawn_agent",
+            "args": {"name": "Child C", "task": "CHILD-C-TASK: test host c.example.com"},
+        }
+    )
+
+
+def _respond_with_a_sequential_spawn(call_index: int, prompt: str) -> str:
+    if "FINDING TO REVIEW" in prompt:
+        return '{"verdict": "confirmed", "proof_level": "L3", "reasoning": "grounded"}'
+    if "MISSION:" not in prompt:
+        return "ok"  # the preflight verify_router() health-check call
+    if "CHILD-C-TASK" in prompt:
+        # The spawned child does a little real work (files a finding, one
+        # real completion) before finishing (a second real completion) - both
+        # attributed to the child's own distinct agent_id.
+        if "HISTORY (most recent last):" not in prompt:
+            return _record_finding_call_for("https://c.example.com/search")
+        return _finish_call()
+    # the root's own mission turns
+    if "HISTORY (most recent last):" not in prompt:
+        return _spawn_agent_call()
+    return _finish_call()
+
+
+def test_scan_runner_emits_usage_delta_by_agent_for_a_sequentially_spawned_child(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The single-agent test above proves the diffing mechanism but can't
+    prove real per-child attribution end-to-end (only one agent_id ever
+    exists in that run). A single sequential spawn_agent call - unlike
+    spawn_agents' parallel fan-out - runs its child to completion on the SAME
+    thread before the root resumes, so there is zero concurrent-write
+    exposure to record_usage's unlocked read-modify-write: this proves the
+    root's and the spawned child's distinct agent_ids both actually flow
+    through to usage_delta["by_agent"], without the parallel path's race.
+    """
+    monkeypatch.setattr(scan_module, "docker_available", lambda: True)
+    monkeypatch.setattr(scan_module, "RuntimeContainer", _FakeContainer)
+    router = ModelRouter(
+        providers={"fake": _ScriptedProvider(_respond_with_a_sequential_spawn)},
+        routes={"reasoning": ("fake",), "review": ("fake",)},
+        default_route=("fake",),
+    )
+    monkeypatch.setattr(scan_module, "build_router", lambda _settings: router)
+
+    event_log = EventLog()
+    config = ScanConfig(
+        mission="find a bug, spawning one child for a focused subtask",
+        target_specs=["c.example.com"],
+        run_dir=tmp_path / "run",
+        usage_path=tmp_path / "usage.json",
+    )
+    ScanRunner(config, env={"ANTHROPIC_API_KEY": "sk-test"}, event_log=event_log).run()
+
+    _cursor, events = event_log.snapshot()
+    completed = next(e for e in events if e.payload.get("event") == "scan_completed")
+    by_agent = completed.payload["usage_delta"]["by_agent"]
+    # agent-1 is the root; agent-2 is the one sequentially spawned child.
+    assert set(by_agent) == {"agent-1", "agent-2"}
+    assert by_agent["agent-1"]["requests"] >= 1
+    assert by_agent["agent-2"]["requests"] >= 1
 
 
 def test_scan_runner_estimates_cost_when_a_pricing_table_is_configured(
