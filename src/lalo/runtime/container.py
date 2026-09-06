@@ -321,6 +321,13 @@ class RuntimeContainer:
         streaming is a side channel for a live viewer, never a replacement
         for the agent's own synchronous "run a command, get the final
         result" contract every existing caller of :meth:`exec` relies on.
+
+        The ``on_chunk(stream, text)`` callback is synchronized across both
+        stdout and stderr streams (never called concurrently), and exceptions
+        raised by the callback are silently caught to prevent stalling the
+        pump threads: the callback's fault (e.g., a GUI event-handler crash)
+        must not prevent the command from completing or its output from being
+        fully drained.
         """
         if not self._started:
             raise ContainerError("cannot exec: container not started")
@@ -338,11 +345,19 @@ class RuntimeContainer:
 
         stdout_chunks: list[str] = []
         stderr_chunks: list[str] = []
+        callback_lock = threading.Lock()
 
         def _pump(stream: object, sink: list[str], name: str) -> None:
-            for line in stream:  # type: ignore[attr-defined]
-                sink.append(line)
-                on_chunk(name, line)
+            try:
+                for line in stream:  # type: ignore[attr-defined]
+                    sink.append(line)
+                    with callback_lock:
+                        try:
+                            on_chunk(name, line)
+                        except Exception as exc:
+                            _log.exception("on_chunk raised in exec_streaming; continuing: %s", exc)
+            except Exception as exc:
+                _log.exception("pump thread raised in exec_streaming: %s", exc)
 
         stdout_thread = threading.Thread(
             target=_pump, args=(process.stdout, stdout_chunks, "stdout"), daemon=True
@@ -364,7 +379,7 @@ class RuntimeContainer:
         return ExecResult(
             exit_code=124 if timed_out else process.returncode,
             stdout="".join(stdout_chunks),
-            stderr="".join(stderr_chunks) if not timed_out else "".join(stderr_chunks) + "timeout",
+            stderr="".join(stderr_chunks),
             timed_out=timed_out,
         )
 
