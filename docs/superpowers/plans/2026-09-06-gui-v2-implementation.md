@@ -564,14 +564,14 @@ git add src/lalo/core/env_file.py src/lalo/setup.py src/lalo/gui/app.py tests/la
 git commit -m "feat(L4L0): in-GUI provider settings (GET/POST /settings/providers)"
 ```
 
-### Task 4: Advanced scan options (max_steps, budget_ceiling, egress_lock)
+### Task 4: Advanced scan options (max_steps, budget_ceiling, egress_lock, redact_findings)
 
 **Files:**
 - Modify: `src/lalo/gui/app.py` (`ScanRequest`, `start_scan`)
 - Test: `tests/lalo/test_gui_app.py`
 
 **Interfaces:**
-- Consumes: `ScanConfig` (existing fields `max_steps: int = 25`, `budget_ceiling: int = 300`, `egress_lock: bool = False` — unchanged).
+- Consumes: `ScanConfig` (existing fields `max_steps: int = 25`, `budget_ceiling: int = 300`, `egress_lock: bool = False`, `redact_findings: bool = False` — all unchanged, `redact_findings` landed in a separate commit after this plan was first written).
 
 - [ ] **Step 1: Write the failing test**
 
@@ -589,11 +589,13 @@ def test_scan_request_advanced_options_pass_through_to_scan_config(
             "max_steps": 10,
             "budget_ceiling": 50,
             "egress_lock": True,
+            "redact_findings": True,
         },
     )
     config = current_config()
     assert config.max_steps == 10
     assert config.budget_ceiling == 50
+    assert config.redact_findings is True
     assert config.egress_lock is True
 
 
@@ -607,12 +609,13 @@ def test_scan_request_advanced_options_default_to_scan_configs_own_defaults(
     assert config.max_steps == 25
     assert config.budget_ceiling == 300
     assert config.egress_lock is False
+    assert config.redact_findings is False
 ```
 
 - [ ] **Step 2: Run to verify it fails**
 
 Run: `uv run pytest tests/lalo/test_gui_app.py -k advanced_options -v`
-Expected: FAIL (`max_steps`/`budget_ceiling`/`egress_lock` unexpected keyword arguments on `ScanRequest`, or config values don't match)
+Expected: FAIL (`max_steps`/`budget_ceiling`/`egress_lock`/`redact_findings` unexpected keyword arguments on `ScanRequest`, or config values don't match)
 
 - [ ] **Step 3: Add the fields and thread them through**
 
@@ -622,6 +625,7 @@ In `ScanRequest`:
     max_steps: int | None = None
     budget_ceiling: int | None = None
     egress_lock: bool = False
+    redact_findings: bool = False
 ```
 
 In `start_scan`'s non-resume branch, when constructing `ScanConfig`:
@@ -636,6 +640,7 @@ In `start_scan`'s non-resume branch, when constructing `ScanConfig`:
                 usage_path=DEFAULT_USAGE_PATH,
                 max_steps=request.max_steps if request.max_steps is not None else 25,
                 budget_ceiling=request.budget_ceiling if request.budget_ceiling is not None else 300,
+                redact_findings=request.redact_findings,
                 egress_lock=request.egress_lock,
             )
 ```
@@ -708,8 +713,13 @@ Add the advanced-options fieldset near the composer, right before `<form id="com
   <label>Max steps <input id="opt-max-steps" type="number" min="1" placeholder="25" /></label>
   <label>Budget ceiling <input id="opt-budget-ceiling" type="number" min="1" placeholder="300" /></label>
   <label><input id="opt-egress-lock" type="checkbox" /> Egress lock</label>
+  <label><input id="opt-redact-findings" type="checkbox" /> Redact secrets in report/logs</label>
 </details>
 ```
+
+(`redact_findings` defaults to unchecked/`False`, matching `ScanConfig`'s
+own default landed alongside this plan: captured secrets appear verbatim
+in the report unless an operator explicitly checks this box.)
 
 - [ ] **Step 2: Wire drawer open/close and provider list rendering**
 
@@ -793,6 +803,7 @@ In `launchFromPrompt`, change the `fetch("/scan", ...)` body to:
       const maxSteps = document.getElementById("opt-max-steps").value;
       const budgetCeiling = document.getElementById("opt-budget-ceiling").value;
       const egressLock = document.getElementById("opt-egress-lock").checked;
+      const redactFindings = document.getElementById("opt-redact-findings").checked;
       const response = await fetch("/scan", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -802,6 +813,7 @@ In `launchFromPrompt`, change the `fetch("/scan", ...)` body to:
           ...(maxSteps ? { max_steps: Number(maxSteps) } : {}),
           ...(budgetCeiling ? { budget_ceiling: Number(budgetCeiling) } : {}),
           egress_lock: egressLock,
+          redact_findings: redactFindings,
         }),
       });
 ```
