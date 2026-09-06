@@ -65,6 +65,27 @@ than letting a huge stdout blob consume the agent's own context window,
 and use a tool's own quiet/summary flags where available rather than
 filtering a verbose stream after the fact.
 
+## Distinguish an Infrastructure Failure From Target Behavior
+
+A network-layer failure — DNS resolution failure, connection refused, a
+TLS handshake mismatch, a timeout — produces its OWN error text from the
+tool or the local network stack, not from the target. Recognize the
+specific error class before drawing any conclusion from it: "could not
+resolve host" means the hostname is wrong or unreachable from this
+network position, "connection refused" means nothing is listening on
+that port, a TLS/handshake error usually means a scheme or port mismatch
+(HTTP tried against an HTTPS port or vice versa) — none of these are the
+target's own behavior, a WAF block, or a finding. This matters even more
+sharply through any intermediary (a local proxy, a VPN client, a
+container's own network stack): the failure page or error you see can be
+that intermediary's own, generated because your request never reached
+the target at all — check for that possibility explicitly (a local
+proxy's own branded error page looks nothing like the real target and is
+worth recognizing on sight) before treating what you see as content from
+the target. Fix the actual cause (hostname, port, scheme, connectivity)
+and retry, or move on — repeatedly re-requesting a genuinely dead host
+wastes turns without producing new information.
+
 ## Fail Fast on Tool Substitution
 
 If a package manager or installation attempt fails, don't retry the exact

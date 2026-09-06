@@ -77,6 +77,27 @@ never told the agent so — added as a one-line, static addition to
 ``agent.txt``'s ``METHODOLOGY`` section (the exact paths are fixed by the
 Dockerfile, so this needed no dynamic environment-probing machinery the way
 that reference's own Mako-templated version does).
+
+A fresh full re-read of the first reference's ``system_prompt.jinja``
+(545 lines — the file underlying most of this module's existing content)
+for this session's Phase 14 cycle surfaced one more genuinely new, general
+lesson beyond what was already adopted: its "CAIDO PROXY ERROR PAGES —
+NOT RESPONSES FROM THE TARGET" section, warning that an unreachable
+target through that reference's own MITM proxy produces the *proxy's*
+error page, not the target's, and must not be read as target behavior, a
+WAF, or a finding. L4L0's own structured ``http`` tool cannot hit this
+specific shape (its firer distinguishes a connection failure from a real
+response at the ``FireResult.status`` level, not by inspecting body text —
+this is exactly what Phase 4's ``probe_reachability`` bug-fix already
+hardened), but the free-shell path has no equivalent structural guard: a
+raw ``curl``/tool invocation against a genuinely unreachable target
+produces its OWN network-layer error text with no code distinguishing it
+from target content. Generalized past that reference's proxy-specific
+framing and added to
+:mod:`~lalo.skills.content.methodology.cli-tool-discipline` (Phase 11's
+skill library, not this module's own template file, since the lesson is
+about interpreting free-shell tool output generally — the natural home
+for it is where every other CLI-interpretation mistake already lives).
 """
 
 from __future__ import annotations
