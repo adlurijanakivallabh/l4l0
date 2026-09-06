@@ -176,7 +176,8 @@ def test_render_report_html_renders_the_executive_summary_when_given() -> None:
     )
     rendered = render_report_html([], coverage, summary=summary)
     assert "<h2>Executive Summary</h2>" in rendered
-    assert "high: 1, low: 1" in rendered
+    assert '<li class="stat-chip sev-high"><span class="stat-count">1</span> HIGH</li>' in rendered
+    assert '<li class="stat-chip sev-low"><span class="stat-count">1</span> LOW</li>' in rendered
     assert "sql-injection: 1, xss: 1" in rendered
     assert "<strong>Highest severity:</strong> HIGH" in rendered
 
@@ -198,3 +199,24 @@ def test_render_report_html_with_no_summary_has_no_executive_summary_section() -
     coverage = CoverageSummary(assessed=[], not_assessed=[])
     rendered = render_report_html([], coverage)
     assert "Executive Summary" not in rendered
+
+
+def test_render_report_html_omits_stat_chips_when_no_findings() -> None:
+    coverage = CoverageSummary(assessed=[], not_assessed=[])
+    summary = ExecutiveSummary(
+        total_findings=0, by_severity={}, by_vuln_class={}, highest_severity=None
+    )
+    rendered = render_report_html([], coverage, summary=summary)
+    assert '<ul class="stat-chips">' not in rendered
+
+
+def test_render_report_html_stat_chip_falls_back_for_an_unrecognized_severity() -> None:
+    """display_severity is operator-supplied (SeverityOverride) - an
+    unexpected string must still render as a chip, never be silently
+    dropped from the summary."""
+    coverage = CoverageSummary(assessed=[], not_assessed=[])
+    summary = ExecutiveSummary(
+        total_findings=1, by_severity={"weird": 1}, by_vuln_class={}, highest_severity="weird"
+    )
+    rendered = render_report_html([], coverage, summary=summary)
+    assert '<li class="stat-chip sev-info"><span class="stat-count">1</span> WEIRD</li>' in rendered

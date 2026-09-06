@@ -43,11 +43,38 @@ dt { font-weight: bold; float: left; clear: left; width: 130px; }
 dd { margin-left: 140px; }
 pre { background: #f4f4f4; padding: 8px; white-space: pre-wrap; word-break: break-word; }
 .warning { color: #a33; font-weight: bold; }
+.stat-chips { display: flex; flex-wrap: wrap; gap: 8px; margin: 4px 0 16px;
+  padding: 0; list-style: none; }
+.stat-chip { display: inline-flex; align-items: baseline; gap: 5px; padding: 4px 12px;
+  border-radius: 999px; font-size: 10pt; font-weight: 600; }
+.stat-chip .stat-count { font-size: 12pt; font-weight: 800; }
+.stat-chip.sev-critical { background: #fee2e2; color: #991b1b; }
+.stat-chip.sev-high { background: #ffedd5; color: #9a3412; }
+.stat-chip.sev-medium { background: #fef9c3; color: #854d0e; }
+.stat-chip.sev-low { background: #dbeafe; color: #1e40af; }
+.stat-chip.sev-info { background: #f1f5f9; color: #475569; }
 """
+
+_KNOWN_SEVERITIES = frozenset({"critical", "high", "medium", "low", "info"})
 
 
 def _e(value: object) -> str:
     return escape(str(value))
+
+
+def _stat_chips(by_severity: dict[str, int]) -> str:
+    """A visual per-severity count row - more scannable at a glance than the
+    equivalent plain-prose numbers alone. An unrecognized severity string
+    (never produced by this codebase's own fixed CVSS scale today, but
+    display_severity is operator-supplied via SeverityOverride, so this
+    stays defensive) falls back to an unstyled chip rather than being
+    silently dropped from the summary."""
+    chips = [
+        f'<li class="stat-chip sev-{sev if sev in _KNOWN_SEVERITIES else "info"}">'
+        f'<span class="stat-count">{count}</span> {_e(sev.upper())}</li>'
+        for sev, count in by_severity.items()
+    ]
+    return f'<ul class="stat-chips">{"".join(chips)}</ul>'
 
 
 def render_finding_html(record: FindingRecord) -> str:
@@ -125,15 +152,12 @@ def render_report_html(
 
     if summary is not None:
         parts.append("<h2>Executive Summary</h2>")
-        severity_line = (
-            ", ".join(f"{_e(sev)}: {count}" for sev, count in summary.by_severity.items())
-            or "(none)"
-        )
+        if summary.by_severity:
+            parts.append(_stat_chips(summary.by_severity))
         category_line = (
             ", ".join(f"{_e(cls)}: {count}" for cls, count in summary.by_vuln_class.items())
             or "(none)"
         )
-        parts.append(f"<p><strong>By severity:</strong> {severity_line}</p>")
         parts.append(f"<p><strong>By category:</strong> {category_line}</p>")
         if summary.highest_severity:
             parts.append(
