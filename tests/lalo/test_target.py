@@ -146,3 +146,49 @@ def test_an_operators_own_malformed_path_spec_drops_the_whole_rule() -> None:
 def test_describe_renders_the_path_prefix() -> None:
     eng = Engagement.from_specs(["https://example.com/api/v2"])
     assert "path prefix: /api/v2" in eng.describe()
+
+
+# --- exclude carve-out --------------------------------------------------
+
+
+def test_exclude_carves_a_host_out_of_a_broader_include_rule() -> None:
+    eng = Engagement.from_specs(["*.example.com"], exclude_specs=["admin.example.com"])
+    assert eng.in_engagement("app.example.com")
+    assert not eng.in_engagement("admin.example.com")
+
+
+def test_exclude_carves_a_path_out_of_an_otherwise_in_scope_host() -> None:
+    eng = Engagement.from_specs(
+        ["https://example.com"], exclude_specs=["https://example.com/admin"]
+    )
+    assert eng.in_engagement("example.com", 443, "https", "/api/users")
+    assert not eng.in_engagement("example.com", 443, "https", "/admin")
+    assert not eng.in_engagement("example.com", 443, "https", "/admin/settings")
+
+
+def test_exclude_always_wins_even_against_a_more_specific_include() -> None:
+    eng = Engagement.from_specs(
+        ["example.com", "admin.example.com"], exclude_specs=["admin.example.com"]
+    )
+    assert not eng.in_engagement("admin.example.com")
+
+
+def test_no_exclude_specs_behaves_exactly_like_before() -> None:
+    eng = Engagement.from_specs(["*.example.com"])
+    assert eng.exclude_rules == ()
+    assert eng.in_engagement("admin.example.com")
+
+
+def test_describe_renders_excluded_rules_separately() -> None:
+    eng = Engagement.from_specs(["*.example.com"], exclude_specs=["admin.example.com"])
+    rendered = eng.describe()
+    assert "admin.example.com" in rendered
+    assert "Excluded" in rendered
+    # the excluded entry appears after the "Excluded" marker, not mixed into
+    # the plain included-rules list above it
+    assert rendered.index("Excluded") < rendered.rindex("admin.example.com")
+
+
+def test_describe_with_no_excludes_has_no_excluded_section() -> None:
+    eng = Engagement.from_specs(["example.com"])
+    assert "Excluded" not in eng.describe()

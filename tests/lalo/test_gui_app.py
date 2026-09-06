@@ -14,6 +14,7 @@ from starlette.websockets import WebSocketDisconnect
 import lalo.gui.app as app_module
 from lalo.gui.app import build_app, generate_token
 from lalo.gui.events import EventLog
+from lalo.scan import ScanConfig
 
 
 def _client(
@@ -29,10 +30,12 @@ class _FakeScanRunner:
 
     block: threading.Event | None = None
     raises: Exception | None = None
+    last_instance: _FakeScanRunner | None = None
 
     def __init__(self, config: object, *, env: object = None, event_log: object = None) -> None:
         self.config = config
         self.cancelled = False
+        _FakeScanRunner.last_instance = self
 
     def run(self) -> None:
         if self.block is not None:
@@ -42,6 +45,12 @@ class _FakeScanRunner:
 
     def cancel(self) -> None:
         self.cancelled = True
+
+
+def current_config() -> ScanConfig:
+    """The ScanConfig the most recently constructed _FakeScanRunner received."""
+    assert _FakeScanRunner.last_instance is not None
+    return _FakeScanRunner.last_instance.config  # type: ignore[return-value]
 
 
 def _wait_until(
@@ -189,6 +198,35 @@ def test_scan_launches_a_runner_and_returns_a_run_dir(
     assert response.status_code == 200
     assert response.json()["ok"] is True
     assert Path(response.json()["run_dir"]).parent == tmp_path
+
+
+def test_scan_request_passes_exclude_targets_through_to_scan_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(app_module, "ScanRunner", _FakeScanRunner)
+    client, _ = _client(runs_dir=tmp_path)
+    response = client.post(
+        "/scan?token=test-token",
+        json={
+            "mission": "find a bug",
+            "targets": ["*.example.com"],
+            "exclude_targets": ["admin.example.com", "  "],
+        },
+    )
+    assert response.status_code == 200
+    # blank entries are stripped the same way `targets` already are
+    assert current_config().exclude_target_specs == ["admin.example.com"]
+
+
+def test_scan_request_defaults_exclude_targets_to_empty(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(app_module, "ScanRunner", _FakeScanRunner)
+    client, _ = _client(runs_dir=tmp_path)
+    client.post(
+        "/scan?token=test-token", json={"mission": "find a bug", "targets": ["example.com"]}
+    )
+    assert current_config().exclude_target_specs == []
 
 
 def test_scan_refuses_a_second_launch_while_one_is_running(

@@ -91,6 +91,7 @@ class SteeringMessage(BaseModel):
 class ScanRequest(BaseModel):
     mission: str
     targets: list[str]
+    exclude_targets: list[str] = []
 
 
 def generate_token() -> str:
@@ -127,6 +128,7 @@ def build_app(event_log: EventLog, token: str, *, runs_dir: Path | None = None) 
             return JSONResponse({"error": "invalid token"}, status_code=403)
         mission = request.mission.strip()
         targets = [t.strip() for t in request.targets if t.strip()]
+        exclude_targets = [t.strip() for t in request.exclude_targets if t.strip()]
         if not mission or not targets:
             return JSONResponse({"error": "'mission' and 'targets' are required"}, status_code=400)
         if current_runner["runner"] is not None:
@@ -134,7 +136,11 @@ def build_app(event_log: EventLog, token: str, *, runs_dir: Path | None = None) 
 
         run_dir = runs_dir / uuid.uuid4().hex[:12]
         config = ScanConfig(
-            mission=mission, target_specs=targets, run_dir=run_dir, usage_path=DEFAULT_USAGE_PATH
+            mission=mission,
+            target_specs=targets,
+            exclude_target_specs=exclude_targets,
+            run_dir=run_dir,
+            usage_path=DEFAULT_USAGE_PATH,
         )
         runner = ScanRunner(config, event_log=event_log)
         current_runner["runner"] = runner

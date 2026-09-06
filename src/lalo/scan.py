@@ -92,7 +92,7 @@ from .graph.model import NodeKind, ReachabilityGraph
 from .graph.tool import build_note_tool, build_query_graph_tool
 from .identity.credentials import Identity, IdentityStore
 from .identity.login import LoginScheme, SessionRegistry
-from .identity.tool import build_jwt_tool, build_login_tool
+from .identity.tool import build_jwt_tool, build_login_tool, build_session_check_tool
 from .integrations.mcp_client import MCPServerConfig, build_mcp_tool
 from .oast.server import OASTServer
 from .oast.tool import build_oast_tools
@@ -121,6 +121,7 @@ class ScanConfig:
     mission: str
     target_specs: list[str]
     run_dir: Path
+    exclude_target_specs: list[str] = field(default_factory=list)
     egress_lock: bool = False
     max_steps: int = 25
     spawn_max_depth: int = 3
@@ -172,20 +173,25 @@ class _ResumeManifest:
     ``max_steps``/``spawn_max_depth``/``budget_ceiling``, which would have
     made exactly that normal, expected resume flow impossible (any budget
     increase would be rejected as a "different config"). Only fields that
-    actually define WHAT is authorized (mission, targets) or toggle a safety
-    control (egress_lock) are locked; operational tuning knobs are free to
-    change across a resume.
+    actually define WHAT is authorized (mission, targets, exclusions) or
+    toggle a safety control (egress_lock) are locked; operational tuning
+    knobs are free to change across a resume.
     """
 
     mission: str
     target_specs: list[str]
     egress_lock: bool
+    # Defaulted (unlike the fields above) so a manifest written before this
+    # field existed still resumes -- an old run predates the concept of an
+    # exclusion list, which is honestly "none", not a reason to refuse resume.
+    exclude_target_specs: list[str] = field(default_factory=list)
 
     @classmethod
     def from_config(cls, config: ScanConfig) -> _ResumeManifest:
         return cls(
             mission=config.mission,
             target_specs=list(config.target_specs),
+            exclude_target_specs=list(config.exclude_target_specs),
             egress_lock=config.egress_lock,
         )
 
@@ -354,7 +360,9 @@ class ScanRunner:
                 failures=[(name, reason) for name, (_, reason) in provider_health.items()],
             )
 
-        engagement = Engagement.from_specs(self.config.target_specs)
+        engagement = Engagement.from_specs(
+            self.config.target_specs, exclude_specs=self.config.exclude_target_specs
+        )
         scope = ScopeGuard(engagement, egress_lock=self.config.egress_lock)
         preflight_firer = HttpFirer(scope)
         try:
@@ -467,6 +475,7 @@ class ScanRunner:
                 tools.append(
                     build_login_tool(firer, identities, sessions, self.config.login_schemes)
                 )
+                tools.append(build_session_check_tool(firer, sessions))
             tools += [build_mcp_tool(conn) for conn in self.config.mcp_connections.values()]
             spawn_tool, view_graph_tool = build_spawn_tools(
                 coordinator, _run_child, self_id=self_id

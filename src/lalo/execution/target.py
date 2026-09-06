@@ -135,9 +135,22 @@ class TargetRule:
 
 @dataclass(frozen=True)
 class Engagement:
-    """The full set of authorized target rules."""
+    """The full set of authorized target rules, plus an optional exclude list.
+
+    ``exclude_rules`` is a narrower, deliberately partial adaptation of a
+    reference platform's own filesystem-path exclusion for a bind-mounted
+    source repo — that mechanism patches a threat (host-repo access) L4L0's
+    own no-bind-mount container model never creates, so it isn't ported as
+    designed. What genuinely transfers is the shape: an operator scoping
+    ``*.example.com`` broadly may still want ``admin.example.com`` or
+    ``/internal/*`` on an otherwise-in-scope host carved OUT, not tested at
+    all — L4L0 had no way to express that before (only "add a narrower
+    include rule" existed, which can't subtract from an existing broad one).
+    An exclude match always wins over an include match, checked first.
+    """
 
     rules: tuple[TargetRule, ...]
+    exclude_rules: tuple[TargetRule, ...] = ()
 
     def in_engagement(
         self,
@@ -146,83 +159,98 @@ class Engagement:
         scheme: str | None = None,
         path: str | None = None,
     ) -> bool:
+        if any(rule.matches(host, port, scheme, path) for rule in self.exclude_rules):
+            return False
         return any(rule.matches(host, port, scheme, path) for rule in self.rules)
 
     @classmethod
-    def from_specs(cls, specs: list[str]) -> Engagement:
+    def from_specs(cls, specs: list[str], *, exclude_specs: list[str] | None = None) -> Engagement:
         """Build an engagement from operator specs.
 
         Accepts ``example.com``, ``*.example.com``, ``example.com:8080``,
         ``https://example.com``, ``https://*.example.com:8443``, ``127.0.0.1``.
+        ``exclude_specs`` accepts the identical forms and always overrides an
+        otherwise-matching include rule.
         """
-        rules: list[TargetRule] = []
-        for raw in specs:
-            spec = raw.strip()
-            if not spec:
-                continue
-            scheme: str | None = None
-            port: int | None = None
-            path_prefix: tuple[str, ...] | None = None
-            if "://" in spec:
-                parts = urlsplit(spec)
-                scheme = parts.scheme or None
-                host = parts.hostname or ""
-                # .port is lazily parsed and raises ValueError on a malformed
-                # or out-of-range port string (e.g. "https://x.com:abc") — one
-                # bad entry among possibly many operator-supplied specs must
-                # not crash the whole engagement, so treat it as "no port
-                # restriction" the same way the plain host:port branch below
-                # already does for a non-digit port.
-                try:
-                    port = parts.port
-                except ValueError:
-                    port = None
-                if parts.path and parts.path != "/":
-                    canonical = _canonical_path_segments(parts.path)
-                    if canonical is None:
-                        # An operator's OWN scope declaration is suspicious/
-                        # unparseable -- unlike a bad port (which degrades to
-                        # "no restriction", a widening a port mistake can't
-                        # really weaponize), silently widening a path
-                        # restriction to "the whole host" would be a real
-                        # scope escalation the operator never asked for. Drop
-                        # the whole spec rather than guess.
-                        continue
-                    path_prefix = canonical
-            elif spec.startswith("["):
-                # A bracketed IPv6 literal ("[::1]" or "[::1]:8080") with no
-                # scheme prefix — urlsplit needs a "//" authority marker to
-                # parse the brackets/port correctly rather than treating the
-                # whole spec as an opaque path, which is what silently
-                # produced a TargetRule that could never match anything here.
-                parts = urlsplit(f"//{spec}")
-                host = parts.hostname or ""
-                try:
-                    port = parts.port
-                except ValueError:
-                    port = None
-            elif spec.count(":") == 1:
-                host, _, port_str = spec.partition(":")
-                port = int(port_str) if port_str.isdigit() else None
-            else:
-                host = spec
-            if not host:
-                continue
-            rules.append(
-                TargetRule(
-                    host=host,
-                    ports=frozenset({port}) if port else None,
-                    schemes=frozenset({scheme}) if scheme else None,
-                    path_prefix=path_prefix,
-                )
-            )
-        return cls(rules=tuple(rules))
+        return cls(
+            rules=_parse_target_specs(specs),
+            exclude_rules=_parse_target_specs(exclude_specs or []),
+        )
 
     def describe(self) -> str:
-        """A human-readable rendering of every authorized rule (for prompts/reports)."""
+        """A human-readable rendering of every authorized (and excluded) rule."""
         if not self.rules:
             return "(no targets declared)"
-        return "\n".join(f"- {_describe_rule(rule)}" for rule in self.rules)
+        lines = [f"- {_describe_rule(rule)}" for rule in self.rules]
+        if self.exclude_rules:
+            lines.append("Excluded (always overrides an otherwise-matching rule above):")
+            lines += [f"- {_describe_rule(rule)}" for rule in self.exclude_rules]
+        return "\n".join(lines)
+
+
+def _parse_target_specs(specs: list[str]) -> tuple[TargetRule, ...]:
+    rules: list[TargetRule] = []
+    for raw in specs:
+        spec = raw.strip()
+        if not spec:
+            continue
+        scheme: str | None = None
+        port: int | None = None
+        path_prefix: tuple[str, ...] | None = None
+        if "://" in spec:
+            parts = urlsplit(spec)
+            scheme = parts.scheme or None
+            host = parts.hostname or ""
+            # .port is lazily parsed and raises ValueError on a malformed
+            # or out-of-range port string (e.g. "https://x.com:abc") — one
+            # bad entry among possibly many operator-supplied specs must
+            # not crash the whole engagement, so treat it as "no port
+            # restriction" the same way the plain host:port branch below
+            # already does for a non-digit port.
+            try:
+                port = parts.port
+            except ValueError:
+                port = None
+            if parts.path and parts.path != "/":
+                canonical = _canonical_path_segments(parts.path)
+                if canonical is None:
+                    # An operator's OWN scope declaration is suspicious/
+                    # unparseable -- unlike a bad port (which degrades to
+                    # "no restriction", a widening a port mistake can't
+                    # really weaponize), silently widening a path
+                    # restriction to "the whole host" would be a real
+                    # scope escalation the operator never asked for. Drop
+                    # the whole spec rather than guess.
+                    continue
+                path_prefix = canonical
+        elif spec.startswith("["):
+            # A bracketed IPv6 literal ("[::1]" or "[::1]:8080") with no
+            # scheme prefix — urlsplit needs a "//" authority marker to
+            # parse the brackets/port correctly rather than treating the
+            # whole spec as an opaque path, which is what silently
+            # produced a TargetRule that could never match anything here.
+            parts = urlsplit(f"//{spec}")
+            host = parts.hostname or ""
+            try:
+                port = parts.port
+            except ValueError:
+                port = None
+        elif spec.count(":") == 1:
+            host, _, port_str = spec.partition(":")
+            port = int(port_str) if port_str.isdigit() else None
+        else:
+            host = spec
+        if not host:
+            continue
+        rules.append(
+            TargetRule(
+                host=host,
+                ports=frozenset({port}) if port else None,
+                schemes=frozenset({scheme}) if scheme else None,
+                path_prefix=path_prefix,
+            )
+        )
+    return tuple(rules)
 
 
 def _describe_rule(rule: TargetRule) -> str:

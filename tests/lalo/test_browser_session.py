@@ -18,6 +18,17 @@ def _scope() -> ScopeGuard:
 
 
 @dataclass
+class _FakeResponse:
+    server_ip: str | None = None
+    raise_on_server_addr: Exception | None = None
+
+    def server_addr(self) -> dict[str, object] | None:
+        if self.raise_on_server_addr is not None:
+            raise self.raise_on_server_addr
+        return {"ipAddress": self.server_ip, "port": 443} if self.server_ip else None
+
+
+@dataclass
 class _FakePage:
     url: str = "about:blank"
     body_text: str = "hello"
@@ -27,12 +38,15 @@ class _FakePage:
     click_navigates_to: str | None = None
     raise_on_click: Exception | None = None
     raise_on_goto: Exception | None = None
+    redirect_to: str | None = None
+    goto_response: _FakeResponse | None = None
 
-    def goto(self, url: str, timeout: float = 0) -> None:
+    def goto(self, url: str, timeout: float = 0) -> _FakeResponse | None:
         if self.raise_on_goto is not None:
             raise self.raise_on_goto
         self.goto_calls.append(url)
-        self.url = url
+        self.url = self.redirect_to if self.redirect_to is not None else url
+        return self.goto_response
 
     def click(self, selector: str, timeout: float = 0) -> None:
         if self.raise_on_click is not None:
@@ -81,6 +95,56 @@ def test_navigate_degrades_gracefully_on_a_real_navigation_error() -> None:
     result = session.navigate("https://app.example.com/")
     assert result.ok is False
     assert "navigation failed" in result.observation
+
+
+def test_navigate_that_redirects_out_of_scope_is_reverted_and_refused() -> None:
+    """A pre-check on the requested URL alone is not enough - the target's own
+    server-side redirect can still land the agent off-scope, exactly the risk
+    click() already guards against post-action."""
+    page = _FakePage(url="https://app.example.com/", redirect_to="https://evil.example.org/")
+    session = _session_with_fake_page(page)
+    result = session.navigate("https://app.example.com/start")
+    assert result.ok is False
+    assert "out of scope" in result.observation
+    assert page.url == "about:blank"  # go_back() was called
+
+
+def test_navigate_reverts_when_the_real_connection_lands_on_a_metadata_address() -> None:
+    """DNS rebinding: the pre-check's own resolution said this host was safe,
+    but the literal IP Chromium actually connected to is cloud metadata."""
+    page = _FakePage(
+        url="https://app.example.com/",
+        goto_response=_FakeResponse(server_ip="169.254.169.254"),
+    )
+    session = _session_with_fake_page(page)
+    result = session.navigate("https://app.example.com/")
+    assert result.ok is False
+    assert "cloud-metadata" in result.observation
+    assert page.url == "about:blank"
+
+
+def test_navigate_succeeds_when_the_real_connection_is_an_ordinary_address() -> None:
+    page = _FakePage(
+        url="https://app.example.com/",
+        body_text="fine",
+        goto_response=_FakeResponse(server_ip="93.184.216.34"),
+    )
+    session = _session_with_fake_page(page)
+    result = session.navigate("https://app.example.com/")
+    assert result.ok is True
+    assert result.observation == "fine"
+
+
+def test_navigate_degrades_gracefully_if_server_addr_itself_raises() -> None:
+    page = _FakePage(
+        url="https://app.example.com/",
+        body_text="fine",
+        goto_response=_FakeResponse(raise_on_server_addr=RuntimeError("browser process hiccup")),
+    )
+    session = _session_with_fake_page(page)
+    result = session.navigate("https://app.example.com/")
+    assert result.ok is True
+    assert result.observation == "fine"
 
 
 def test_click_before_any_navigation_is_a_failed_result() -> None:

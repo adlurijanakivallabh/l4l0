@@ -16,11 +16,12 @@ from lalo.identity import (
     Identity,
     IdentityStore,
     LoginScheme,
+    Session,
     SessionRegistry,
     SessionSource,
 )
 from lalo.identity.jwt_tools import jwt_alg_none, jwt_with_claim
-from lalo.identity.tool import build_jwt_tool, build_login_tool
+from lalo.identity.tool import build_jwt_tool, build_login_tool, build_session_check_tool
 
 _ALICE = Identity(
     id="alice", username="alice", credential=Credential(CredentialKind.PASSWORD, "hunter2xxxxx")
@@ -153,3 +154,72 @@ def test_jwt_rejects_an_unknown_op() -> None:
     tool = build_jwt_tool()
     result = tool.run({"op": "not-a-real-op", "token": _TOKEN})
     assert result.ok is False
+
+
+# --- check_session_valid ------------------------------------------------
+
+
+def _registered_session(graph: ReachabilityGraph, *, value: str = "abc123") -> SessionRegistry:
+    sessions = SessionRegistry(graph)
+    sessions.register(
+        Session(
+            id="session-alice",
+            identity_id="alice",
+            kind=SessionSource.COOKIE,
+            name="session",
+            value=value,
+        )
+    )
+    return sessions
+
+
+def test_check_session_valid_reports_a_healthy_session() -> None:
+    seen: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["cookie"] = request.headers.get("cookie")
+        return httpx.Response(200)
+
+    sessions = _registered_session(ReachabilityGraph())
+    tool = build_session_check_tool(_firer(handler), sessions)
+    result = tool.run({"session_id": "session-alice", "validate_url": "https://app.example.com/me"})
+    assert result.ok is True
+    assert "valid" in result.observation
+    assert seen["cookie"] == "session=abc123"
+
+
+def test_check_session_valid_reports_a_stale_session() -> None:
+    tool = build_session_check_tool(
+        _firer(lambda r: httpx.Response(401)), _registered_session(ReachabilityGraph())
+    )
+    result = tool.run({"session_id": "session-alice", "validate_url": "https://app.example.com/me"})
+    assert result.ok is False
+    assert "stale" in result.observation
+
+
+def test_check_session_valid_rejects_an_unknown_session_id() -> None:
+    tool = build_session_check_tool(
+        _firer(lambda r: httpx.Response(200)), SessionRegistry(ReachabilityGraph())
+    )
+    result = tool.run({"session_id": "nope", "validate_url": "https://app.example.com/me"})
+    assert result.ok is False
+    assert "unknown session" in result.observation
+
+
+def test_check_session_valid_requires_both_args() -> None:
+    tool = build_session_check_tool(
+        _firer(lambda r: httpx.Response(200)), _registered_session(ReachabilityGraph())
+    )
+    assert tool.run({"session_id": "session-alice"}).ok is False
+    assert tool.run({"validate_url": "https://app.example.com/me"}).ok is False
+
+
+def test_check_session_valid_out_of_scope_url_is_a_failed_result_not_a_crash() -> None:
+    tool = build_session_check_tool(
+        _firer(lambda r: httpx.Response(200)), _registered_session(ReachabilityGraph())
+    )
+    result = tool.run(
+        {"session_id": "session-alice", "validate_url": "https://evil.example.org/me"}
+    )
+    assert result.ok is False
+    assert "could not check" in result.observation

@@ -19,12 +19,27 @@ there is no way to route around that invariant.
 tool (mirroring :mod:`lalo.integrations.mcp_client`'s
 dispatch-by-``tool``-name shape) rather than three separate tools for three
 one-line functions.
+
+``check_session_valid`` closes a real gap a reference platform's own
+cross-agent session-sharing design named but L4L0 never had any equivalent
+of: :class:`~lalo.identity.login.SessionRegistry.get` only ever confirms a
+session's graph node still exists, never that the target server still
+honors the session material itself — a silently-expired session currently
+just surfaces as ordinary 401s on whatever `http` call happens to hit it
+next, with nothing telling the agent to treat that as staleness rather than
+a new finding. Deliberately NOT a pre-configured field on
+:class:`~lalo.identity.login.LoginScheme` (no universal "am I still logged
+in" endpoint exists across targets) and NOT automatic (no silent background
+network call hidden from the agent) — the agent supplies its own
+already-discovered validate_url per call, matching this project's own
+agent-judgment-over-fixed-pipeline design rather than Shannon's own
+config-driven revalidation.
 """
 
 from __future__ import annotations
 
 from ..agent.tools import FunctionTool, ToolResult, str_arg
-from ..core.errors import JwtMalformedError, LoginFailedError
+from ..core.errors import JwtMalformedError, LoginFailedError, SessionNotMirroredError
 from ..core.redaction import shared_redactor
 from ..execution.firer import HttpFirer
 from .credentials import IdentityStore
@@ -86,6 +101,45 @@ def build_login_tool(
             'to subsequent http calls. args: {"identity_id": str, "scheme": str}'
         ),
         func=_login,
+    )
+
+
+def build_session_check_tool(firer: HttpFirer, sessions: SessionRegistry) -> FunctionTool:
+    def _check(args: dict[str, object]) -> ToolResult:
+        session_id = str_arg(args, "session_id").strip()
+        validate_url = str_arg(args, "validate_url").strip()
+        if not session_id or not validate_url:
+            return ToolResult(
+                observation="error: 'session_id' and 'validate_url' are required", ok=False
+            )
+        try:
+            session = sessions.get(session_id)
+        except SessionNotMirroredError:
+            return ToolResult(observation=f"error: unknown session {session_id!r}", ok=False)
+        header_name, header_value = session.auth_header()
+        result = firer.fire("GET", validate_url, headers={header_name: header_value})
+        if not result.fired:
+            reason = result.scope_reason + (f" ({result.error})" if result.error else "")
+            return ToolResult(observation=f"could not check: {reason}", ok=False)
+        valid = result.status is not None and result.status < 400
+        return ToolResult(
+            observation=(
+                f"session {session_id} looks "
+                f"{'valid' if valid else 'stale'} (validate_url responded {result.status})"
+            ),
+            ok=valid,
+        )
+
+    return FunctionTool(
+        name="check_session_valid",
+        description=(
+            "Fire a request to validate_url (a URL you know only succeeds while "
+            "authenticated, e.g. a profile/whoami endpoint) using an already-registered "
+            "session's own auth header, to check whether the session is still accepted "
+            "before relying on it further. A non-2xx/3xx response is reported as stale, "
+            'not proof of anything else. args: {"session_id": str, "validate_url": str}'
+        ),
+        func=_check,
     )
 
 

@@ -204,6 +204,42 @@ def test_scan_runner_wires_every_phase_into_one_completed_run(
     assert (run_dir / "graph.json").exists()
 
 
+def test_scan_runner_applies_exclude_target_specs_end_to_end(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The exclude carve-out (execution/target.py) actually reaches the live
+    ScopeGuard a real scan's http tool fires through, not just the unit-level
+    Engagement it was added to."""
+    monkeypatch.setattr(scan_module, "docker_available", lambda: True)
+    monkeypatch.setattr(scan_module, "RuntimeContainer", _FakeContainer)
+
+    def respond(_call_index: int, prompt: str) -> str:
+        if "MISSION:" not in prompt:
+            return "ok"
+        if "HISTORY (most recent last):" not in prompt:
+            return json.dumps({"tool": "http", "args": {"url": "https://excluded.example.com/"}})
+        return _finish_call()
+
+    router = ModelRouter(
+        providers={"fake": _ScriptedProvider(respond)},
+        routes={"reasoning": ("fake",), "review": ("fake",)},
+        default_route=("fake",),
+    )
+    monkeypatch.setattr(scan_module, "build_router", lambda _settings: router)
+
+    config = ScanConfig(
+        mission="test the excluded host",
+        target_specs=["*.example.com"],
+        exclude_target_specs=["excluded.example.com"],
+        run_dir=tmp_path / "run",
+    )
+    outcome = ScanRunner(config, env={"ANTHROPIC_API_KEY": "sk-test"}).run()
+
+    http_call = next(e for e in outcome.result.transcript if e["tool"] == "http")
+    assert "not fired" in http_call["observation"]
+    assert "out_of_engagement" in http_call["observation"]
+
+
 def test_scan_runner_emits_events_for_a_real_run(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -418,6 +454,19 @@ def test_resume_after_a_crash_does_not_redispatch_the_completed_step(
     # every finding always gets.
     assert resumed_provider.calls == 3
     assert len(ReachabilityGraph.load(run_dir / "graph.json").nodes_of_kind(NodeKind.FINDING)) == 1
+
+
+def test_resume_manifest_without_the_exclude_field_still_resumes(tmp_path: Path) -> None:
+    """A manifest written before exclude_target_specs existed has no such key
+    in its persisted JSON - resuming against it must not raise, and must
+    treat the omission as "no exclusions were ever declared", not a mismatch."""
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    old_manifest = {"mission": "find a bug", "target_specs": ["example.com"], "egress_lock": False}
+    scan_module._manifest_path(run_dir).write_text(json.dumps(old_manifest), encoding="utf-8")  # noqa: SLF001
+
+    config = ScanConfig(mission="find a bug", target_specs=["example.com"], run_dir=run_dir)
+    scan_module._load_or_write_manifest(config)  # noqa: SLF001 - must not raise
 
 
 def test_resume_refuses_a_different_mission_against_the_same_run_dir(

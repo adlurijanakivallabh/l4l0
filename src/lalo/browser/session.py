@@ -21,14 +21,29 @@ navigating to an operator-declared, scope-checked engagement target is the
 same risk shape as ``httpx`` firing a scope-checked request to it, not a
 free-shell-style unrestricted action.
 
-Deliberately NOT adopted from that same reference: the pinned-IP-dial
-DNS-rebinding defense :mod:`lalo.execution.firer` uses for plain HTTP is not
-implemented here. Chromium has no simple, direct "dial this literal resolved
-IP for this hostname" API the way raw ``httpx`` does (Playwright/Chromium
-support host-resolver-rules launch flags, but wiring them per-navigation
-would mean relaunching or reconfiguring the browser per call) — a real,
-documented residual gap versus the ``http`` tool's own stronger guarantee,
-not silently assumed to be equivalent.
+Not adopted from that same reference: the pinned-IP-*dial* DNS-rebinding
+defense :mod:`lalo.execution.firer` uses for plain HTTP (resolve once, dial
+that literal IP) is not implemented here — Chromium has no simple, direct
+"dial this literal resolved IP for this hostname" API the way raw ``httpx``
+does (Playwright/Chromium support host-resolver-rules launch flags, but
+wiring them per-navigation would mean relaunching or reconfiguring the
+browser per call). Closing the actual threat that defense exists for
+(cloud-metadata exfiltration via a DNS answer that changes between the
+pre-navigation scope check and the real connection) does not require the
+dial-side mechanism, though: :meth:`_post_navigation_violation` checks the
+literal IP Chromium actually connected to, via Playwright's own
+``Response.server_addr()`` — ground truth from the real connection, not a
+second DNS lookup a rebinding attacker controls exactly as easily as the
+first — and reverts if it lands in a metadata range regardless of what the
+pre-check's own (necessarily separate) resolution believed. Narrower than
+``firer``'s pin-and-dial (this can only catch the rebind after the fact, not
+prevent the one connection from happening), but closes the same class of
+exposure for the case that actually matters here: the response never
+reaches the agent. Applied to :meth:`navigate` only, not :meth:`click` —
+retrofitting a click-triggered navigation would require wrapping every
+click in Playwright's ``expect_navigation()``, which raises on the common
+case of a click that doesn't navigate at all; :meth:`click` keeps its
+existing URL-based (not IP-based) re-check, a real, disclosed asymmetry.
 
 One shared session for the whole scan, not one per spawned agent:
 :mod:`lalo.agent.spawn`'s own docstring already establishes that spawning is
@@ -43,9 +58,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from playwright.sync_api import Playwright, sync_playwright
+from playwright.sync_api import Playwright, Response, sync_playwright
 
-from ..execution.scope import ScopeGuard
+from ..execution.scope import ScopeGuard, _in_metadata_range
 
 _DEFAULT_NAV_TIMEOUT_MS = 30_000
 _MAX_TEXT_CHARS = 8_000
@@ -84,12 +99,46 @@ class BrowserSession:
             return BrowserActionResult(ok=False, observation=f"error: scope {reason}: {url}")
         page = self._ensure_started()
         try:
-            page.goto(url, timeout=_DEFAULT_NAV_TIMEOUT_MS)  # type: ignore[attr-defined]
+            response = page.goto(url, timeout=_DEFAULT_NAV_TIMEOUT_MS)  # type: ignore[attr-defined]
         except Exception as exc:  # noqa: BLE001 - a navigation failure (timeout, DNS,
             # a target that resets the connection) must degrade to a failed
             # BrowserActionResult, never crash the calling agent's turn.
             return BrowserActionResult(ok=False, observation=f"error: navigation failed: {exc}")
+        violation = self._post_navigation_violation(page, response)
+        if violation is not None:
+            page.go_back()  # type: ignore[attr-defined]
+            return BrowserActionResult(ok=False, observation=f"error: {violation} - reverted")
         return BrowserActionResult(ok=True, observation=self._render_text())
+
+    def _post_navigation_violation(self, page: object, response: Response | None) -> str | None:
+        """``None`` if the page's current state is safe to keep; otherwise why not.
+
+        Covers two risks a single pre-navigation URL check cannot: a
+        server-side redirect landing outside the declared engagement (the
+        final page URL, re-checked the same way :meth:`click` already
+        re-checks its own post-click URL), and DNS rebinding to a
+        cloud-metadata address between the pre-check's resolution and
+        Chromium's real connection (the literal IP actually dialed, per the
+        module docstring's own citation).
+        """
+        current_url = page.url  # type: ignore[attr-defined]
+        reason = self._check(current_url)
+        if reason is not None:
+            return f"navigated out of scope ({reason}: {current_url})"
+        if response is None:
+            return None
+        try:
+            addr = response.server_addr()
+        except Exception:  # noqa: BLE001 - a Playwright/browser-process quirk here
+            # must degrade to "skip this check", never crash the turn - the
+            # URL-based check above already ran regardless.
+            return None
+        if addr is not None and _in_metadata_range(addr["ipAddress"]):
+            return (
+                f"connected to a cloud-metadata address ({addr['ipAddress']}) "
+                "- possible DNS rebinding"
+            )
+        return None
 
     def click(self, selector: str) -> BrowserActionResult:
         if self._page is None:
