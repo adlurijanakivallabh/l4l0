@@ -72,6 +72,24 @@ own silence on the topic across everything already read for every other
 phase. A genuine, clean null result, recorded explicitly here rather than
 left as an unstated gap in this docstring's own citation record.
 
+This closes Phase 18 across all 5 references. Re-verified this session, one
+reference at a time: the reference-agent CTF-benchmark citation above (104
+challenges, 96%) was re-checked directly against its ``benchmarks/README.md``
+again — accurate as stated, and there is genuinely no local scoring code to
+read further (the actual harness lives in that project's separate results
+repository, not this clone, which is why there is nothing more to cite than
+the README already does). The pipeline-testing "scripted provider" citation
+was also re-verified by reading every `exploit-*.txt` fixture in that
+reference's own ``prompts/pipeline-testing/`` directory, not just the two
+already named: `exploit-miscellaneous.txt` differs in one respect worth
+recording — it exercises the real structured-finding collector with an
+honestly-labeled placeholder verdict rather than instructing the model to
+narrate a fabricated "simulated successful exploitation," which is closer to
+what this project's own tests already do everywhere. It does not change the
+paragraph's conclusion: every one of those fixtures still drives a real, live
+LLM call, none of them are the scripted/fake-provider pattern this module's
+own tests use.
+
 Findings are already graph nodes (Phase 7/12) with a computed confidence
 score (Phase 12b), so scoring a case is a read over already-existing data —
 :func:`run_case` reuses :func:`~lalo.report.collect.collect_findings`
