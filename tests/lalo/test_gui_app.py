@@ -684,3 +684,39 @@ def test_post_settings_providers_rejects_an_unexpected_extra_key(
     assert response.status_code == 400
     assert not env_path.exists()
     assert "SOME_INJECTED_VAR" not in os.environ
+
+
+def test_scan_request_advanced_options_pass_through_to_scan_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(app_module, "ScanRunner", _FakeScanRunner)
+    client, _ = _client(runs_dir=tmp_path)
+    client.post(
+        "/scan",
+        json={
+            "mission": "find a bug",
+            "targets": ["example.com"],
+            "max_steps": 10,
+            "budget_ceiling": 50,
+            "egress_lock": True,
+            "redact_findings": True,
+        },
+    )
+    config = current_config()
+    assert config.max_steps == 10
+    assert config.budget_ceiling == 50
+    assert config.redact_findings is True
+    assert config.egress_lock is True
+
+
+def test_scan_request_advanced_options_default_to_scan_configs_own_defaults(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(app_module, "ScanRunner", _FakeScanRunner)
+    client, _ = _client(runs_dir=tmp_path)
+    client.post("/scan", json={"mission": "find a bug", "targets": ["example.com"]})
+    config = current_config()
+    assert config.max_steps == 25
+    assert config.budget_ceiling == 300
+    assert config.egress_lock is False
+    assert config.redact_findings is False

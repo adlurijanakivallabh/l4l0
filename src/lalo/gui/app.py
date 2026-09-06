@@ -174,6 +174,10 @@ class ScanRequest(BaseModel):
     exclude_targets: list[str] = []
     rules_of_engagement: str = ""
     resume_run_id: str | None = None
+    max_steps: int | None = None
+    budget_ceiling: int | None = None
+    egress_lock: bool = False
+    redact_findings: bool = False
 
 
 class ProviderSettingsRequest(BaseModel):
@@ -304,6 +308,12 @@ def build_app(event_log: EventLog, *, runs_dir: Path | None = None) -> FastAPI:
                 rules_of_engagement=request.rules_of_engagement.strip(),
                 run_dir=run_dir,
                 usage_path=DEFAULT_USAGE_PATH,
+                max_steps=request.max_steps if request.max_steps is not None else 25,
+                budget_ceiling=request.budget_ceiling
+                if request.budget_ceiling is not None
+                else 300,
+                redact_findings=request.redact_findings,
+                egress_lock=request.egress_lock,
             )
 
         runner = ScanRunner(config, event_log=event_log)
