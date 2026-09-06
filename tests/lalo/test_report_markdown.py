@@ -131,3 +131,15 @@ def test_render_report_md_with_no_chains_has_no_chains_section() -> None:
     coverage = CoverageSummary(assessed=[], not_assessed=[])
     rendered = render_report_md([], coverage)
     assert "Attack Chains" not in rendered
+
+
+def test_render_report_md_shows_the_scan_status_when_given() -> None:
+    coverage = CoverageSummary(assessed=[], not_assessed=[])
+    rendered = render_report_md([], coverage, status="budget_exhausted")
+    assert "**Scan Status:** budget_exhausted" in rendered
+
+
+def test_render_report_md_with_no_status_has_no_status_line() -> None:
+    coverage = CoverageSummary(assessed=[], not_assessed=[])
+    rendered = render_report_md([], coverage)
+    assert "Scan Status" not in rendered

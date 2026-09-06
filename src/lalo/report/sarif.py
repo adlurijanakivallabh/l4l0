@@ -94,8 +94,22 @@ def _build_result(record: FindingRecord, rule_index: int) -> dict[str, Any]:
     }
 
 
-def render_sarif(records: list[FindingRecord]) -> dict[str, Any]:
-    """Build a SARIF 2.1.0 document with one rule per vuln_class and one result per finding."""
+def render_sarif(
+    records: list[FindingRecord],
+    *,
+    execution_successful: bool = True,
+    automation_id: str | None = None,
+) -> dict[str, Any]:
+    """Build a SARIF 2.1.0 document with one rule per vuln_class and one result per finding.
+
+    ``execution_successful`` reports whether the *scan itself* ran to a clean
+    stop (never whether vulnerabilities were found) - a CI consumer reading
+    ``invocations[].executionSuccessful`` needs to distinguish "the tool
+    crashed/was cut off" from "the tool ran fine and found nothing," which
+    the results list alone cannot tell it. ``automation_id`` identifies which
+    scan run produced this document, so a CI system uploading SARIF from
+    repeated runs can tell them apart.
+    """
     rule_index_by_id: dict[str, int] = {}
     rules: list[dict[str, Any]] = []
     results: list[dict[str, Any]] = []
@@ -106,13 +120,16 @@ def render_sarif(records: list[FindingRecord]) -> dict[str, Any]:
             rules.append(_build_rule(record))
         results.append(_build_result(record, rule_index_by_id[rule_id]))
 
+    run: dict[str, Any] = {
+        "tool": {"driver": {"name": TOOL_NAME, "rules": rules}},
+        "results": results,
+        "invocations": [{"executionSuccessful": execution_successful}],
+    }
+    if automation_id:
+        run["automationDetails"] = {"id": automation_id}
+
     return {
         "$schema": SARIF_SCHEMA,
         "version": SARIF_VERSION,
-        "runs": [
-            {
-                "tool": {"driver": {"name": TOOL_NAME, "rules": rules}},
-                "results": results,
-            }
-        ],
+        "runs": [run],
     }

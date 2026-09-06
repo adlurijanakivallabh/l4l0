@@ -109,6 +109,7 @@ def render_report_html(
     *,
     chains: Sequence[ChainRecord] = (),
     generated_at: str | None = None,
+    status: str | None = None,
 ) -> str:
     parts = [
         "<!doctype html>",
@@ -117,6 +118,8 @@ def render_report_html(
     ]
     if generated_at:
         parts.append(f"<p><strong>Generated:</strong> {_e(generated_at)}</p>")
+    if status:
+        parts.append(f"<p><strong>Scan Status:</strong> {_e(status)}</p>")
     parts.append(f"<p><strong>Findings:</strong> {len(records)}</p>")
 
     parts.append("<h2>Coverage</h2>")

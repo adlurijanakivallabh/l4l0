@@ -11,6 +11,7 @@ import lalo.report.writer as writer_module
 from lalo.agent.tools import ToolRegistry
 from lalo.findings.tool import build_record_finding_tool
 from lalo.graph.model import NodeKind, ReachabilityGraph
+from lalo.orchestrator.budget import RunStatus
 from lalo.report.overrides import SeverityOverride
 from lalo.report.writer import (
     DOCX_FILENAME,
@@ -196,6 +197,36 @@ def test_write_report_survives_a_leftover_crashed_temp_file(tmp_path: Path) -> N
     # a fresh write afterward still succeeds and produces a complete report
     write_report(tmp_path, graph, _SKILLS)
     assert (tmp_path / MARKDOWN_FILENAME).read_text(encoding="utf-8") == good_markdown
+
+
+def test_write_report_threads_the_scan_status_into_every_format(tmp_path: Path) -> None:
+    graph, _ = _graph_with_finding()
+    paths = write_report(tmp_path, graph, _SKILLS, status=RunStatus.BUDGET_EXHAUSTED)
+
+    doc = json.loads(paths["json"].read_text(encoding="utf-8"))
+    assert doc["status"] == "budget_exhausted"
+    assert "**Scan Status:** budget_exhausted" in paths["markdown"].read_text(encoding="utf-8")
+
+    sarif = json.loads(paths["sarif"].read_text(encoding="utf-8"))
+    assert sarif["runs"][0]["invocations"] == [{"executionSuccessful": True}]
+    assert sarif["runs"][0]["automationDetails"] == {"id": tmp_path.name}
+
+
+def test_write_report_a_run_status_of_error_reports_an_unsuccessful_sarif_execution(
+    tmp_path: Path,
+) -> None:
+    graph, _ = _graph_with_finding()
+    paths = write_report(tmp_path, graph, _SKILLS, status=RunStatus.ERROR)
+    sarif = json.loads(paths["sarif"].read_text(encoding="utf-8"))
+    assert sarif["runs"][0]["invocations"] == [{"executionSuccessful": False}]
+
+
+def test_write_report_with_no_status_omits_it_from_json_and_markdown(tmp_path: Path) -> None:
+    graph, _ = _graph_with_finding()
+    paths = write_report(tmp_path, graph, _SKILLS)
+    doc = json.loads(paths["json"].read_text(encoding="utf-8"))
+    assert doc["status"] is None
+    assert "Scan Status" not in paths["markdown"].read_text(encoding="utf-8")
 
 
 def test_write_report_creates_missing_run_directory(tmp_path: Path) -> None:

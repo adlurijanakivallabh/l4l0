@@ -51,6 +51,22 @@ def test_render_sarif_document_shape() -> None:
     assert doc["runs"][0]["results"] == []
 
 
+def test_render_sarif_defaults_to_a_successful_execution_with_no_automation_id() -> None:
+    doc = render_sarif([])
+    assert doc["runs"][0]["invocations"] == [{"executionSuccessful": True}]
+    assert "automationDetails" not in doc["runs"][0]
+
+
+def test_render_sarif_reports_an_unsuccessful_execution() -> None:
+    doc = render_sarif([], execution_successful=False)
+    assert doc["runs"][0]["invocations"] == [{"executionSuccessful": False}]
+
+
+def test_render_sarif_includes_the_automation_id_when_given() -> None:
+    doc = render_sarif([], automation_id="scan-42")
+    assert doc["runs"][0]["automationDetails"] == {"id": "scan-42"}
+
+
 def test_render_sarif_one_rule_and_result_per_finding() -> None:
     graph = ReachabilityGraph()
     _file(graph)

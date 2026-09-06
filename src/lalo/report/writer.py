@@ -58,6 +58,7 @@ from pathlib import Path
 from ..core.atomic_io import atomic_write_verified
 from ..core.logging import get_logger
 from ..graph.model import ReachabilityGraph
+from ..orchestrator.budget import RunStatus
 from ..skills.loader import Skill
 from .collect import build_chain_records, collect_findings, sort_findings
 from .coverage import build_coverage_summary
@@ -84,8 +85,15 @@ def write_report(
     *,
     overrides: list[SeverityOverride] | None = None,
     generated_at: str | None = None,
+    status: RunStatus | None = None,
 ) -> dict[str, Path]:
     """Assemble every format from ``graph`` and write them, byte-verified.
+
+    ``status`` is the scan's own closed-taxonomy outcome (see
+    :class:`~lalo.orchestrator.budget.RunStatus`) - passing it surfaces
+    *why* a scan stopped (budget exhausted, an unverified stop, an error)
+    directly in the delivered report, rather than that information living
+    only in the live GUI event stream and being lost once the run ends.
 
     Returns the written path for each format, keyed by ``"markdown"``,
     ``"json"``, and ``"sarif"`` (always present - a failure here propagates
@@ -101,16 +109,26 @@ def write_report(
     records = sort_findings(apply_overrides(collect_findings(graph), overrides or []))
     coverage = build_coverage_summary(skills, records)
     chains = build_chain_records(graph.all_enabling_chains(), records)
+    status_value = status.value if status is not None else None
 
-    markdown = render_report_md(records, coverage, chains=chains, generated_at=generated_at)
+    markdown = render_report_md(
+        records, coverage, chains=chains, generated_at=generated_at, status=status_value
+    )
     json_document = {
         "generated_at": generated_at,
+        "status": status_value,
         "findings": [asdict(record) for record in records],
         "coverage": asdict(coverage),
         "chains": [asdict(chain) for chain in chains],
     }
-    sarif_document = render_sarif(records)
-    html = render_report_html(records, coverage, chains=chains, generated_at=generated_at)
+    sarif_document = render_sarif(
+        records,
+        execution_successful=status is None or status != RunStatus.ERROR,
+        automation_id=run_dir.name,
+    )
+    html = render_report_html(
+        records, coverage, chains=chains, generated_at=generated_at, status=status_value
+    )
 
     paths = {
         "markdown": run_dir / MARKDOWN_FILENAME,

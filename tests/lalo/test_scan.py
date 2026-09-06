@@ -201,6 +201,8 @@ def test_scan_runner_wires_every_phase_into_one_completed_run(
     assert outcome.result.summary == "found and filed one sqli"
     assert outcome.report_paths["markdown"].exists()
     assert "SQLi in search" in outcome.report_paths["markdown"].read_text()
+    assert "**Scan Status:** completed" in outcome.report_paths["markdown"].read_text()
+    assert json.loads(outcome.report_paths["json"].read_text())["status"] == "completed"
     assert (run_dir / "graph.json").exists()
 
 

@@ -106,10 +106,14 @@ def render_report_md(
     *,
     chains: Sequence[ChainRecord] = (),
     generated_at: str | None = None,
+    status: str | None = None,
 ) -> str:
     lines = ["# L4L0 Security Assessment Report", ""]
     if generated_at:
         lines.append(f"**Generated:** {generated_at}")
+        lines.append("")
+    if status:
+        lines.append(f"**Scan Status:** {status}")
         lines.append("")
     lines.append(f"**Findings:** {len(records)}")
     lines.append("")
