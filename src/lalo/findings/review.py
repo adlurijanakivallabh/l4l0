@@ -60,6 +60,17 @@ from ..prompts import render_prompt
 from .confidence import ConfidenceScore
 
 _VALID_PROOF_LEVELS = frozenset({"L1", "L2", "L3", "L4"})
+# review.txt defines L2-L4 purely in terms of a CONFIRMED finding ("confirmed
+# but low-value" / "real impact" / "durable/systemic") - pairing one of these
+# with a ruled_out/open_proof_gap verdict contradicts the reviewer's own
+# stated scale, not a legitimate independent reading of "how far the
+# evidence goes." See _compute_review's use below.
+_CONFIRMED_ONLY_PROOF_LEVELS = frozenset({"L2", "L3", "L4"})
+# One real retry after a single malformed/unparseable turn from an otherwise-
+# healthy provider - never applied to AllProvidersFailedError (the router has
+# already exhausted its own failover chain by the time that reaches here, so
+# retrying would just repeat the same failure).
+_MAX_ATTEMPTS = 2
 
 
 class ReviewVerdict(StrEnum):
@@ -153,6 +164,22 @@ def run_adversarial_review(
     return result
 
 
+def _parse_review_response(text: str) -> tuple[dict[str, object] | None, str]:
+    """Parse and validate one response's verdict field.
+
+    Returns ``(parsed, "")`` for a response with a recognized verdict, or
+    ``(None, reason)`` otherwise - ``reason`` becomes the eventual fallback's
+    reasoning if every attempt fails.
+    """
+    parsed = _extract_json_object(text)
+    if parsed is None:
+        return None, "review response was not valid JSON"
+    raw_verdict = str(parsed.get("verdict", ""))
+    if raw_verdict not in {v.value for v in ReviewVerdict}:
+        return None, f"review returned an unrecognized verdict: {raw_verdict!r}"
+    return parsed, ""
+
+
 def _compute_review(
     graph: ReachabilityGraph,
     finding_id: str,
@@ -163,27 +190,30 @@ def _compute_review(
 ) -> ReviewResult:
     node = graph.node(finding_id)
     system_prompt = render_prompt("review", overrides_dir=prompt_overrides_dir)
-    try:
-        response = router.complete(
-            role,
-            CompletionRequest(system=system_prompt, prompt=_build_user_prompt(node)),
-        )
-    except AllProvidersFailedError:
-        return _fallback("review unavailable: every provider failed", confidence.score)
+    user_prompt = _build_user_prompt(node)
 
-    parsed = _extract_json_object(response.text)
+    parsed: dict[str, object] | None = None
+    reason = ""
+    for _attempt in range(_MAX_ATTEMPTS):
+        try:
+            response = router.complete(
+                role, CompletionRequest(system=system_prompt, prompt=user_prompt)
+            )
+        except AllProvidersFailedError:
+            return _fallback("review unavailable: every provider failed", confidence.score)
+        parsed, reason = _parse_review_response(response.text)
+        if parsed is not None:
+            break
+
     if parsed is None:
-        return _fallback("review response was not valid JSON", confidence.score)
+        return _fallback(reason, confidence.score)
 
-    raw_verdict = str(parsed.get("verdict", ""))
-    if raw_verdict not in {v.value for v in ReviewVerdict}:
-        return _fallback(
-            f"review returned an unrecognized verdict: {raw_verdict!r}", confidence.score
-        )
-    verdict = ReviewVerdict(raw_verdict)
+    verdict = ReviewVerdict(str(parsed["verdict"]))
 
     proof_level = str(parsed.get("proof_level", ""))
     if proof_level not in _VALID_PROOF_LEVELS:
+        proof_level = "L1"
+    elif verdict != ReviewVerdict.CONFIRMED and proof_level in _CONFIRMED_ONLY_PROOF_LEVELS:
         proof_level = "L1"
 
     adjusted_score = max(0, min(100, confidence.score + _VERDICT_ADJUSTMENT[verdict]))

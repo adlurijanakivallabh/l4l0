@@ -10,9 +10,16 @@ from lalo.graph.model import NodeKind, ReachabilityGraph
 
 
 class _FakeProvider:
-    def __init__(self, *, text: str = "", raises: Exception | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        text: str = "",
+        texts: list[str] | None = None,
+        raises: Exception | None = None,
+    ) -> None:
         self.name = "fake"
         self._text = text
+        self._texts = texts
         self._raises = raises
         self.seen_prompts: list[CompletionRequest] = []
 
@@ -20,7 +27,12 @@ class _FakeProvider:
         self.seen_prompts.append(request)
         if self._raises is not None:
             raise self._raises
-        return CompletionResponse(text=self._text, provider=self.name, model="fake-model")
+        if self._texts is not None:
+            index = min(len(self.seen_prompts) - 1, len(self._texts) - 1)
+            text = self._texts[index]
+        else:
+            text = self._text
+        return CompletionResponse(text=text, provider=self.name, model="fake-model")
 
 
 def _router(provider: _FakeProvider) -> ModelRouter:
@@ -112,6 +124,79 @@ def test_an_unrecognized_verdict_degrades_to_open_proof_gap_not_a_crash() -> Non
     result = run_adversarial_review(graph, finding_id, confidence, _router(provider))
     assert result.verdict is ReviewVerdict.OPEN_PROOF_GAP
     assert result.adjusted_score == confidence.score
+
+
+def test_an_unparseable_first_response_retries_once_and_succeeds() -> None:
+    provider = _FakeProvider(
+        texts=[
+            "I refuse to answer in JSON.",
+            '{"verdict": "confirmed", "proof_level": "L3", "reasoning": "grounded"}',
+        ]
+    )
+    graph, finding_id = _graph_with_finding()
+    confidence = compute_confidence(graph, finding_id)
+    result = run_adversarial_review(graph, finding_id, confidence, _router(provider))
+    assert result.verdict is ReviewVerdict.CONFIRMED
+    assert len(provider.seen_prompts) == 2
+
+
+def test_an_unrecognized_verdict_on_the_first_turn_also_retries() -> None:
+    provider = _FakeProvider(
+        texts=[
+            '{"verdict": "definitely maybe", "proof_level": "L3"}',
+            '{"verdict": "ruled_out", "proof_level": "L1", "reasoning": "not in evidence"}',
+        ]
+    )
+    graph, finding_id = _graph_with_finding()
+    confidence = compute_confidence(graph, finding_id)
+    result = run_adversarial_review(graph, finding_id, confidence, _router(provider))
+    assert result.verdict is ReviewVerdict.RULED_OUT
+    assert len(provider.seen_prompts) == 2
+
+
+def test_two_bad_responses_in_a_row_still_falls_back_after_one_retry() -> None:
+    provider = _FakeProvider(texts=["not json", "still not json"])
+    graph, finding_id = _graph_with_finding()
+    confidence = compute_confidence(graph, finding_id)
+    result = run_adversarial_review(graph, finding_id, confidence, _router(provider))
+    assert result.verdict is ReviewVerdict.OPEN_PROOF_GAP
+    assert len(provider.seen_prompts) == 2  # no third attempt
+
+
+def test_a_total_provider_failure_is_never_retried() -> None:
+    provider = _FakeProvider(raises=AllProvidersFailedError("all down", role="review", failures=[]))
+    graph, finding_id = _graph_with_finding()
+    confidence = compute_confidence(graph, finding_id)
+    run_adversarial_review(graph, finding_id, confidence, _router(provider))
+    assert len(provider.seen_prompts) == 1  # the router already exhausted its own failover
+
+
+def test_a_ruled_out_verdict_with_a_confirmed_only_proof_level_is_downgraded_to_l1() -> None:
+    """review.txt defines L2+ purely in terms of a confirmed finding
+    ("confirmed but low-value" / "real impact" / "durable/systemic") -
+    pairing one with ruled_out contradicts the reviewer's own scale."""
+    provider = _FakeProvider(text='{"verdict": "ruled_out", "proof_level": "L3"}')
+    graph, finding_id = _graph_with_finding()
+    confidence = compute_confidence(graph, finding_id)
+    result = run_adversarial_review(graph, finding_id, confidence, _router(provider))
+    assert result.verdict is ReviewVerdict.RULED_OUT
+    assert result.proof_level == "L1"
+
+
+def test_an_open_proof_gap_verdict_with_a_confirmed_only_proof_level_is_downgraded_to_l1() -> None:
+    provider = _FakeProvider(text='{"verdict": "open_proof_gap", "proof_level": "L4"}')
+    graph, finding_id = _graph_with_finding()
+    confidence = compute_confidence(graph, finding_id)
+    result = run_adversarial_review(graph, finding_id, confidence, _router(provider))
+    assert result.proof_level == "L1"
+
+
+def test_a_confirmed_verdict_keeps_any_valid_proof_level() -> None:
+    provider = _FakeProvider(text='{"verdict": "confirmed", "proof_level": "L4"}')
+    graph, finding_id = _graph_with_finding()
+    confidence = compute_confidence(graph, finding_id)
+    result = run_adversarial_review(graph, finding_id, confidence, _router(provider))
+    assert result.proof_level == "L4"
 
 
 def test_an_invalid_proof_level_falls_back_to_l1_without_failing_the_review() -> None:
