@@ -82,3 +82,24 @@ def test_immediate_exit_is_detected() -> None:
     with pytest.raises(ContainerError):
         container.start()
     container.stop()
+
+
+def test_sys_ptrace_is_granted_unconditionally_for_the_arsenals_debugger() -> None:
+    # Docker's default seccomp profile blocks ptrace(2) without CAP_SYS_PTRACE,
+    # regardless of user -- without this, the arsenal's own gdb/radare2 could
+    # never attach to or single-step a live process, only disassemble statically.
+    with RuntimeContainer(RuntimeConfig(image=_IMAGE)) as c:
+        cap_eff = c.exec("grep CapEff /proc/self/status").stdout
+        assert cap_eff, "could not read /proc/self/status inside the sandbox"
+        # bit 19 (0x80000) is CAP_SYS_PTRACE; verified against a live daemon
+        # the same way the forbidden-cap check above is.
+        hex_value = cap_eff.split()[-1]
+        assert int(hex_value, 16) & 0x80000, f"CAP_SYS_PTRACE not effective: {cap_eff!r}"
+
+
+def test_sys_ptrace_baseline_is_present_even_with_an_empty_cap_add() -> None:
+    # Fast, no-docker-needed check on the args shape itself.
+    container = RuntimeContainer(RuntimeConfig(image=_IMAGE))
+    args = container._run_args()
+    ptrace_index = args.index("SYS_PTRACE")
+    assert args[ptrace_index - 1] == "--cap-add"

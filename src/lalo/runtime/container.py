@@ -14,6 +14,24 @@ SYS_RAWIO/SYS_BOOT) are adopted here — but that project only *documents* the
 exclusion list; this module *enforces* it: requesting a forbidden capability
 raises before any container is started, rather than relying on the caller to
 have read the comment.
+
+Phase 1, pentagi pass: that same reference's cap-add allowlist grants
+``SYS_PTRACE`` *unconditionally* (unlike its own ``NET_ADMIN``, which is gated
+behind an explicit config flag) — reasoned as safe to always grant because
+ptrace never crosses a container's own PID namespace boundary: it only ever
+lets a process trace another process already inside the SAME container, never
+the host or a sibling container. Adopted as an always-granted baseline here
+too, for a concrete reason no caller in this codebase was actually closing:
+the arsenal image unconditionally ships ``gdb``/``radare2`` for the in-mission
+binary/pwn work L4L0's own mandate covers, but Docker's default seccomp
+profile blocks the ``ptrace(2)`` syscall entirely unless ``CAP_SYS_PTRACE`` is
+present — with no caller ever requesting it via ``cap_add``, every real scan's
+own pre-installed debugger was silently unusable for anything beyond static
+disassembly. Granted as a fixed baseline (like ``--cap-drop ALL`` itself)
+rather than through ``cap_add``, since the agent's free-shell model means any
+tool in the arsenal can be invoked unpredictably at any point in a scan — there
+is no natural "this specific call needs debugging" moment for a caller to opt
+in at.
 """
 
 from __future__ import annotations
@@ -35,6 +53,12 @@ _KEEPALIVE = ("tail", "-f", "/dev/null")
 # caller requests — each would materially weaken containment (kernel module
 # load, raw I/O, admin-equivalent, reboot). Runtime-enforced, not just documented.
 _FORBIDDEN_CAPS = frozenset({"SYS_ADMIN", "SYS_MODULE", "SYS_RAWIO", "SYS_BOOT"})
+
+# Granted unconditionally to every sandbox, never opt-in via `cap_add` — see
+# the module docstring's Phase 1 pentagi-pass note for why SYS_PTRACE alone
+# gets this treatment (never crosses the container's own PID namespace; the
+# arsenal's own gdb/radare2 need it for anything beyond static analysis).
+_BASELINE_CAPS = ("SYS_PTRACE",)
 
 
 def _normalize_cap(cap: str) -> str:
@@ -89,9 +113,10 @@ class RuntimeConfig:
     """How to launch the disposable container.
 
     ``user=None`` keeps the image's default user (root for the arsenal image —
-    fine here, see the module docstring). ``cap_add`` is the *only* way caps come
-    back after the blanket drop (e.g. ``("NET_RAW",)`` for a raw-socket tool);
-    each is validated against :data:`_FORBIDDEN_CAPS` at construction time.
+    fine here, see the module docstring). ``cap_add`` is how a caller opts a
+    scan into anything BEYOND the fixed :data:`_BASELINE_CAPS` (e.g.
+    ``("NET_RAW",)`` for a raw-socket tool); each is validated against
+    :data:`_FORBIDDEN_CAPS` at construction time.
     No restart policy is set on purpose: this is a single-shot disposable
     container — a crash should surface immediately, not silently retry and mask
     a fast-crash-loop.
@@ -163,6 +188,8 @@ class RuntimeContainer:
         ]
         if self.config.user is not None:
             args += ["--user", self.config.user]
+        for cap in _BASELINE_CAPS:
+            args += ["--cap-add", cap]
         for cap in self.config.cap_add:
             args += ["--cap-add", cap]
         # Deliberately NO -v/--mount (no host filesystem) and NO docker socket —
