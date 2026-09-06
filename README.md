@@ -31,11 +31,15 @@ uv run pytest tests/lalo -q -m "not integration"   # test suite (fast; needs no 
 # recon/exploitation toolkit; only needed before your first live scan):
 docker build -t lalo-runtime:latest -f docker/lalo-runtime.Dockerfile .
 
-uv run lalo-gui   # web GUI — prints a tokened URL, e.g. http://127.0.0.1:8765/?token=...
+uv run lalo-gui   # web GUI — always at http://127.0.0.1:8000/
 ```
 
 Open the printed URL, fill in a mission and one or more targets in the launch
-form, and start a scan. Provide an LLM via a provider key (e.g.
+form, and start a scan. The GUI is unauthenticated by design (no token,
+local-machine convenience over same-machine drive-by/CSRF hardening) - it
+binds only to 127.0.0.1, so it is never reachable from the network, but
+another browser tab or local process on the same machine could still reach
+it. Provide an LLM via a provider key (e.g.
 `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, or a local
 `OPENCODEX_API_KEY`/`LALO_CUSTOM_*` gateway) — the multi-provider router fails
 over between whichever of these are actually configured. A working `docker`

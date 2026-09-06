@@ -15,7 +15,6 @@
 (() => {
   "use strict";
 
-  const token = new URLSearchParams(window.location.search).get("token") || "";
   const statusEl = document.getElementById("conn-status");
   const threadEl = document.getElementById("thread");
   const statAgentsEl = document.getElementById("stat-agents");
@@ -251,7 +250,7 @@
     const link = item.querySelector(".run-report-link");
     const fmt = preferredReportFormat(run.report_formats || []);
     if (fmt) {
-      link.href = `/runs/${encodeURIComponent(run.run_id)}/report/${fmt}?token=${encodeURIComponent(token)}`;
+      link.href = `/runs/${encodeURIComponent(run.run_id)}/report/${fmt}`;
       link.hidden = false;
     }
     return item;
@@ -273,7 +272,7 @@
 
   async function loadRunHistory() {
     try {
-      const response = await fetch(`/runs?token=${encodeURIComponent(token)}`);
+      const response = await fetch("/runs");
       if (!response.ok) return; // best-effort - must never block the live console
       const body = await response.json();
       renderRunHistory(body.runs || []);
@@ -413,7 +412,6 @@
   function connect() {
     const url = new URL("/ws", window.location.href);
     url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
-    url.searchParams.set("token", token);
     if (lastCursor !== null) {
       url.searchParams.set("cursor", String(lastCursor));
     }
@@ -433,21 +431,11 @@
     });
 
     socket.addEventListener("close", (ev) => {
-      if (ev.code === 4401) {
-        // The token in this page's own URL is invalid - the server has no
-        // way to hand this page a new one, and retrying with the same
-        // token can never succeed. Stop, rather than showing
-        // "reconnecting..." forever with no way to recover short of
-        // knowing to reload.
-        statusEl.textContent = "session invalid - reload the page for a new link";
-        statusEl.className = "conn-pill disconnected";
-        return;
-      }
       if (ev.code === 4400) {
         // The cursor this client remembered is stale/out of range (e.g. the
-        // server's event log was reset) - the token may still be fine, but
-        // repeating the same cursor will only fail the same way forever.
-        // Fall back to a fresh full snapshot on the next attempt instead.
+        // server's event log was reset) - repeating the same cursor will
+        // only fail the same way forever. Fall back to a fresh full
+        // snapshot on the next attempt instead.
         lastCursor = null;
       }
       setStatus(false);
@@ -480,7 +468,7 @@
     composerSendBtn.disabled = true;
     composerInput.disabled = true;
     try {
-      const response = await fetch(`/scan?token=${encodeURIComponent(token)}`, {
+      const response = await fetch("/scan", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ mission: text, targets }),
@@ -505,7 +493,7 @@
     composerSendBtn.disabled = true;
     composerInput.disabled = true;
     try {
-      const response = await fetch(`/steer?token=${encodeURIComponent(token)}`, {
+      const response = await fetch("/steer", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ text }),
@@ -540,7 +528,7 @@
   stopScanBtn.addEventListener("click", async () => {
     stopScanBtn.disabled = true;
     try {
-      const response = await fetch(`/scan/stop?token=${encodeURIComponent(token)}`, {
+      const response = await fetch("/scan/stop", {
         method: "POST",
       });
       const body = await response.json().catch(() => ({}));
