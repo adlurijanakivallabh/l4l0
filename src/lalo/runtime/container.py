@@ -61,7 +61,9 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+import threading
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from ..core.errors import ContainerError
@@ -305,6 +307,66 @@ class RuntimeContainer:
         except subprocess.TimeoutExpired:
             return ExecResult(exit_code=124, stdout="", stderr="timeout", timed_out=True)
         return ExecResult(exit_code=result.returncode, stdout=result.stdout, stderr=result.stderr)
+
+    def exec_streaming(
+        self,
+        command: str | list[str],
+        on_chunk: Callable[[str, str], None],
+        *,
+        timeout: float = 120.0,
+    ) -> ExecResult:
+        """Like :meth:`exec`, but calls ``on_chunk(stream, text)`` with output
+        as it's produced instead of only returning once the command
+        finishes. Returns the identical :class:`ExecResult` shape - the
+        streaming is a side channel for a live viewer, never a replacement
+        for the agent's own synchronous "run a command, get the final
+        result" contract every existing caller of :meth:`exec` relies on.
+        """
+        if not self._started:
+            raise ContainerError("cannot exec: container not started")
+        argv = (
+            [_docker_bin(), "exec", self._name, "sh", "-c", command]
+            if isinstance(command, str)
+            else [_docker_bin(), "exec", self._name, *command]
+        )
+        try:
+            process = subprocess.Popen(  # noqa: S603 - resolved binary; workload isolation is the control
+                argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1
+            )
+        except OSError as exc:
+            return ExecResult(exit_code=1, stdout="", stderr=str(exc))
+
+        stdout_chunks: list[str] = []
+        stderr_chunks: list[str] = []
+
+        def _pump(stream: object, sink: list[str], name: str) -> None:
+            for line in stream:  # type: ignore[attr-defined]
+                sink.append(line)
+                on_chunk(name, line)
+
+        stdout_thread = threading.Thread(
+            target=_pump, args=(process.stdout, stdout_chunks, "stdout"), daemon=True
+        )
+        stderr_thread = threading.Thread(
+            target=_pump, args=(process.stderr, stderr_chunks, "stderr"), daemon=True
+        )
+        stdout_thread.start()
+        stderr_thread.start()
+        try:
+            process.wait(timeout=timeout)
+            timed_out = False
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
+            timed_out = True
+        stdout_thread.join(timeout=5)
+        stderr_thread.join(timeout=5)
+        return ExecResult(
+            exit_code=124 if timed_out else process.returncode,
+            stdout="".join(stdout_chunks),
+            stderr="".join(stderr_chunks) if not timed_out else "".join(stderr_chunks) + "timeout",
+            timed_out=timed_out,
+        )
 
     def stop(self) -> None:
         if self._started:
