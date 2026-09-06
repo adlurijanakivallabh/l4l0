@@ -84,6 +84,55 @@
     return msg.querySelector(".msg-body");
   }
 
+  // Curated one-liners for the known "log"/"status" event shapes emitted by
+  // scan.py/loop.py - falls back to a raw JSON dump for anything not
+  // recognized, since EventCategory's own payload shapes are an open set
+  // (a future event kind must still render as *something*, not vanish).
+  function formatLogPayload(payload) {
+    switch (payload.event) {
+      case "tool_call":
+        return `→ ${payload.tool}(${JSON.stringify(payload.args ?? {})})`;
+      case "tool_result":
+        return `${payload.ok ? "✓" : "✗"} ${payload.tool}`;
+      default:
+        return payload.text || JSON.stringify(payload);
+    }
+  }
+
+  function formatFailure(payload) {
+    let text = `scan failed: ${payload.error || "unknown error"}`;
+    if (payload.failures && payload.failures.length) {
+      const segments = payload.failures.map((f) => `${f.provider}: ${f.reason}`).join("; ");
+      text += ` (role=${payload.role || "?"}; tried: ${segments})`;
+    }
+    return text;
+  }
+
+  function formatStatusPayload(payload) {
+    switch (payload.event) {
+      case "resumed":
+        return `resumed from step ${payload.replayed_steps}`;
+      case "budget_exhausted":
+        return `budget exhausted at step ${payload.step}`;
+      case "provider_failed":
+        return `provider failed at step ${payload.step}`;
+      case "finished":
+        return payload.reserved_turn
+          ? `finished (reserved turn, step ${payload.step})`
+          : `finished at step ${payload.step}`;
+      case "repeating_tool_call_aborted":
+        return `repeating tool call aborted: ${payload.tool}`;
+      case "scan_started":
+        return `scan started — targets: ${(payload.targets || []).join(", ") || "(none)"}`;
+      case "scan_completed":
+        return `scan completed — status: ${payload.status}`;
+      case "scan_failed":
+        return formatFailure(payload);
+      default:
+        return JSON.stringify(payload);
+    }
+  }
+
   function appendScrollback(text) {
     if (!openLogBlock) {
       const body = newAgentTurn();
@@ -228,6 +277,10 @@
     stopScanBtn.hidden = true;
     composerInput.placeholder = "Tell me what to test…";
     stopElapsedClock();
+    if (payload && payload.event === "scan_failed") {
+      appendAgentText(formatFailure(payload));
+      return;
+    }
     let text = "Scan finished — send another target and objective anytime.";
     if (payload && payload.usage_delta) {
       const u = payload.usage_delta;
@@ -246,7 +299,7 @@
   function applyEvent(event) {
     switch (event.category) {
       case "status":
-        appendScrollback(`[status] ${JSON.stringify(event.payload)}`);
+        appendScrollback(`[status] ${formatStatusPayload(event.payload)}`);
         if (SCAN_STATUS_EVENTS.has(event.payload.event)) {
           if (event.payload.event === "scan_started") {
             if (!scanActive) onScanStarted();
@@ -256,7 +309,7 @@
         }
         break;
       case "log":
-        appendScrollback(event.payload.text || JSON.stringify(event.payload));
+        appendScrollback(formatLogPayload(event.payload));
         break;
       case "agent":
         {
