@@ -35,6 +35,23 @@ def test_every_vulnerability_skill_cites_closure_discipline() -> None:
         assert "closure-discipline" in skill.body, f"{skill.name} never cites closure-discipline"
 
 
+def test_cloud_binary_ad_skills_exist_and_are_vulnerability_category() -> None:
+    """CLAUDE.md's safety posture explicitly lists cloud/K8s/serverless,
+    binary/pwn, and read-only AD mapping as in-scope engagement types - the
+    skill library must actually carry methodology for them, not just leave
+    the agent to work from general model knowledge with none of this
+    project's own proof-ladder/validation discipline."""
+    skills = {s.name: s for s in load_skills()}
+    for name in (
+        "cloud-iam-storage-misconfiguration",
+        "kubernetes-serverless-assessment",
+        "binary-memory-corruption",
+        "active-directory-ldap-mapping",
+    ):
+        assert name in skills, f"missing skill: {name}"
+        assert skills[name].category is SkillCategory.VULNERABILITY
+
+
 def test_skill_names_are_unique_across_the_library() -> None:
     skills = load_skills()
     names = [s.name for s in skills]
