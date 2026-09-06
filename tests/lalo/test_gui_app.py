@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import threading
 import time
 from collections.abc import Callable
@@ -599,3 +600,61 @@ def test_a_failed_scan_with_a_plain_error_has_no_role_or_failures_fields(
         assert "failures" not in payload
     finally:
         _FakeScanRunner.raises = None
+
+
+def test_get_settings_providers_reports_which_are_configured(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-real")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    client, _ = _client(runs_dir=tmp_path)
+    response = client.get("/settings/providers")
+    assert response.status_code == 200
+    providers = {p["id"]: p["configured"] for p in response.json()["providers"]}
+    assert providers["anthropic"] is True
+    assert providers["openai"] is False
+
+
+def test_post_settings_providers_verifies_and_writes_env_and_updates_process_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    env_path = tmp_path / ".env"
+    monkeypatch.setattr(app_module, "_SETTINGS_ENV_PATH", env_path)
+    monkeypatch.setattr(app_module, "verify_router", lambda _router: {"anthropic": (True, "ok")})
+    client, _ = _client(runs_dir=tmp_path)
+    response = client.post(
+        "/settings/providers",
+        json={"provider_id": "anthropic", "api_key": "sk-ant-real", "extra": {}},
+    )
+    assert response.status_code == 200
+    assert env_path.read_text(encoding="utf-8") == "ANTHROPIC_API_KEY=sk-ant-real\n"
+    assert os.environ["ANTHROPIC_API_KEY"] == "sk-ant-real"  # picked up by THIS process immediately
+
+
+def test_post_settings_providers_writes_nothing_on_failed_verification(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    env_path = tmp_path / ".env"
+    monkeypatch.setattr(app_module, "_SETTINGS_ENV_PATH", env_path)
+    monkeypatch.setattr(
+        app_module, "verify_router", lambda _router: {"anthropic": (False, "401 unauthorized")}
+    )
+    client, _ = _client(runs_dir=tmp_path)
+    response = client.post(
+        "/settings/providers",
+        json={"provider_id": "anthropic", "api_key": "sk-ant-bad", "extra": {}},
+    )
+    assert response.status_code == 400
+    assert not env_path.exists()
+
+
+def test_post_settings_providers_rejects_an_unknown_provider_id(
+    tmp_path: Path,
+) -> None:
+    client, _ = _client(runs_dir=tmp_path)
+    response = client.post(
+        "/settings/providers",
+        json={"provider_id": "not-a-real-provider", "api_key": "x", "extra": {}},
+    )
+    assert response.status_code == 400

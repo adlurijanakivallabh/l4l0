@@ -102,6 +102,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
 import threading
 import uuid
@@ -114,8 +115,11 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from ..core.config import CURATED_PROVIDERS, load_settings
+from ..core.env_file import merge_env_file
 from ..core.errors import AllProvidersFailedError
 from ..core.logging import get_logger
+from ..core.providers import build_router, verify_router
 from ..core.usage import DEFAULT_USAGE_PATH
 from ..report.writer import (
     DOCX_FILENAME,
@@ -146,6 +150,7 @@ _log = get_logger("lalo.gui")
 STATIC_DIR = Path(__file__).parent / "static"
 _POLL_INTERVAL_S = 0.3
 _DEFAULT_RUNS_DIR = Path.home() / ".lalo" / "runs"
+_SETTINGS_ENV_PATH = Path(".env")
 # Every real run_id this project ever creates is uuid.uuid4().hex[:12] - a
 # strict allowlist (not a "/"/".."  blocklist) closes path traversal for
 # GOOD, including the shapes a blocklist alone would miss (an absolute
@@ -169,6 +174,12 @@ class ScanRequest(BaseModel):
     exclude_targets: list[str] = []
     rules_of_engagement: str = ""
     resume_run_id: str | None = None
+
+
+class ProviderSettingsRequest(BaseModel):
+    provider_id: str
+    api_key: str
+    extra: dict[str, str] = {}
 
 
 def _event_to_json(event: Any) -> dict[str, Any]:
@@ -372,6 +383,44 @@ def build_app(event_log: EventLog, *, runs_dir: Path | None = None) -> FastAPI:
         if not path.is_file():
             return JSONResponse({"error": "report not found"}, status_code=404)
         return FileResponse(path, media_type=media_type, filename=filename)
+
+    @app.get("/settings/providers")
+    def list_provider_settings() -> JSONResponse:
+        settings = load_settings(os.environ)
+        configured_ids = {p.id for p in settings.resolved}
+        return JSONResponse(
+            {
+                "providers": [
+                    {
+                        "id": spec.id,
+                        "credential_hint": spec.credential_hint,
+                        "configured": spec.id in configured_ids,
+                    }
+                    for spec in CURATED_PROVIDERS
+                ]
+            }
+        )
+
+    @app.post("/settings/providers")
+    def set_provider_settings(request: ProviderSettingsRequest) -> JSONResponse:
+        spec = next((s for s in CURATED_PROVIDERS if s.id == request.provider_id), None)
+        if spec is None:
+            return JSONResponse(
+                {"error": f"unknown provider {request.provider_id!r}"}, status_code=400
+            )
+        api_key = request.api_key.strip()
+        if not api_key:
+            return JSONResponse({"error": "'api_key' is required"}, status_code=400)
+        env = {spec.candidate_key_envs[0]: api_key, **request.extra}
+        settings = load_settings(env)
+        router = build_router(settings)
+        ok, reason = verify_router(router).get(spec.id, (False, "not resolved"))
+        if not ok:
+            return JSONResponse({"error": f"verification failed: {reason}"}, status_code=400)
+        merge_env_file(_SETTINGS_ENV_PATH, env)
+        for key, value in env.items():
+            os.environ[key] = value
+        return JSONResponse({"ok": True, "provider_id": spec.id})
 
     @app.post("/scan/stop")
     async def stop_scan() -> JSONResponse:

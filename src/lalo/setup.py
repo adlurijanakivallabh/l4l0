@@ -25,8 +25,8 @@ from __future__ import annotations
 import getpass
 from pathlib import Path
 
-from .core.atomic_io import atomic_write_verified
 from .core.config import CURATED_PROVIDERS, ProviderSpec, load_settings
+from .core.env_file import merge_env_file
 from .core.providers import build_router, verify_router
 
 _ENV_PATH = Path(".env")
@@ -57,25 +57,6 @@ def _collect_env(spec: ProviderSpec) -> dict[str, str]:
     return env
 
 
-def _merge_env_file(path: Path, values: dict[str, str]) -> None:
-    """Update ``path`` with ``values``, replacing matching keys in place and
-    preserving every other line untouched - the repo's own ``.env`` may
-    already hold unrelated content, so this never blindly overwrites it.
-    """
-    remaining = dict(values)
-    out_lines: list[str] = []
-    if path.exists():
-        for line in path.read_text(encoding="utf-8").splitlines():
-            stripped = line.strip()
-            key = stripped.split("=", 1)[0].strip() if "=" in stripped else None
-            if key and not stripped.startswith("#") and key in remaining:
-                out_lines.append(f"{key}={remaining.pop(key)}")
-            else:
-                out_lines.append(line)
-    out_lines.extend(f"{key}={value}" for key, value in remaining.items())
-    atomic_write_verified(path, ("\n".join(out_lines) + "\n").encode("utf-8"))
-
-
 def main() -> None:
     try:
         spec = _prompt_provider()
@@ -96,7 +77,7 @@ def main() -> None:
         print(f"✗ {spec.id} failed verification: {reason} - nothing written")
         raise SystemExit(1)
 
-    _merge_env_file(_ENV_PATH, env)
+    merge_env_file(_ENV_PATH, env)
     print(f"✓ {spec.id} verified working. Wrote {_ENV_PATH.resolve()}")
     print(f"Run the GUI with:  uv run --env-file {_ENV_PATH} lalo-gui")
 
