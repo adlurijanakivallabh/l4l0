@@ -70,7 +70,7 @@ from .agent.spawn import AgentCoordinator, build_spawn_tools, isolate_for_child,
 from .agent.tools import Tool, ToolRegistry
 from .browser.session import BrowserSession
 from .browser.tool import build_browser_tool
-from .core.atomic_io import atomic_write_verified
+from .core.atomic_io import append_owner_only_line, atomic_write_verified
 from .core.config import load_settings
 from .core.errors import (
     AllProvidersFailedError,
@@ -222,6 +222,48 @@ def _journal_path(run_dir: Path) -> Path:
     return run_dir / "journal.jsonl"
 
 
+def _events_path(run_dir: Path) -> Path:
+    return run_dir / "events.jsonl"
+
+
+def load_run_events(run_dir: Path) -> EventLog:
+    """Replay a run's durably-persisted narration into a fresh, in-memory
+    :class:`~lalo.gui.events.EventLog` — for a run-history viewer to render a
+    completed/crashed run's events exactly as the live GUI would have,
+    independent of whether that scan's own live ``EventLog`` (process-
+    lifetime, not run-scoped) still holds them or the GUI process that ran it
+    is even still alive.
+
+    Missing file or a torn final line from a crash mid-write are never fatal
+    - the former is a run recorded before this feature existed (or one with
+    no ``event_log`` attached at all), the latter mirrors
+    :class:`~lalo.orchestrator.journal.DurableJournal`'s own established
+    crash-tolerant reload behavior.
+    """
+    from .gui.events import EventLog
+
+    replay = EventLog()
+    path = _events_path(run_dir)
+    if not path.exists():
+        return replay
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            record = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if not isinstance(record, dict):
+            continue
+        category = record.get("category")
+        payload = record.get("payload")
+        if not isinstance(category, str) or not isinstance(payload, dict):
+            continue
+        replay.append(category, payload)  # type: ignore[arg-type]
+    return replay
+
+
 def _load_or_write_manifest(config: ScanConfig) -> None:
     """Enforce config-identity across a resume, then ensure a manifest exists
     for THIS run either way (a first run writes one so a later crash has
@@ -302,6 +344,17 @@ class ScanRunner:
         return self._cancelled
 
     def _emit(self, category: EventCategory, payload: dict[str, object]) -> None:
+        # Durably persisted regardless of whether a live EventLog is attached
+        # (EventLog itself is process-lifetime, not run-scoped - it outlives
+        # any single scan - so this is the only durable, per-run record of a
+        # scan's own narration once the process exits or a later scan starts).
+        # Same sensitivity class as journal.jsonl (tool_call args can carry a
+        # session token, a login password) - same append_owner_only_line
+        # primitive, same 0600 permission model.
+        append_owner_only_line(
+            _events_path(self.config.run_dir),
+            json.dumps({"category": category, "payload": payload}, sort_keys=True, default=str),
+        )
         if self.event_log is not None:
             self.event_log.append(category, payload)
 

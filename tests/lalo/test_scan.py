@@ -36,7 +36,7 @@ from lalo.graph.model import NodeKind, ReachabilityGraph
 from lalo.gui.events import EventLog
 from lalo.integrations.mcp_client import MCPServerConfig
 from lalo.orchestrator.budget import RunStatus
-from lalo.scan import ScanConfig, ScanRunner, _terminal_status
+from lalo.scan import ScanConfig, ScanRunner, _terminal_status, load_run_events
 
 
 @pytest.fixture(autouse=True)
@@ -374,6 +374,54 @@ def test_scan_runner_emits_usage_delta_when_usage_path_is_configured(
     # token deltas are honestly 0 -- but real completions did happen this run,
     # so the request count must reflect that, not also default to 0.
     assert usage_delta["requests"] > 0
+
+
+def test_scan_runner_durably_persists_events_even_with_no_live_event_log(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """EventLog is process-lifetime, not run-scoped, and a caller can run a
+    scan with no event_log attached at all (event_log=None) - durable
+    narration must not depend on either."""
+    monkeypatch.setattr(scan_module, "docker_available", lambda: True)
+    monkeypatch.setattr(scan_module, "RuntimeContainer", _FakeContainer)
+    router = ModelRouter(
+        providers={"fake": _ScriptedProvider(_respond)},
+        routes={"reasoning": ("fake",), "review": ("fake",)},
+        default_route=("fake",),
+    )
+    monkeypatch.setattr(scan_module, "build_router", lambda _settings: router)
+
+    run_dir = tmp_path / "run"
+    config = ScanConfig(mission="find a bug", target_specs=["example.com"], run_dir=run_dir)
+    ScanRunner(config, env={"ANTHROPIC_API_KEY": "sk-test"}).run()  # no event_log passed
+
+    events_path = run_dir / "events.jsonl"
+    assert events_path.exists()
+    replay = load_run_events(run_dir)
+    _cursor, events = replay.snapshot()
+    assert any(e.payload.get("event") == "scan_started" for e in events)
+    assert any(e.category == "finding" for e in events)
+
+
+def test_load_run_events_on_a_missing_file_is_an_empty_log(tmp_path: Path) -> None:
+    replay = load_run_events(tmp_path / "no-such-run")
+    cursor, events = replay.snapshot()
+    assert cursor == 0
+    assert events == []
+
+
+def test_load_run_events_skips_a_torn_final_line_from_a_crash(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "events.jsonl").write_text(
+        '{"category": "status", "payload": {"event": "scan_started"}}\n'
+        '{"category": "log", "payload": {"tex',  # torn mid-write, no trailing newline
+        encoding="utf-8",
+    )
+    replay = load_run_events(run_dir)
+    _cursor, events = replay.snapshot()
+    assert len(events) == 1
+    assert events[0].payload == {"event": "scan_started"}
 
 
 def test_scan_runner_attributes_usage_to_the_root_agent_id(

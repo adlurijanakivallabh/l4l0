@@ -60,6 +60,7 @@ module does not.
 from __future__ import annotations
 
 import asyncio
+import json
 import secrets
 import threading
 import uuid
@@ -75,7 +76,7 @@ from pydantic import BaseModel
 from ..core.errors import AllProvidersFailedError
 from ..core.logging import get_logger
 from ..core.usage import DEFAULT_USAGE_PATH
-from ..scan import ScanConfig, ScanRunner
+from ..scan import ScanConfig, ScanRunner, load_run_events
 from .events import EventLog
 
 _log = get_logger("lalo.gui")
@@ -103,6 +104,43 @@ def generate_token() -> str:
 
 def _event_to_json(event: Any) -> dict[str, Any]:
     return asdict(event)
+
+
+def _list_runs(runs_dir: Path) -> list[dict[str, Any]]:
+    """Every run directory under ``runs_dir``, most recently modified first -
+    pure filesystem enumeration, no separate run-index state to keep in sync.
+    A directory missing/unreadable ``resume_manifest.json`` (a run that never
+    got past the earliest preflight checks) still lists, just without a
+    mission/targets summary.
+    """
+    if not runs_dir.exists():
+        return []
+    summaries: list[dict[str, Any]] = []
+    for entry in runs_dir.iterdir():
+        if not entry.is_dir():
+            continue
+        mission: str | None = None
+        target_specs: list[str] = []
+        try:
+            manifest = json.loads((entry / "resume_manifest.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            manifest = {}
+        if isinstance(manifest, dict):
+            raw_mission = manifest.get("mission")
+            mission = raw_mission if isinstance(raw_mission, str) else None
+            raw_targets = manifest.get("target_specs")
+            target_specs = raw_targets if isinstance(raw_targets, list) else []
+        summaries.append(
+            {
+                "run_id": entry.name,
+                "mission": mission,
+                "target_specs": target_specs,
+                "has_report": (entry / "report.json").exists(),
+                "modified_at": entry.stat().st_mtime,
+            }
+        )
+    summaries.sort(key=lambda s: s["modified_at"], reverse=True)
+    return summaries
 
 
 def build_app(event_log: EventLog, token: str, *, runs_dir: Path | None = None) -> FastAPI:
@@ -189,6 +227,30 @@ def build_app(event_log: EventLog, token: str, *, runs_dir: Path | None = None) 
                 "last_status": last_status,
             }
         )
+
+    @app.get("/runs")
+    def list_runs(provided_token: str = Query(default="", alias="token")) -> JSONResponse:
+        if not _authorized(provided_token):
+            return JSONResponse({"error": "invalid token"}, status_code=403)
+        return JSONResponse({"runs": _list_runs(runs_dir)})
+
+    @app.get("/runs/{run_id}/events")
+    def run_events(
+        run_id: str, provided_token: str = Query(default="", alias="token")
+    ) -> JSONResponse:
+        if not _authorized(provided_token):
+            return JSONResponse({"error": "invalid token"}, status_code=403)
+        # Starlette's default path converter already excludes "/" from a
+        # single {run_id} segment; this additionally rejects the one
+        # traversal shape still expressible as one segment.
+        if not run_id or run_id in (".", ".."):
+            return JSONResponse({"error": "invalid run_id"}, status_code=400)
+        run_path = runs_dir / run_id
+        if not run_path.is_dir():
+            return JSONResponse({"error": "run not found"}, status_code=404)
+        replay = load_run_events(run_path)
+        cursor, events = replay.snapshot()
+        return JSONResponse({"cursor": cursor, "events": [_event_to_json(e) for e in events]})
 
     @app.post("/scan/stop")
     async def stop_scan(provided_token: str = Query(default="", alias="token")) -> JSONResponse:

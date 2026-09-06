@@ -209,6 +209,88 @@ def test_status_reports_the_most_recent_status_event() -> None:
     assert response.json()["last_status"] == {"event": "scan_completed", "status": "completed"}
 
 
+def test_list_runs_requires_a_valid_token(tmp_path: Path) -> None:
+    client, _ = _client(token="real-token", runs_dir=tmp_path)
+    response = client.get("/runs?token=wrong")
+    assert response.status_code == 403
+
+
+def test_list_runs_on_an_empty_runs_dir_is_empty(tmp_path: Path) -> None:
+    client, _ = _client(runs_dir=tmp_path)
+    response = client.get("/runs?token=test-token")
+    assert response.json() == {"runs": []}
+
+
+def test_list_runs_on_a_runs_dir_that_does_not_exist_yet_is_empty(tmp_path: Path) -> None:
+    client, _ = _client(runs_dir=tmp_path / "never-created")
+    response = client.get("/runs?token=test-token")
+    assert response.json() == {"runs": []}
+
+
+def test_list_runs_returns_mission_and_report_status_from_a_real_run_dir(
+    tmp_path: Path,
+) -> None:
+    run_dir = tmp_path / "abc123"
+    run_dir.mkdir()
+    (run_dir / "resume_manifest.json").write_text(
+        '{"mission": "find a bug", "target_specs": ["example.com"], "egress_lock": false}',
+        encoding="utf-8",
+    )
+    (run_dir / "report.json").write_text("{}", encoding="utf-8")
+
+    client, _ = _client(runs_dir=tmp_path)
+    response = client.get("/runs?token=test-token")
+    runs = response.json()["runs"]
+    assert len(runs) == 1
+    assert runs[0]["run_id"] == "abc123"
+    assert runs[0]["mission"] == "find a bug"
+    assert runs[0]["target_specs"] == ["example.com"]
+    assert runs[0]["has_report"] is True
+
+
+def test_list_runs_without_a_manifest_still_lists_with_no_mission(tmp_path: Path) -> None:
+    (tmp_path / "no-manifest-yet").mkdir()
+    client, _ = _client(runs_dir=tmp_path)
+    runs = client.get("/runs?token=test-token").json()["runs"]
+    assert runs[0]["run_id"] == "no-manifest-yet"
+    assert runs[0]["mission"] is None
+    assert runs[0]["has_report"] is False
+
+
+def test_run_events_requires_a_valid_token(tmp_path: Path) -> None:
+    client, _ = _client(token="real-token", runs_dir=tmp_path)
+    response = client.get("/runs/abc123/events?token=wrong")
+    assert response.status_code == 403
+
+
+def test_run_events_on_an_unknown_run_id_is_404(tmp_path: Path) -> None:
+    client, _ = _client(runs_dir=tmp_path)
+    response = client.get("/runs/no-such-run/events?token=test-token")
+    assert response.status_code == 404
+
+
+def test_run_events_rejects_a_dot_dot_run_id(tmp_path: Path) -> None:
+    client, _ = _client(runs_dir=tmp_path)
+    response = client.get("/runs/../events?token=test-token")
+    assert response.status_code in (400, 404)  # 404 if the router itself normalizes the path
+
+
+def test_run_events_replays_a_persisted_runs_narration(tmp_path: Path) -> None:
+    run_dir = tmp_path / "abc123"
+    run_dir.mkdir()
+    (run_dir / "events.jsonl").write_text(
+        '{"category": "status", "payload": {"event": "scan_started"}}\n'
+        '{"category": "finding", "payload": {"finding_id": "f1"}}\n',
+        encoding="utf-8",
+    )
+    client, _ = _client(runs_dir=tmp_path)
+    response = client.get("/runs/abc123/events?token=test-token")
+    assert response.status_code == 200
+    body = response.json()
+    categories = [e["category"] for e in body["events"]]
+    assert categories == ["status", "finding"]
+
+
 def test_scan_requires_a_valid_token(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(app_module, "ScanRunner", _FakeScanRunner)
     client, _ = _client(token="real-token", runs_dir=tmp_path)

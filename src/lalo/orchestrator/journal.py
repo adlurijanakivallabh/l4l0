@@ -43,7 +43,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-_OWNER_ONLY = 0o600
+from ..core.atomic_io import append_owner_only_line
 
 
 @dataclass(frozen=True)
@@ -87,14 +87,8 @@ class DurableJournal:
         # process wouldn't see the key at all, and within the same process the
         # step would never be retried. This ordering makes an unrecorded step
         # look exactly like it never ran, which is the truth.
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        line = json.dumps({"key": key, "result": result}, sort_keys=True) + "\n"
-        fd = os.open(self.path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, _OWNER_ONLY)
-        os.fchmod(fd, _OWNER_ONLY)  # tighten even if the file pre-existed looser
-        with os.fdopen(fd, "a", encoding="utf-8") as handle:
-            handle.write(line)
-            handle.flush()
-            os.fsync(handle.fileno())
+        line = json.dumps({"key": key, "result": result}, sort_keys=True)
+        append_owner_only_line(self.path, line)
         self._entries[key] = result
 
     def run_once(self, key: str, fn: Callable[[], Any]) -> Any:

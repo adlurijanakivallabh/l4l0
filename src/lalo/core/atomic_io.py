@@ -57,6 +57,30 @@ class AtomicWriteError(LaloError):
     code = "atomic_write_error"
 
 
+def append_owner_only_line(path: Path, line: str) -> None:
+    """Append ``line`` (plus a trailing newline) to ``path``, owner-only (``0600``).
+
+    The append-only counterpart to :func:`atomic_write_verified`: an
+    append-only log that grows over a long-running scan is the wrong shape
+    for a whole-file replace-and-verify primitive (read-modify-write the
+    whole file on every record would be quadratic), so this gets the same
+    ``0600`` property a different way — set at file-creation time via
+    ``os.open``'s own ``mode`` argument, and re-tightened via
+    :func:`os.fchmod` even if the file already existed looser. Originally
+    factored out of :class:`~lalo.orchestrator.journal.DurableJournal`
+    (its own module docstring has the full citation for why this file's
+    permissions matter) once a second append-only-log caller needed the
+    exact same behavior.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, _OWNER_ONLY)
+    os.fchmod(fd, _OWNER_ONLY)  # tighten even if the file pre-existed looser
+    with os.fdopen(fd, "a", encoding="utf-8") as handle:
+        handle.write(line if line.endswith("\n") else line + "\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+
+
 def atomic_write_verified(path: Path, data: bytes) -> None:
     """Write ``data`` to ``path`` atomically and owner-only (``0600``), never
     leaving a truncated file behind.

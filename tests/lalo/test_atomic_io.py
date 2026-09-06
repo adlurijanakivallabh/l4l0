@@ -6,7 +6,7 @@ import os
 import stat
 from pathlib import Path
 
-from lalo.core.atomic_io import atomic_write_verified
+from lalo.core.atomic_io import append_owner_only_line, atomic_write_verified
 
 
 def test_write_then_read_round_trips(tmp_path: Path) -> None:
@@ -68,4 +68,48 @@ def test_overwrite_tightens_permissions_even_if_the_old_file_was_looser(tmp_path
     target.write_bytes(b"pre-existing, world-readable file from an older run")
     target.chmod(0o644)
     atomic_write_verified(target, b"new state")
+    assert stat.S_IMODE(target.stat().st_mode) == 0o600
+
+
+# --- append_owner_only_line -------------------------------------------------
+
+
+def test_append_owner_only_line_creates_and_appends(tmp_path: Path) -> None:
+    target = tmp_path / "events.jsonl"
+    append_owner_only_line(target, "one")
+    append_owner_only_line(target, "two")
+    assert target.read_text(encoding="utf-8") == "one\ntwo\n"
+
+
+def test_append_owner_only_line_does_not_double_the_trailing_newline(tmp_path: Path) -> None:
+    target = tmp_path / "events.jsonl"
+    append_owner_only_line(target, "already has one\n")
+    assert target.read_text(encoding="utf-8") == "already has one\n"
+
+
+def test_append_owner_only_line_creates_missing_parent_directories(tmp_path: Path) -> None:
+    target = tmp_path / "nested" / "dir" / "events.jsonl"
+    append_owner_only_line(target, "line")
+    assert target.read_text(encoding="utf-8") == "line\n"
+
+
+def test_append_owner_only_line_is_owner_only_regardless_of_a_permissive_umask(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "events.jsonl"
+    old_umask = os.umask(0o000)
+    try:
+        append_owner_only_line(target, "line")
+    finally:
+        os.umask(old_umask)
+    assert stat.S_IMODE(target.stat().st_mode) == 0o600
+
+
+def test_append_owner_only_line_tightens_permissions_on_a_pre_existing_looser_file(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "events.jsonl"
+    target.write_text("")
+    target.chmod(0o644)
+    append_owner_only_line(target, "line")
     assert stat.S_IMODE(target.stat().st_mode) == 0o600
