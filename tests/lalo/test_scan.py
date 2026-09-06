@@ -29,7 +29,7 @@ import pytest
 import lalo.scan as scan_module
 from lalo.agent.spawn import merge_finding_nodes
 from lalo.agent.tools import FunctionTool, ToolResult
-from lalo.core.errors import ConfigError, ContainerError
+from lalo.core.errors import ConfigError, ContainerError, TargetUnreachableError
 from lalo.core.model_router import CompletionResponse, ModelRouter
 from lalo.core.usage import load_usage
 from lalo.graph.model import NodeKind, ReachabilityGraph
@@ -401,6 +401,61 @@ def test_scan_runner_attributes_usage_to_the_root_agent_id(
     # AgentCoordinator hands out ids as "agent-N" starting from 1 - the root
     # agent registered by ScanRunner.run() is always the first one.
     assert stats.by_agent["agent-1"]["requests"] > 0
+
+
+def test_scan_runner_defaults_to_advisory_only_for_an_unreachable_target(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(scan_module, "docker_available", lambda: True)
+    monkeypatch.setattr(scan_module, "RuntimeContainer", _FakeContainer)
+    monkeypatch.setattr(
+        scan_module,
+        "probe_reachability",
+        lambda *_a, **_k: {"example.com": (False, "connection refused")},
+    )
+    router = ModelRouter(
+        providers={"fake": _ScriptedProvider(_respond)},
+        routes={"reasoning": ("fake",), "review": ("fake",)},
+        default_route=("fake",),
+    )
+    monkeypatch.setattr(scan_module, "build_router", lambda _settings: router)
+
+    event_log = EventLog()
+    config = ScanConfig(
+        mission="find a bug", target_specs=["example.com"], run_dir=tmp_path / "run"
+    )
+    outcome = ScanRunner(config, env={"ANTHROPIC_API_KEY": "sk-test"}, event_log=event_log).run()
+
+    assert outcome.status is RunStatus.COMPLETED  # never blocked by an advisory-only signal
+    _cursor, events = event_log.snapshot()
+    assert any(e.payload.get("event") == "target_unreachable_preflight" for e in events)
+
+
+def test_scan_runner_hard_stops_on_an_unreachable_target_when_opted_in(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(scan_module, "docker_available", lambda: True)
+    monkeypatch.setattr(scan_module, "RuntimeContainer", _FakeContainer)
+    monkeypatch.setattr(
+        scan_module,
+        "probe_reachability",
+        lambda *_a, **_k: {"example.com": (False, "connection refused")},
+    )
+    router = ModelRouter(
+        providers={"fake": _ScriptedProvider(_respond)},
+        routes={"reasoning": ("fake",), "review": ("fake",)},
+        default_route=("fake",),
+    )
+    monkeypatch.setattr(scan_module, "build_router", lambda _settings: router)
+
+    config = ScanConfig(
+        mission="find a bug",
+        target_specs=["example.com"],
+        run_dir=tmp_path / "run",
+        fail_on_unreachable_targets=True,
+    )
+    with pytest.raises(TargetUnreachableError, match="example.com"):
+        ScanRunner(config, env={"ANTHROPIC_API_KEY": "sk-test"}).run()
 
 
 def test_cancel_before_run_stops_on_the_first_step(

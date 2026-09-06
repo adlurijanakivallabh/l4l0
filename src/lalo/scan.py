@@ -77,6 +77,7 @@ from .core.errors import (
     ConfigError,
     ContainerError,
     ResumeConfigMismatchError,
+    TargetUnreachableError,
 )
 from .core.model_router import ModelRouter
 from .core.providers import build_router, verify_router
@@ -147,6 +148,14 @@ class ScanConfig:
     # record real lifetime token/cost usage for this scan's completions; the
     # GUI's own real scan-launch path opts in.
     usage_path: Path | None = None
+    # False (the default) preserves probe_reachability's own advisory-only
+    # design -- an in-engagement network/infra or raw-TCP target may simply
+    # not speak HTTP, so "unreachable" is never assumed to mean
+    # misconfigured. An operator who knows their targets are HTTP-reachable
+    # can opt into a hard stop instead of a logged warning. An operational
+    # preference, not a locked scope/safety field -- deliberately excluded
+    # from _ResumeManifest, same reasoning as max_steps/budget_ceiling.
+    fail_on_unreachable_targets: bool = False
 
 
 @dataclass
@@ -378,12 +387,20 @@ class ScanRunner:
             reachability = probe_reachability(engagement, preflight_firer)
         finally:
             preflight_firer.close()
+        unreachable: list[tuple[str, str]] = []
         for host, (reachable, reason) in reachability.items():
             if not reachable:
                 self._emit(
                     "status",
                     {"event": "target_unreachable_preflight", "host": host, "reason": reason},
                 )
+                unreachable.append((host, reason))
+        if self.config.fail_on_unreachable_targets and unreachable:
+            detail = "; ".join(f"{host}: {reason}" for host, reason in unreachable)
+            raise TargetUnreachableError(
+                f"target reachability preflight failed ({detail}) and "
+                "fail_on_unreachable_targets is set"
+            )
 
         container = RuntimeContainer(self.config.container_config)
         self._container = container

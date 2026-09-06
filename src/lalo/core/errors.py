@@ -96,6 +96,22 @@ class TargetOutOfScopeError(ScopeError):
     code = "scope_violation"
 
 
+class TargetUnreachableError(LaloError):
+    """A declared target failed its reachability preflight and the operator
+    opted into treating that as fatal (``ScanConfig.fail_on_unreachable_targets``).
+
+    Off by default: an in-engagement network/infra or raw-TCP target may
+    simply not speak HTTP at all, which the HEAD-request preflight probe
+    cannot distinguish from a genuine misconfiguration - see
+    :func:`~lalo.execution.firer.probe_reachability`'s own docstring. This
+    error exists only for an operator who knows their targets are
+    HTTP-reachable and wants an unreachable one to hard-stop the scan rather
+    than merely log a preflight warning and proceed.
+    """
+
+    code = "target_unreachable"
+
+
 class ContainerError(LaloError):
     """The disposable runtime container failed to start, exec, or was misused."""
 
