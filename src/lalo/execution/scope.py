@@ -149,7 +149,7 @@ class ScopeGuard:
         effective_port = explicit_port if explicit_port is not None else _DEFAULT_PORTS.get(scheme)
         if self.deny_metadata and self._hits_metadata(host):
             return ScopeDecision(Decision.DENIED, "cloud_metadata_denied")
-        if self.engagement.in_engagement(host, effective_port, parts.scheme):
+        if self.engagement.in_engagement(host, effective_port, parts.scheme, parts.path):
             return ScopeDecision(Decision.ALLOWED, "in_engagement")
         if self.egress_lock:
             return ScopeDecision(Decision.DENIED, "egress_lock_out_of_engagement")

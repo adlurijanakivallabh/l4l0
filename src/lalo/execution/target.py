@@ -9,6 +9,27 @@ a local lab or an internal corporate host. Blanket-blocking private/loopback
 ranges here would break the tool's actual purpose, so the engagement allowlist
 alone decides what's in scope — see scope.py for the small set of things that
 stay denied regardless (cloud metadata, non-http(s) schemes).
+
+Phase 3, PentestGPT pass: read `pentestgpt_agent/src/pentestgpt_agent/plan.py`
+in full. Its ``_target_is_allowed``/``_canonical_url_target`` is a real, careful
+deny-by-default target-scope check — the closest thing in that codebase to this
+module — extended to PATH-prefix granularity, not just host/port/scheme, with
+genuine anti-bypass rigor: percent-decoding iterated up to 4 rounds with a
+residue check (catching multi-layer encoding like ``%252e%252e%252f``, while
+still rejecting anything STILL further-decodable after 4 rounds), a rejected
+backslash/control-character set, and ``.``/``..`` segment rejection AFTER full
+decoding (checked on decoded segments, not the raw string, so a traversal
+attempt can't hide behind encoding). L4L0 had no path-scoping concept at all
+before this — a real, common engagement shape ("test only /api/v2/* on this
+shared host, not /admin or other paths") had no way to be expressed or
+enforced, and worse, an operator who DID include a path in a target spec (e.g.
+``https://example.com/api/v2``) had it silently discarded, granting the whole
+host rather than what was actually declared. Adapted, not ported: PentestGPT's
+own check runs once against a proposed task's target *string*, before any
+traffic fires (this comparison's own real finding is that this doesn't cover
+the Executor's actual tool calls at all); this module's path check runs
+inside :meth:`TargetRule.matches`, called from every real `fire()` via
+ScopeGuard.check — enforced per-request, not per-task-description.
 """
 
 from __future__ import annotations
@@ -17,9 +38,11 @@ import fnmatch
 import socket
 from collections.abc import Callable
 from dataclasses import dataclass
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 Resolver = Callable[[str], frozenset[str]]
+
+_MAX_DECODE_ROUNDS = 4
 
 
 def default_resolver(host: str) -> frozenset[str]:
@@ -36,23 +59,78 @@ def _host_matches(pattern: str, host: str | None) -> bool:
     return fnmatch.fnmatch(host.lower(), pattern.lower())
 
 
+def _canonical_path_segments(path: str) -> tuple[str, ...] | None:
+    """Fully percent-decode ``path`` and split it into segments, or ``None`` if
+    it's suspicious in any way a path-scope check must never quietly ignore.
+
+    Returns ``None`` (never a permissive guess) for: an unparseable/misencoded
+    string, control characters, a backslash, a still-further-decodable residue
+    after :data:`_MAX_DECODE_ROUNDS` rounds (blocks multi-layer percent-encoding
+    bypass tricks), or any ``.``/``..`` segment once fully decoded (blocks path
+    traversal, including traversal hidden behind encoding). Callers must treat
+    ``None`` as "does not match", not as "no restriction".
+    """
+    if any(ord(character) < 0x20 or ord(character) == 0x7F for character in path):
+        return None
+    try:
+        decoded = path
+        for _ in range(_MAX_DECODE_ROUNDS):
+            next_round = unquote(decoded, errors="strict")
+            if next_round == decoded:
+                break
+            decoded = next_round
+        if unquote(decoded, errors="strict") != decoded:
+            return None  # still decodable after the round cap -- reject, don't guess
+    except (UnicodeDecodeError, ValueError):
+        return None
+    if (
+        "%" in decoded
+        or "\\" in decoded
+        or any(ord(character) < 0x20 or ord(character) == 0x7F for character in decoded)
+    ):
+        return None
+    segments = tuple(segment for segment in decoded.split("/") if segment)
+    if any(segment.split(";", 1)[0] in {".", ".."} for segment in segments):
+        return None
+    return segments
+
+
 @dataclass(frozen=True)
 class TargetRule:
     """One authorized entry: a host (exact or glob like ``*.example.com``) with
-    optional port/scheme restrictions (``None`` means "any")."""
+    optional port/scheme/path-prefix restrictions (``None`` means "any").
+
+    ``path_prefix`` holds pre-canonicalized segments (see
+    :func:`_canonical_path_segments`) so a stored ``/api/v2`` restriction is
+    compared against the REQUEST's own canonicalized segments, never against
+    a raw, possibly-encoded string.
+    """
 
     host: str
     ports: frozenset[int] | None = None
     schemes: frozenset[str] | None = None
+    path_prefix: tuple[str, ...] | None = None
 
-    def matches(self, host: str | None, port: int | None, scheme: str | None) -> bool:
+    def matches(
+        self,
+        host: str | None,
+        port: int | None,
+        scheme: str | None,
+        path: str | None = None,
+    ) -> bool:
         if not _host_matches(self.host, host):
             return False
         if self.ports is not None and port is not None and port not in self.ports:
             return False
-        return not (
-            self.schemes is not None and scheme is not None and scheme.lower() not in self.schemes
-        )
+        if self.schemes is not None and scheme is not None and scheme.lower() not in self.schemes:
+            return False
+        if self.path_prefix is not None:
+            candidate = _canonical_path_segments(path or "/")
+            if candidate is None:
+                return False  # suspicious path shape -- fail closed, never guess a match
+            if candidate[: len(self.path_prefix)] != self.path_prefix:
+                return False
+        return True
 
 
 @dataclass(frozen=True)
@@ -62,9 +140,13 @@ class Engagement:
     rules: tuple[TargetRule, ...]
 
     def in_engagement(
-        self, host: str | None, port: int | None = None, scheme: str | None = None
+        self,
+        host: str | None,
+        port: int | None = None,
+        scheme: str | None = None,
+        path: str | None = None,
     ) -> bool:
-        return any(rule.matches(host, port, scheme) for rule in self.rules)
+        return any(rule.matches(host, port, scheme, path) for rule in self.rules)
 
     @classmethod
     def from_specs(cls, specs: list[str]) -> Engagement:
@@ -80,6 +162,7 @@ class Engagement:
                 continue
             scheme: str | None = None
             port: int | None = None
+            path_prefix: tuple[str, ...] | None = None
             if "://" in spec:
                 parts = urlsplit(spec)
                 scheme = parts.scheme or None
@@ -94,6 +177,18 @@ class Engagement:
                     port = parts.port
                 except ValueError:
                     port = None
+                if parts.path and parts.path != "/":
+                    canonical = _canonical_path_segments(parts.path)
+                    if canonical is None:
+                        # An operator's OWN scope declaration is suspicious/
+                        # unparseable -- unlike a bad port (which degrades to
+                        # "no restriction", a widening a port mistake can't
+                        # really weaponize), silently widening a path
+                        # restriction to "the whole host" would be a real
+                        # scope escalation the operator never asked for. Drop
+                        # the whole spec rather than guess.
+                        continue
+                    path_prefix = canonical
             elif spec.startswith("["):
                 # A bracketed IPv6 literal ("[::1]" or "[::1]:8080") with no
                 # scheme prefix — urlsplit needs a "//" authority marker to
@@ -118,6 +213,7 @@ class Engagement:
                     host=host,
                     ports=frozenset({port}) if port else None,
                     schemes=frozenset({scheme}) if scheme else None,
+                    path_prefix=path_prefix,
                 )
             )
         return cls(rules=tuple(rules))
@@ -135,4 +231,6 @@ def _describe_rule(rule: TargetRule) -> str:
         parts.append(f"scheme(s): {', '.join(sorted(rule.schemes))}")
     if rule.ports:
         parts.append(f"port(s): {', '.join(str(p) for p in sorted(rule.ports))}")
+    if rule.path_prefix:
+        parts.append(f"path prefix: /{'/'.join(rule.path_prefix)}")
     return " - ".join(parts)

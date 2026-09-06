@@ -93,3 +93,56 @@ def test_port_and_scheme_restrictions() -> None:
     https_only = Engagement.from_specs(["https://x.example.com"])
     assert https_only.in_engagement("x.example.com", None, "https")
     assert not https_only.in_engagement("x.example.com", None, "http")
+
+
+def test_path_prefix_scoping_restricts_to_the_declared_subtree() -> None:
+    eng = Engagement.from_specs(["https://example.com/api/v2"])
+    assert eng.in_engagement("example.com", 443, "https", "/api/v2")
+    assert eng.in_engagement("example.com", 443, "https", "/api/v2/users")
+    assert eng.in_engagement("example.com", 443, "https", "/api/v2/users/1")
+    assert not eng.in_engagement("example.com", 443, "https", "/admin")
+    # A sibling path that merely shares the string prefix ("/api/v2" is a
+    # substring of "/api/v20") must NOT match -- this is a segment-wise
+    # prefix check, not a naive str.startswith.
+    assert not eng.in_engagement("example.com", 443, "https", "/api/v20/users")
+
+
+def test_a_target_spec_with_no_path_component_restricts_nothing() -> None:
+    eng = Engagement.from_specs(["https://example.com"])
+    assert eng.in_engagement("example.com", 443, "https", "/anything/at/all")
+    assert eng.in_engagement("example.com", 443, "https", None)
+
+
+def test_path_prefix_scoping_rejects_dot_dot_traversal_even_when_encoded() -> None:
+    eng = Engagement.from_specs(["https://example.com/api/v2"])
+    # Plain traversal.
+    assert not eng.in_engagement("example.com", 443, "https", "/api/v2/../admin")
+    # Single-layer percent-encoded traversal.
+    assert not eng.in_engagement("example.com", 443, "https", "/api/v2/%2e%2e/admin")
+    # Double-encoded traversal ("%252e%252e" decodes to "%2e%2e" decodes to "..").
+    assert not eng.in_engagement("example.com", 443, "https", "/api/v2/%252e%252e/admin")
+
+
+def test_path_prefix_scoping_rejects_excessive_encoding_depth() -> None:
+    # Still decodable after the round cap -- must be REJECTED, never guessed
+    # at by returning whatever the last round happened to produce. Verified
+    # by direct simulation: "%252525252e%252525252e" needs a 5th unquote()
+    # round to fully resolve to ".." (4 rounds only gets to "%2e%2e"), so it
+    # must be rejected as still-decodable residue, not silently allowed
+    # through as some other, wrong path.
+    eng = Engagement.from_specs(["https://example.com/api"])
+    five_layers_deep = "/api/%252525252e%252525252e"
+    assert not eng.in_engagement("example.com", 443, "https", five_layers_deep)
+
+
+def test_an_operators_own_malformed_path_spec_drops_the_whole_rule() -> None:
+    # A suspicious path in the OPERATOR's own declared scope must never
+    # silently widen to "no path restriction at all" -- drop the spec.
+    eng = Engagement.from_specs(["good.com", "https://bad.com/api/../escape"])
+    assert len(eng.rules) == 1
+    assert eng.rules[0].host == "good.com"
+
+
+def test_describe_renders_the_path_prefix() -> None:
+    eng = Engagement.from_specs(["https://example.com/api/v2"])
+    assert "path prefix: /api/v2" in eng.describe()
