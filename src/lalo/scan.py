@@ -494,10 +494,13 @@ class ScanRunner:
         for finding_id in graph.nodes_of_kind(NodeKind.FINDING):
             confidence = compute_confidence(graph, finding_id)
             review = run_adversarial_review(graph, finding_id, confidence, router)
+            node = graph.node(finding_id)
             self._emit(
                 "finding",
                 {
                     "finding_id": finding_id,
+                    "title": node.get("title", finding_id),
+                    "severity": node.get("cvss_severity", "info"),
                     "confidence": confidence.score,
                     "verdict": review.verdict.value,
                 },
