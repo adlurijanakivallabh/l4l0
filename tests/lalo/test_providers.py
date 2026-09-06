@@ -7,8 +7,14 @@ import pytest
 
 from lalo.core.config import load_settings
 from lalo.core.errors import ProviderRefusalError, ProviderUnavailableError
-from lalo.core.model_router import CompletionRequest
-from lalo.core.providers import AnthropicProvider, OpenAICompatibleProvider, build_router
+from lalo.core.model_router import CompletionRequest, ModelRouter
+from lalo.core.providers import (
+    AnthropicProvider,
+    OpenAICompatibleProvider,
+    build_router,
+    verify_provider,
+    verify_router,
+)
 from lalo.core.redaction import redact
 
 
@@ -176,3 +182,70 @@ def test_build_router_empty_when_nothing_configured() -> None:
     router = build_router(load_settings({}))
     assert router.providers == {}
     assert router.default_route == ()
+
+
+def test_verify_provider_true_on_a_real_successful_completion() -> None:
+    def ok(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, json={"stop_reason": "end_turn", "content": [{"type": "text", "text": "ok"}]}
+        )
+
+    provider = AnthropicProvider(
+        "k", model="m", client=httpx.Client(transport=httpx.MockTransport(ok))
+    )
+    healthy, message = verify_provider(provider)
+    assert healthy is True
+    assert message == "ok"
+
+
+def test_verify_provider_false_on_a_refusal_never_raises() -> None:
+    def refused(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"stop_reason": "refusal", "content": []})
+
+    provider = AnthropicProvider(
+        "k", model="m", client=httpx.Client(transport=httpx.MockTransport(refused))
+    )
+    healthy, message = verify_provider(provider)
+    assert healthy is False
+    assert message
+
+
+def test_verify_provider_false_on_an_unavailable_provider_never_raises() -> None:
+    def bad(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, json={})
+
+    provider = AnthropicProvider(
+        "k", model="m", client=httpx.Client(transport=httpx.MockTransport(bad))
+    )
+    healthy, message = verify_provider(provider)
+    assert healthy is False
+    assert "401" in message
+
+
+def test_verify_router_checks_every_configured_provider_independently() -> None:
+    def ok(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, json={"choices": [{"finish_reason": "stop", "message": {"content": "ok"}}]}
+        )
+
+    def broken(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, json={})
+
+    healthy_provider = OpenAICompatibleProvider(
+        "gw-a",
+        "k",
+        model="m",
+        base_url="http://x",
+        client=httpx.Client(transport=httpx.MockTransport(ok)),
+    )
+    broken_provider = OpenAICompatibleProvider(
+        "gw-b",
+        "k",
+        model="m",
+        base_url="http://y",
+        client=httpx.Client(transport=httpx.MockTransport(broken)),
+    )
+    router = ModelRouter(providers={"gw-a": healthy_provider, "gw-b": broken_provider})
+    results = verify_router(router)
+    assert results["gw-a"] == (True, "ok")
+    assert results["gw-b"][0] is False

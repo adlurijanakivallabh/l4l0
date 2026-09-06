@@ -9,6 +9,13 @@ class per name.
 
 A safety refusal maps to :class:`ProviderRefusalError` so the router fails over
 to another provider rather than aborting the run.
+
+:func:`verify_provider`/:func:`verify_router` are informed by a reference
+platform's own ``backend/cmd/ctester`` (its standalone provider-capability-
+test CLI, read in full) — see their own docstrings for what was adopted
+(a real completion call confirming credentials actually work, not just that
+an env var is set) versus what wasn't (a separate CLI tool, since L4L0 has
+none by design).
 """
 
 from __future__ import annotations
@@ -187,3 +194,48 @@ def build_router(settings: Settings) -> ModelRouter:
         routes={"reasoning": role_chain, "triage": role_chain, "report": role_chain},
         default_route=role_chain,
     )
+
+
+_VERIFY_PROMPT = "reply with exactly: ok"
+
+
+def verify_provider(provider: Provider) -> tuple[bool, str]:
+    """A minimal, cheap real completion call confirming ``provider`` actually
+    works — not just that its credential env var was present.
+
+    Informed by a reference agent's own ``ctester`` — a standalone CLI that
+    instantiates each configured provider and runs a real capability-test
+    battery before an operator commits to using it. That reference ships it
+    as a separate CLI tool with its own Markdown/table report writer; L4L0
+    has no CLI at all by design (GUI-only, per ``pyproject.toml``'s own
+    stated convention), so the equivalent here is a single, small function a
+    caller (e.g. :mod:`lalo.scan`, before ever starting the disposable
+    container) can invoke directly — proving the router health-checks itself
+    at the moment it's needed rather than requiring a separate tool a
+    human remembers to run beforehand. ``load_settings``/``build_router``
+    only ever check that a credential env var is *set*; a typo'd key, an
+    expired key, or a wrong model/base-url for a custom gateway all
+    currently surface only at the first real completion call deep into a
+    live run, after the (potentially slow) container/OAST-server startup
+    already happened for nothing.
+
+    Never raises for an ordinary provider failure (refusal/unavailable) —
+    returns ``(False, <reason>)`` instead, matching the ``Provider`` protocol's
+    own "only ``ProviderRefusalError``/``ProviderUnavailableError`` are
+    routine" contract; any other exception is a real bug and still propagates.
+    """
+    try:
+        provider.complete(CompletionRequest(prompt=_VERIFY_PROMPT, max_tokens=10))
+    except (ProviderRefusalError, ProviderUnavailableError) as exc:
+        return False, str(exc)
+    return True, "ok"
+
+
+def verify_router(router: ModelRouter) -> dict[str, tuple[bool, str]]:
+    """:func:`verify_provider` for every provider the router actually has,
+    not just whichever one its own failover chain happens to try first —
+    an operator with three configured providers wants to know all three are
+    healthy, not just that the chain as a whole would succeed via the first
+    one that works.
+    """
+    return {name: verify_provider(provider) for name, provider in router.providers.items()}
