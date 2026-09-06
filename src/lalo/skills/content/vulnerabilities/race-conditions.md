@@ -118,6 +118,13 @@ traps:
   proof of a durable double-effect — the authoritative backing state (the
   ledger, the counter, the inventory table) can disagree with what the
   response bodies claimed, and only the backing state settles the claim.
+- A low per-attempt hit rate is not grounds to dismiss a confirmed race —
+  if the narrow window can be automated and retried without limit, an
+  attacker eventually wins regardless of how unlikely any single attempt
+  is. Only dismiss it if something genuinely caps the number of attempts
+  available (a hard per-account attempt limit, a cost per attempt that
+  makes unbounded retry impractical) — never because the odds look small
+  in isolation.
 
 ## Impact
 

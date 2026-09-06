@@ -27,6 +27,32 @@ If the honest answer is "only if you accept a chain of unproven
 assumptions," it is not high. Rate the weakness you actually proved, not the
 worst case you can imagine chaining it into.
 
+## Marginal Capability
+
+Severity is bounded by what the finding actually adds on top of the
+attacker's own starting position — not by how bad the bug pattern looks in
+isolation. Ask: compared to what this attacker could already legitimately
+do, how much NEW capability, access, or reach does this specific exploit
+grant? If the honest answer is "none, or almost none," cap the severity
+regardless of how the underlying mechanism reads. Two recurring shapes of
+this:
+
+- **Equivalent primitives.** The exploit reaches something the same
+  principal could already reach through a normal, sanctioned path (an
+  admin using a bug to download a file the admin panel already lets them
+  download). This is real — worth fixing for defense-in-depth — but it is
+  not a privilege escalation, and should not be scored like one.
+- **Self-contained blast radius.** The maximum impact stays entirely
+  within resources, data, or execution contexts the triggering principal
+  already owns or has full legitimate authority over (their own account,
+  tenant, project, or container), and never crosses an isolation boundary
+  to a different principal. Cap this at Medium even if the underlying
+  mechanism (an injection, a deserialization bug) would otherwise read as
+  a High. This cap does NOT apply the moment the exploit reaches another
+  principal's resources, touches shared/multi-party infrastructure, or
+  places the attacker upstream of others (a build node, a shared cache) —
+  any of those is a real boundary crossing, not a self-contained effect.
+
 ## Critical
 
 Reserve for findings where a realistic attacker gets decisive control or
