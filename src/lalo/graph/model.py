@@ -107,6 +107,22 @@ class ReachabilityGraph:
         touching = (*self._g.out_edges(node_id, data=True), *self._g.in_edges(node_id, data=True))
         return any(data.get("kind") == kind.value for *_ends, data in touching)
 
+    def connected_via(self, node_id: str, kind: EdgeKind) -> list[str]:
+        """Every node connected to ``node_id`` by an edge of ``kind``, in
+        either direction — the neighbor's id, not the edge itself. Used by
+        confidence scoring to look up what a declared chain link actually
+        connects to, not just whether one exists."""
+        if not self._g.has_node(node_id):
+            return []
+        neighbors: list[str] = []
+        for _u, v, data in self._g.out_edges(node_id, data=True):
+            if data.get("kind") == kind.value:
+                neighbors.append(v)
+        for u, _v, data in self._g.in_edges(node_id, data=True):
+            if data.get("kind") == kind.value:
+                neighbors.append(u)
+        return neighbors
+
     def __len__(self) -> int:
         return self._g.number_of_nodes()
 

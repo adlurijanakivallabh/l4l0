@@ -59,6 +59,29 @@ def test_has_edge_of_kind_false_for_a_different_kind_or_unknown_node() -> None:
     assert g.has_edge_of_kind("nonexistent", EdgeKind.ENABLES) is False
 
 
+def test_connected_via_returns_neighbors_in_either_direction() -> None:
+    g = ReachabilityGraph()
+    g.add_node("a", NodeKind.FINDING)
+    g.add_node("b", NodeKind.FINDING)
+    g.add_node("c", NodeKind.FINDING)
+    g.add_edge("a", "b", EdgeKind.ENABLES)
+    g.add_edge("c", "a", EdgeKind.ENABLES)
+    assert set(g.connected_via("a", EdgeKind.ENABLES)) == {"b", "c"}
+
+
+def test_connected_via_only_the_requested_edge_kind() -> None:
+    g = ReachabilityGraph()
+    g.add_node("a", NodeKind.FINDING)
+    g.add_node("b", NodeKind.FINDING)
+    g.add_edge("a", "b", EdgeKind.SUPPORTS)
+    assert g.connected_via("a", EdgeKind.ENABLES) == []
+
+
+def test_connected_via_an_unknown_node_is_empty() -> None:
+    g = ReachabilityGraph()
+    assert g.connected_via("nonexistent", EdgeKind.ENABLES) == []
+
+
 def test_find_chains_solves_a_seeded_multistep_exploit_path() -> None:
     g = ReachabilityGraph()
     for node_id in ("idor", "admin", "upload", "rce"):
