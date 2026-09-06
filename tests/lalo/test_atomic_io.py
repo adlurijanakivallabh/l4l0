@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import stat
 from pathlib import Path
 
 from lalo.core.atomic_io import atomic_write_verified
@@ -49,3 +51,21 @@ def test_no_leftover_temp_file_after_a_successful_write(tmp_path: Path) -> None:
     atomic_write_verified(target, b"data")
     leftovers = list(tmp_path.glob(".*.tmp-*"))
     assert leftovers == []
+
+
+def test_written_file_is_owner_only_regardless_of_a_permissive_umask(tmp_path: Path) -> None:
+    target = tmp_path / "usage.json"
+    old_umask = os.umask(0o000)
+    try:
+        atomic_write_verified(target, b"engagement-adjacent state")
+    finally:
+        os.umask(old_umask)
+    assert stat.S_IMODE(target.stat().st_mode) == 0o600
+
+
+def test_overwrite_tightens_permissions_even_if_the_old_file_was_looser(tmp_path: Path) -> None:
+    target = tmp_path / "usage.json"
+    target.write_bytes(b"pre-existing, world-readable file from an older run")
+    target.chmod(0o644)
+    atomic_write_verified(target, b"new state")
+    assert stat.S_IMODE(target.stat().st_mode) == 0o600
