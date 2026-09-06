@@ -61,6 +61,7 @@ every spawned descendant for a proportionally small additional benefit.
 from __future__ import annotations
 
 import json
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -145,6 +146,21 @@ _COMPACTION_SYSTEM_PROMPT = (
     "with the newly completed steps into one updated summary."
 )
 
+# Long-horizon provider-outage retry: distinct from _post_with_retry's own
+# sub-second, single-HTTP-call retries in core/providers.py. A total chain
+# failure (every configured provider down at once) reaching _complete() as
+# None is not necessarily permanent - it might be a transient multi-minute
+# incident (a hosted provider's own outage, a network blip hitting every
+# configured endpoint at once). Waited out here, once per step, before
+# finally giving up: 30s, 60s, 120s (210s total worst case) rather than
+# ending the whole run on the very first exhausted chain.
+_PROVIDER_OUTAGE_MAX_RETRIES = 3
+_PROVIDER_OUTAGE_BASE_DELAY_S = 30.0
+# Sleeps in chunks this large so a cooperative-cancellation request (a manual
+# stop, or ScanRunner's own wall-clock kill) is honored within roughly one
+# chunk rather than only after the full backoff delay elapses.
+_INTERRUPTIBLE_SLEEP_CHUNK_S = 1.0
+
 
 @dataclass
 class AgentConfig:
@@ -227,6 +243,7 @@ class AgentLoop:
         should_stop: Callable[[], bool] | None = None,
         usage_path: Path | None = None,
         agent_id: str | None = None,
+        sleep: Callable[[float], None] = time.sleep,
     ) -> None:
         self.router = router
         self.registry = registry
@@ -240,6 +257,11 @@ class AgentLoop:
         self.budget = budget
         self.on_event = on_event
         self.should_stop = should_stop
+        # Injected for tests (a real 30s/60s/120s backoff would make the
+        # outage-retry tests themselves take minutes) - matches
+        # core/providers.py's own sleep-injection pattern for its
+        # short-horizon per-HTTP-call retries exactly.
+        self._sleep = sleep
         # None (the default) means "don't record" -- every existing caller
         # that doesn't opt in stays hermetic (no write to the real lifetime
         # usage log). See _complete()'s own note for why this was dead code
@@ -273,9 +295,11 @@ class AgentLoop:
         letting it crash the run uncaught. Mirrors a reference agent
         executor's own result shape (a `retryable` classification returned to
         an OUTER orchestrator) rather than retrying internally — ModelRouter
-        has already exhausted its own failover chain by the time
-        AllProvidersFailedError reaches here, so there is nothing left to
-        retry at this layer; a future orchestrator decides what to do next.
+        has already exhausted its own short-horizon, per-HTTP-call failover
+        chain by the time AllProvidersFailedError reaches here, so there is
+        nothing left to retry AT THIS LAYER; :meth:`_retry_through_provider_outage`
+        is that outer orchestration, called by ``run()`` when this returns
+        ``None``.
 
         ``system`` defaults to this agent's own ``system_prompt`` — every
         real mission-turn caller relies on that default; :meth:`_compact_history`
@@ -311,6 +335,45 @@ class AgentLoop:
             except Exception:
                 _log.exception("usage recording failed; continuing without it")
         return response
+
+    def _interruptible_sleep(self, total_seconds: float) -> bool:
+        """Sleep ``total_seconds``, checking ``should_stop`` every
+        ``_INTERRUPTIBLE_SLEEP_CHUNK_S`` rather than in one uninterruptible
+        block - a manual stop (or ScanRunner's own wall-clock kill, which
+        shares this exact same ``should_stop`` callback) is honored within
+        roughly one chunk instead of only after the full delay elapses.
+        Returns ``False`` if cancelled partway through, ``True`` if the full
+        duration elapsed.
+        """
+        remaining = total_seconds
+        while remaining > 0:
+            if self.should_stop is not None and self.should_stop():
+                return False
+            chunk = min(_INTERRUPTIBLE_SLEEP_CHUNK_S, remaining)
+            self._sleep(chunk)
+            remaining -= chunk
+        return True
+
+    def _retry_through_provider_outage(self, prompt: str) -> CompletionResponse | None:
+        """Wait out a total provider-chain failure, in case it's a transient
+        multi-minute outage rather than a permanent one - see this module's
+        own constants for the exact backoff schedule and rationale. Emits a
+        status event per attempt (and on recovery) so a live GUI shows
+        genuine retry progress instead of looking hung. Returns ``None``
+        (never raises) if every retry in the schedule also failed, or if
+        cancelled partway through - either way ``run()``'s own caller treats
+        that identically to the original, unretried failure.
+        """
+        for attempt in range(_PROVIDER_OUTAGE_MAX_RETRIES):
+            delay = _PROVIDER_OUTAGE_BASE_DELAY_S * (2**attempt)
+            self._emit("provider_outage_retry", {"attempt": attempt + 1, "delay_s": delay})
+            if not self._interruptible_sleep(delay):
+                return None
+            response = self._complete(prompt)
+            if response is not None:
+                self._emit("provider_outage_recovered", {"attempt": attempt + 1})
+                return response
+        return None
 
     def _compact_history(self, entries: list[dict[str, object]]) -> str:
         """One best-effort completion folding ``entries`` (steps about to
@@ -435,6 +498,8 @@ class AgentLoop:
                 prompt = self._render_prompt(mission, transcript, directive)
                 response = self._complete(prompt)
                 if response is None:
+                    response = self._retry_through_provider_outage(prompt)
+                if response is None:
                     self._emit("provider_failed", {"step": step})
                     return AgentResult("provider_failed", step, transcript)
                 call = parse_tool_call(response.text)
@@ -518,6 +583,8 @@ class AgentLoop:
         falls back to the plain max_steps outcome rather than looping further."""
         prompt = self._render_prompt(mission, transcript, _FINAL_TURN_DIRECTIVE)
         response = self._complete(prompt)
+        if response is None:
+            response = self._retry_through_provider_outage(prompt)
         if response is None:
             return AgentResult("max_steps", self.config.max_steps, transcript)
         call = parse_tool_call(response.text)

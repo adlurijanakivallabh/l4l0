@@ -518,12 +518,117 @@ def test_a_usage_recording_failure_never_crashes_the_agent_loop(tmp_path) -> Non
 
 
 def test_provider_failure_returns_a_typed_stop_reason_not_a_crash() -> None:
+    # A total provider-chain failure now retries through _retry_through_
+    # provider_outage before finally giving up (see the dedicated outage-
+    # retry tests below) - sleep=lambda: None keeps this test's own focus
+    # (the eventual typed stop reason) fast rather than waiting out the
+    # real 210s worst-case backoff.
     registry = ToolRegistry([])
     router = _scripted([AllProvidersFailedError("all down", role="reasoning", failures=[])])
-    loop = AgentLoop(router, registry, system_prompt="")  # type: ignore[arg-type]
+    loop = AgentLoop(
+        router,  # type: ignore[arg-type]
+        registry,
+        system_prompt="",
+        sleep=lambda _s: None,
+    )
     result = loop.run("mission")
     assert result.stop_reason == "provider_failed"
     assert result.steps == 0
+
+
+# --- long-horizon provider-outage retry -------------------------------------
+
+
+def test_interruptible_sleep_returns_true_when_the_full_duration_elapses() -> None:
+    router = _scripted([""])
+    loop = AgentLoop(router, ToolRegistry([]), system_prompt="sys", sleep=lambda _s: None)  # type: ignore[arg-type]
+    assert loop._interruptible_sleep(5.0) is True  # noqa: SLF001
+
+
+def test_interruptible_sleep_returns_false_when_cancelled_partway_through() -> None:
+    router = _scripted([""])
+    loop = AgentLoop(
+        router,  # type: ignore[arg-type]
+        ToolRegistry([]),
+        system_prompt="sys",
+        should_stop=lambda: True,
+        sleep=lambda _s: None,
+    )
+    assert loop._interruptible_sleep(5.0) is False  # noqa: SLF001
+
+
+def test_provider_outage_retry_recovers_after_a_transient_failure() -> None:
+    """The first attempt fails (every provider down); the retry succeeds -
+    the run must complete normally, not report provider_failed."""
+    registry = ToolRegistry([])
+    router = _scripted(
+        [
+            AllProvidersFailedError("transient", role="reasoning", failures=[]),
+            '{"tool": "finish", "args": {"summary": "recovered"}}',
+        ]
+    )
+    loop = AgentLoop(
+        router,  # type: ignore[arg-type]
+        registry,
+        system_prompt="",
+        sleep=lambda _s: None,
+    )
+    result = loop.run("mission")
+    assert result.stop_reason == "finished"
+    assert result.summary == "recovered"
+
+
+def test_provider_outage_retry_emits_a_status_event_per_attempt_and_on_recovery() -> None:
+    registry = ToolRegistry([])
+    router = _scripted(
+        [
+            AllProvidersFailedError("transient", role="reasoning", failures=[]),
+            '{"tool": "finish", "args": {"summary": "recovered"}}',
+        ]
+    )
+    events: list[tuple[str, dict[str, object]]] = []
+    loop = AgentLoop(
+        router,  # type: ignore[arg-type]
+        registry,
+        system_prompt="",
+        on_event=lambda ev, pl: events.append((ev, pl)),
+        sleep=lambda _s: None,
+    )
+    loop.run("mission")
+    kinds = [ev for ev, _pl in events]
+    assert "provider_outage_retry" in kinds
+    assert "provider_outage_recovered" in kinds
+
+
+def test_provider_outage_retry_exhausts_every_attempt_before_giving_up() -> None:
+    registry = ToolRegistry([])
+    router = _scripted([AllProvidersFailedError("permanently down", role="reasoning", failures=[])])
+    loop = AgentLoop(
+        router,  # type: ignore[arg-type]
+        registry,
+        system_prompt="",
+        sleep=lambda _s: None,
+    )
+    result = loop.run("mission")
+    assert result.stop_reason == "provider_failed"
+    # 1 initial attempt (in the step loop's own _complete call) + 3 retries
+    assert router.calls == 4
+
+
+def test_provider_outage_retry_is_cancellable_mid_backoff() -> None:
+    """should_stop firing during the wait must return None promptly rather
+    than completing the whole backoff schedule regardless."""
+    registry = ToolRegistry([])
+    router = _scripted([AllProvidersFailedError("down", role="reasoning", failures=[])])
+    loop = AgentLoop(
+        router,  # type: ignore[arg-type]
+        registry,
+        system_prompt="",
+        should_stop=lambda: True,
+        sleep=lambda _s: None,
+    )
+    assert loop._retry_through_provider_outage("prompt") is None  # noqa: SLF001
+    assert router.calls == 0  # never even attempted _complete() again before cancelling
 
 
 def test_resume_replays_completed_steps_without_redispatching_or_recalling_the_model(

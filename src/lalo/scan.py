@@ -61,6 +61,7 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -163,6 +164,21 @@ class ScanConfig:
     # preference, not a locked scope/safety field -- deliberately excluded
     # from _ResumeManifest, same reasoning as max_steps/budget_ceiling.
     fail_on_unreachable_targets: bool = False
+    # None (the default) preserves today's unbounded behavior - nothing
+    # anywhere else enforces a real-time ceiling on a scan; only the step
+    # count (max_steps) and step budget (budget_ceiling) can ever stop one,
+    # and a mission spending most of its steps on slow network waits could
+    # otherwise run for a very long time while technically still "within
+    # budget". Set to opt into a hard wall-clock kill via the SAME
+    # cooperative should_stop() every AgentLoop already checks between
+    # steps - reuses the existing cancel plumbing rather than adding a new
+    # one. Deliberately excluded from _ResumeManifest and NOT persisted
+    # across a resume: the clock restarts fresh on each real process
+    # lifetime rather than tracking cumulative wall-clock time across
+    # crashes, the same simplification already accepted for max_steps/
+    # budget_ceiling being resume-adjustable operational knobs, not locked
+    # scope/safety fields.
+    max_duration_s: float | None = None
 
 
 @dataclass
@@ -351,6 +367,12 @@ class ScanRunner:
         # call back onto a shared parent graph ever need this).
         self._emit_lock = threading.Lock()
         self._graph_lock = threading.Lock()
+        # Set to time.monotonic() at the top of run() - None beforehand so
+        # _should_stop() (which every AgentLoop, root and every spawned
+        # child, already polls between steps) can't mistake "hasn't started
+        # yet" for "the deadline already passed".
+        self._start_time: float | None = None
+        self._wall_clock_exceeded = False
 
     def cancel(self) -> None:
         self._cancelled = True
@@ -359,7 +381,21 @@ class ScanRunner:
             container.stop()
 
     def _should_stop(self) -> bool:
-        return self._cancelled
+        if self._cancelled:
+            return True
+        max_duration = self.config.max_duration_s
+        if (
+            max_duration is not None
+            and self._start_time is not None
+            and time.monotonic() - self._start_time >= max_duration
+        ):
+            # A plain bool write, not a read-modify-write - concurrently
+            # spawned children (spawn_agents) may all observe and set this
+            # at once; redundant writes of the same value are harmless,
+            # unlike the counter/dict races elsewhere in this phase.
+            self._wall_clock_exceeded = True
+            return True
+        return False
 
     def _emit(self, category: EventCategory, payload: dict[str, object]) -> None:
         # Durably persisted regardless of whether a live EventLog is attached
@@ -414,6 +450,10 @@ class ScanRunner:
             graph.save(graph_path)
 
     def run(self) -> ScanOutcome:
+        # Started here, not in __init__: a session's wall-clock budget
+        # should measure from when the scan actually begins running, not
+        # from whenever the ScanRunner object happened to be constructed.
+        self._start_time = time.monotonic()
         # Cheap, local, no-resource-started-yet check: refuse to (re)start
         # against a run_dir that already belongs to a different config before
         # a single provider/container/OAST resource is touched.
@@ -650,7 +690,17 @@ class ScanRunner:
         for chain in graph.all_enabling_chains():
             self._emit("chain", {"node_ids": chain.node_ids})
 
-        status = _terminal_status(result.stop_reason)
+        # Checked ahead of the ordinary stop_reason mapping: a wall-clock
+        # kill goes through the exact same cooperative should_stop()/
+        # "cancelled" path as a manual stop, so _terminal_status alone
+        # cannot tell the two apart - this reclassifies it into its own
+        # honest RunStatus rather than reporting it as an ambiguous,
+        # unconfirmed stop.
+        status = (
+            RunStatus.WALL_CLOCK_EXCEEDED
+            if self._wall_clock_exceeded
+            else _terminal_status(result.stop_reason)
+        )
         report_paths = write_report(self.config.run_dir, graph, skills, status=status)
         graph.save(self.config.run_dir / "graph.json")
         completed_payload: dict[str, object] = {

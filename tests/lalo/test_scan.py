@@ -20,6 +20,7 @@ from __future__ import annotations
 import http.server
 import json
 import threading
+import time
 from collections.abc import Iterator
 from pathlib import Path
 from types import SimpleNamespace
@@ -610,6 +611,79 @@ def test_cancel_before_run_stops_on_the_first_step(
     # runs regardless of a pre-set cancel flag -- the agent loop itself still
     # never took a real step, which is the actual property this test checks.
     assert provider.calls == 1
+
+
+def test_max_duration_s_kills_a_run_and_reports_wall_clock_exceeded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A wall-clock kill goes through the exact same should_stop()/cancelled
+    path as a manual stop - it must still be reported honestly as its own
+    RunStatus, not folded into the ambiguous UNVERIFIED_STOP a plain cancel
+    gets."""
+    monkeypatch.setattr(scan_module, "docker_available", lambda: True)
+    monkeypatch.setattr(scan_module, "RuntimeContainer", _FakeContainer)
+    provider = _ScriptedProvider(_respond)
+    router = ModelRouter(
+        providers={"fake": provider}, routes={"reasoning": ("fake",)}, default_route=("fake",)
+    )
+    monkeypatch.setattr(scan_module, "build_router", lambda _settings: router)
+
+    config = ScanConfig(
+        mission="find a bug",
+        target_specs=["example.com"],
+        run_dir=tmp_path / "run",
+        max_duration_s=0.0,  # already "exceeded" the instant the clock starts
+    )
+    outcome = ScanRunner(config, env={"ANTHROPIC_API_KEY": "sk-test"}).run()
+
+    assert outcome.status is RunStatus.WALL_CLOCK_EXCEEDED
+
+
+def test_max_duration_s_defaults_to_no_wall_clock_limit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(scan_module, "docker_available", lambda: True)
+    monkeypatch.setattr(scan_module, "RuntimeContainer", _FakeContainer)
+    router = ModelRouter(
+        providers={"fake": _ScriptedProvider(_respond)},
+        routes={"reasoning": ("fake",), "review": ("fake",)},
+        default_route=("fake",),
+    )
+    monkeypatch.setattr(scan_module, "build_router", lambda _settings: router)
+
+    config = ScanConfig(
+        mission="find a bug", target_specs=["example.com"], run_dir=tmp_path / "run"
+    )
+    assert config.max_duration_s is None
+    outcome = ScanRunner(config, env={"ANTHROPIC_API_KEY": "sk-test"}).run()
+    assert outcome.status is RunStatus.COMPLETED
+
+
+def test_should_stop_does_not_trigger_before_max_duration_s_elapses(tmp_path: Path) -> None:
+    config = ScanConfig(
+        mission="m",
+        target_specs=["example.com"],
+        run_dir=tmp_path / "run",
+        max_duration_s=3600.0,
+    )
+    runner = ScanRunner(config, env={"ANTHROPIC_API_KEY": "sk-test"})
+    runner._start_time = time.monotonic()  # simulate run() having just started
+    assert runner._should_stop() is False
+    assert runner._wall_clock_exceeded is False
+
+
+def test_should_stop_is_false_before_run_has_ever_started(tmp_path: Path) -> None:
+    """_start_time is None until run() sets it - max_duration_s must never
+    be checked against a run that hasn't actually begun yet."""
+    config = ScanConfig(
+        mission="m",
+        target_specs=["example.com"],
+        run_dir=tmp_path / "run",
+        max_duration_s=0.0,
+    )
+    runner = ScanRunner(config, env={"ANTHROPIC_API_KEY": "sk-test"})
+    assert runner._start_time is None
+    assert runner._should_stop() is False
 
 
 # --- Phase 2, shannon pass: cancel force-stops the container, not just a flag -

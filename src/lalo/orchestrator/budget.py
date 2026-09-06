@@ -40,6 +40,11 @@ class RunStatus(StrEnum):
     BUDGET_EXHAUSTED = "budget_exhausted"  # stopped by the ceiling; NEVER "completed"
     ERROR = "error"
     UNVERIFIED_STOP = "unverified_stop"  # a stop was requested but termination unconfirmed
+    # An opt-in wall-clock ceiling (ScanConfig.max_duration_s) tripped - a
+    # distinct reason from UNVERIFIED_STOP: the step/budget loop was
+    # otherwise healthy and cooperating normally with should_stop(), this
+    # was a real-time deadline, not an unconfirmed/ambiguous termination.
+    WALL_CLOCK_EXCEEDED = "wall_clock_exceeded"
 
 
 class BudgetExceededError(RuntimeError):
