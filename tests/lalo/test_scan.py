@@ -28,10 +28,12 @@ import pytest
 
 import lalo.scan as scan_module
 from lalo.agent.spawn import merge_finding_nodes
+from lalo.agent.tools import FunctionTool, ToolResult
 from lalo.core.errors import ConfigError, ContainerError
 from lalo.core.model_router import CompletionResponse, ModelRouter
 from lalo.graph.model import NodeKind, ReachabilityGraph
 from lalo.gui.events import EventLog
+from lalo.integrations.mcp_client import MCPServerConfig
 from lalo.orchestrator.budget import RunStatus
 from lalo.scan import ScanConfig, ScanRunner, _terminal_status
 
@@ -537,3 +539,65 @@ def test_scan_runner_dispatches_a_real_browser_tool_call(
     transcript = outcome.result.transcript
     browser_call = next(entry for entry in transcript if entry["tool"] == "browser")
     assert "a real page for a real browser" in browser_call["observation"]
+
+
+def test_scan_runner_dispatches_a_configured_mcp_connection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A real bug this closes: MCPServerConfig/build_mcp_tool (Phase 15) were
+    fully built and unit-tested but ScanConfig had no field for an operator
+    to actually configure a connection, so no mcp_<name> tool was ever
+    present in a live scan's registry - it existed only in its own test file.
+    Stubs build_mcp_tool itself (protocol round-trip is already exhaustively
+    covered by test_integrations_mcp_client.py) purely to prove the
+    config -> tool-list wiring path this bug was in.
+    """
+    monkeypatch.setattr(scan_module, "docker_available", lambda: True)
+    monkeypatch.setattr(scan_module, "RuntimeContainer", _FakeContainer)
+
+    def _fake_build_mcp_tool(config: object) -> object:
+        return FunctionTool(
+            name=f"mcp_{config.name}",  # type: ignore[attr-defined]
+            description="fake MCP connection tool",
+            func=lambda _args: ToolResult(observation="mcp connection reachable", ok=True),
+        )
+
+    monkeypatch.setattr(scan_module, "build_mcp_tool", _fake_build_mcp_tool)
+
+    def respond(call_index: int, prompt: str) -> str:
+        if "FINDING TO REVIEW" in prompt:
+            return '{"verdict": "confirmed", "proof_level": "L1", "reasoning": "n/a"}'
+        if "MISSION:" not in prompt:
+            return "ok"
+        if "HISTORY (most recent last):" not in prompt:
+            return json.dumps({"tool": "mcp_burp", "args": {"tool": "list_requests"}})
+        return json.dumps({"tool": "finish", "args": {"summary": "used the mcp connection"}})
+
+    router = ModelRouter(
+        providers={"fake": _ScriptedProvider(respond)},
+        routes={"reasoning": ("fake",), "review": ("fake",)},
+        default_route=("fake",),
+    )
+    monkeypatch.setattr(scan_module, "build_router", lambda _settings: router)
+
+    config = ScanConfig(
+        mission="use the burp connection",
+        target_specs=["example.com"],
+        run_dir=tmp_path / "run",
+        mcp_connections={
+            "burp": MCPServerConfig(
+                name="burp",
+                transport="http",
+                credential_env_var="BURP_MCP_TOKEN",
+                allowed_tools={"list_requests": "read"},
+                url="https://burp.local/mcp",
+            )
+        },
+    )
+    outcome = ScanRunner(config, env={"ANTHROPIC_API_KEY": "sk-test"}).run()
+
+    assert outcome.status is RunStatus.COMPLETED
+    assert outcome.result.summary == "used the mcp connection"
+    transcript = outcome.result.transcript
+    mcp_call = next(entry for entry in transcript if entry["tool"] == "mcp_burp")
+    assert mcp_call["observation"] == "mcp connection reachable"

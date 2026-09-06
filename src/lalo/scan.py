@@ -92,6 +92,7 @@ from .graph.tool import build_note_tool, build_query_graph_tool
 from .identity.credentials import Identity, IdentityStore
 from .identity.login import LoginScheme, SessionRegistry
 from .identity.tool import build_jwt_tool, build_login_tool
+from .integrations.mcp_client import MCPServerConfig, build_mcp_tool
 from .oast.server import OASTServer
 from .oast.tool import build_oast_tools
 from .observability.tracing import Tracer
@@ -125,6 +126,13 @@ class ScanConfig:
     budget_ceiling: int = 300
     identities: dict[str, Identity] = field(default_factory=dict)
     login_schemes: dict[str, LoginScheme] = field(default_factory=dict)
+    # Keyed by connection name, matching `identities`' own convention -- a
+    # dict key structurally rules out two connections silently colliding on
+    # the same agent-facing `mcp_<name>` tool name, unlike a plain list
+    # (see integrations/mcp_client.py's own module docstring for why a
+    # reference agent's equivalent raises UserError on this at runtime
+    # instead; a dict makes the collision unrepresentable instead of caught).
+    mcp_connections: dict[str, MCPServerConfig] = field(default_factory=dict)
     container_config: RuntimeConfig | None = None
     # None (the default) keeps a caller hermetic -- matching container_config's
     # own opt-in shape. Pass DEFAULT_USAGE_PATH (or any path) to actually
@@ -449,6 +457,7 @@ class ScanRunner:
                 tools.append(
                     build_login_tool(firer, identities, sessions, self.config.login_schemes)
                 )
+            tools += [build_mcp_tool(conn) for conn in self.config.mcp_connections.values()]
             spawn_tool, view_graph_tool = build_spawn_tools(
                 coordinator, _run_child, self_id=self_id
             )

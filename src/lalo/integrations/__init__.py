@@ -9,6 +9,7 @@ from .mcp_client import (
     call_external_tool,
     check_tool_call,
     resolve_credential,
+    validate_server_url,
 )
 
 __all__ = [
@@ -21,4 +22,5 @@ __all__ = [
     "check_tool_call",
     "fetch_epss_score",
     "resolve_credential",
+    "validate_server_url",
 ]
