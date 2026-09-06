@@ -3,10 +3,9 @@
     "code-review-graph": {
       "command": "uvx",
       "args": [
-        "code-review-graph",
+        "code-review-graph@2.3.8",
         "serve"
       ],
-      "cwd": "/home/kali/Downloads/reachagent",
       "type": "stdio"
     }
   }
