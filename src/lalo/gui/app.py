@@ -76,8 +76,29 @@ from pydantic import BaseModel
 from ..core.errors import AllProvidersFailedError
 from ..core.logging import get_logger
 from ..core.usage import DEFAULT_USAGE_PATH
+from ..report.writer import (
+    DOCX_FILENAME,
+    JSON_FILENAME,
+    MARKDOWN_FILENAME,
+    PDF_FILENAME,
+    SARIF_FILENAME,
+)
 from ..scan import ScanConfig, ScanRunner, load_run_events
 from .events import EventLog
+
+# fmt -> (filename in a run_dir, media type) - a fixed allowlist, not a raw
+# path segment, so /runs/{id}/report/{fmt} can never be tricked into serving
+# an arbitrary file from the run directory.
+_REPORT_FORMATS: dict[str, tuple[str, str]] = {
+    "md": (MARKDOWN_FILENAME, "text/markdown"),
+    "json": (JSON_FILENAME, "application/json"),
+    "sarif": (SARIF_FILENAME, "application/json"),
+    "pdf": (PDF_FILENAME, "application/pdf"),
+    "docx": (
+        DOCX_FILENAME,
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ),
+}
 
 _log = get_logger("lalo.gui")
 
@@ -106,12 +127,18 @@ def _event_to_json(event: Any) -> dict[str, Any]:
     return asdict(event)
 
 
-def _list_runs(runs_dir: Path) -> list[dict[str, Any]]:
+def _list_runs(runs_dir: Path, *, running_run_id: str | None = None) -> list[dict[str, Any]]:
     """Every run directory under ``runs_dir``, most recently modified first -
     pure filesystem enumeration, no separate run-index state to keep in sync.
     A directory missing/unreadable ``resume_manifest.json`` (a run that never
     got past the earliest preflight checks) still lists, just without a
     mission/targets summary.
+
+    ``running_run_id``, if given, marks that one entry ``"running": True`` -
+    the caller derives it from ``current_runner`` (the single mutable
+    "is a scan already running" slot this module already keeps), since
+    filesystem state alone can't distinguish a completed run from one still
+    in progress.
     """
     if not runs_dir.exists():
         return []
@@ -130,13 +157,25 @@ def _list_runs(runs_dir: Path) -> list[dict[str, Any]]:
             mission = raw_mission if isinstance(raw_mission, str) else None
             raw_targets = manifest.get("target_specs")
             target_specs = raw_targets if isinstance(raw_targets, list) else []
+        # Individually checked, not inferred from report.json alone: pdf/docx
+        # are each independently best-effort at write time (write_report's
+        # own documented behavior) - a run can have a canonical report with
+        # no pdf if WeasyPrint hit a renderer bug, and the frontend needs to
+        # know exactly which formats it can actually link to.
+        report_formats = [
+            fmt
+            for fmt, (filename, _media) in _REPORT_FORMATS.items()
+            if (entry / filename).exists()
+        ]
         summaries.append(
             {
                 "run_id": entry.name,
                 "mission": mission,
                 "target_specs": target_specs,
-                "has_report": (entry / "report.json").exists(),
+                "has_report": "json" in report_formats,
+                "report_formats": report_formats,
                 "modified_at": entry.stat().st_mtime,
+                "running": entry.name == running_run_id,
             }
         )
     summaries.sort(key=lambda s: s["modified_at"], reverse=True)
@@ -232,7 +271,9 @@ def build_app(event_log: EventLog, token: str, *, runs_dir: Path | None = None) 
     def list_runs(provided_token: str = Query(default="", alias="token")) -> JSONResponse:
         if not _authorized(provided_token):
             return JSONResponse({"error": "invalid token"}, status_code=403)
-        return JSONResponse({"runs": _list_runs(runs_dir)})
+        runner = current_runner["runner"]
+        running_run_id = runner.config.run_dir.name if runner is not None else None
+        return JSONResponse({"runs": _list_runs(runs_dir, running_run_id=running_run_id)})
 
     @app.get("/runs/{run_id}/events")
     def run_events(
@@ -251,6 +292,23 @@ def build_app(event_log: EventLog, token: str, *, runs_dir: Path | None = None) 
         replay = load_run_events(run_path)
         cursor, events = replay.snapshot()
         return JSONResponse({"cursor": cursor, "events": [_event_to_json(e) for e in events]})
+
+    @app.get("/runs/{run_id}/report/{fmt}", response_model=None)
+    def run_report(
+        run_id: str, fmt: str, provided_token: str = Query(default="", alias="token")
+    ) -> FileResponse | JSONResponse:
+        if not _authorized(provided_token):
+            return JSONResponse({"error": "invalid token"}, status_code=403)
+        if not run_id or run_id in (".", ".."):
+            return JSONResponse({"error": "invalid run_id"}, status_code=400)
+        format_info = _REPORT_FORMATS.get(fmt)
+        if format_info is None:
+            return JSONResponse({"error": "invalid format"}, status_code=400)
+        filename, media_type = format_info
+        path = runs_dir / run_id / filename
+        if not path.is_file():
+            return JSONResponse({"error": "report not found"}, status_code=404)
+        return FileResponse(path, media_type=media_type, filename=filename)
 
     @app.post("/scan/stop")
     async def stop_scan(provided_token: str = Query(default="", alias="token")) -> JSONResponse:

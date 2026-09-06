@@ -28,11 +28,15 @@
   const composerSendBtn = composerForm.querySelector(".btn-send");
   const stopScanBtn = document.getElementById("stop-scan");
 
+  const runHistoryListEl = document.getElementById("run-history-list");
+  const refreshRunsBtn = document.getElementById("refresh-runs");
+
   const tplMsgAgent = document.getElementById("tpl-msg-agent");
   const tplMsgUser = document.getElementById("tpl-msg-user");
   const tplAgentStatus = document.getElementById("tpl-agent-status");
   const tplFindingCard = document.getElementById("tpl-finding-card");
   const tplChainCard = document.getElementById("tpl-chain-card");
+  const tplRunItem = document.getElementById("tpl-run-item");
 
   const SCAN_STATUS_EVENTS = new Set(["scan_started", "scan_completed", "scan_failed"]);
   const KNOWN_SEVERITIES = new Set(["critical", "high", "medium", "low", "info"]);
@@ -217,6 +221,67 @@
     statChainsEl.textContent = String(chainCount);
   }
 
+  // Preference order, not alphabetical: pdf (best presentation) first, then
+  // the always-present canonical markdown, then whatever else exists - a
+  // narrow rail item links to exactly one format rather than cluttering
+  // itself with one link per available export.
+  const REPORT_LINK_PREFERENCE = ["pdf", "md", "json", "sarif", "docx"];
+
+  function preferredReportFormat(formats) {
+    return REPORT_LINK_PREFERENCE.find((fmt) => formats.includes(fmt)) || null;
+  }
+
+  function formatRunTimestamp(epochSeconds) {
+    if (!epochSeconds) return "";
+    return new Date(epochSeconds * 1000).toLocaleString(undefined, {
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+    });
+  }
+
+  function buildRunItem(run) {
+    const node = tplRunItem.content.cloneNode(true);
+    const item = node.querySelector(".run-item");
+    if (run.running) item.classList.add("running");
+    item.querySelector(".run-mission").textContent = run.mission || "(no mission recorded)";
+    const parts = [run.running ? "running" : "completed", formatRunTimestamp(run.modified_at)];
+    item.querySelector(".run-meta").textContent = parts.filter(Boolean).join(" · ");
+    const link = item.querySelector(".run-report-link");
+    const fmt = preferredReportFormat(run.report_formats || []);
+    if (fmt) {
+      link.href = `/runs/${encodeURIComponent(run.run_id)}/report/${fmt}?token=${encodeURIComponent(token)}`;
+      link.hidden = false;
+    }
+    return item;
+  }
+
+  function renderRunHistory(runs) {
+    runHistoryListEl.replaceChildren();
+    if (!runs.length) {
+      const empty = document.createElement("li");
+      empty.className = "run-history-empty";
+      empty.textContent = "No runs yet.";
+      runHistoryListEl.appendChild(empty);
+      return;
+    }
+    for (const run of runs) {
+      runHistoryListEl.appendChild(buildRunItem(run));
+    }
+  }
+
+  async function loadRunHistory() {
+    try {
+      const response = await fetch(`/runs?token=${encodeURIComponent(token)}`);
+      if (!response.ok) return; // best-effort - must never block the live console
+      const body = await response.json();
+      renderRunHistory(body.runs || []);
+    } catch {
+      // network hiccup fetching history - the live scan itself is unaffected
+    }
+  }
+
   function appendUserMessage(text, { error = false } = {}) {
     const wasNear = isNearBottom();
     const node = tplMsgUser.content.cloneNode(true);
@@ -270,6 +335,7 @@
     stopScanBtn.hidden = false;
     composerInput.placeholder = "Message this run…";
     startElapsedClock();
+    loadRunHistory();
   }
 
   function onScanEnded(payload) {
@@ -277,6 +343,7 @@
     stopScanBtn.hidden = true;
     composerInput.placeholder = "Tell me what to test…";
     stopElapsedClock();
+    loadRunHistory();
     if (payload && payload.event === "scan_failed") {
       appendAgentText(formatFailure(payload));
       return;
@@ -514,5 +581,8 @@
     }
   });
 
+  refreshRunsBtn.addEventListener("click", () => loadRunHistory());
+
   connect();
+  loadRunHistory();
 })();

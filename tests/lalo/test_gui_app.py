@@ -237,6 +237,7 @@ def test_list_runs_returns_mission_and_report_status_from_a_real_run_dir(
         encoding="utf-8",
     )
     (run_dir / "report.json").write_text("{}", encoding="utf-8")
+    (run_dir / "report.md").write_text("# report", encoding="utf-8")
 
     client, _ = _client(runs_dir=tmp_path)
     response = client.get("/runs?token=test-token")
@@ -246,6 +247,7 @@ def test_list_runs_returns_mission_and_report_status_from_a_real_run_dir(
     assert runs[0]["mission"] == "find a bug"
     assert runs[0]["target_specs"] == ["example.com"]
     assert runs[0]["has_report"] is True
+    assert set(runs[0]["report_formats"]) == {"json", "md"}
 
 
 def test_list_runs_without_a_manifest_still_lists_with_no_mission(tmp_path: Path) -> None:
@@ -255,6 +257,61 @@ def test_list_runs_without_a_manifest_still_lists_with_no_mission(tmp_path: Path
     assert runs[0]["run_id"] == "no-manifest-yet"
     assert runs[0]["mission"] is None
     assert runs[0]["has_report"] is False
+    assert runs[0]["report_formats"] == []
+
+
+def test_list_runs_report_formats_reflects_a_partial_pdf_failure(tmp_path: Path) -> None:
+    """pdf/docx are each independently best-effort at write time - a run
+    with a canonical report but no pdf must not silently claim it has one."""
+    run_dir = tmp_path / "abc123"
+    run_dir.mkdir()
+    (run_dir / "report.json").write_text("{}", encoding="utf-8")
+    (run_dir / "report.md").write_text("# report", encoding="utf-8")
+    # no report.pdf / report.docx written for this run
+    client, _ = _client(runs_dir=tmp_path)
+    runs = client.get("/runs?token=test-token").json()["runs"]
+    assert "pdf" not in runs[0]["report_formats"]
+    assert "docx" not in runs[0]["report_formats"]
+
+
+def test_run_report_requires_a_valid_token(tmp_path: Path) -> None:
+    client, _ = _client(token="real-token", runs_dir=tmp_path)
+    response = client.get("/runs/abc123/report/md?token=wrong")
+    assert response.status_code == 403
+
+
+def test_run_report_rejects_an_unknown_format(tmp_path: Path) -> None:
+    run_dir = tmp_path / "abc123"
+    run_dir.mkdir()
+    (run_dir / "report.md").write_text("# report", encoding="utf-8")
+    client, _ = _client(runs_dir=tmp_path)
+    response = client.get("/runs/abc123/report/exe?token=test-token")
+    assert response.status_code == 400
+
+
+def test_run_report_on_a_missing_file_is_404(tmp_path: Path) -> None:
+    run_dir = tmp_path / "abc123"
+    run_dir.mkdir()
+    client, _ = _client(runs_dir=tmp_path)
+    response = client.get("/runs/abc123/report/pdf?token=test-token")
+    assert response.status_code == 404
+
+
+def test_run_report_rejects_a_dot_dot_run_id(tmp_path: Path) -> None:
+    client, _ = _client(runs_dir=tmp_path)
+    response = client.get("/runs/../report/md?token=test-token")
+    assert response.status_code in (400, 404)
+
+
+def test_run_report_serves_the_real_file_with_the_right_media_type(tmp_path: Path) -> None:
+    run_dir = tmp_path / "abc123"
+    run_dir.mkdir()
+    (run_dir / "report.md").write_text("# a real report\n", encoding="utf-8")
+    client, _ = _client(runs_dir=tmp_path)
+    response = client.get("/runs/abc123/report/md?token=test-token")
+    assert response.status_code == 200
+    assert response.content == b"# a real report\n"
+    assert response.headers["content-type"].startswith("text/markdown")
 
 
 def test_run_events_requires_a_valid_token(tmp_path: Path) -> None:
@@ -435,6 +492,38 @@ def test_status_reports_running_while_a_scan_is_in_flight(
     finally:
         block.set()
         _FakeScanRunner.block = None
+
+
+def test_list_runs_marks_the_currently_running_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    block = threading.Event()
+    _FakeScanRunner.block = block
+    monkeypatch.setattr(app_module, "ScanRunner", _FakeScanRunner)
+    try:
+        client, _ = _client(runs_dir=tmp_path)
+        response = client.post(
+            "/scan?token=test-token", json={"mission": "find a bug", "targets": ["example.com"]}
+        )
+        run_dir = Path(response.json()["run_dir"])
+        # _FakeScanRunner never touches the filesystem, unlike the real
+        # ScanRunner.run() (which mkdir()s run_dir as its very first action)
+        # - created here so _list_runs' filesystem enumeration sees it.
+        run_dir.mkdir(parents=True, exist_ok=True)
+        runs = client.get("/runs?token=test-token").json()["runs"]
+        assert len(runs) == 1
+        assert runs[0]["run_id"] == run_dir.name
+        assert runs[0]["running"] is True
+    finally:
+        block.set()
+        _FakeScanRunner.block = None
+
+
+def test_list_runs_reports_false_for_a_completed_run(tmp_path: Path) -> None:
+    (tmp_path / "abc123").mkdir()
+    client, _ = _client(runs_dir=tmp_path)
+    runs = client.get("/runs?token=test-token").json()["runs"]
+    assert runs[0]["running"] is False
 
 
 def test_a_failed_scan_emits_a_status_event_instead_of_dying_silently(

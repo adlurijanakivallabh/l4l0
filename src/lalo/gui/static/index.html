@@ -21,6 +21,14 @@
       <div><dt>Chains</dt><dd id="stat-chains">0</dd></div>
       <div><dt>Elapsed</dt><dd id="stat-elapsed">--:--</dd></div>
     </dl>
+
+    <div class="rail-history">
+      <div class="rail-history-header">
+        <span>Past Runs</span>
+        <button type="button" id="refresh-runs" class="btn-icon" aria-label="Refresh run history" title="Refresh">↻</button>
+      </div>
+      <ul id="run-history-list" class="run-history-list" aria-label="Past runs"></ul>
+    </div>
   </aside>
 
   <main class="main">
@@ -85,6 +93,17 @@
 
 <template id="tpl-chain-card">
   <div class="chain-card"></div>
+</template>
+
+<template id="tpl-run-item">
+  <li class="run-item">
+    <span class="run-status-dot"></span>
+    <div class="run-info">
+      <span class="run-mission"></span>
+      <span class="run-meta"></span>
+    </div>
+    <a class="run-report-link" target="_blank" rel="noopener" hidden>Report</a>
+  </li>
 </template>
 
 <script src="/static/app.js"></script>

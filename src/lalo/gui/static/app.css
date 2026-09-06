@@ -152,6 +152,100 @@ button, input, textarea {
   color: var(--text);
 }
 
+/* ---------- run history (rail) ---------- */
+
+.rail-history {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+  flex: 1;
+}
+
+.rail-history-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 6px;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+}
+
+.btn-icon {
+  background: transparent;
+  border: none;
+  color: var(--text-faint);
+  cursor: pointer;
+  font-size: 0.95rem;
+  line-height: 1;
+  padding: 2px 4px;
+  border-radius: var(--radius-sm);
+}
+.btn-icon:hover { color: var(--text); background: var(--surface-muted); }
+
+.run-history-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.run-history-empty {
+  padding: 6px;
+  font-size: 0.78rem;
+  color: var(--text-faint);
+}
+
+.run-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 6px;
+  border-radius: var(--radius-sm);
+}
+.run-item:hover { background: var(--surface); }
+
+.run-status-dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--text-faint);
+}
+.run-item.running .run-status-dot { background: var(--accent); }
+
+.run-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.run-mission {
+  font-size: 0.78rem;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.run-meta {
+  font-size: 0.68rem;
+  color: var(--text-faint);
+}
+
+.run-report-link {
+  flex: none;
+  font-size: 0.68rem;
+  font-weight: 600;
+  color: var(--accent);
+  text-decoration: none;
+}
+.run-report-link:hover { text-decoration: underline; }
+
 .main {
   padding: 24px 24px 0;
   overflow-x: hidden;
@@ -487,6 +581,10 @@ button, input, textarea {
   }
   .rail-stats { flex-direction: row; gap: 16px; flex-wrap: wrap; }
   .btn-stop { width: auto; }
+  /* A scrolling vertical run list doesn't fit the horizontal-bar rail this
+     breakpoint switches to - history browsing stays a desktop-width feature,
+     the live conversation (the primary experience) is unaffected. */
+  .rail-history { display: none; }
   .main { padding: 16px 12px 0; }
   .thread-wrap { height: calc(100vh - 64px); }
 }
