@@ -21,11 +21,13 @@ AGPL/proprietary reasons behind it).
 
 **The agent itself is the primary methodology** — not fixed detector code. A
 hierarchical agent loop: a root agent takes the mission and `spawn_agent`s
-specialist children (each naming skills to `recall`); every agent has a flat,
-powerful toolset centered on a **free shell** (`run_command` — runs/installs
-anything) plus `http` (multi-protocol firer), `browser`, `spawn_agent`,
-`view_agent_graph`, `record_finding`, `poll_oast`, `query_graph`/`note`, and
-`recall` (retrieval over the skill library + past findings). The skill library
+specialist children serially, or fans several out at once via `spawn_agents`
+for genuinely independent lines of investigation (each naming skills to
+`recall`); every agent has a flat, powerful toolset centered on a **free
+shell** (`run_command` — runs/installs anything) plus `http` (multi-protocol
+firer), `browser`, `spawn_agent`/`spawn_agents`, `view_agent_graph`,
+`record_finding`, `poll_oast`, `query_graph`/`note`, and `recall` (retrieval
+over the skill library + past findings). The skill library
 (one dense playbook per vuln class: attack surface → recon → techniques →
 proof ladder → validation/false-positive discipline) is what the agent follows
 to find, exploit, and prove vulnerabilities — the actual methodology lives
