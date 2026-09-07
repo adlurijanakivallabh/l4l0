@@ -120,7 +120,7 @@ from __future__ import annotations
 import json
 import threading
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -505,6 +505,71 @@ def _diff_by_agent(
             for field in ("requests", "input_tokens", "output_tokens", "cost_usd")
         }
     return result
+
+
+_SHELL_CHUNK_FLUSH_THRESHOLD_CHARS = 750
+
+
+class _ShellChunkCoalescer:
+    """Wraps an ``on_shell_event`` sink to collapse high-frequency shell
+    "chunk" events (one per output line) into far fewer, larger ones before
+    they ever reach :meth:`ScanRunner._emit` -- a single verbose command
+    (feroxbuster, ``nmap -v``, gobuster) can otherwise emit thousands of
+    one-line chunk events, which would evict a run's own earlier
+    findings/narration from the shared, bounded ``EventLog`` and serialize
+    concurrent agents behind a synchronous per-line disk append.
+
+    "start" and "end" events (exactly one each per command) always pass
+    through immediately, unbuffered, in original order. "chunk" events are
+    buffered per ``(command_id, stream)`` -- stdout and stderr are never
+    merged, since the frontend renders them with different styling (see
+    ``applyShellEvent`` in gui/static/app.js) -- and flushed as one combined
+    event once the buffered text reaches ``threshold`` characters, or when a
+    "start"/"end" for that command_id arrives (any pending chunks for that
+    command, both streams, are flushed first, then the start/end passes
+    through).
+
+    Not thread-safe by design and doesn't need to be: one instance is built
+    fresh per agent (inside ``_build_registry``, itself called once per
+    agent), and a single agent's own ``run_command`` tool calls are already
+    sequential from that agent's own perspective.
+    """
+
+    def __init__(
+        self,
+        emit: Callable[[dict[str, object]], None],
+        *,
+        threshold: int = _SHELL_CHUNK_FLUSH_THRESHOLD_CHARS,
+    ) -> None:
+        self._emit = emit
+        self._threshold = threshold
+        self._buffers: dict[tuple[object, str], str] = {}
+
+    def __call__(self, payload: dict[str, object]) -> None:
+        event = payload.get("event")
+        command_id = payload.get("command_id")
+        if event == "chunk":
+            key = (command_id, str(payload.get("stream")))
+            text = self._buffers.get(key, "") + str(payload.get("text", ""))
+            if len(text) >= self._threshold:
+                del self._buffers[key]
+                self._emit_chunk(command_id, key[1], text)
+            else:
+                self._buffers[key] = text
+            return
+        if event in ("start", "end"):
+            self._flush_command(command_id)
+        self._emit(payload)
+
+    def _flush_command(self, command_id: object) -> None:
+        for stream in ("stdout", "stderr"):
+            key = (command_id, stream)
+            text = self._buffers.pop(key, None)
+            if text:
+                self._emit_chunk(command_id, stream, text)
+
+    def _emit_chunk(self, command_id: object, stream: str, text: str) -> None:
+        self._emit({"event": "chunk", "command_id": command_id, "stream": stream, "text": text})
 
 
 class ScanRunner:
@@ -914,12 +979,16 @@ class ScanRunner:
                     merge_finding_nodes(agent_graph, child_graph, new_ids)
                 return result.summary, new_ids, result.stop_reason in _TERMINAL_SUCCESS
 
+            # Coalesced (not passed straight to self._emit) so a single
+            # verbose command's thousands of one-line chunk events can't
+            # flood the shared, bounded EventLog -- see _ShellChunkCoalescer.
+            shell_event_sink = _ShellChunkCoalescer(
+                lambda payload: self._emit("shell", {"agent_id": self_id, **payload})
+            )
             tools: list[Tool] = [
                 build_run_command_tool(
                     container,
-                    on_shell_event=lambda payload: self._emit(
-                        "shell", {"agent_id": self_id, **payload}
-                    ),
+                    on_shell_event=shell_event_sink,
                 ),
                 build_http_tool(firer),
                 build_fire_concurrent_tool(firer),

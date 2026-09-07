@@ -44,6 +44,7 @@ from lalo.scan import (
     ScanConfig,
     ScanRunner,
     _diff_by_agent,
+    _ShellChunkCoalescer,
     _terminal_status,
     load_run_events,
     read_resume_manifest,
@@ -102,6 +103,102 @@ def test_diff_by_agent_handles_an_agent_present_in_only_one_snapshot() -> None:
         "output_tokens": 10.0,
         "cost_usd": 0.05,
     }
+
+
+# --- _ShellChunkCoalescer: pure unit ------------------------------------------
+
+
+def test_shell_chunk_coalescer_passes_start_and_end_through_immediately() -> None:
+    emitted: list[dict[str, object]] = []
+    coalesce = _ShellChunkCoalescer(emitted.append)
+
+    coalesce({"event": "start", "command_id": "c1", "command": "ls"})
+    coalesce({"event": "end", "command_id": "c1", "exit_code": 0})
+
+    assert emitted == [
+        {"event": "start", "command_id": "c1", "command": "ls"},
+        {"event": "end", "command_id": "c1", "exit_code": 0},
+    ]
+
+
+def test_shell_chunk_coalescer_merges_many_small_chunks_into_far_fewer_emits() -> None:
+    emitted: list[dict[str, object]] = []
+    coalesce = _ShellChunkCoalescer(emitted.append, threshold=100)
+
+    coalesce({"event": "start", "command_id": "c1", "command": "feroxbuster"})
+    for i in range(50):
+        coalesce({"event": "chunk", "command_id": "c1", "stream": "stdout", "text": f"line {i}\n"})
+    coalesce({"event": "end", "command_id": "c1", "exit_code": 0})
+
+    chunk_events = [e for e in emitted if e["event"] == "chunk"]
+    # 50 lines of ~7-8 chars each is ~375 chars total -- with a 100-char
+    # threshold that's a handful of flushes, nowhere near 50 individual events.
+    assert 1 <= len(chunk_events) < 10
+
+
+def test_shell_chunk_coalescer_never_merges_stdout_and_stderr() -> None:
+    emitted: list[dict[str, object]] = []
+    coalesce = _ShellChunkCoalescer(emitted.append, threshold=1000)
+
+    coalesce({"event": "start", "command_id": "c1", "command": "nmap"})
+    coalesce({"event": "chunk", "command_id": "c1", "stream": "stdout", "text": "out-a\n"})
+    coalesce({"event": "chunk", "command_id": "c1", "stream": "stderr", "text": "err-a\n"})
+    coalesce({"event": "chunk", "command_id": "c1", "stream": "stdout", "text": "out-b\n"})
+    coalesce({"event": "end", "command_id": "c1", "exit_code": 0})
+
+    chunk_events = [e for e in emitted if e["event"] == "chunk"]
+    by_stream = {e["stream"]: e["text"] for e in chunk_events}
+    assert by_stream == {"stdout": "out-a\nout-b\n", "stderr": "err-a\n"}
+
+
+def test_shell_chunk_coalescer_preserves_full_text_and_order_per_stream() -> None:
+    emitted: list[dict[str, object]] = []
+    coalesce = _ShellChunkCoalescer(emitted.append, threshold=20)
+
+    coalesce({"event": "start", "command_id": "c1", "command": "gobuster"})
+    expected = "".join(f"line-{i}\n" for i in range(30))
+    for i in range(30):
+        coalesce({"event": "chunk", "command_id": "c1", "stream": "stdout", "text": f"line-{i}\n"})
+    coalesce({"event": "end", "command_id": "c1", "exit_code": 0})
+
+    chunk_events = [e for e in emitted if e["event"] == "chunk" and e["stream"] == "stdout"]
+    assert len(chunk_events) > 1  # actually coalesced, not a no-op passthrough
+    assert "".join(str(e["text"]) for e in chunk_events) == expected
+
+
+def test_shell_chunk_coalescer_flushes_pending_chunks_before_end_event() -> None:
+    emitted: list[dict[str, object]] = []
+    coalesce = _ShellChunkCoalescer(emitted.append, threshold=1000)
+
+    coalesce({"event": "start", "command_id": "c1", "command": "id"})
+    coalesce({"event": "chunk", "command_id": "c1", "stream": "stdout", "text": "uid=0\n"})
+    coalesce({"event": "end", "command_id": "c1", "exit_code": 0})
+
+    # The buffered chunk (well under the threshold) must still land, and
+    # strictly before the "end" event -- never dropped, never reordered.
+    events_order = [(e["event"], e.get("stream")) for e in emitted]
+    assert events_order == [
+        ("start", None),
+        ("chunk", "stdout"),
+        ("end", None),
+    ]
+    assert next(e for e in emitted if e["event"] == "chunk")["text"] == "uid=0\n"
+
+
+def test_shell_chunk_coalescer_keeps_two_commands_independent() -> None:
+    emitted: list[dict[str, object]] = []
+    coalesce = _ShellChunkCoalescer(emitted.append, threshold=1000)
+
+    coalesce({"event": "start", "command_id": "c1", "command": "id"})
+    coalesce({"event": "chunk", "command_id": "c1", "stream": "stdout", "text": "c1-out\n"})
+    coalesce({"event": "end", "command_id": "c1", "exit_code": 0})
+    coalesce({"event": "start", "command_id": "c2", "command": "whoami"})
+    coalesce({"event": "chunk", "command_id": "c2", "stream": "stdout", "text": "c2-out\n"})
+    coalesce({"event": "end", "command_id": "c2", "exit_code": 0})
+
+    chunk_events = [e for e in emitted if e["event"] == "chunk"]
+    assert [e["command_id"] for e in chunk_events] == ["c1", "c2"]
+    assert [e["text"] for e in chunk_events] == ["c1-out\n", "c2-out\n"]
 
 
 def test_terminal_status_maps_finish_reasons_to_completed() -> None:

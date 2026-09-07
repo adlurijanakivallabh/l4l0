@@ -46,6 +46,7 @@ speak HTTP at all.
 
 from __future__ import annotations
 
+import threading
 import time
 from dataclasses import dataclass, field
 from urllib.parse import urljoin, urlsplit, urlunsplit
@@ -142,12 +143,28 @@ class HttpFirer:
         self._breaker_reset_after_s = breaker_reset_after_s
         self._max_response_bytes = max_response_bytes
         self._breakers: dict[str, _Breaker] = {}
+        # Guards ONLY the breaker-state check/update below (never the network
+        # I/O in fire()) - fire_concurrent fires up to 50 requests to the same
+        # host through one shared HttpFirer instance at once, and spawn_agents
+        # does the same for the whole firer across concurrent agents, so the
+        # pre-request is_open/should_probe check and the post-request
+        # failures/is_open/opened_at mutation are each an unlocked
+        # read-modify-write that concurrent callers can race on, corrupting
+        # the failure count or tripping the breaker inconsistently. Locking
+        # the whole fire() call instead would serialize every concurrent
+        # request and defeat fire_concurrent's entire purpose (simultaneity
+        # for race-condition testing) - same coarse-lock pattern already used
+        # for Budget/Tracer/access_control_matrix's shared state.
+        self._breaker_lock = threading.Lock()
 
     def _breaker(self, host: str) -> _Breaker:
-        return self._breakers.setdefault(
-            host,
-            _Breaker(threshold=self._breaker_threshold, reset_after_s=self._breaker_reset_after_s),
-        )
+        with self._breaker_lock:
+            return self._breakers.setdefault(
+                host,
+                _Breaker(
+                    threshold=self._breaker_threshold, reset_after_s=self._breaker_reset_after_s
+                ),
+            )
 
     def fire(
         self,
@@ -165,8 +182,9 @@ class HttpFirer:
         parts = urlsplit(url)
         host = parts.hostname or ""
         breaker = self._breaker(host)
-        if breaker.is_open and not breaker.should_probe():
-            return FireResult(method=method, url=url, fired=False, scope_reason="circuit_open")
+        with self._breaker_lock:
+            if breaker.is_open and not breaker.should_probe():
+                return FireResult(method=method, url=url, fired=False, scope_reason="circuit_open")
 
         pinned_ip = self.scope.pin_for_connect(host)
         if pinned_ip is None:
@@ -228,11 +246,15 @@ class HttpFirer:
                 elapsed_ms=(time.monotonic() - start) * 1000.0,
             )
         except httpx.HTTPError as exc:
-            breaker.failures += 1
-            if breaker.failures >= breaker.threshold:
-                breaker.is_open = True
-                breaker.opened_at = time.monotonic()  # (re)arm the cooldown on every trip/re-trip
-                _log.warning("circuit opened for host %s after %d failures", host, breaker.failures)
+            with self._breaker_lock:
+                breaker.failures += 1
+                if breaker.failures >= breaker.threshold:
+                    breaker.is_open = True
+                    # (re)arm the cooldown on every trip/re-trip
+                    breaker.opened_at = time.monotonic()
+                    _log.warning(
+                        "circuit opened for host %s after %d failures", host, breaker.failures
+                    )
             return FireResult(
                 method=method,
                 url=url,
@@ -242,8 +264,9 @@ class HttpFirer:
                 elapsed_ms=(time.monotonic() - start) * 1000.0,
             )
         else:
-            breaker.failures = 0
-            breaker.is_open = False  # a successful request (incl. a half-open probe) closes it
+            with self._breaker_lock:
+                breaker.failures = 0
+                breaker.is_open = False  # a successful request (a half-open probe too) closes it
             return FireResult(
                 method=method,
                 url=url,
