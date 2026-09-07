@@ -2568,7 +2568,108 @@ git commit -m "feat(L4L0): duplicate a past run as a new scan; paste a scope lis
 
 ---
 
-## Final check (after all 19 tasks)
+### Task 20: Extend the duplicate-spawn warning to `spawn_agents` (parallel fan-out)
+
+Added after Task 18 shipped: Task 18's guard only covers `spawn_agent`
+(serial) because `spawn_agents` (parallel fan-out, `build_parallel_spawn_tool`)
+did not exist yet when Task 18 was scoped. It exists on `project-lalo` now.
+The original brainstorm idea this whole feature came from explicitly named
+both gaps: "a single `spawn_agents` call fans out several tasks with zero
+cross-check between them" — meaning both (a) a batch task vs. an
+already-running sibling, and (b) a batch task vs. another task in the SAME
+batch. Task 18's `_duplicate_task_warning` only checks (a) has ever been
+implemented, and only for `spawn_agent`.
+
+**Files:**
+- Modify: `src/lalo/agent/spawn.py`
+- Test: `tests/lalo/test_spawn.py`
+
+**Interfaces:**
+- Produces: a module-level `_duplicate_task_warning(coordinator, self_id, task, extra_tasks=())` — lifted out of `build_spawn_tools`'s closure so both `build_spawn_tools` and `build_parallel_spawn_tool` can share it, with an added `extra_tasks` parameter for batch-internal comparison.
+- Consumes: `token_overlap_ratio` (existing, Task 18), `AgentCoordinator.children_of`/`.node` (existing).
+
+- [ ] **Step 1: Lift `_duplicate_task_warning` to module level, add `extra_tasks`**
+
+Read the current `src/lalo/agent/spawn.py` (has drifted since this plan section was written — the real current line numbers/exact surrounding code are authoritative). Move the existing `_duplicate_task_warning` function (currently a closure inside `build_spawn_tools`) to module level, immediately before `build_spawn_tools`:
+
+```python
+def _duplicate_task_warning(
+    coordinator: AgentCoordinator, self_id: str, task: str, extra_tasks: tuple[str, ...] = ()
+) -> str:
+    """Warn, never block, when ``task`` looks like a near-duplicate of an
+    already-spawned sibling's task, or of another task in the same
+    ``spawn_agents`` batch (``extra_tasks``) - a running-siblings-only check
+    would miss the latter, since batch siblings aren't registered with the
+    coordinator until after every task in the batch is already collected.
+    """
+    for other_id in coordinator.children_of(self_id):
+        other_task = coordinator.node(other_id).task
+        if token_overlap_ratio(task, other_task) >= _DUPLICATE_TASK_SIMILARITY_THRESHOLD:
+            return (
+                f"warning: this task looks similar to running agent {other_id}'s task "
+                f"({other_task!r}) - confirm this isn't a duplicate before proceeding.\n"
+            )
+    for other_task in extra_tasks:
+        if other_task != task and token_overlap_ratio(task, other_task) >= _DUPLICATE_TASK_SIMILARITY_THRESHOLD:
+            return (
+                f"warning: this task looks similar to another task in the same batch "
+                f"({other_task!r}) - confirm this isn't a duplicate before proceeding.\n"
+            )
+    return ""
+```
+
+Update `build_spawn_tools`'s `_spawn` to call the module-level version: `warning = _duplicate_task_warning(coordinator, self_id, task)`.
+
+- [ ] **Step 2: Wire it into `_spawn_agents`**
+
+In `build_parallel_spawn_tool`'s `_spawn_agents`, after `parsed: list[tuple[str, str]]` is fully built (before `coordinator.spawn(...)` is called for each), compute one warning per task, checking it against running siblings AND every other task in the same batch:
+
+```python
+warnings = [
+    _duplicate_task_warning(
+        coordinator, self_id, task, extra_tasks=tuple(t for j, (_, t) in enumerate(parsed) if j != i)
+    )
+    for i, (_, task) in enumerate(parsed)
+]
+```
+
+Prefix the batch's returned observation with any non-empty warnings (mirroring `_spawn`'s single-string-prefix convention rather than restructuring the JSON reports list):
+
+```python
+return ToolResult(observation=f"{''.join(w for w in warnings if w)}{json.dumps(reports)}", ok=overall_ok)
+```
+
+- [ ] **Step 3: Write the failing tests, then verify they pass**
+
+Following `test_spawn.py`'s existing conventions (from Task 18's own tests):
+
+```python
+def test_spawn_agents_warns_about_a_duplicate_task_within_the_same_batch() -> None:
+    # two near-identical tasks in one spawn_agents call, no pre-existing running siblings
+    ...
+    assert "similar to another task in the same batch" in observation
+    assert result.ok  # never blocked
+
+
+def test_spawn_agents_warns_about_a_duplicate_task_against_a_running_sibling() -> None:
+    # spawn one child via spawn_agent first, then spawn_agents with a task
+    # similar to that sibling's
+    ...
+    assert "similar to running agent" in observation
+    assert result.ok
+```
+
+- [ ] **Step 4: Full check and commit**
+
+```bash
+uv run ruff check src/lalo tests/lalo --fix && uv run ruff format src/lalo tests/lalo && uv run mypy && uv run pytest -q -m "not integration and not live"
+git add src/lalo/agent/spawn.py tests/lalo/test_spawn.py
+git commit -m "feat(L4L0): extend the duplicate-spawn warning to spawn_agents' parallel fan-out"
+```
+
+---
+
+## Final check (after all 20 tasks)
 
 Run: `uv run ruff check src/lalo tests/lalo && uv run ruff format --check src/lalo tests/lalo && uv run mypy && uv run pytest -q -m "not integration and not live"`
 
