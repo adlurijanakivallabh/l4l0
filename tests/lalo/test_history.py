@@ -12,6 +12,7 @@ def _finding(dedup_key: str) -> FindingRecord:
         finding_id=f"finding-{dedup_key}",
         title="A finding",
         description="desc",
+        remediation="fix it",
         vuln_class="sql-injection",
         target="https://x.example.com/search",
         param=None,
