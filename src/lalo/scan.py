@@ -154,7 +154,7 @@ from .core.usage import load_usage
 from .execution.firer import HttpFirer, probe_reachability
 from .execution.scope import ScopeGuard
 from .execution.target import Engagement
-from .execution.tool import build_http_tool
+from .execution.tool import build_diff_responses_tool, build_fire_concurrent_tool, build_http_tool
 from .findings.confidence import compute_confidence
 from .findings.review import run_adversarial_review
 from .findings.tool import build_record_finding_tool
@@ -912,6 +912,8 @@ class ScanRunner:
                     ),
                 ),
                 build_http_tool(firer),
+                build_fire_concurrent_tool(firer),
+                build_diff_responses_tool(firer),
                 build_record_finding_tool(agent_graph),
                 *build_oast_tools(oast),
                 build_recall_tool(skills),
