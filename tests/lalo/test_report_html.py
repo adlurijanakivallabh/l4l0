@@ -75,6 +75,18 @@ def test_render_finding_html_escapes_a_malicious_title_and_evidence() -> None:
     assert "&lt;img" in rendered
 
 
+def test_render_finding_html_includes_the_cwe_line_when_mapped() -> None:
+    record = _record()  # vuln_class="sql-injection" -> CWE-89
+    rendered = render_finding_html(record)
+    assert "<dt>CWE</dt><dd>CWE-89</dd>" in rendered
+
+
+def test_render_finding_html_omits_the_cwe_line_when_unmapped() -> None:
+    record = replace(_record(), vuln_class="not-a-real-class")
+    rendered = render_finding_html(record)
+    assert "<dt>CWE</dt>" not in rendered
+
+
 def test_render_finding_html_warns_when_evidence_is_not_grounded() -> None:
     graph = ReachabilityGraph()
     ToolRegistry([build_record_finding_tool(graph)]).dispatch(

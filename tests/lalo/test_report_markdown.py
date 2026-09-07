@@ -15,7 +15,12 @@ from lalo.report.collect import (
     collect_findings,
 )
 from lalo.report.coverage import CoverageSummary
-from lalo.report.markdown import render_finding_md, render_report_md, safe_fence
+from lalo.report.markdown import (
+    _render_chains_mermaid,
+    render_finding_md,
+    render_report_md,
+    safe_fence,
+)
 
 _VALID_CVSS = {
     "attack_vector": "N",
@@ -67,6 +72,18 @@ def test_render_finding_md_includes_core_fields() -> None:
     assert "https://x.example.com/search" in rendered
     assert "`q`" in rendered
     assert "HIGH" in rendered.upper() or "MEDIUM" in rendered.upper()
+
+
+def test_render_finding_md_includes_the_cwe_line_when_mapped() -> None:
+    record = _record()  # vuln_class="sql-injection" -> CWE-89
+    rendered = render_finding_md(record)
+    assert "**CWE:** CWE-89" in rendered
+
+
+def test_render_finding_md_omits_the_cwe_line_when_unmapped() -> None:
+    record = replace(_record(), vuln_class="not-a-real-class")
+    rendered = render_finding_md(record)
+    assert "**CWE:**" not in rendered
 
 
 def test_render_finding_md_evidence_cannot_break_out_of_its_fence() -> None:
@@ -131,6 +148,45 @@ def test_render_report_md_renders_an_attack_chains_section() -> None:
     rendered = render_report_md([], coverage, chains=chains)
     assert "## Attack Chains" in rendered
     assert "IDOR in /api → Admin RCE" in rendered
+
+
+def test_render_report_md_attack_chains_section_also_includes_a_mermaid_block() -> None:
+    """The Mermaid diagram is additive - it must appear ALONGSIDE the plain
+    bullet, never replacing it, so a viewer with no Mermaid renderer still
+    gets the readable fallback."""
+    coverage = CoverageSummary(assessed=[], not_assessed=[])
+    chains = [ChainRecord(finding_ids=["f1", "f2"], titles=["IDOR in /api", "Admin RCE"])]
+    rendered = render_report_md([], coverage, chains=chains)
+    assert "- IDOR in /api → Admin RCE" in rendered
+    assert "```mermaid" in rendered
+    assert "flowchart LR" in rendered
+
+
+def test_render_chains_mermaid_empty_chains_renders_nothing() -> None:
+    assert _render_chains_mermaid([]) == ""
+
+
+def test_render_chains_mermaid_two_chains_sharing_one_node() -> None:
+    chains = [
+        ChainRecord(finding_ids=["f1", "f2"], titles=["IDOR in /api", "Admin RCE"]),
+        ChainRecord(finding_ids=["f3", "f2"], titles=["SSRF in /fetch", "Admin RCE"]),
+    ]
+    rendered = _render_chains_mermaid(chains)
+    assert rendered.startswith("```mermaid\nflowchart LR")
+    assert rendered.endswith("```")
+    assert '    c0n0["IDOR in /api"]' in rendered
+    assert '    c0n1["Admin RCE"]' in rendered
+    assert "    c0n0 --> c0n1" in rendered
+    assert '    c1n0["SSRF in /fetch"]' in rendered
+    assert '    c1n1["Admin RCE"]' in rendered
+    assert "    c1n0 --> c1n1" in rendered
+
+
+def test_render_chains_mermaid_escapes_a_double_quote_in_a_chain_title() -> None:
+    chains = [ChainRecord(finding_ids=["f1"], titles=['SQLi in "search"'])]
+    rendered = _render_chains_mermaid(chains)
+    assert "c0n0[\"SQLi in 'search'\"]" in rendered
+    assert '"search"' not in rendered
 
 
 def test_render_report_md_with_no_chains_has_no_chains_section() -> None:

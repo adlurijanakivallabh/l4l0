@@ -148,6 +148,24 @@ def test_render_sarif_security_severity_uses_the_real_cvss_score() -> None:
     assert result["properties"]["security-severity"] == "7.5"
 
 
+def test_render_sarif_rule_includes_cwe_relationship_when_mapped() -> None:
+    graph = ReachabilityGraph()
+    _file(graph)  # vuln_class="sql-injection" -> CWE-89
+    doc = render_sarif(_records(graph))
+    rule = doc["runs"][0]["tool"]["driver"]["rules"][0]
+    assert rule["relationships"] == [
+        {"target": {"id": "CWE-89", "toolComponent": {"name": "CWE"}}, "kinds": ["relevant"]}
+    ]
+
+
+def test_render_sarif_rule_omits_relationships_when_unmapped() -> None:
+    graph = ReachabilityGraph()
+    _file(graph, vuln_class="not-a-real-class")
+    doc = render_sarif(_records(graph))
+    rule = doc["runs"][0]["tool"]["driver"]["rules"][0]
+    assert "relationships" not in rule
+
+
 def test_render_sarif_security_severity_preserves_a_real_zero_score() -> None:
     """A genuine all-'N'-impact CVSS breakdown legitimately scores 0.0 - this
     must not be confused with "no score supplied" and replaced by an

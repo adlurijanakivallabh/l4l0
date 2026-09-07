@@ -265,6 +265,27 @@ def test_run_report_serves_the_real_file_with_the_right_media_type(tmp_path: Pat
     assert response.headers["content-type"].startswith("text/markdown")
 
 
+def test_run_report_serves_csv_with_the_right_media_type(tmp_path: Path) -> None:
+    run_dir = tmp_path / "abc123"
+    run_dir.mkdir()
+    (run_dir / "findings.csv").write_text("finding_id,title\nf1,SQLi\n", encoding="utf-8")
+    client, _ = _client(runs_dir=tmp_path)
+    response = client.get("/runs/abc123/report/csv")
+    assert response.status_code == 200
+    assert response.content == b"finding_id,title\nf1,SQLi\n"
+    assert response.headers["content-type"].startswith("text/csv")
+
+
+def test_list_runs_report_formats_includes_csv(tmp_path: Path) -> None:
+    run_dir = tmp_path / "abc123"
+    run_dir.mkdir()
+    (run_dir / "report.json").write_text("{}", encoding="utf-8")
+    (run_dir / "findings.csv").write_text("finding_id,title\n", encoding="utf-8")
+    client, _ = _client(runs_dir=tmp_path)
+    runs = client.get("/runs").json()["runs"]
+    assert "csv" in runs[0]["report_formats"]
+
+
 def test_run_events_on_an_unknown_run_id_is_404(tmp_path: Path) -> None:
     client, _ = _client(runs_dir=tmp_path)
     response = client.get("/runs/no-such-run/events")

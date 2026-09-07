@@ -28,7 +28,7 @@ build on this reference's design rather than reinvent it.
 
 PDF and DOCX are both rendered from the SAME intermediate HTML
 (:mod:`lalo.report.html`), not built independently of each other or of the
-Markdown/JSON/SARIF outputs — one escaped, deterministic source of truth for
+Markdown/JSON/SARIF/CSV outputs — one escaped, deterministic source of truth for
 every human-facing rendering, matching this module's own "assemble once,
 write many formats" shape rather than re-deriving report content per format.
 
@@ -41,11 +41,11 @@ warning while treating canonical-data corruption as always terminal —
 canonical data, not the record of truth itself. :func:`write_report`
 previously had no such distinction: a WeasyPrint or html2docx bug on either
 export would raise straight out of this function and leave the operator
-with NO report at all, even though Markdown/JSON/SARIF — the actual
+with NO report at all, even though Markdown/JSON/SARIF/CSV — the actual
 canonical, structured record — had already rendered successfully. PDF and
 DOCX generation are now each independently wrapped: a failure there is
 logged and that format is simply absent from the returned mapping, while a
-Markdown/JSON/SARIF failure still propagates uncaught, exactly matching
+Markdown/JSON/SARIF/CSV failure still propagates uncaught, exactly matching
 that reference's own canonical-vs-secondary distinction.
 """
 
@@ -68,6 +68,7 @@ from .collect import (
     sort_findings,
 )
 from .coverage import build_coverage_summary
+from .csv_export import build_csv
 from .docx import render_report_docx
 from .html import render_report_html
 from .markdown import render_report_md
@@ -80,6 +81,7 @@ _log = get_logger("lalo.report")
 MARKDOWN_FILENAME = "report.md"
 JSON_FILENAME = "report.json"
 SARIF_FILENAME = "findings.sarif"
+CSV_FILENAME = "findings.csv"
 PDF_FILENAME = "report.pdf"
 DOCX_FILENAME = "report.docx"
 
@@ -108,10 +110,10 @@ def write_report(
     after the fact.
 
     Returns the written path for each format, keyed by ``"markdown"``,
-    ``"json"``, and ``"sarif"`` (always present - a failure here propagates
-    uncaught), plus ``"pdf"`` and ``"docx"`` (present only if that specific
-    export succeeded; a renderer failure there is logged and the key is
-    simply absent, never fatal to this call).
+    ``"json"``, ``"sarif"``, and ``"csv"`` (always present - a failure here
+    propagates uncaught), plus ``"pdf"`` and ``"docx"`` (present only if that
+    specific export succeeded; a renderer failure there is logged and the key
+    is simply absent, never fatal to this call).
     """
     # Overrides before sort, not after: sort_findings reads effective_severity
     # (display_severity if set, else cvss_severity) - sorting first would rank
@@ -165,11 +167,13 @@ def write_report(
         summary=summary,
         usage=usage,
     )
+    csv_document = build_csv(records)
 
     paths = {
         "markdown": run_dir / MARKDOWN_FILENAME,
         "json": run_dir / JSON_FILENAME,
         "sarif": run_dir / SARIF_FILENAME,
+        "csv": run_dir / CSV_FILENAME,
     }
     atomic_write_verified(paths["markdown"], markdown.encode("utf-8"))
     atomic_write_verified(
@@ -178,6 +182,7 @@ def write_report(
     atomic_write_verified(
         paths["sarif"], json.dumps(sarif_document, ensure_ascii=False, indent=2).encode("utf-8")
     )
+    atomic_write_verified(paths["csv"], csv_document.encode("utf-8"))
 
     # PDF/DOCX are secondary, customer-convenience re-renders of the SAME
     # canonical data already durably written above - a renderer bug (a

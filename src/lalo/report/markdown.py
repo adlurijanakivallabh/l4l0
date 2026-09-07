@@ -16,14 +16,21 @@ CommonMark-fence-length calculation has no meaningfully different "better"
 shape to invent, only a different one to independently derive. That
 reference's own ``csv_safe()`` (a same-file, adjacent CWE-1236 CSV-formula-
 injection guard prefixing a leading apostrophe on cells starting with
-``= + - @``/tab/CR) is a real, separate defensive idea this module does not
-need: L4L0 emits Markdown/JSON/SARIF, never CSV, so there is no spreadsheet-
-formula-injection surface here to guard against — noted as a deliberately
-inapplicable reference rather than a missed one. A reference SAST platform's
+``= + - @``/tab/CR) is a real, separate defensive idea this module itself
+does not need: this module only ever emits Markdown, never CSV, so there is
+no spreadsheet-formula-injection surface *here* to guard against — the same
+idea is instead applied, independently, in :mod:`lalo.report.csv_export`,
+the module that actually owns L4L0's CSV output. A reference SAST platform's
 ``findings-renderer.ts`` fail-partial discipline ("a per-class render
 failure is isolated... rather than aborting the whole report") is adopted
 directly for :func:`render_report_md`: one malformed finding renders as its
 own failure note, never a reason to drop or blank the rest of the report.
+
+:func:`_render_chains_mermaid` is additive, not a replacement: the existing
+plain-text chain bullet (``" → ".join(chain.titles)``) stays as the fallback
+for a viewer with no Mermaid renderer, and the Mermaid ``flowchart LR`` block
+renders alongside it for the viewers that do (GitHub/GitLab render fenced
+```mermaid blocks natively).
 """
 
 from __future__ import annotations
@@ -32,6 +39,7 @@ from collections.abc import Sequence
 
 from .collect import ChainRecord, ExecutiveSummary, FindingRecord, ReportUsage
 from .coverage import CoverageSummary
+from .taxonomy import cwe_for
 
 
 def safe_fence(content: str) -> str:
@@ -43,11 +51,43 @@ def safe_fence(content: str) -> str:
     return "`" * max(3, longest + 1)
 
 
+def _render_chains_mermaid(chains: Sequence[ChainRecord]) -> str:
+    """A Mermaid ``flowchart LR`` counterpart to the plain-text chain bullets
+    - GitHub/GitLab/most modern Markdown viewers render this natively, while
+    the bullet list above remains the explicit plain-text fallback for
+    viewers that don't. A double-quote inside a chain title would otherwise
+    terminate the Mermaid node's own quoted label early, so it is swapped
+    for a single quote here - the same "neutralize what could break the
+    surrounding syntax" discipline as this module's own :func:`safe_fence`,
+    applied to Mermaid's node-label syntax instead of a Markdown fence."""
+    if not chains:
+        return ""
+    lines = ["```mermaid", "flowchart LR"]
+    for i, chain in enumerate(chains):
+        node_ids = [f"c{i}n{j}" for j in range(len(chain.titles))]
+        for node_id, title in zip(node_ids, chain.titles, strict=True):
+            lines.append(f'    {node_id}["{title.replace(chr(34), chr(39))}"]')
+        # node_ids and node_ids[1:] are deliberately one element apart to
+        # form adjacent pairs - strict=True here (unlike the node/title zip
+        # above, where matching lengths is a real invariant) would raise on
+        # every chain with 1+ nodes, since the two sequences can never be
+        # equal length by construction.
+        for a, b in zip(node_ids, node_ids[1:], strict=False):
+            lines.append(f"    {a} --> {b}")
+    lines.append("```")
+    return "\n".join(lines)
+
+
 def render_finding_md(record: FindingRecord) -> str:
     lines = [
         f"## {record.title or record.finding_id}",
         f"**ID:** {record.finding_id}",
         f"**Class:** {record.vuln_class}",
+    ]
+    cwe = cwe_for(record.vuln_class)
+    if cwe:
+        lines.append(f"**CWE:** {cwe}")
+    lines += [
         f"**Target:** {record.target}" + (f" (param: `{record.param}`)" if record.param else ""),
         f"**Severity:** {record.effective_severity.upper()}"
         + (f" — _overridden: {record.override_reason}_" if record.override_reason else ""),
@@ -163,6 +203,10 @@ def render_report_md(
         )
         lines.extend(f"- {' → '.join(chain.titles)}" for chain in chains)
         lines.append("")
+        mermaid = _render_chains_mermaid(chains)
+        if mermaid:
+            lines.append(mermaid)
+            lines.append("")
 
     lines.append("## Findings\n")
     if not records:

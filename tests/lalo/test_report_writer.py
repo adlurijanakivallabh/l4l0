@@ -15,6 +15,7 @@ from lalo.orchestrator.budget import RunStatus
 from lalo.report.collect import ReportUsage
 from lalo.report.overrides import SeverityOverride
 from lalo.report.writer import (
+    CSV_FILENAME,
     DOCX_FILENAME,
     JSON_FILENAME,
     MARKDOWN_FILENAME,
@@ -79,18 +80,29 @@ def _graph_with_finding() -> tuple[ReachabilityGraph, str]:
     return graph, finding_id
 
 
-def test_write_report_writes_all_five_formats(tmp_path: Path) -> None:
+def test_write_report_writes_all_six_formats(tmp_path: Path) -> None:
     graph, _ = _graph_with_finding()
     paths = write_report(tmp_path, graph, _SKILLS, generated_at="2026-01-01")
     assert paths["markdown"] == tmp_path / MARKDOWN_FILENAME
     assert paths["json"] == tmp_path / JSON_FILENAME
     assert paths["sarif"] == tmp_path / SARIF_FILENAME
+    assert paths["csv"] == tmp_path / CSV_FILENAME
     assert paths["pdf"] == tmp_path / PDF_FILENAME
     assert paths["docx"] == tmp_path / DOCX_FILENAME
     for path in paths.values():
         assert path.exists()
     assert paths["pdf"].read_bytes().startswith(b"%PDF-")
     assert paths["docx"].read_bytes().startswith(b"PK")
+
+
+def test_write_report_csv_contains_the_finding(tmp_path: Path) -> None:
+    graph, _ = _graph_with_finding()
+    paths = write_report(tmp_path, graph, _SKILLS)
+    text = paths["csv"].read_text(encoding="utf-8")
+    rows = text.strip().splitlines()
+    assert len(rows) == 2  # header + one data row
+    assert "SQLi in /search" in text
+    assert "sql-injection" in text
 
 
 def test_write_report_markdown_contains_the_finding(tmp_path: Path) -> None:
@@ -310,6 +322,7 @@ def test_write_report_a_pdf_renderer_failure_still_delivers_the_canonical_format
     assert paths["markdown"].exists()
     assert paths["json"].exists()
     assert paths["sarif"].exists()
+    assert paths["csv"].exists()
     assert paths["docx"].exists()
 
 
@@ -328,6 +341,7 @@ def test_write_report_a_docx_renderer_failure_still_delivers_the_canonical_forma
     assert paths["markdown"].exists()
     assert paths["json"].exists()
     assert paths["sarif"].exists()
+    assert paths["csv"].exists()
     assert paths["pdf"].exists()
 
 
@@ -399,4 +413,22 @@ def test_write_report_a_markdown_failure_still_propagates_uncaught(
     monkeypatch.setattr(writer_module, "render_report_md", _broken_md)
     graph, _ = _graph_with_finding()
     with pytest.raises(RuntimeError, match="markdown renderer blew up"):
+        write_report(tmp_path, graph, _SKILLS)
+
+
+def test_write_report_a_csv_failure_still_propagates_uncaught(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """CSV is a canonical, structured-data export (built straight from
+    already-collected records, same as JSON/SARIF) - not a secondary
+    presentation re-render like PDF/DOCX - so a bug building it must stay
+    terminal rather than silently produce a partial report."""
+
+    def _broken_csv(_records: object) -> str:
+        msg = "csv builder blew up"
+        raise RuntimeError(msg)
+
+    monkeypatch.setattr(writer_module, "build_csv", _broken_csv)
+    graph, _ = _graph_with_finding()
+    with pytest.raises(RuntimeError, match="csv builder blew up"):
         write_report(tmp_path, graph, _SKILLS)

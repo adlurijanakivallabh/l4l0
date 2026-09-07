@@ -122,6 +122,7 @@ from ..core.logging import get_logger
 from ..core.providers import build_router, verify_router
 from ..core.usage import DEFAULT_USAGE_PATH
 from ..report.writer import (
+    CSV_FILENAME,
     DOCX_FILENAME,
     JSON_FILENAME,
     MARKDOWN_FILENAME,
@@ -138,6 +139,7 @@ _REPORT_FORMATS: dict[str, tuple[str, str]] = {
     "md": (MARKDOWN_FILENAME, "text/markdown"),
     "json": (JSON_FILENAME, "application/json"),
     "sarif": (SARIF_FILENAME, "application/json"),
+    "csv": (CSV_FILENAME, "text/csv"),
     "pdf": (PDF_FILENAME, "application/pdf"),
     "docx": (
         DOCX_FILENAME,

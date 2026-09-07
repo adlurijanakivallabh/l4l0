@@ -23,6 +23,7 @@ from typing import Any
 
 from ..findings.dedup import dedup_key
 from .collect import FindingRecord
+from .taxonomy import cwe_for
 
 SARIF_SCHEMA = "https://json.schemastore.org/sarif-2.1.0.json"
 SARIF_VERSION = "2.1.0"
@@ -57,7 +58,7 @@ def _sarif_level(record: FindingRecord) -> str:
 
 def _build_rule(record: FindingRecord) -> dict[str, Any]:
     rule_id = _rule_id(record)
-    return {
+    rule: dict[str, Any] = {
         "id": rule_id,
         "name": record.vuln_class or rule_id,
         "shortDescription": {"text": record.title or rule_id},
@@ -66,6 +67,16 @@ def _build_rule(record: FindingRecord) -> dict[str, Any]:
         "defaultConfiguration": {"level": _sarif_level(record)},
         "properties": {"security-severity": _security_severity(record)},
     }
+    # Only added when a mapping actually exists - an unmapped vuln_class
+    # must never render as a fabricated/empty relationship, per
+    # lalo.report.taxonomy's own "degrades to no CWE line, never an error"
+    # contract.
+    cwe = cwe_for(record.vuln_class)
+    if cwe:
+        rule["relationships"] = [
+            {"target": {"id": cwe, "toolComponent": {"name": "CWE"}}, "kinds": ["relevant"]}
+        ]
+    return rule
 
 
 def _result_markdown(record: FindingRecord) -> str:

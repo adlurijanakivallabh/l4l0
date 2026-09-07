@@ -17,10 +17,10 @@ risk this rendering path does carry, absent from the Markdown/JSON/SARIF
 outputs entirely: :mod:`lalo.report.pdf`'s WeasyPrint renderer can fetch
 external resources an ``<img src>``/``@import`` references — a report
 containing target-influenced content is exactly adversarial-input-reaching-
-a-renderer, the same category of concern strix's own PDF-generation path
-(``reportlab``, read via its comparison doc) explicitly guards against by
-escaping unrecognized markup tokens. Escaping here closes the injection
-vector at the source (no live tag ever reaches the renderer to begin with);
+a-renderer, the same category of concern a reference agent's own
+PDF-generation path (``reportlab``, read via its comparison doc) explicitly
+guards against by escaping unrecognized markup tokens. Escaping here closes
+the injection vector at the source (no live tag ever reaches the renderer);
 :mod:`lalo.report.pdf`'s own locked-down ``url_fetcher`` is the second,
 independent layer in case an escaping bug ever let one through anyway.
 """
@@ -32,6 +32,7 @@ from html import escape
 
 from .collect import ChainRecord, ExecutiveSummary, FindingRecord, ReportUsage
 from .coverage import CoverageSummary
+from .taxonomy import cwe_for
 
 _STYLE = """
 body { font-family: sans-serif; font-size: 11pt; color: #1a1a1a; }
@@ -81,6 +82,9 @@ def render_finding_html(record: FindingRecord) -> str:
     parts = [f"<h2>{_e(record.title or record.finding_id)}</h2>", "<dl>"]
     parts.append(f"<dt>ID</dt><dd>{_e(record.finding_id)}</dd>")
     parts.append(f"<dt>Class</dt><dd>{_e(record.vuln_class)}</dd>")
+    cwe = cwe_for(record.vuln_class)
+    if cwe:
+        parts.append(f"<dt>CWE</dt><dd>{_e(cwe)}</dd>")
     target_line = _e(record.target)
     if record.param:
         target_line += f" (param: <code>{_e(record.param)}</code>)"
@@ -192,6 +196,15 @@ def render_report_html(
             "<p><em>Each chain below was explicitly declared by the agent "
             "(record_finding's own enabled_by_finding_id), not inferred.</em></p>"
         )
+        # No Mermaid diagram here (unlike lalo.report.markdown's own
+        # _render_chains_mermaid): this document loads no <script> tag at
+        # all (see the module docstring - every dynamic value is escaped,
+        # never executed), so a Mermaid renderer is never present in this
+        # rendering context. A `<pre class="mermaid">` block with no library
+        # to interpret it would render as inert, confusing plain text -
+        # worse than the plain list below, not better - so this stays
+        # HTML/CSS only, same as :mod:`lalo.report.pdf`/:mod:`lalo.report.docx`,
+        # which both convert FROM this exact HTML.
         parts.append("<ul>")
         parts += [f"<li>{' → '.join(_e(title) for title in chain.titles)}</li>" for chain in chains]
         parts.append("</ul>")

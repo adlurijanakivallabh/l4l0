@@ -641,7 +641,14 @@ def test_scan_runner_emits_events_for_a_real_run(
     assert "finding" in categories
     assert any(e.payload.get("event") == "scan_started" for e in events)
     completed = next(e for e in events if e.payload.get("event") == "scan_completed")
-    assert set(completed.payload["report_paths"]) == {"markdown", "json", "sarif", "pdf", "docx"}
+    assert set(completed.payload["report_paths"]) == {
+        "markdown",
+        "json",
+        "sarif",
+        "csv",
+        "pdf",
+        "docx",
+    }
     # usage_path was never configured on this ScanConfig -- usage_delta must be
     # absent, never a fabricated zero.
     assert "usage_delta" not in completed.payload
