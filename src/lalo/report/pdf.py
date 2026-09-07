@@ -1,10 +1,10 @@
 """PDF export via WeasyPrint, rendered from :mod:`lalo.report.html`'s own
 escaped HTML — with all external resource fetching disabled.
 
-A reference agent's own PDF report generator (``reportlab``-based read in
-full, not just via its comparison doc, for this project's own Phase 16
-reference-pass cycle: ``strix/interface/viewer/report_pdf.py``, 705 lines)
-explicitly escapes unrecognized markup tokens in LLM-authored finding
+A reference agent's own PDF report generator (a ``reportlab``-based module,
+read in full, not just via its comparison doc, for this project's own
+Phase 16 reference-pass cycle) explicitly escapes unrecognized markup
+tokens in LLM-authored finding
 fields specifically because those fields ultimately trace back to
 target-observed content — the same defensive reasoning
 :mod:`lalo.report.html` already applies here via :func:`html.escape`. This
