@@ -284,10 +284,7 @@ def _duplicate_task_warning(
                 f"({other_task!r}) - confirm this isn't a duplicate before proceeding.\n"
             )
     for other_task in extra_tasks:
-        if (
-            other_task != task
-            and token_overlap_ratio(task, other_task) >= _DUPLICATE_TASK_SIMILARITY_THRESHOLD
-        ):
+        if token_overlap_ratio(task, other_task) >= _DUPLICATE_TASK_SIMILARITY_THRESHOLD:
             return (
                 f"warning: this task looks similar to another task in the same batch "
                 f"({other_task!r}) - confirm this isn't a duplicate before proceeding.\n"

@@ -443,6 +443,32 @@ def test_spawn_agents_warns_about_a_duplicate_task_within_the_same_batch() -> No
     assert "similar to another task in the same batch" in result.observation
 
 
+def test_spawn_agents_warns_on_byte_identical_task_text_within_the_same_batch() -> None:
+    """Two DIFFERENT batch entries with byte-identical task text (e.g. a
+    copy-paste) is the most obvious duplicate a batch could produce - it must
+    still warn, not be silently exempted just because the text matches exactly."""
+    coord = AgentCoordinator(max_depth=5)
+    root = coord.register_root("root", "mission")
+
+    def run_child(child_id: str, name: str, task: str) -> tuple[str, list[str], bool]:
+        return "confirmed", [], True
+
+    tool = build_parallel_spawn_tool(coord, run_child, self_id=root)
+    registry = ToolRegistry([tool])
+
+    result = registry.dispatch(
+        "spawn_agents",
+        {
+            "tasks": [
+                {"name": "a", "task": "enumerate S3 buckets for public read access"},
+                {"name": "b", "task": "enumerate S3 buckets for public read access"},
+            ]
+        },
+    )
+    assert result.ok is True  # never blocked
+    assert "similar to another task in the same batch" in result.observation
+
+
 def test_spawn_agents_warns_about_a_duplicate_task_against_a_running_sibling() -> None:
     coord = AgentCoordinator(max_depth=5)
     root = coord.register_root("root", "mission")
