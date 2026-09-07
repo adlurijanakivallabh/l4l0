@@ -12,6 +12,7 @@ request/response shape.
 from __future__ import annotations
 
 import difflib
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
@@ -224,45 +225,59 @@ def build_access_control_matrix_tool() -> FunctionTool:
     the hierarchy, the same way `firer`/`scope` are single-instances-per-scan).
     """
     state: dict[tuple[str, str], _MatrixCell] = {}
+    # spawn_agents runs siblings on real OS threads, all sharing this one
+    # tool instance (see build_access_control_matrix_tool's docstring) -
+    # without this, a concurrent `build` can `state.clear()` mid-iteration
+    # of another thread's `query_untested` (RuntimeError) or silently wipe
+    # cells another agent already marked tested. One lock held for the
+    # whole dispatch is enough: no branch below does I/O or calls back out,
+    # so there's no deadlock/starvation risk to trade against a finer-grained
+    # per-branch lock.
+    lock = threading.Lock()
 
     def _run(args: dict[str, object]) -> ToolResult:
         action = str_arg(args, "action", "")
-        if action == "build":
-            identity_ids = args.get("identity_ids")
-            endpoint_ids = args.get("endpoint_ids")
-            if not isinstance(identity_ids, list) or not isinstance(endpoint_ids, list):
+        with lock:
+            if action == "build":
+                identity_ids = args.get("identity_ids")
+                endpoint_ids = args.get("endpoint_ids")
+                if not isinstance(identity_ids, list) or not isinstance(endpoint_ids, list):
+                    return ToolResult(
+                        observation="error: 'identity_ids' and 'endpoint_ids' must be lists",
+                        ok=False,
+                    )
+                state.clear()
+                for entry in build_role_matrix(
+                    [str(i) for i in identity_ids], [str(e) for e in endpoint_ids]
+                ):
+                    state[(entry.identity_id, entry.endpoint_id)] = _MatrixCell(entry=entry)
+                return ToolResult(observation=f"built {len(state)} cells", ok=True)
+            if action == "mark_tested":
+                key = (str_arg(args, "identity_id", ""), str_arg(args, "endpoint_id", ""))
+                cell = state.get(key)
+                if cell is None:
+                    return ToolResult(
+                        observation=f"error: no cell for {key} - call action=build first",
+                        ok=False,
+                    )
+                cell.tested = True
+                cell.observed_status = str_arg(args, "observed_status", "")
+                return ToolResult(observation="marked", ok=True)
+            if action == "query_untested":
+                untested = [
+                    f"{c.entry.identity_id} x {c.entry.endpoint_id}"
+                    for c in state.values()
+                    if not c.tested
+                ]
                 return ToolResult(
-                    observation="error: 'identity_ids' and 'endpoint_ids' must be lists", ok=False
+                    observation="\n".join(untested) if untested else "all cells tested", ok=True
                 )
-            state.clear()
-            for entry in build_role_matrix(
-                [str(i) for i in identity_ids], [str(e) for e in endpoint_ids]
-            ):
-                state[(entry.identity_id, entry.endpoint_id)] = _MatrixCell(entry=entry)
-            return ToolResult(observation=f"built {len(state)} cells", ok=True)
-        if action == "mark_tested":
-            key = (str_arg(args, "identity_id", ""), str_arg(args, "endpoint_id", ""))
-            cell = state.get(key)
-            if cell is None:
-                return ToolResult(
-                    observation=f"error: no cell for {key} - call action=build first", ok=False
-                )
-            cell.tested = True
-            cell.observed_status = str_arg(args, "observed_status", "")
-            return ToolResult(observation="marked", ok=True)
-        if action == "query_untested":
-            untested = [
-                f"{c.entry.identity_id} x {c.entry.endpoint_id}"
-                for c in state.values()
-                if not c.tested
-            ]
             return ToolResult(
-                observation="\n".join(untested) if untested else "all cells tested", ok=True
+                observation=(
+                    f"error: unknown action {action!r} - use build|mark_tested|query_untested"
+                ),
+                ok=False,
             )
-        return ToolResult(
-            observation=f"error: unknown action {action!r} - use build|mark_tested|query_untested",
-            ok=False,
-        )
 
     return FunctionTool(
         name="access_control_matrix",

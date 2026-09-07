@@ -3,6 +3,8 @@ and `raw_tcp` agent tool wiring."""
 
 from __future__ import annotations
 
+import sys
+import threading
 from collections.abc import Callable
 from itertools import count
 from types import SimpleNamespace
@@ -392,6 +394,62 @@ def test_access_control_matrix_build_requires_lists() -> None:
         "access_control_matrix", {"action": "build", "identity_ids": "admin", "endpoint_ids": []}
     )
     assert result.ok is False
+
+
+def test_access_control_matrix_is_thread_safe_under_concurrent_build_and_query() -> None:
+    """spawn_agents runs sibling agents on real OS threads, all sharing one
+    access_control_matrix tool instance. Without a lock, a concurrent `build`
+    (state.clear() + repopulate) racing another thread's `query_untested`
+    (iterating state.values()) can raise "dictionary changed size during
+    iteration" - caught by ToolRegistry.dispatch and surfaced as ok=False.
+
+    A barrier starts every thread's tight loop at the same instant, and
+    `sys.setswitchinterval` is dropped to force frequent GIL handoffs, to
+    maximize interleaving; confirmed by hand (temporarily removing the lock)
+    that these parameters reproduce the RuntimeError within a handful of
+    runs. With the lock, this must never fail regardless of scheduling -
+    it's a real regression test, not a flaky probabilistic one.
+    """
+    tool = build_access_control_matrix_tool()
+    registry = ToolRegistry([tool])
+    build_args = {
+        "action": "build",
+        "identity_ids": [f"id{i}" for i in range(500)],
+        "endpoint_ids": ["/x"],
+    }
+    registry.dispatch("access_control_matrix", build_args)
+
+    n_query_threads = 16
+    barrier = threading.Barrier(n_query_threads + 1)
+    bad_results: list[str] = []
+    bad_results_lock = threading.Lock()
+
+    def _query_loop() -> None:
+        barrier.wait()
+        for _ in range(400):
+            result = registry.dispatch("access_control_matrix", {"action": "query_untested"})
+            if not result.ok:
+                with bad_results_lock:
+                    bad_results.append(result.observation)
+
+    def _build_loop() -> None:
+        barrier.wait()
+        for _ in range(400):
+            registry.dispatch("access_control_matrix", build_args)
+
+    threads = [threading.Thread(target=_query_loop) for _ in range(n_query_threads)]
+    threads.append(threading.Thread(target=_build_loop))
+    original_interval = sys.getswitchinterval()
+    sys.setswitchinterval(1e-6)
+    try:
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+    finally:
+        sys.setswitchinterval(original_interval)
+
+    assert bad_results == []
 
 
 # --- raw_tcp ---------------------------------------------------------------
