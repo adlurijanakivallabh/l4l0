@@ -763,6 +763,61 @@ def test_scan_runner_emits_usage_delta_by_agent_for_a_sequentially_spawned_child
     assert by_agent["agent-2"]["requests"] >= 1
 
 
+def _respond_with_a_sequentially_spawned_child_running_a_command(
+    call_index: int, prompt: str
+) -> str:
+    if "MISSION:" not in prompt:
+        return "ok"  # the preflight verify_router() health-check call
+    if "CHILD-C-TASK" in prompt:
+        if "HISTORY (most recent last):" not in prompt:
+            return json.dumps({"tool": "run_command", "args": {"command": "whoami"}})
+        return _finish_call()
+    # the root's own mission turns
+    if "HISTORY (most recent last):" not in prompt:
+        return _spawn_agent_call()
+    return _finish_call()
+
+
+def test_scan_runner_persists_a_spawned_childs_tool_observation_in_the_event_log(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The actual gap this closes (not just a root-only proof): before, the
+    full {tool, args, observation, ok} shape only ever reached the root's own
+    local transcript/journal (a spawned child is always constructed with
+    journal=None), so a child's own "tool_result" event carried only
+    {tool, ok} - its observation was visible nowhere durable. AgentLoop._emit
+    is the identical code path for every agent regardless of role, so this
+    proves the fix for a REAL spawned child (agent-2), not just the root
+    (agent-1)."""
+    monkeypatch.setattr(scan_module, "docker_available", lambda: True)
+    monkeypatch.setattr(scan_module, "RuntimeContainer", _FakeContainer)
+    router = ModelRouter(
+        providers={
+            "fake": _ScriptedProvider(_respond_with_a_sequentially_spawned_child_running_a_command)
+        },
+        routes={"reasoning": ("fake",), "review": ("fake",)},
+        default_route=("fake",),
+    )
+    monkeypatch.setattr(scan_module, "build_router", lambda _settings: router)
+
+    event_log = EventLog()
+    config = ScanConfig(
+        mission="find a bug, spawning one child for a focused subtask",
+        target_specs=["c.example.com"],
+        run_dir=tmp_path / "run",
+    )
+    ScanRunner(config, env={"ANTHROPIC_API_KEY": "sk-test"}, event_log=event_log).run()
+
+    _cursor, events = event_log.snapshot()
+    tool_result_events = [
+        e for e in events if e.category == "log" and e.payload.get("event") == "tool_result"
+    ]
+    child_result = next(e for e in tool_result_events if e.payload.get("tool") == "run_command")
+    assert child_result.payload["agent_id"] == "agent-2"  # the spawned child, not the root
+    observation = child_result.payload.get("observation")
+    assert isinstance(observation, str) and observation
+
+
 def test_scan_runner_estimates_cost_when_a_pricing_table_is_configured(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

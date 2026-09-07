@@ -252,6 +252,16 @@ _COMPACTION_SYSTEM_PROMPT = (
 # chunk rather than only after the full backoff delay elapses.
 _INTERRUPTIBLE_SLEEP_CHUNK_S = 1.0
 
+# Caps the "tool_result" event's own observation, kept separate from
+# AgentConfig.max_observation_chars (the transcript/prompt-facing budget):
+# EventLog durably persists every event for the WHOLE run regardless of
+# which agent (root or a spawned child) emitted it, so this is the one place
+# that gives every agent's tool observations post-hoc debugging visibility -
+# the root's own local transcript/journal already carries the untruncated
+# (well, max_observation_chars-truncated) version; a spawned child's never
+# reached anywhere durable before this.
+_MAX_EMITTED_OBSERVATION_CHARS = 2000
+
 
 @dataclass
 class AgentConfig:
@@ -703,7 +713,16 @@ class AgentLoop:
                             entry = _dispatch_once()
                     observation = str(entry["observation"])
                     ok = bool(entry["ok"])
-                    self._emit("tool_result", {"tool": call.name, "ok": ok})
+                    self._emit(
+                        "tool_result",
+                        {
+                            "tool": call.name,
+                            "ok": ok,
+                            "observation": _truncate_observation(
+                                observation, _MAX_EMITTED_OBSERVATION_CHARS
+                            ),
+                        },
+                    )
 
                 if call.dropped_calls > 0:
                     # The model itself must be told, in its own context, not

@@ -506,6 +506,48 @@ def test_a_long_tool_observation_is_head_and_tail_truncated_not_cut() -> None:
     assert "truncated" in observation
 
 
+def test_tool_result_event_carries_a_bounded_observation() -> None:
+    """Closes a real gap: the emitted "tool_result" event used to carry only
+    {tool, ok} - the full observation only ever reached the root's own local
+    transcript/journal (root-only, since a spawned child never gets a real
+    DurableJournal). This is the SAME `_emit` call for every AgentLoop
+    instance, root or child alike, so proving it here at the loop level
+    covers a spawned child identically - scan.py's per-agent on_event
+    wiring (`_on_agent_event`) forwards whatever this emits, unchanged, into
+    the durable, whole-run EventLog regardless of which agent produced it."""
+    long_observation = "x" * 10_000 + "-FINAL-VERDICT-LINE"
+    tool = FunctionTool(
+        name="verbose",
+        description="t",
+        func=lambda _args: ToolResult(observation=long_observation),
+    )
+    registry = ToolRegistry([tool])
+    router = _scripted(
+        ['{"tool": "verbose", "args": {}}', '{"tool": "finish", "args": {"summary": "done"}}']
+    )
+    events: list[tuple[str, dict[str, object]]] = []
+    loop = AgentLoop(
+        router,  # type: ignore[arg-type]
+        registry,
+        system_prompt="",
+        on_event=lambda ev, pl: events.append((ev, pl)),
+    )
+    loop.run("mission")
+
+    tool_result_payloads = [pl for ev, pl in events if ev == "tool_result"]
+    assert len(tool_result_payloads) == 1
+    payload = tool_result_payloads[0]
+    assert payload["tool"] == "verbose"
+    assert payload["ok"] is True
+    observation = payload["observation"]
+    assert isinstance(observation, str) and observation
+    # Genuinely bounded - much smaller than the 10KB+ raw observation - and
+    # not a naive head-only cut: the tail (where a real verdict tends to
+    # live) still survives.
+    assert len(observation) < len(long_observation)
+    assert "FINAL-VERDICT-LINE" in observation
+
+
 def test_a_captured_session_token_in_a_tool_observation_reaches_the_prompt_unredacted() -> None:
     """Deliberate, evidence-based non-behavior, not an oversight: a prior
     fix routed tool observations through redact() before they reached the
