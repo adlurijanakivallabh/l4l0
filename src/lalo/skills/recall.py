@@ -66,6 +66,17 @@ def _score(skill: Skill, normalized_query: str, query_tokens: set[str]) -> float
     )
 
 
+def token_overlap_ratio(a: str, b: str) -> float:
+    """Fraction of shared tokens between two plain strings - the same
+    [a-z0-9]+ tokenizer recall() uses for query/skill scoring, reused here
+    to compare two task descriptions instead of a query against a Skill."""
+    tokens_a = set(_TOKEN.findall(a.lower()))
+    tokens_b = set(_TOKEN.findall(b.lower()))
+    if not tokens_a or not tokens_b:
+        return 0.0
+    return len(tokens_a & tokens_b) / len(tokens_a | tokens_b)
+
+
 def recall(query: str, skills: list[Skill], *, top_k: int = 3) -> list[RecallResult]:
     """Return up to ``top_k`` skills best matching ``query``, highest score first."""
     normalized = query.strip().lower()

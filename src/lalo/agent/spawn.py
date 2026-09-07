@@ -66,9 +66,11 @@ from typing import Protocol, Self, runtime_checkable
 from ..core.errors import SpawnDepthExceededError
 from ..findings.dedup import find_duplicate
 from ..graph.model import NodeKind, ReachabilityGraph
+from ..skills.recall import token_overlap_ratio
 from .tools import FunctionTool, Tool, ToolResult, str_arg
 
 _MAX_PARALLEL_WORKERS = 8
+_DUPLICATE_TASK_SIMILARITY_THRESHOLD = 0.6
 
 
 class AgentStatus(StrEnum):
@@ -280,11 +282,28 @@ def build_spawn_tools(
     injected-spawner seam a reference tool module uses for testability.
     """
 
+    def _duplicate_task_warning(task: str) -> str:
+        """Warn, never block, when ``task`` looks like a near-duplicate of an
+        already-spawned sibling's task. Reuses ``children_of``/``node`` --
+        the same parent/child accessor ``render_tree`` (and so
+        ``view_agent_graph``) already walks -- rather than a second,
+        separately-maintained tracking structure.
+        """
+        for other_id in coordinator.children_of(self_id):
+            other_task = coordinator.node(other_id).task
+            if token_overlap_ratio(task, other_task) >= _DUPLICATE_TASK_SIMILARITY_THRESHOLD:
+                return (
+                    f"warning: this task looks similar to running agent {other_id}'s task "
+                    f"({other_task!r}) - confirm this isn't a duplicate before proceeding.\n"
+                )
+        return ""
+
     def _spawn(args: dict[str, object]) -> ToolResult:
         name = str_arg(args, "name").strip()
         task = str_arg(args, "task").strip()
         if not name or not task:
             return ToolResult(observation="error: 'name' and 'task' are required", ok=False)
+        warning = _duplicate_task_warning(task)
         try:
             child_id = coordinator.spawn(self_id, name, task)
         except SpawnDepthExceededError as exc:
@@ -296,7 +315,9 @@ def build_spawn_tools(
             # in this module ever revisits a node once spawn() registers it.
             error = f"child crashed: {type(exc).__name__}: {exc}"
             coordinator.record_result(child_id, summary=error, finding_ids=[], success=False)
-            return ToolResult(observation=f"error running child {child_id}: {error}", ok=False)
+            return ToolResult(
+                observation=f"{warning}error running child {child_id}: {error}", ok=False
+            )
         coordinator.record_result(
             child_id, summary=summary, finding_ids=finding_ids, success=success
         )
@@ -306,7 +327,7 @@ def build_spawn_tools(
             "summary": summary,
             "filed_finding_ids": finding_ids,
         }
-        return ToolResult(observation=json.dumps(report), ok=success)
+        return ToolResult(observation=f"{warning}{json.dumps(report)}", ok=success)
 
     def _view_graph(_args: dict[str, object]) -> ToolResult:
         return ToolResult(observation=coordinator.render_tree(highlight=self_id))

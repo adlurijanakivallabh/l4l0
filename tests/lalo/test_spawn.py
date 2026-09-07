@@ -154,6 +154,51 @@ def test_spawn_agent_tool_reports_depth_ceiling_as_a_failed_result_not_an_except
     assert "depth" in result.observation
 
 
+def test_spawn_warns_on_a_near_duplicate_sibling_task_but_still_succeeds() -> None:
+    coord = AgentCoordinator(max_depth=5)
+    root = coord.register_root("root", "mission")
+
+    def run_child(child_id: str, name: str, task: str) -> tuple[str, list[str], bool]:
+        return "confirmed", [], True
+
+    spawn_tool, _ = build_spawn_tools(coord, run_child, self_id=root)
+    registry = ToolRegistry([spawn_tool])
+
+    first = registry.dispatch(
+        "spawn_agent",
+        {"name": "S3 Specialist", "task": "enumerate S3 buckets for public read access"},
+    )
+    assert first.ok is True
+    assert "warning" not in first.observation
+
+    second = registry.dispatch(
+        "spawn_agent",
+        {"name": "S3 Specialist Duplicate", "task": "enumerate S3 buckets for public read access"},
+    )
+    # Never a hard block: the second spawn must still succeed.
+    assert second.ok is True
+    assert "warning" in second.observation
+    assert "agent-2" in second.observation  # names the similar sibling
+
+
+def test_spawn_does_not_warn_on_unrelated_sibling_tasks() -> None:
+    coord = AgentCoordinator(max_depth=5)
+    root = coord.register_root("root", "mission")
+
+    def run_child(child_id: str, name: str, task: str) -> tuple[str, list[str], bool]:
+        return "confirmed", [], True
+
+    spawn_tool, _ = build_spawn_tools(coord, run_child, self_id=root)
+    registry = ToolRegistry([spawn_tool])
+
+    registry.dispatch("spawn_agent", {"name": "S3 Specialist", "task": "enumerate S3 buckets"})
+    second = registry.dispatch(
+        "spawn_agent", {"name": "SQLi Specialist", "task": "fuzz the login form for SQL injection"}
+    )
+    assert second.ok is True
+    assert "warning" not in second.observation
+
+
 def test_a_crashing_child_still_reaches_a_terminal_status_not_a_permanent_ghost() -> None:
     # Before the fix, an exception from run_child() skipped record_result()
     # entirely, leaving the child's AgentNode stuck at RUNNING forever --
