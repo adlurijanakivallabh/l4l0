@@ -1,4 +1,5 @@
-"""Tests for the `http`, `fire_concurrent`, and `diff_responses` agent tool wiring."""
+"""Tests for the `http`, `fire_concurrent`, `diff_responses`, `access_control_matrix`,
+and `raw_tcp` agent tool wiring."""
 
 from __future__ import annotations
 
@@ -7,11 +8,18 @@ from itertools import count
 from types import SimpleNamespace
 
 import httpx
+import pytest
 
+import lalo.execution.tool as execution_tool_module
 from lalo.agent.tools import ToolRegistry
-from lalo.execution import FireResult, HttpFirer, ScopeGuard, build_http_tool
+from lalo.execution import FireResult, HttpFirer, RawResult, ScopeGuard, build_http_tool
 from lalo.execution.target import Engagement
-from lalo.execution.tool import build_diff_responses_tool, build_fire_concurrent_tool
+from lalo.execution.tool import (
+    build_access_control_matrix_tool,
+    build_diff_responses_tool,
+    build_fire_concurrent_tool,
+    build_raw_tcp_tool,
+)
 
 
 def _tool(handler: httpx.MockTransport) -> ToolRegistry:
@@ -304,3 +312,133 @@ def test_diff_responses_reports_not_fired_reason_instead_of_a_bogus_status() -> 
 
     assert "a: not fired: out_of_scope" in result.observation
     assert "b: status=200" in result.observation
+
+
+# --- access_control_matrix ------------------------------------------------
+
+
+def test_access_control_matrix_build_creates_the_full_cartesian_product() -> None:
+    registry = ToolRegistry([build_access_control_matrix_tool()])
+    result = registry.dispatch(
+        "access_control_matrix",
+        {"action": "build", "identity_ids": ["admin", "user"], "endpoint_ids": ["/a", "/b"]},
+    )
+    assert result.ok is True
+    assert "built 4 cells" in result.observation
+
+
+def test_access_control_matrix_query_untested_lists_all_cells_before_any_are_marked() -> None:
+    registry = ToolRegistry([build_access_control_matrix_tool()])
+    registry.dispatch(
+        "access_control_matrix",
+        {"action": "build", "identity_ids": ["admin", "user"], "endpoint_ids": ["/a", "/b"]},
+    )
+    result = registry.dispatch("access_control_matrix", {"action": "query_untested"})
+    assert result.ok is True
+    assert len(result.observation.splitlines()) == 4
+    assert "admin x /a" in result.observation
+    assert "user x /b" in result.observation
+
+
+def test_access_control_matrix_mark_tested_removes_the_cell_from_query_untested() -> None:
+    registry = ToolRegistry([build_access_control_matrix_tool()])
+    registry.dispatch(
+        "access_control_matrix",
+        {"action": "build", "identity_ids": ["admin", "user"], "endpoint_ids": ["/a", "/b"]},
+    )
+    mark_result = registry.dispatch(
+        "access_control_matrix",
+        {
+            "action": "mark_tested",
+            "identity_id": "admin",
+            "endpoint_id": "/a",
+            "observed_status": "200",
+        },
+    )
+    assert mark_result.ok is True
+
+    result = registry.dispatch("access_control_matrix", {"action": "query_untested"})
+    assert len(result.observation.splitlines()) == 3
+    assert "admin x /a" not in result.observation
+
+
+def test_access_control_matrix_mark_tested_without_build_errors_without_raising() -> None:
+    registry = ToolRegistry([build_access_control_matrix_tool()])
+    result = registry.dispatch(
+        "access_control_matrix",
+        {"action": "mark_tested", "identity_id": "admin", "endpoint_id": "/a"},
+    )
+    assert result.ok is False
+    assert "error" in result.observation
+
+
+def test_access_control_matrix_query_untested_without_build_reports_all_tested() -> None:
+    registry = ToolRegistry([build_access_control_matrix_tool()])
+    result = registry.dispatch("access_control_matrix", {"action": "query_untested"})
+    assert result.ok is True
+    assert result.observation == "all cells tested"
+
+
+def test_access_control_matrix_rejects_an_unknown_action() -> None:
+    registry = ToolRegistry([build_access_control_matrix_tool()])
+    result = registry.dispatch("access_control_matrix", {"action": "bogus"})
+    assert result.ok is False
+    assert "bogus" in result.observation
+
+
+def test_access_control_matrix_build_requires_lists() -> None:
+    registry = ToolRegistry([build_access_control_matrix_tool()])
+    result = registry.dispatch(
+        "access_control_matrix", {"action": "build", "identity_ids": "admin", "endpoint_ids": []}
+    )
+    assert result.ok is False
+
+
+# --- raw_tcp ---------------------------------------------------------------
+
+
+def test_raw_tcp_reports_byte_count_and_data_on_success(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_tcp_send_recv(scope, host, port, payload, *, timeout=5.0, recv_bytes=65535):
+        return RawResult(
+            host=host,
+            port=port,
+            fired=True,
+            scope_reason="in_scope",
+            data=b"hello back",
+            elapsed_ms=12.0,
+        )
+
+    monkeypatch.setattr(execution_tool_module, "tcp_send_recv", fake_tcp_send_recv)
+    registry = ToolRegistry([build_raw_tcp_tool(object())])
+    result = registry.dispatch("raw_tcp", {"host": "10.0.0.1", "port": 9999, "payload": "ping"})
+
+    assert result.ok is True
+    assert "received 10 bytes" in result.observation
+    assert "hello back" in result.observation
+
+
+def test_raw_tcp_surfaces_scope_reason_on_a_scope_denied_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_tcp_send_recv(scope, host, port, payload, *, timeout=5.0, recv_bytes=65535):
+        return RawResult(host=host, port=port, fired=False, scope_reason="out of scope")
+
+    monkeypatch.setattr(execution_tool_module, "tcp_send_recv", fake_tcp_send_recv)
+    registry = ToolRegistry([build_raw_tcp_tool(object())])
+    result = registry.dispatch("raw_tcp", {"host": "evil.example.com", "port": 22})
+
+    assert result.ok is False
+    assert "out of scope" in result.observation
+
+
+def test_raw_tcp_requires_host_and_port() -> None:
+    registry = ToolRegistry([build_raw_tcp_tool(object())])
+    result = registry.dispatch("raw_tcp", {"host": "10.0.0.1"})
+    assert result.ok is False
+
+
+def test_raw_tcp_rejects_a_non_integer_port() -> None:
+    registry = ToolRegistry([build_raw_tcp_tool(object())])
+    result = registry.dispatch("raw_tcp", {"host": "10.0.0.1", "port": "not-a-port"})
+    assert result.ok is False
+    assert "port" in result.observation

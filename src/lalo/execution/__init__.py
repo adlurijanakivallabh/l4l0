@@ -12,7 +12,13 @@ from .firer import FireResult, HttpFirer
 from .rawsock import RawResult, tcp_send_recv
 from .scope import Decision, ScopeDecision, ScopeGuard
 from .target import Engagement, TargetRule
-from .tool import build_diff_responses_tool, build_fire_concurrent_tool, build_http_tool
+from .tool import (
+    build_access_control_matrix_tool,
+    build_diff_responses_tool,
+    build_fire_concurrent_tool,
+    build_http_tool,
+    build_raw_tcp_tool,
+)
 
 __all__ = [
     "Decision",
@@ -23,8 +29,10 @@ __all__ = [
     "ScopeDecision",
     "ScopeGuard",
     "TargetRule",
+    "build_access_control_matrix_tool",
     "build_diff_responses_tool",
     "build_fire_concurrent_tool",
     "build_http_tool",
+    "build_raw_tcp_tool",
     "tcp_send_recv",
 ]

@@ -13,9 +13,13 @@ from __future__ import annotations
 
 import difflib
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 
 from ..agent.tools import FunctionTool, ToolResult, str_arg
+from ..identity.role_matrix import RoleMatrixEntry, build_role_matrix
 from .firer import FireResult, HttpFirer
+from .rawsock import tcp_send_recv
+from .scope import ScopeGuard
 
 _MAX_BODY_CHARS = 4000
 
@@ -199,4 +203,113 @@ def build_diff_responses_tool(firer: HttpFirer) -> FunctionTool:
             '"url_b": str, "headers_b": dict (optional)}'
         ),
         func=_diff,
+    )
+
+
+@dataclass
+class _MatrixCell:
+    entry: RoleMatrixEntry
+    tested: bool = False
+    observed_status: str | None = None
+
+
+def build_access_control_matrix_tool() -> FunctionTool:
+    """Track access-control test coverage as an identity x endpoint matrix,
+    so coverage is machine-observed (queryable untested cells) rather than
+    the agent's own self-reported todo list.
+
+    `build_role_matrix` produces immutable cells with no "tested" state; the
+    state dict closed over here owns that, one instance per scan (the caller
+    builds this tool once and shares the same instance across every agent in
+    the hierarchy, the same way `firer`/`scope` are single-instances-per-scan).
+    """
+    state: dict[tuple[str, str], _MatrixCell] = {}
+
+    def _run(args: dict[str, object]) -> ToolResult:
+        action = str_arg(args, "action", "")
+        if action == "build":
+            identity_ids = args.get("identity_ids")
+            endpoint_ids = args.get("endpoint_ids")
+            if not isinstance(identity_ids, list) or not isinstance(endpoint_ids, list):
+                return ToolResult(
+                    observation="error: 'identity_ids' and 'endpoint_ids' must be lists", ok=False
+                )
+            state.clear()
+            for entry in build_role_matrix(
+                [str(i) for i in identity_ids], [str(e) for e in endpoint_ids]
+            ):
+                state[(entry.identity_id, entry.endpoint_id)] = _MatrixCell(entry=entry)
+            return ToolResult(observation=f"built {len(state)} cells", ok=True)
+        if action == "mark_tested":
+            key = (str_arg(args, "identity_id", ""), str_arg(args, "endpoint_id", ""))
+            cell = state.get(key)
+            if cell is None:
+                return ToolResult(
+                    observation=f"error: no cell for {key} - call action=build first", ok=False
+                )
+            cell.tested = True
+            cell.observed_status = str_arg(args, "observed_status", "")
+            return ToolResult(observation="marked", ok=True)
+        if action == "query_untested":
+            untested = [
+                f"{c.entry.identity_id} x {c.entry.endpoint_id}"
+                for c in state.values()
+                if not c.tested
+            ]
+            return ToolResult(
+                observation="\n".join(untested) if untested else "all cells tested", ok=True
+            )
+        return ToolResult(
+            observation=f"error: unknown action {action!r} - use build|mark_tested|query_untested",
+            ok=False,
+        )
+
+    return FunctionTool(
+        name="access_control_matrix",
+        description=(
+            "Track access-control test coverage as an identity x endpoint matrix. args: "
+            '{"action": "build"|"mark_tested"|"query_untested", ...}. build: '
+            '{"identity_ids": [str], "endpoint_ids": [str]}. mark_tested: {"identity_id": str, '
+            '"endpoint_id": str, "observed_status": str}. query_untested: {}.'
+        ),
+        func=_run,
+    )
+
+
+def build_raw_tcp_tool(scope: ScopeGuard) -> FunctionTool:
+    """Wrap the scope-checked, pinned-IP `tcp_send_recv` primitive for direct
+    non-web service interaction (raw TCP payloads: SMTP/LDAP/custom protocol
+    probing, not just HTTP).
+    """
+
+    def _raw_tcp(args: dict[str, object]) -> ToolResult:
+        host = str_arg(args, "host", "")
+        port_raw = args.get("port")
+        if not host or port_raw is None:
+            return ToolResult(observation="error: 'host' and 'port' are required", ok=False)
+        try:
+            port = int(port_raw)  # type: ignore[call-overload]
+        except (TypeError, ValueError):
+            return ToolResult(observation="error: 'port' must be an integer", ok=False)
+        payload = str_arg(args, "payload", "").encode()
+        timeout = float(args.get("timeout", 5.0) or 5.0)  # type: ignore[arg-type]
+
+        result = tcp_send_recv(scope, host, port, payload, timeout=timeout)
+        if not result.fired:
+            return ToolResult(observation=f"error: {result.scope_reason}", ok=False)
+        elapsed = result.elapsed_ms if result.elapsed_ms is not None else 0.0
+        observation = (
+            f"received {len(result.data)} bytes in {elapsed:.0f}ms\n"
+            f"{result.data[:_MAX_BODY_CHARS]!r}"
+        )
+        return ToolResult(observation=observation, ok=result.error is None)
+
+    return FunctionTool(
+        name="raw_tcp",
+        description=(
+            "Send raw bytes over a scope-checked, pinned-IP TCP connection and return "
+            'whatever comes back. args: {"host": str, "port": int, "payload": str '
+            '(optional, sent as raw bytes), "timeout": number (optional, seconds, default 5.0)}'
+        ),
+        func=_raw_tcp,
     )

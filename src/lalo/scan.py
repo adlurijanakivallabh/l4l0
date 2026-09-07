@@ -154,7 +154,13 @@ from .core.usage import load_usage
 from .execution.firer import HttpFirer, probe_reachability
 from .execution.scope import ScopeGuard
 from .execution.target import Engagement
-from .execution.tool import build_diff_responses_tool, build_fire_concurrent_tool, build_http_tool
+from .execution.tool import (
+    build_access_control_matrix_tool,
+    build_diff_responses_tool,
+    build_fire_concurrent_tool,
+    build_http_tool,
+    build_raw_tcp_tool,
+)
 from .findings.confidence import compute_confidence
 from .findings.review import run_adversarial_review
 from .findings.tool import build_record_finding_tool
@@ -854,6 +860,10 @@ class ScanRunner:
         journal = DurableJournal(_journal_path(self.config.run_dir))
         skills = load_skills()
         firer = HttpFirer(scope)
+        # Built once here (not inside _build_registry, which runs once per
+        # agent) so every agent in the hierarchy shares the same coverage
+        # state, the same single-instance-per-scan pattern firer/scope use.
+        access_control_matrix_tool = build_access_control_matrix_tool()
         identities = IdentityStore()
         for identity in self.config.identities.values():
             identities.add(identity)
@@ -914,6 +924,8 @@ class ScanRunner:
                 build_http_tool(firer),
                 build_fire_concurrent_tool(firer),
                 build_diff_responses_tool(firer),
+                build_raw_tcp_tool(scope),
+                access_control_matrix_tool,
                 build_record_finding_tool(agent_graph),
                 *build_oast_tools(oast),
                 build_recall_tool(skills),
