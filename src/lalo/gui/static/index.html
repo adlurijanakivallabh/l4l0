@@ -66,6 +66,12 @@
         <label><input id="opt-redact-findings" type="checkbox" /> Redact secrets in report/logs</label>
       </details>
 
+      <details id="bulk-import" class="advanced-options">
+        <summary>Paste scope list</summary>
+        <textarea id="bulk-import-textarea" rows="4" placeholder="one target per line"></textarea>
+        <button type="button" id="bulk-import-add-btn" class="btn btn-ghost">Add to message</button>
+      </details>
+
       <form id="composer-form" class="composer-bar">
         <input id="composer-input" type="text" placeholder="Tell me what to test…" autocomplete="off" />
         <button type="submit" class="btn btn-send" aria-label="Send">
@@ -130,6 +136,7 @@
     </div>
     <a class="run-report-link" target="_blank" rel="noopener" hidden>Report</a>
     <button type="button" class="run-resume-btn" hidden>Resume</button>
+    <button type="button" class="run-duplicate-btn" title="Start a new scan with this run's mission">Duplicate</button>
   </li>
 </template>
 

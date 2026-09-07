@@ -276,6 +276,9 @@ button, input, textarea {
 .run-meta {
   font-size: 0.68rem;
   color: var(--text-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .run-report-link {
@@ -300,6 +303,19 @@ button, input, textarea {
 }
 .run-resume-btn:hover { text-decoration: underline; }
 .run-resume-btn:disabled { color: var(--text-faint); cursor: not-allowed; }
+
+.run-duplicate-btn {
+  flex: none;
+  font: inherit;
+  font-size: 0.68rem;
+  font-weight: 600;
+  color: var(--text-faint);
+  background: transparent;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+}
+.run-duplicate-btn:hover { color: var(--text); text-decoration: underline; }
 
 .main {
   padding: 24px 24px 0;
@@ -676,6 +692,20 @@ button, input, textarea {
   color: var(--text-muted);
 }
 .advanced-options label { display: block; margin: 4px 0; }
+.advanced-options textarea {
+  display: block;
+  width: 100%;
+  margin: 6px 0;
+  background: var(--surface);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  padding: 6px 8px;
+  font-family: inherit;
+  font-size: 0.82rem;
+  resize: vertical;
+}
+.advanced-options .btn-ghost { font-size: 0.78rem; padding: 6px 12px; }
 
 /* ---------- settings drawer ---------- */
 

@@ -26,6 +26,8 @@
   const composerInput = document.getElementById("composer-input");
   const composerSendBtn = composerForm.querySelector(".btn-send");
   const stopScanBtn = document.getElementById("stop-scan");
+  const bulkImportTextarea = document.getElementById("bulk-import-textarea");
+  const bulkImportAddBtn = document.getElementById("bulk-import-add-btn");
 
   const runHistoryListEl = document.getElementById("run-history-list");
   const refreshRunsBtn = document.getElementById("refresh-runs");
@@ -846,12 +848,45 @@
   });
 
   runHistoryListEl.addEventListener("click", (ev) => {
-    if (ev.target.closest(".run-resume-btn") || ev.target.closest(".run-report-link")) return;
+    if (
+      ev.target.closest(".run-resume-btn") ||
+      ev.target.closest(".run-report-link") ||
+      ev.target.closest(".run-duplicate-btn")
+    ) {
+      return;
+    }
     const item = ev.target.closest(".run-item");
     if (!item) return;
     document.querySelectorAll(".run-item.viewing").forEach((el) => el.classList.remove("viewing"));
     item.classList.add("viewing");
     openRun(item.dataset.runId, item.dataset.missionText);
+  });
+
+  // Duplicate: pre-fill the composer with a past run's original mission text
+  // (untruncated - buildRunItem stashes the full string in dataset.missionText)
+  // and stop there. It never auto-launches - the operator edits/resubmits
+  // through the exact same launchFromPrompt path every fresh scan already
+  // uses, so this needs zero backend changes.
+  runHistoryListEl.addEventListener("click", (ev) => {
+    const btn = ev.target.closest(".run-duplicate-btn");
+    if (!btn) return;
+    const item = btn.closest(".run-item");
+    composerInput.value = item.dataset.missionText || "";
+    composerInput.focus();
+  });
+
+  // Bulk target import: pasted lines just become more text in the same
+  // composer box a normal scan launch already parses via extractTargets, so
+  // no backend/endpoint change is needed here either.
+  bulkImportAddBtn.addEventListener("click", () => {
+    const lines = bulkImportTextarea.value
+      .split("\n")
+      .map((l) => l.trim())
+      .filter(Boolean);
+    if (!lines.length) return;
+    composerInput.value = [composerInput.value.trim(), ...lines].filter(Boolean).join(" ");
+    bulkImportTextarea.value = "";
+    composerInput.focus();
   });
 
   connect();
