@@ -267,6 +267,34 @@ class AgentCoordinator:
 ChildRunner = Callable[[str, str, str], tuple[str, list[str], bool]]
 
 
+def _duplicate_task_warning(
+    coordinator: AgentCoordinator, self_id: str, task: str, extra_tasks: tuple[str, ...] = ()
+) -> str:
+    """Warn, never block, when ``task`` looks like a near-duplicate of an
+    already-spawned sibling's task, or of another task in the same
+    ``spawn_agents`` batch (``extra_tasks``) - a running-siblings-only check
+    would miss the latter, since batch siblings aren't registered with the
+    coordinator until after every task in the batch is already collected.
+    """
+    for other_id in coordinator.children_of(self_id):
+        other_task = coordinator.node(other_id).task
+        if token_overlap_ratio(task, other_task) >= _DUPLICATE_TASK_SIMILARITY_THRESHOLD:
+            return (
+                f"warning: this task looks similar to running agent {other_id}'s task "
+                f"({other_task!r}) - confirm this isn't a duplicate before proceeding.\n"
+            )
+    for other_task in extra_tasks:
+        if (
+            other_task != task
+            and token_overlap_ratio(task, other_task) >= _DUPLICATE_TASK_SIMILARITY_THRESHOLD
+        ):
+            return (
+                f"warning: this task looks similar to another task in the same batch "
+                f"({other_task!r}) - confirm this isn't a duplicate before proceeding.\n"
+            )
+    return ""
+
+
 def build_spawn_tools(
     coordinator: AgentCoordinator,
     run_child: ChildRunner,
@@ -282,28 +310,12 @@ def build_spawn_tools(
     injected-spawner seam a reference tool module uses for testability.
     """
 
-    def _duplicate_task_warning(task: str) -> str:
-        """Warn, never block, when ``task`` looks like a near-duplicate of an
-        already-spawned sibling's task. Reuses ``children_of``/``node`` --
-        the same parent/child accessor ``render_tree`` (and so
-        ``view_agent_graph``) already walks -- rather than a second,
-        separately-maintained tracking structure.
-        """
-        for other_id in coordinator.children_of(self_id):
-            other_task = coordinator.node(other_id).task
-            if token_overlap_ratio(task, other_task) >= _DUPLICATE_TASK_SIMILARITY_THRESHOLD:
-                return (
-                    f"warning: this task looks similar to running agent {other_id}'s task "
-                    f"({other_task!r}) - confirm this isn't a duplicate before proceeding.\n"
-                )
-        return ""
-
     def _spawn(args: dict[str, object]) -> ToolResult:
         name = str_arg(args, "name").strip()
         task = str_arg(args, "task").strip()
         if not name or not task:
             return ToolResult(observation="error: 'name' and 'task' are required", ok=False)
-        warning = _duplicate_task_warning(task)
+        warning = _duplicate_task_warning(coordinator, self_id, task)
         try:
             child_id = coordinator.spawn(self_id, name, task)
         except SpawnDepthExceededError as exc:
@@ -403,6 +415,16 @@ def build_parallel_spawn_tool(
                 )
             parsed.append((name, task))
 
+        warnings = [
+            _duplicate_task_warning(
+                coordinator,
+                self_id,
+                task,
+                extra_tasks=tuple(t for j, (_, t) in enumerate(parsed) if j != i),
+            )
+            for i, (_, task) in enumerate(parsed)
+        ]
+
         # Registered up front, sequentially, before any thread starts: every
         # task in one batch shares the exact same parent (self_id), so they
         # all pass or all fail the depth ceiling identically - no partial
@@ -442,7 +464,9 @@ def build_parallel_spawn_tool(
                 }
             )
             overall_ok = overall_ok and success
-        return ToolResult(observation=json.dumps(reports), ok=overall_ok)
+        return ToolResult(
+            observation=f"{''.join(w for w in warnings if w)}{json.dumps(reports)}", ok=overall_ok
+        )
 
     return FunctionTool(
         name="spawn_agents",

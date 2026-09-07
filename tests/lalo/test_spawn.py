@@ -418,3 +418,54 @@ def test_spawn_agents_merges_every_childs_finding_ids_and_summary() -> None:
     assert set(coord.all_finding_ids(root)) == {"f-a", "f-b"}
     assert "confirmed for a" in result.observation
     assert "confirmed for b" in result.observation
+
+
+def test_spawn_agents_warns_about_a_duplicate_task_within_the_same_batch() -> None:
+    coord = AgentCoordinator(max_depth=5)
+    root = coord.register_root("root", "mission")
+
+    def run_child(child_id: str, name: str, task: str) -> tuple[str, list[str], bool]:
+        return "confirmed", [], True
+
+    tool = build_parallel_spawn_tool(coord, run_child, self_id=root)
+    registry = ToolRegistry([tool])
+
+    result = registry.dispatch(
+        "spawn_agents",
+        {
+            "tasks": [
+                {"name": "a", "task": "enumerate S3 buckets for public read access"},
+                {"name": "b", "task": "enumerate S3 buckets for public write access"},
+            ]
+        },
+    )
+    assert result.ok is True  # never blocked
+    assert "similar to another task in the same batch" in result.observation
+
+
+def test_spawn_agents_warns_about_a_duplicate_task_against_a_running_sibling() -> None:
+    coord = AgentCoordinator(max_depth=5)
+    root = coord.register_root("root", "mission")
+
+    def run_child(child_id: str, name: str, task: str) -> tuple[str, list[str], bool]:
+        return "confirmed", [], True
+
+    spawn_tool, _ = build_spawn_tools(coord, run_child, self_id=root)
+    ToolRegistry([spawn_tool]).dispatch(
+        "spawn_agent",
+        {"name": "S3 Specialist", "task": "enumerate S3 buckets for public read access"},
+    )
+
+    tool = build_parallel_spawn_tool(coord, run_child, self_id=root)
+    registry = ToolRegistry([tool])
+    result = registry.dispatch(
+        "spawn_agents",
+        {
+            "tasks": [
+                {"name": "c", "task": "enumerate S3 buckets for public read access"},
+                {"name": "d", "task": "fuzz the login form for SQL injection"},
+            ]
+        },
+    )
+    assert result.ok is True  # never blocked
+    assert "similar to running agent" in result.observation
