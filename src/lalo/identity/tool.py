@@ -53,6 +53,18 @@ def build_login_tool(
     sessions: SessionRegistry,
     schemes: dict[str, LoginScheme],
 ) -> FunctionTool:
+    # Every configured scheme's totp_secret is operator/engagement-setup
+    # knowledge, exactly like identity.credential.value (registered by
+    # IdentityStore.add()) and the session material registered below -- it
+    # must never leak into a log line or captured observation unredacted
+    # either. Registered once here, at tool-build time (this dict is fixed
+    # for the life of the scan), not lazily inside `_login` on first use, so
+    # a scheme's secret is protected the moment it's wired in even if no
+    # agent ever calls login_as with it.
+    for scheme in schemes.values():
+        if scheme.totp_secret is not None:
+            shared_redactor().register_secret(scheme.totp_secret)
+
     def _login(args: dict[str, object]) -> ToolResult:
         identity_id = str_arg(args, "identity_id").strip()
         scheme_name = str_arg(args, "scheme").strip()

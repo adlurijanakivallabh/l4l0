@@ -142,6 +142,32 @@ def test_login_as_registers_the_session_material_with_the_shared_redactor() -> N
     assert "super-secret-value" not in shared_redactor().redact("super-secret-value")
 
 
+def test_login_scheme_totp_secret_is_registered_with_the_shared_redactor() -> None:
+    """Mirrors test_adding_an_identity_registers_its_credential_for_universal_redaction
+    (test_identity.py) for the one LoginScheme field IdentityStore.add() never sees:
+    a scheme's totp_secret. Registration happens at build time, not login time -- the
+    tool is built here but never run, proving the secret is protected the moment a
+    scheme carrying one is wired in, not only after a login happens to succeed.
+
+    ``secret`` is deliberately short and low-entropy (not a plausible real base32
+    TOTP seed) and the surrounding sentence avoids every word the redactor's
+    pattern layer keys on ("token", "secret=", etc.) -- unlike this module's own
+    ``super-secret-value``/``zzz-unique-marker`` style fixtures elsewhere, which
+    the pattern layer alone would already catch, so this is the only way to prove
+    register_secret() itself (not the unrelated pattern layer) is what redacts it.
+    """
+    secret = "totp-seed-mk9-77"
+    scheme = LoginScheme(login_url="https://app.example.com/login", totp_secret=secret)
+    build_login_tool(
+        _firer(lambda r: httpx.Response(200)),
+        IdentityStore(),
+        SessionRegistry(ReachabilityGraph()),
+        {"s": scheme},
+    )
+    leaked_line = f"login flow needs one-time code derived from {secret}"
+    assert secret not in shared_redactor().redact(leaked_line)
+
+
 def test_jwt_decode_returns_header_and_payload() -> None:
     tool = build_jwt_tool()
     result = tool.run({"op": "decode", "token": _TOKEN})
