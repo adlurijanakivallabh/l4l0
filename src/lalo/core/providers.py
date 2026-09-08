@@ -18,7 +18,7 @@ test CLI, read in full) — see their own docstrings for what was adopted
 an env var is set) versus what wasn't (a separate CLI tool, since L4L0 has
 none by design).
 
-:func:`_post_with_retry` closes a real gap found in the Phase 0 strix pass:
+:func:`_post_with_retry` closes a real gap found in an earlier, reference-informed Phase 0 pass:
 that reference's own agent-execution-loop tests (``test_execution_transient_
 retry.py``/``test_model_retry.py``, read via its comparison doc since the
 retry classifier itself lives deep inside its third-party agent-SDK

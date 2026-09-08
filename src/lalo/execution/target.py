@@ -10,8 +10,9 @@ ranges here would break the tool's actual purpose, so the engagement allowlist
 alone decides what's in scope — see scope.py for the small set of things that
 stay denied regardless (cloud metadata, non-http(s) schemes).
 
-Phase 3, PentestGPT pass: read `pentestgpt_agent/src/pentestgpt_agent/plan.py`
-in full. Its ``_target_is_allowed``/``_canonical_url_target`` is a real, careful
+Phase 3, a studied reference agent's own pass: read that reference's own
+target-planning module in full. Its ``_target_is_allowed``/``_canonical_url_target``
+is a real, careful
 deny-by-default target-scope check — the closest thing in that codebase to this
 module — extended to PATH-prefix granularity, not just host/port/scheme, with
 genuine anti-bypass rigor: percent-decoding iterated up to 4 rounds with a
@@ -24,8 +25,8 @@ before this — a real, common engagement shape ("test only /api/v2/* on this
 shared host, not /admin or other paths") had no way to be expressed or
 enforced, and worse, an operator who DID include a path in a target spec (e.g.
 ``https://example.com/api/v2``) had it silently discarded, granting the whole
-host rather than what was actually declared. Adapted, not ported: PentestGPT's
-own check runs once against a proposed task's target *string*, before any
+host rather than what was actually declared. Adapted, not ported: that
+reference's own check runs once against a proposed task's target *string*, before any
 traffic fires (this comparison's own real finding is that this doesn't cover
 the Executor's actual tool calls at all); this module's path check runs
 inside :meth:`TargetRule.matches`, called from every real `fire()` via

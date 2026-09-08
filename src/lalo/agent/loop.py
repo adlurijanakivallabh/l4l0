@@ -37,7 +37,7 @@ project's reference-first mandate), not any single one:
   5) but not actually adopted at the time; added retroactively after an
   audit flagged the gap between what was read and what was built.
 
-Phase 2, pentagi pass: :mod:`lalo.orchestrator.journal` was built and
+Phase 2, a studied reference agent's own pass: :mod:`lalo.orchestrator.journal` was built and
 independently tested to satisfy the original plan's own Phase 2 acceptance
 criterion ("kill-mid-run -> resume replays to the exact next action with no
 duplicated side effect"), but nothing ever actually wired it into the live
@@ -391,8 +391,9 @@ def _call_signature(name: str, args: dict[str, object]) -> str:
 def _truncate_observation(text: str, max_chars: int) -> str:
     """Cap ``text`` at ``max_chars``, keeping head AND tail with a clear marker.
 
-    Phase 6, cai pass: informed by a reference agent's own worker-output
-    truncation (read in full — ``_truncate_worker_output``), adopted here at
+    Phase 6, a studied reference agent's own pass: informed by that
+    reference agent's own worker-output truncation (read in full —
+    ``_truncate_worker_output``), adopted here at
     the one place every tool observation, spawned-child summaries included,
     already funnels through. A naive ``text[:max_chars]`` head-only slice (the
     prior behavior) does two things wrong at once: it discards exactly the
@@ -507,9 +508,10 @@ class AgentLoop:
         is a different task from advancing the mission and needs its own
         instructions, not this agent's own persona/scope prompt.
 
-        Phase 2, strix pass (closes Phase 2): :func:`~lalo.core.usage.
-        record_usage` was built and unit-tested in the Phase 0 cai pass to
-        close a real gap ("an autonomous run's actual dollar cost is
+        Phase 2, another studied reference agent's own pass (closes Phase 2):
+        :func:`~lalo.core.usage.record_usage` was built and unit-tested in an
+        earlier, separately reference-informed Phase 0 pass to close a real
+        gap ("an autonomous run's actual dollar cost is
         invisible") but, like the durable journal earlier in this phase,
         nothing ever actually called it from the live loop -- every real
         completion's token usage was silently discarded. Recording happens

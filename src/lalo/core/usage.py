@@ -1,8 +1,8 @@
 """Persistent, cross-run token/cost usage stats — the local, honest analogue
 of a reference agent's own ``global_usage_tracker.py``.
 
-That reference persists lifetime usage to ``$HOME/.cai/usage.json`` using a
-hand-rolled ``fcntl``-based read/write lock plus a plain temp-file-then-
+That reference persists lifetime usage to its own per-tool home-directory
+usage file using a hand-rolled ``fcntl``-based read/write lock plus a plain temp-file-then-
 ``Path.replace()`` write (no read-back verification), with a corrupt-file
 fallback that renames the bad file aside and starts fresh. L4L0 already has
 a stronger primitive for exactly this shape of problem —

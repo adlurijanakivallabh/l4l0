@@ -11,8 +11,8 @@ never a truth judgment. A finding with weak or ungrounded evidence still
 records once every field is present; :mod:`~lalo.findings.confidence`
 scores the weakness, it never blocks the recording.
 
-A fresh re-read of that same real source (this project's Phase 12 shannon/
-strix reference-pass cycle) surfaced a genuine gap against its own ten
+A fresh re-read of that same real source (this project's Phase 12
+reference-pass cycle) surfaced a genuine gap against its own ten
 required fields: that reference requires ``remediation_steps`` on every
 finding and L4L0 had no equivalent — a report telling an operator what is
 broken without saying how to fix it is a real product gap, not

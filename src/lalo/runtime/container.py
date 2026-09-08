@@ -15,7 +15,7 @@ exclusion list; this module *enforces* it: requesting a forbidden capability
 raises before any container is started, rather than relying on the caller to
 have read the comment.
 
-Phase 1, pentagi pass: that same reference's cap-add allowlist grants
+Phase 1, a studied reference agent's own pass: that same reference's cap-add allowlist grants
 ``SYS_PTRACE`` *unconditionally* (unlike its own ``NET_ADMIN``, which is gated
 behind an explicit config flag) — reasoned as safe to always grant because
 ptrace never crosses a container's own PID namespace boundary: it only ever
@@ -33,8 +33,9 @@ tool in the arsenal can be invoked unpredictably at any point in a scan — ther
 is no natural "this specific call needs debugging" moment for a caller to opt
 in at.
 
-Phase 1, strix pass (closes Phase 1): that reference unconditionally appends
-``NET_ADMIN``/``NET_RAW`` to every sandbox's caps, "required for `nmap -sS`
+Phase 1, another studied reference agent's own pass (closes Phase 1): that
+reference unconditionally appends ``NET_ADMIN``/``NET_RAW`` to every
+sandbox's caps, "required for `nmap -sS`
 and other raw-socket recon tools" — its own comparison notes this as broad
 and *not scoped or gated by target/scope config*, a fair critique of granting
 it with no complementary control. L4L0 doesn't have that weakness: a scope
@@ -80,7 +81,7 @@ _KEEPALIVE = ("tail", "-f", "/dev/null")
 _FORBIDDEN_CAPS = frozenset({"SYS_ADMIN", "SYS_MODULE", "SYS_RAWIO", "SYS_BOOT"})
 
 # Granted unconditionally to every sandbox, never opt-in via `cap_add` — see
-# the module docstring's Phase 1 pentagi/strix-pass notes: SYS_PTRACE (the
+# the module docstring's Phase 1 reference-pass notes: SYS_PTRACE (the
 # arsenal's gdb/radare2 need it for anything beyond static analysis) and
 # NET_RAW (routine raw-socket recon like nmap SYN scans) never cross the
 # container's own PID/network namespace, and NET_RAW is further backstopped
@@ -144,8 +145,8 @@ class RuntimeConfig:
     scan into anything BEYOND the fixed :data:`_BASELINE_CAPS` (e.g.
     ``("NET_RAW",)`` for a raw-socket tool); each is validated against
     :data:`_FORBIDDEN_CAPS` at construction time. ``enable_vpn`` is a separate,
-    narrower opt-in (Phase 1, PentestGPT pass — its own ``docker-compose.yml``
-    grants ``NET_ADMIN`` + a mounted ``/dev/net/tun`` specifically "for OpenVPN
+    narrower opt-in (a studied reference agent's own container config grants
+    ``NET_ADMIN`` + a mounted ``/dev/net/tun`` specifically "for OpenVPN
     (HackTheBox/TryHackMe connectivity)"): many real engagements are only
     reachable via a client-provided OpenVPN/WireGuard config, and the sandbox
     had no path to that network at all before this. Off by default and kept

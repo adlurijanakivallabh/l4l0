@@ -1,7 +1,8 @@
 """``lalo-setup``: a tiny, interactive provider-credential wizard.
 
-A real gap a Shannon-comparison audit found and this closes: the reference
-agent's own ``setup`` command is a real interactive wizard - pick a
+A real gap a comparison audit against a studied reference agent found and
+this closes: that reference agent's own ``setup`` command is a real
+interactive wizard - pick a
 provider from a curated list, enter the credential via a masked prompt,
 verified end to end before it's ever trusted. L4L0's own credential setup
 was pure README prose naming four env vars with no picker, no masked

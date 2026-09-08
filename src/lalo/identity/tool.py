@@ -32,8 +32,8 @@ a new finding. Deliberately NOT a pre-configured field on
 in" endpoint exists across targets) and NOT automatic (no silent background
 network call hidden from the agent) — the agent supplies its own
 already-discovered validate_url per call, matching this project's own
-agent-judgment-over-fixed-pipeline design rather than Shannon's own
-config-driven revalidation.
+agent-judgment-over-fixed-pipeline design rather than a studied reference
+agent's own config-driven revalidation.
 """
 
 from __future__ import annotations

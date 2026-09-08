@@ -653,10 +653,11 @@ class ScanRunner:
     (it blocks for the whole scan) and :meth:`cancel` from any other thread to
     request early termination.
 
-    Phase 2, shannon pass (closes Phase 2): that reference's own ``stop``
-    command implements a deliberately elaborate cancel-then-terminate-then-
-    verify workflow lifecycle, with its own docstring naming the property
-    worth adopting -- "Shannon does not silently believe a scan stopped."
+    Phase 2, a studied reference agent's own pass (closes Phase 2): that
+    reference's own ``stop`` command implements a deliberately elaborate
+    cancel-then-terminate-then-verify workflow lifecycle, with its own
+    docstring naming the property worth adopting -- it does not silently
+    believe a scan stopped.
     :meth:`cancel` here used to be purely cooperative (set a flag, checked
     only at the next agent-loop step boundary) -- correct for the model call
     itself, but a scan blocked on a long-running tool call (a multi-minute

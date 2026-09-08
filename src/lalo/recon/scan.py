@@ -4,10 +4,11 @@ Phase 9's plan named a tool-runner framework wrapping best-in-class external
 tools, and :mod:`lalo.recon.runner` built the availability-gated chain
 orchestrator for it — but no phase ever actually implemented one, leaving
 :func:`~lalo.recon.runner.run_recon_chain` with nothing to run. This is the
-first one, informed by strix's own sandboxed recon roster (nmap as the
-curated port/service-discovery tool) and pentagi's raw-engine-vs-orchestrator
-split already adopted in ``runner.py`` — the runner here is the "raw engine"
-half, a thin adapter around one external command, never a policy decision
+first one, informed by one studied reference agent's own sandboxed recon
+roster (nmap as the curated port/service-discovery tool) and another's
+raw-engine-vs-orchestrator split already adopted in ``runner.py`` — the
+runner here is the "raw engine" half, a thin adapter around one external
+command, never a policy decision
 point itself.
 
 Runs inside the disposable runtime container (via the same

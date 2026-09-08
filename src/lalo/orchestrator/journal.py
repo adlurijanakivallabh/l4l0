@@ -12,7 +12,8 @@ reference's own re-drive-safety idea (detect that a declared state was already
 achieved and adopt it, rather than redoing or erroring) is what ``run_once``
 implements for every individual key.
 
-Phase 2, cai pass: reading ``docs/running_agents.md``'s note on
+Phase 2, a studied reference agent's own pass: reading that reference's own
+running-agents documentation note on
 ``RunConfig.trace_include_sensitive_data`` (an opt-out for whether LLM/tool
 I/O — potentially including credentials scraped mid-scan — gets written into
 a persisted trace) surfaced a real gap here, not there: this journal is

@@ -45,7 +45,7 @@ could never actually be populated by a real review, only ever default to
 :mod:`lalo.report.collect` reading it back is a plain field read, not a
 second source of truth to keep in sync.
 
-A fresh Shannon re-check of this same confirmation-oracle territory
+A fresh re-check against a studied reference agent, of this same confirmation-oracle territory,
 confirmed its own gate-shaped export mechanism is NOT adoptable (a hard
 drop for three whole status classes before its primary machine-consumable
 artifact — exactly what this module's own non-blocking design exists to

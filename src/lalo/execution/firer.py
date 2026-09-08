@@ -16,8 +16,9 @@ Redirects are followed manually (:meth:`fire_redirects`), re-checking scope
 proxy tool's own gap (a scope filter that only narrows what's *displayed*,
 never something that blocks an out-of-scope replay from actually firing).
 
-Phase 3, cai pass: that same reference's own fetch tool (read in full, not
-just its comparison-doc summary) streams the response body and stops reading
+Phase 3, a studied reference agent's own pass: that same reference's own
+fetch tool (read in full, not just its comparison-doc summary) streams the
+response body and stops reading
 once a configurable byte ceiling is hit, rather than reading an unbounded
 body into memory. This firer's ``fire()`` had no such cap at all — a large or
 adversarial in-engagement target response (a deliberate memory-exhaustion
@@ -28,8 +29,8 @@ memory-safety concern); a capped response sets ``FireResult.truncated`` so a
 cut-off body is never silently mistaken for a complete capture — evidence
 grounding and reporting both need to know the difference.
 
-Phase 4, shannon pass: :func:`probe_reachability` is informed by that
-reference's own ``services/preflight.ts`` (read in full), which runs
+Phase 4, another studied reference agent's own pass: :func:`probe_reachability`
+is informed by that reference's own preflight-check module (read in full), which runs
 cheap-to-expensive checks before any pipeline agent executes, including a
 target-URL reachability probe with the SAME resolve-once-pin-IP/metadata-
 denylist hardening this module already implements for real traffic — reusing
@@ -325,7 +326,7 @@ def probe_reachability(engagement: Engagement, firer: HttpFirer) -> dict[str, tu
     has no single host to probe and is skipped.
 
     Returns ``{host: (reachable, reason)}``. Advisory only — see the module
-    docstring's Phase 4 shannon-pass note for why an "unreachable" result is
+    docstring's Phase 4 reference-pass note for why an "unreachable" result is
     never treated as fatal: an in-engagement network/infra or raw-TCP target
     may simply not speak HTTP at all, which isn't a misconfiguration.
     """

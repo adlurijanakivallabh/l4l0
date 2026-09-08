@@ -17,9 +17,10 @@ different: every fact still passes through the same code-level ScopeGuard
 check every other request does, on every use, not just once at discovery
 time into advisory prompt text.
 
-Phase 9, strix pass: re-reading that same reference's real ``utils/api_spec.py``
-in full (not just the module-docstring principle it already contributed)
-surfaced a genuine gap this module never closed — it also parses Postman
+Phase 9, another studied reference agent's own pass: re-reading that same
+reference's real API-spec-parsing module in full (not just the
+module-docstring principle it already contributed) surfaced a genuine gap
+this module never closed — it also parses Postman
 collections (an extremely common real-world API-spec format), walking nested
 folders with a depth cap against pathological nesting, extracting only each
 request's own concrete URL. :func:`parse_postman_collection` adds the same
