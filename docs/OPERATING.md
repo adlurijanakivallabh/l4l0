@@ -108,11 +108,17 @@ gaps without a fresh, explicit reason:
 The agent's free shell and `http`/`browser` tools run *inside* the
 disposable runtime container (Docker's default `bridge` network, not host
 networking), so `localhost`/`127.0.0.1` inside that container is the
-container itself, not your machine. There's no `host.docker.internal`
-convenience name wired up (that's a Docker Desktop feature; this project
-targets Linux). To reach something you're running locally (a dev server, a
-lab target container you've brought up for eval purposes), use the bridge
-network's own gateway address instead of `localhost` — find it with
-`docker network inspect bridge | grep Gateway` (commonly `172.17.0.1` on
-an unmodified install) — or bind the local service to a real LAN interface
-and use that IP as the target.
+container itself, not your machine. Every sandbox is started with
+`--add-host host.docker.internal:host-gateway`, so `host.docker.internal`
+reaches your machine from inside the container — this is a native Docker
+Engine 20.10+ feature on Linux, not a Docker-Desktop-only convenience, so
+it's wired up unconditionally rather than left as a manual lookup. Point a
+target at `host.docker.internal` (a dev server, a lab target container
+you've brought up for eval purposes) instead of `localhost`.
+
+Any custom entry already in your own `/etc/hosts` (a lab DNS name, your
+machine's own hostname) is also forwarded into the sandbox automatically as
+its own `--add-host`, so a target you can already reach by name on your own
+machine is reachable by that same name from inside the container too — no
+extra step needed. Set `forward_etc_hosts=False` on `RuntimeConfig` to turn
+this off if a specific entry ever causes a problem.

@@ -60,15 +60,18 @@ on its own once the capability is actually present.
 
 from __future__ import annotations
 
+import ipaddress
 import shutil
 import subprocess
 import threading
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 
 from ..core.errors import ContainerError
 from ..core.logging import get_logger
+from ..execution.scope import _in_metadata_range
 
 _log = get_logger("lalo.runtime")
 
@@ -87,6 +90,21 @@ _FORBIDDEN_CAPS = frozenset({"SYS_ADMIN", "SYS_MODULE", "SYS_RAWIO", "SYS_BOOT"}
 # container's own PID/network namespace, and NET_RAW is further backstopped
 # by the separate scope guard governing what any tool may actually reach.
 _BASELINE_CAPS = ("SYS_PTRACE", "NET_RAW")
+
+# Hostnames every stock /etc/hosts ships with -- never something an operator
+# added for an engagement, so never forwarded into the sandbox.
+_STANDARD_HOSTNAMES: frozenset[str] = frozenset(
+    {
+        "localhost",
+        "ip6-localhost",
+        "ip6-loopback",
+        "ip6-localnet",
+        "ip6-mcastprefix",
+        "ip6-allnodes",
+        "ip6-allrouters",
+        "broadcasthost",
+    }
+)
 
 
 def _normalize_cap(cap: str) -> str:
@@ -156,6 +174,14 @@ class RuntimeConfig:
     stays namespace-scoped (lets a process create a virtual interface inside
     its OWN network namespace only), so this doesn't touch the "no host
     bind-mounts" line — no host filesystem or host network state is exposed.
+    ``forward_etc_hosts`` (on by default) mirrors the operator's own custom
+    ``/etc/hosts`` entries into the sandbox via ``--add-host``, alongside the
+    unconditional ``host.docker.internal:host-gateway`` mapping every run's
+    args always carry: a lab target the operator can already reach by hostname
+    on their own machine shouldn't need a manual gateway-IP lookup to reach
+    from inside the container too. Purely additive reachability, never a
+    restriction, so it defaults on; set ``False`` only if a specific entry
+    ever gets in the way of a scan.
     No restart policy is set on purpose: this is a single-shot disposable
     container — a crash should surface immediately, not silently retry and mask
     a fast-crash-loop.
@@ -169,6 +195,7 @@ class RuntimeConfig:
     pids_limit: int = 2048  # caps fork bombs
     cap_add: tuple[str, ...] = ()
     enable_vpn: bool = False
+    forward_etc_hosts: bool = True
     log_max_size: str = "10m"
     log_max_files: int = 3
     extra_run_args: tuple[str, ...] = ()
@@ -180,6 +207,58 @@ class RuntimeConfig:
             raise ForbiddenCapabilityError(
                 f"refusing to grant forbidden capabilities to the sandbox: {sorted(forbidden)}"
             )
+
+
+def _parse_etc_hosts_add_host_args(text: str) -> list[str]:
+    """Turn the operator's own custom ``/etc/hosts`` lines into Docker
+    ``--add-host`` args, so a target already reachable by hostname on the
+    operator's own machine (a lab DNS entry, a local dev vhost, their own
+    machine's hostname) is reachable by that same hostname from inside the
+    sandbox too -- no manual gateway-IP lookup required.
+
+    Pure text-in, args-out so it's testable without touching a real
+    filesystem. Skips comments, blank lines, and the standard localhost/
+    multicast aliases every ``/etc/hosts`` ships with (:data:`_STANDARD_HOSTNAMES`).
+    A loopback entry (the operator's own machine -- e.g. the installer-
+    generated ``127.0.1.1 <hostname>`` line) is rewritten to Docker's
+    ``host-gateway`` sentinel rather than forwarded literally, since
+    ``127.0.0.1`` inside the container is the container itself, not the
+    host. Anything in a cloud-metadata or link-local range is skipped
+    outright, reusing the same check :mod:`lalo.execution.scope` already
+    uses to deny those as direct firer targets.
+    """
+    args: list[str] = []
+    for raw_line in text.splitlines():
+        line = raw_line.split("#", 1)[0].strip()
+        if not line:
+            continue
+        fields = line.split()
+        if len(fields) < 2:
+            continue
+        ip_text, hostnames = fields[0], fields[1:]
+        try:
+            addr = ipaddress.ip_address(ip_text)
+        except ValueError:
+            continue
+        if _in_metadata_range(ip_text):
+            continue
+        target = "host-gateway" if addr.is_loopback else ip_text
+        for hostname in hostnames:
+            if hostname.lower() in _STANDARD_HOSTNAMES:
+                continue
+            args += ["--add-host", f"{hostname}:{target}"]
+    return args
+
+
+def _operator_add_host_args() -> list[str]:
+    """Best-effort: an unreadable or malformed ``/etc/hosts`` yields no extra
+    flags rather than failing the run -- this is a convenience, never a
+    requirement for a scan to start."""
+    try:
+        text = Path("/etc/hosts").read_text()
+    except (OSError, UnicodeDecodeError):
+        return []
+    return _parse_etc_hosts_add_host_args(text)
 
 
 class RuntimeContainer:
@@ -234,6 +313,14 @@ class RuntimeContainer:
             args += ["--cap-add", cap]
         if self.config.enable_vpn:
             args += ["--cap-add", "NET_ADMIN", "--device", "/dev/net/tun:/dev/net/tun"]
+        # host.docker.internal:host-gateway is a native Docker Engine 20.10+
+        # feature on Linux (not Docker-Desktop-only, despite the old docs claim
+        # this replaces) -- always wired up so the agent's free shell and
+        # http/browser tools can reach a service the operator runs on their own
+        # machine without a manual `docker network inspect bridge` lookup first.
+        args += ["--add-host", "host.docker.internal:host-gateway"]
+        if self.config.forward_etc_hosts:
+            args += _operator_add_host_args()
         # Deliberately NO -v/--mount (no host filesystem) and NO docker socket —
         # never offered as a config option here, unlike every reference that
         # either lacks scope-egress hardening or ships host-socket delegation.

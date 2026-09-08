@@ -10,6 +10,7 @@ import pytest
 
 from lalo.core.errors import ContainerError
 from lalo.runtime import ForbiddenCapabilityError, RuntimeConfig, RuntimeContainer, docker_available
+from lalo.runtime.container import _parse_etc_hosts_add_host_args
 
 pytestmark = [
     pytest.mark.integration,
@@ -142,3 +143,40 @@ def test_enable_vpn_grants_a_working_tun_device_and_net_admin_on_a_live_daemon()
         hex_value = cap_eff.split()[-1]
         assert int(hex_value, 16) & 0x1000, f"CAP_NET_ADMIN not effective: {cap_eff!r}"
         assert c.exec("test -c /dev/net/tun").ok
+
+
+def test_add_host_host_docker_internal_present() -> None:
+    # Native Docker Engine 20.10+ feature on Linux too, not Docker-Desktop-only
+    # -- always wired up, never gated behind a toggle.
+    args = RuntimeContainer(RuntimeConfig(image=_IMAGE))._run_args()
+    idx = args.index("host.docker.internal:host-gateway")
+    assert args[idx - 1] == "--add-host"
+
+
+def test_parse_etc_hosts_forwards_custom_entries_and_rewrites_loopback() -> None:
+    sample = (
+        "127.0.0.1 localhost\n"
+        "127.0.1.1 kali\n"
+        "::1 localhost ip6-localhost ip6-loopback\n"
+        "169.254.169.254 metadata.internal\n"
+        "fe80::1 somelink.local\n"
+        "10.129.15.187 bedside.htb research.bedside.htb bedside\n"
+        "# a comment 10.0.0.1 commented.out\n"
+        "\n"
+    )
+    args = _parse_etc_hosts_add_host_args(sample)
+    assert "kali:host-gateway" in args
+    assert "bedside.htb:10.129.15.187" in args
+    assert "research.bedside.htb:10.129.15.187" in args
+    assert "bedside:10.129.15.187" in args
+    assert not any("localhost" in a for a in args)
+    assert not any("metadata.internal" in a for a in args)
+    assert not any("somelink.local" in a for a in args)
+    assert not any("commented.out" in a for a in args)
+
+
+def test_forward_etc_hosts_defaults_to_on_and_can_be_disabled() -> None:
+    assert RuntimeConfig(image=_IMAGE).forward_etc_hosts is True
+    args = RuntimeContainer(RuntimeConfig(image=_IMAGE, forward_etc_hosts=False))._run_args()
+    add_host_values = [args[i + 1] for i, a in enumerate(args) if a == "--add-host"]
+    assert add_host_values == ["host.docker.internal:host-gateway"]
