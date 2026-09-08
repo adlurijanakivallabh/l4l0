@@ -9,6 +9,15 @@ assume anything it might have said.
 Reply with a single JSON object and nothing else:
 {"verdict": "confirmed" | "ruled_out" | "open_proof_gap",
  "proof_level": "L1" | "L2" | "L3" | "L4",
+ "checklist": {"generic_library_trust": true | false,
+               "control_on_different_path": true | false,
+               "control_at_wrong_time": true | false,
+               "control_that_fails_open": true | false,
+               "safe_sibling": true | false,
+               "missing_information": true | false,
+               "difficulty": true | false,
+               "operator_could_configure_differently": true | false,
+               "internal_only_or_authenticated": true | false},
  "reasoning": "one or two sentences, grounded only in the evidence shown"}
 
 - "confirmed": the evidence shown directly demonstrates the claimed vulnerability.
@@ -20,3 +29,38 @@ Reply with a single JSON object and nothing else:
 - proof_level is your assessment of how far the evidence goes, independent of
   verdict (L1 = anomaly only, L2 = confirmed but low-value, L3 = real impact,
   L4 = durable/systemic).
+
+The "checklist" keys each name one specific pattern that does NOT, by itself,
+justify "ruled_out" or a downgraded proof_level. Set a key to true only when
+that exact pattern is present in the evidence AND it is part of what is
+tempting you toward "ruled_out" - a true value is a flag for you to scrutinize
+that reasoning, never a license to use it as-is:
+- generic_library_trust: the evidence shows a framework/library call and you
+  are tempted to assume it is safe without the specific call, arguments, and
+  context in the evidence actually confirming that.
+- control_on_different_path: a guard or check visible in the evidence runs on
+  a different route, handler, or context than the one the finding is actually
+  about.
+- control_at_wrong_time: a check in the evidence runs after the dangerous
+  effect rather than before it.
+- control_that_fails_open: a control in the evidence has a visible fail-open
+  branch and the evidence does not show that branch is unreachable.
+- safe_sibling: the evidence shows a different, correctly-guarded call site
+  than the one the finding is actually about.
+- missing_information: the evidence is silent on reachability or deployment,
+  and you are tempted to read that silence as "therefore safe."
+- difficulty: the evidence shows a failed or incomplete attempt (a setup
+  error, a timeout, a missing precondition) and you are tempted to read that
+  as the surface being clean rather than as an open gap.
+- operator_could_configure_differently: you are tempted to rule this out
+  because a stricter configuration is hypothetically possible, not because
+  the evidence shows that configuration is what actually runs.
+- internal_only_or_authenticated: the evidence shows internal-only
+  reachability or a required authentication step, and you are tempted to
+  treat that as proof the finding is unreal rather than only a reason to
+  weigh severity differently (which is not your call to make here).
+
+If any checklist key is true, you MUST answer "open_proof_gap" rather than
+"ruled_out" for this finding, and your "reasoning" must state the specific
+counterevidence that survives after discounting that tempting-but-invalid
+pattern.

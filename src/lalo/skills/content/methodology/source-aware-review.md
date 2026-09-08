@@ -70,6 +70,30 @@ here it runs in the other direction — a scary-looking grep hit is not
 evidence of a real bug until you confirm the specific call, with real
 input, in context.
 
+Two checks decide whether a hit is even worth tracing, before you look at
+what category of sink it is:
+
+- **Production code vs. test fixture.** A dangerous-looking pattern living
+  under an `examples/`, `fixtures/`, `test/`, or `tests/` directory may
+  belong to code that never runs in the deployed application at all — a
+  sample script, a database seed fixture, a demo the README points at.
+  Confirm the file is actually reachable from the running application (it
+  is imported by real application code, registered as a route, or built
+  into the shipped artifact) before treating a hit found under one of
+  these directories as a production finding — a vulnerable-looking
+  snippet that only ever runs under a test runner is, at most, a note
+  about development posture, not a finding against the deployed target.
+- **Git-tracked vs. untracked.** A naive grep sweep for a hardcoded secret
+  cannot tell a real, committed-and-shipped value from a local
+  `.env`/config file a developer created on their own machine that the
+  repository's own `.gitignore` deliberately excludes — both read
+  identically to `grep`. Run `git ls-files` (scoped to the relevant path
+  if the repo is large) and check the hit's path against it, and read
+  `.gitignore` directly, before reporting a hardcoded secret found on
+  disk: a value git has never tracked was never actually shipped, and
+  finding it only proves you have local filesystem access to a clone, not
+  that the deployed target embeds it.
+
 Starting patterns, by category (adapt exact syntax to the actual language/
 framework — these are shapes, not literal strings to `grep -F`):
 

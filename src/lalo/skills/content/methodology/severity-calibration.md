@@ -53,6 +53,24 @@ this:
   places the attacker upstream of others (a build node, a shared cache) —
   any of those is a real boundary crossing, not a self-contained effect.
 
+## Stochastic / Non-Reproducible Findings
+
+Some classes — prompt injection and jailbreaking chief among them — do not
+reproduce on every attempt even when the underlying gap is real; see
+[[llm-prompt-injection]]'s own reproducibility-testing guidance for how to
+actually run that test before you get here (this section is about the
+severity consequence, not a restatement of that method). Cap the default
+severity of a finding you could only trigger some fraction of the time,
+UNLESS the attacker can retry the same technique against the same target
+with no rate limit or concurrency limit standing in the way — an attacker
+free to simply retry until it lands is not meaningfully slowed by low
+per-attempt reproducibility, so the cap does not apply once you have
+confirmed retries are unconstrained. Confirm which case you are actually
+in rather than assuming one: whether "sometimes works" means "rare and
+hard to land twice" or "trivially automatable to a near-certain eventual
+success" changes the honest severity, and only testing at the target's
+real allowed concurrency tells you which.
+
 ## Critical
 
 Reserve for findings where a realistic attacker gets decisive control or

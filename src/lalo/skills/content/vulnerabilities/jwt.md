@@ -86,6 +86,27 @@ methodology for what to try and how to prove it matters.
    previously-used refresh token is still accepted (no rotation
    enforcement) — this is a durable-access finding distinct from anything
    about the access token itself.
+8. **OIDC identity binding to a mutable claim ("nOAuth"-style account
+   takeover).** Applies wherever the target lets an operator or user
+   register or link an arbitrary external OIDC tenant as a trusted
+   identity provider (a "bring your own IdP" / social-login SSO model).
+   Check which claim the relying party actually uses to look up or
+   provision the local account on login: `email` and `preferred_username`
+   are values the ATTACKER fully controls inside a tenant they administer,
+   while `sub` is scoped to that specific issuer and tenant and is not. To
+   test: register a self-service tenant on the same IdP family the target
+   trusts, issue yourself an ID token whose `sub` is attacker-chosen but
+   whose `email`/`preferred_username` is set to a known victim's real
+   address, and present that token at the target's SSO callback. The
+   finding is confirmed when this authenticates you AS the victim's
+   existing account — an established session, the victim's own private
+   data visible — purely because the mutable claim matched, not because
+   you merely created a new account under that address. Before calling it
+   confirmed, rule out a relying party that keys the account on the
+   immutable `issuer + sub` pair instead, or that requires a separate
+   email-ownership verification step (a confirmation link, an OTP) before
+   granting the session — either one defeats this specific variant even
+   though the claim itself is still technically attacker-controlled.
 
 ## Proof Ladder
 
