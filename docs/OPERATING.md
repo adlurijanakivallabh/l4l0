@@ -72,16 +72,16 @@ not to resume a shown orphan, gets the old fresh-restart behavior exactly
 as before — a deliberate choice, not an oversight, matching this
 project's "the agent decides" design center.
 
-Usage accounting under resume is narrower than "any resumed step might
-double-count" — a resumed step whose result is already in the journal is
-purely replayed (no model call, no `record_usage`), so it never
-double-counts. The one real window is a crash between a step's own LLM
-call recording its usage and that same step's tool-dispatch result
-finishing its journal write: on resume that ONE step re-runs in full (a
-genuinely new LLM call), double-recording that single step's usage.
-Accepted as-is rather than built around, matching this project's own
-precedent for a structurally similar narrow race in `core/usage.py`'s own
-module docstring.
+Usage accounting under resume no longer double-counts, even in the one
+narrow window where it used to: a crash between a step's own LLM call
+recording its usage and that same step's tool-dispatch result finishing
+its journal write used to mean the redone step's usage landed twice on
+resume. `record_usage` now takes the exact same `f"{agent_key}:{step}"`
+key the journal itself uses for that step and recomputes the affected
+totals from the current set of per-step attempts — a step's second
+attempt subtracts its own prior contribution back out before adding the
+new one, so only the latest attempt at any given step is ever reflected
+in the ledger, however many times a crash forces it to redo.
 
 ## Gaps this project intentionally does not close
 
