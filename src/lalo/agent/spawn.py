@@ -158,6 +158,7 @@ class AgentNode:
     status: AgentStatus = AgentStatus.RUNNING
     summary: str = ""
     finding_ids: list[str] = field(default_factory=list)
+    role: str = "full"
 
 
 class AgentCoordinator:
@@ -206,7 +207,7 @@ class AgentCoordinator:
             self._nodes[agent_id] = AgentNode(agent_id, name, task, parent_id=None, depth=0)
             return agent_id
 
-    def spawn(self, parent_id: str, name: str, task: str) -> str:
+    def spawn(self, parent_id: str, name: str, task: str, *, role: str = "full") -> str:
         with self._lock:
             parent = self._nodes[parent_id]
             child_depth = parent.depth + 1
@@ -217,7 +218,7 @@ class AgentCoordinator:
             self._counter += 1
             child_id = f"agent-{self._counter}"
             self._nodes[child_id] = AgentNode(
-                child_id, name, task, parent_id=parent_id, depth=child_depth
+                child_id, name, task, parent_id=parent_id, depth=child_depth, role=role
             )
             return child_id
 

@@ -72,6 +72,26 @@ def test_record_result_marks_failure_status() -> None:
     assert coord.node(child).status is AgentStatus.FAILED
 
 
+def test_spawn_stores_the_full_role_by_default() -> None:
+    coord = AgentCoordinator(max_depth=5)
+    root = coord.register_root("root", "mission")
+    child = coord.spawn(root, "child", "subtask")
+    assert coord.node(child).role == "full"
+
+
+def test_spawn_stores_an_explicit_role() -> None:
+    coord = AgentCoordinator(max_depth=5)
+    root = coord.register_root("root", "mission")
+    child = coord.spawn(root, "child", "subtask", role="source_reviewer")
+    assert coord.node(child).role == "source_reviewer"
+
+
+def test_register_root_defaults_to_the_full_role() -> None:
+    coord = AgentCoordinator()
+    root = coord.register_root("root", "mission")
+    assert coord.node(root).role == "full"
+
+
 def test_render_tree_shows_hierarchy_status_and_highlight() -> None:
     coord = AgentCoordinator(max_depth=5)
     root = coord.register_root("root", "mission")
