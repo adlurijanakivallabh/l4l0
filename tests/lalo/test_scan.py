@@ -1857,6 +1857,66 @@ def test_resume_after_a_crash_does_not_redispatch_the_completed_step(
     assert len(ReachabilityGraph.load(run_dir / "graph.json").nodes_of_kind(NodeKind.FINDING)) == 1
 
 
+def test_resuming_an_already_finished_run_adopts_the_report_with_no_new_llm_work(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A run that already finished cleanly and wrote a verified report must
+    be a pure no-op on resume: no fresh mission turn just to hear the model
+    say "done" again, and no full re-run of the confidence/adversarial-review
+    pass (a real, avoidable LLM call per already-reviewed finding) plus a
+    report rewrite, all to reach the exact same conclusion a second time.
+    """
+    monkeypatch.setattr(scan_module, "docker_available", lambda: True)
+    monkeypatch.setattr(scan_module, "RuntimeContainer", _FakeContainer)
+
+    router1 = ModelRouter(
+        providers={"fake": _ScriptedProvider(_respond)},
+        routes={"reasoning": ("fake",), "review": ("fake",)},
+        default_route=("fake",),
+    )
+    monkeypatch.setattr(scan_module, "build_router", lambda _settings: router1)
+
+    run_dir = tmp_path / "run"
+    config = ScanConfig(mission="find a bug", target_specs=["example.com"], run_dir=run_dir)
+    outcome1 = ScanRunner(config, env={"ANTHROPIC_API_KEY": "sk-test"}).run()
+    assert outcome1.status is RunStatus.COMPLETED
+    original_markdown = outcome1.report_paths["markdown"].read_text()
+    original_manifest = (run_dir / "report_manifest.json").read_text()
+
+    def _fail_on_anything_but_the_preflight_healthcheck(_call_index: int, prompt: str) -> str:
+        if "FINDING TO REVIEW" in prompt:
+            raise AssertionError(
+                "adversarial review must not re-run for an already-reviewed "
+                "finding on a no-new-work resume"
+            )
+        if "MISSION:" in prompt:
+            raise AssertionError(
+                "the model must not be asked for a new mission turn on a "
+                "resume of an already cleanly-finished run"
+            )
+        return "ok"  # only the preflight verify_router() health-check call
+
+    router2 = ModelRouter(
+        providers={"fake": _ScriptedProvider(_fail_on_anything_but_the_preflight_healthcheck)},
+        routes={"reasoning": ("fake",), "review": ("fake",)},
+        default_route=("fake",),
+    )
+    monkeypatch.setattr(scan_module, "build_router", lambda _settings: router2)
+
+    # SAME config/run_dir -- ScanRunner auto-detects the existing, already-
+    # finished journal + manifest and must adopt the standing report rather
+    # than regenerate it.
+    outcome2 = ScanRunner(config, env={"ANTHROPIC_API_KEY": "sk-test"}).run()
+
+    assert outcome2.status is RunStatus.COMPLETED
+    assert outcome2.report_paths["markdown"].read_text() == original_markdown
+    assert (run_dir / "report_manifest.json").read_text() == original_manifest
+    events = load_run_events(run_dir).snapshot()[1]
+    assert any(
+        e.category == "status" and e.payload.get("event") == "report_adopted" for e in events
+    )
+
+
 def test_resume_reseeds_the_spawn_counter_so_a_second_child_gets_a_fresh_agent_id(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

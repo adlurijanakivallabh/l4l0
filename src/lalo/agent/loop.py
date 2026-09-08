@@ -696,6 +696,17 @@ class AgentLoop:
             # and no re-dispatch -- this is the actual resume, not just a log.
             while journal.has(f"{agent_key}:{start_step}"):
                 entry = journal.get(f"{agent_key}:{start_step}")
+                if entry["tool"] == "finish":
+                    # A prior attempt already reached a genuine, journaled
+                    # finish for this agent -- resume must adopt that result
+                    # outright rather than fall through to the live loop
+                    # below and ask the model to declare the same mission
+                    # finished a second time (a real, avoidable LLM call on
+                    # every resume of an already-completed run).
+                    self._emit("resumed", {"replayed_steps": start_step})
+                    return AgentResult(
+                        "finished", start_step + 1, transcript, summary=str(entry["observation"])
+                    )
                 transcript.append(
                     {
                         "tool": entry["tool"],
@@ -778,10 +789,27 @@ class AgentLoop:
                 no_tool_call_retries = 0
 
                 if call.name == "finish":
+                    summary = str_arg(call.args, "summary")
+                    finish_args = call.args  # assigned first: mypy strict does not
+                    # carry `call`'s non-None narrowing into
+                    # a nested def's own default-argument
+                    # expression (matches the existing
+                    # tool_name/tool_args pattern above)
+
+                    def _finish_once(
+                        _args: dict[str, object] = finish_args, _summary: str = summary
+                    ) -> dict[str, object]:
+                        return {"tool": "finish", "args": _args, "observation": _summary}
+
+                    # Journaled like every other step (dispatch, nudge, skip)
+                    # -- otherwise a resumed run_dir replays every step up to
+                    # but not including this one, then falls through to a
+                    # live loop iteration and asks the model AGAIN purely to
+                    # hear it declare the same mission finished a second time.
+                    if journal is not None:
+                        journal.run_once(f"{agent_key}:{step}", _finish_once)
                     self._emit("finished", {"step": step})
-                    return AgentResult(
-                        "finished", step + 1, transcript, summary=str_arg(call.args, "summary")
-                    )
+                    return AgentResult("finished", step + 1, transcript, summary=summary)
 
                 signature = _call_signature(call.name, call.args)
                 if signature == last_signature:

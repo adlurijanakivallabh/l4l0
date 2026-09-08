@@ -218,6 +218,56 @@ def test_list_runs_without_a_manifest_still_lists_with_no_mission(tmp_path: Path
     assert runs[0]["report_formats"] == []
 
 
+def test_list_runs_reports_report_valid_true_for_an_intact_manifest(tmp_path: Path) -> None:
+    """report_valid is purely informational (the frontend never hides or
+    disables Resume on it - see gui/static/app.js's own buildRunItem) but
+    must correctly reflect whether ScanRunner's own idempotent-resume fast
+    path (scan.py) would actually adopt this run's report rather than
+    regenerate it."""
+    from lalo.report.manifest import write_report_manifest
+
+    run_dir = tmp_path / "abc123"
+    run_dir.mkdir()
+    (run_dir / "report.json").write_text("{}", encoding="utf-8")
+    (run_dir / "report.md").write_text("# report", encoding="utf-8")
+    write_report_manifest(run_dir, {"json": run_dir / "report.json", "md": run_dir / "report.md"})
+
+    client, _ = _client(runs_dir=tmp_path)
+    runs = client.get("/runs").json()["runs"]
+    assert runs[0]["has_report"] is True
+    assert runs[0]["report_valid"] is True
+
+
+def test_list_runs_reports_report_valid_false_with_no_manifest_at_all(tmp_path: Path) -> None:
+    run_dir = tmp_path / "abc123"
+    run_dir.mkdir()
+    (run_dir / "report.json").write_text("{}", encoding="utf-8")
+    (run_dir / "report.md").write_text("# report", encoding="utf-8")
+    # no report_manifest.json written for this run
+
+    client, _ = _client(runs_dir=tmp_path)
+    runs = client.get("/runs").json()["runs"]
+    assert runs[0]["has_report"] is True
+    assert runs[0]["report_valid"] is False
+
+
+def test_list_runs_reports_report_valid_false_when_a_reported_file_drifted(
+    tmp_path: Path,
+) -> None:
+    from lalo.report.manifest import write_report_manifest
+
+    run_dir = tmp_path / "abc123"
+    run_dir.mkdir()
+    (run_dir / "report.json").write_text("{}", encoding="utf-8")
+    (run_dir / "report.md").write_text("# report", encoding="utf-8")
+    write_report_manifest(run_dir, {"json": run_dir / "report.json", "md": run_dir / "report.md"})
+    (run_dir / "report.md").write_text("# a different report now", encoding="utf-8")
+
+    client, _ = _client(runs_dir=tmp_path)
+    runs = client.get("/runs").json()["runs"]
+    assert runs[0]["report_valid"] is False
+
+
 def test_list_runs_report_formats_reflects_a_partial_pdf_failure(tmp_path: Path) -> None:
     """pdf/docx are each independently best-effort at write time - a run
     with a canonical report but no pdf must not silently claim it has one."""

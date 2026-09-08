@@ -180,7 +180,11 @@ from .orchestrator.journal import DurableJournal
 from .prompts import render_prompt
 from .recon.tool import build_recon_tool
 from .report.collect import ReportUsage
-from .report.manifest import write_report_manifest
+from .report.manifest import (
+    read_report_manifest_paths,
+    verify_report_manifest,
+    write_report_manifest,
+)
 from .report.writer import write_report
 from .runtime.container import RuntimeConfig, RuntimeContainer, docker_available
 from .runtime.tool import build_run_command_tool
@@ -1211,6 +1215,7 @@ class ScanRunner:
         # the same child_id), and the new child_loop.run() call resumes that
         # SAME child_id's own already-journaled steps instead of restarting
         # its task from scratch.
+        journal_keys_before_root = len(journal.completed_keys())
         result = root_loop.run(self.config.mission, journal=journal, agent_key="root")
         coordinator.record_result(
             root_id,
@@ -1219,29 +1224,67 @@ class ScanRunner:
             success=result.stop_reason in _TERMINAL_SUCCESS,
         )
 
-        for finding_id in graph.nodes_of_kind(NodeKind.FINDING):
-            confidence = compute_confidence(graph, finding_id)
-            review = run_adversarial_review(
-                graph,
-                finding_id,
-                confidence,
-                router,
-                second_opinion=self.config.enable_second_opinion_review,
-            )
-            node = graph.node(finding_id)
+        # Idempotent-resume fast path: journal.jsonl is strictly append-only
+        # (see orchestrator/journal.py's own module docstring) and every
+        # individual side-effecting step -- root or spawned child, dispatch,
+        # nudge, skip, or a genuine finish -- gets its own journaled key (see
+        # agent/loop.py's own finish-step journaling). If THIS invocation's
+        # own root_loop.run() call above added not a single new key, nothing
+        # anywhere in the whole spawn tree ran live this time -- the graph is
+        # provably byte-identical to what it was before that call, which
+        # already carries whatever confidence/review_verdict fields a PRIOR
+        # invocation's own review pass persisted onto it. "cancelled" is
+        # deliberately excluded even then: it's the one stop_reason that can
+        # fire before any work is attempted for a reason specific to THIS
+        # invocation (an operator cancel, or an unusually tight
+        # max_duration_s tripping instantly) rather than a genuine verdict on
+        # the mission -- adopting a stale report under a THIS-invocation-only
+        # preemption would report a status the delivered report never
+        # actually reached.
+        no_new_work_this_invocation = (
+            len(journal.completed_keys()) == journal_keys_before_root
+            and result.stop_reason != "cancelled"
+        )
+        report_paths: dict[str, Path] | None = None
+        if no_new_work_this_invocation and not verify_report_manifest(self.config.run_dir):
+            report_paths = read_report_manifest_paths(self.config.run_dir)
+
+        if report_paths is not None:
+            # Adopt: recomputing confidence, re-running the adversarial-
+            # review LLM call for every existing finding, and rewriting
+            # every report format would spend real money to reach the exact
+            # same conclusion a second time.
             self._emit(
-                "finding",
+                "status",
                 {
-                    "finding_id": finding_id,
-                    "title": node.get("title", finding_id),
-                    "severity": node.get("cvss_severity", "info"),
-                    "confidence": confidence.score,
-                    "verdict": review.verdict.value,
+                    "event": "report_adopted",
+                    "report_paths": {fmt: str(path) for fmt, path in report_paths.items()},
                 },
             )
+        else:
+            for finding_id in graph.nodes_of_kind(NodeKind.FINDING):
+                confidence = compute_confidence(graph, finding_id)
+                review = run_adversarial_review(
+                    graph,
+                    finding_id,
+                    confidence,
+                    router,
+                    second_opinion=self.config.enable_second_opinion_review,
+                )
+                node = graph.node(finding_id)
+                self._emit(
+                    "finding",
+                    {
+                        "finding_id": finding_id,
+                        "title": node.get("title", finding_id),
+                        "severity": node.get("cvss_severity", "info"),
+                        "confidence": confidence.score,
+                        "verdict": review.verdict.value,
+                    },
+                )
 
-        for chain in graph.all_enabling_chains():
-            self._emit("chain", {"node_ids": chain.node_ids})
+            for chain in graph.all_enabling_chains():
+                self._emit("chain", {"node_ids": chain.node_ids})
 
         # Checked ahead of the ordinary stop_reason mapping: a wall-clock
         # kill goes through the exact same cooperative should_stop()/
@@ -1275,10 +1318,11 @@ class ScanRunner:
                     else None
                 ),
             )
-        report_paths = write_report(
-            self.config.run_dir, graph, skills, status=status, usage=report_usage
-        )
-        write_report_manifest(self.config.run_dir, report_paths)
+        if report_paths is None:
+            report_paths = write_report(
+                self.config.run_dir, graph, skills, status=status, usage=report_usage
+            )
+            write_report_manifest(self.config.run_dir, report_paths)
         graph.save(self.config.run_dir / "graph.json")
         _write_trace_file(self.config.run_dir, tracer)
         completed_payload: dict[str, object] = {

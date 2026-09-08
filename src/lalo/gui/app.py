@@ -121,6 +121,7 @@ from ..core.errors import AllProvidersFailedError
 from ..core.logging import get_logger
 from ..core.providers import build_router, verify_router
 from ..intake import parse_scan_intent
+from ..report.manifest import verify_report_manifest
 from ..report.writer import (
     CSV_FILENAME,
     DOCX_FILENAME,
@@ -232,12 +233,21 @@ def _list_runs(runs_dir: Path, *, running_run_ids: set[str] | None = None) -> li
             for fmt, (filename, _media) in _REPORT_FORMATS.items()
             if (entry / filename).exists()
         ]
+        has_report = "json" in report_formats
+        # Informational only, never a gate: ScanRunner's own idempotent-resume
+        # fast path (scan.py) already makes resuming a run with an intact
+        # report a cheap no-op, but the frontend still offered "Resume" with
+        # no indication that nothing further would actually happen - this
+        # lets it say so, purely for the operator's own expectations, while
+        # the button itself stays exactly as clickable as before.
+        report_valid = has_report and not verify_report_manifest(entry)
         summaries.append(
             {
                 "run_id": entry.name,
                 "mission": mission,
                 "target_specs": target_specs,
-                "has_report": "json" in report_formats,
+                "has_report": has_report,
+                "report_valid": report_valid,
                 "report_formats": report_formats,
                 "modified_at": entry.stat().st_mtime,
                 "running": entry.name in (running_run_ids or set()),

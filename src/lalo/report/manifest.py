@@ -35,6 +35,20 @@ def write_report_manifest(run_dir: Path, report_paths: dict[str, Path]) -> Path:
     return manifest_path
 
 
+def read_report_manifest_paths(run_dir: Path) -> dict[str, Path] | None:
+    """The per-format report path recorded in this run's own manifest, keyed
+    the same way :func:`~lalo.report.writer.write_report`'s own return value
+    is -- for a caller that wants to ADOPT an already-verified-intact prior
+    report instead of regenerating it (see :func:`verify_report_manifest`,
+    which should be checked first). ``None`` if no manifest exists yet.
+    """
+    manifest_path = run_dir / _MANIFEST_FILENAME
+    if not manifest_path.exists():
+        return None
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    return {fmt: run_dir / entry["path"] for fmt, entry in manifest.get("artifacts", {}).items()}
+
+
 def verify_report_manifest(run_dir: Path) -> list[str]:
     """Every drift between the recorded manifest and the artifacts on disk
     right now - a missing file, or one whose digest no longer matches.

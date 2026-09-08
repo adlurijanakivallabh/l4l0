@@ -59,3 +59,20 @@ def test_verify_report_manifest_reports_missing_manifest_itself(tmp_path: Path) 
 
     drift = verify_report_manifest(tmp_path)
     assert len(drift) == 1
+
+
+def test_read_report_manifest_paths_reconstructs_the_written_paths(tmp_path: Path) -> None:
+    from lalo.report.manifest import read_report_manifest_paths, write_report_manifest
+
+    (tmp_path / "report.md").write_text("hello", encoding="utf-8")
+    (tmp_path / "report.json").write_text('{"a": 1}', encoding="utf-8")
+    report_paths = {"md": tmp_path / "report.md", "json": tmp_path / "report.json"}
+    write_report_manifest(tmp_path, report_paths)
+
+    assert read_report_manifest_paths(tmp_path) == report_paths
+
+
+def test_read_report_manifest_paths_on_a_run_with_no_manifest_is_none(tmp_path: Path) -> None:
+    from lalo.report.manifest import read_report_manifest_paths
+
+    assert read_report_manifest_paths(tmp_path) is None

@@ -1192,6 +1192,32 @@ def test_resume_with_an_empty_journal_behaves_exactly_like_a_fresh_run(tmp_path)
     assert "resumed" not in events  # nothing to replay -- no resumed event at all
 
 
+def test_finish_step_is_journaled_so_a_resumed_run_never_recalls_the_model(tmp_path) -> None:
+    """A completed run's own "finish" turn must land in the journal like every
+    other step - otherwise a later resume of the SAME run_dir replays every
+    step up to (but not including) the finish, then falls through to the
+    live loop and asks the model AGAIN, purely to hear it say "done" a
+    second time - a real, avoidable cost on every resume of an already-
+    finished scan.
+    """
+    registry = ToolRegistry([])
+    journal = DurableJournal(tmp_path / "j.jsonl")
+    router1 = _scripted(['{"tool": "finish", "args": {"summary": "all done"}}'])
+    loop1 = AgentLoop(router1, registry, system_prompt="")  # type: ignore[arg-type]
+    result1 = loop1.run("mission", journal=journal, agent_key="root")
+    assert result1.stop_reason == "finished"
+    assert journal.has("root:0")  # the finish turn itself must be journaled
+
+    # "Resume": a fresh process, same run_dir/journal - the model must never
+    # be asked anything at all, since the mission already finished cleanly.
+    router2 = _scripted(["THIS SHOULD NEVER BE READ"])
+    loop2 = AgentLoop(router2, registry, system_prompt="")  # type: ignore[arg-type]
+    result2 = loop2.run("mission", journal=journal, agent_key="root")
+    assert result2.stop_reason == "finished"
+    assert result2.summary == "all done"
+    assert router2.calls == 0  # zero fresh LLM calls -- a real cost bug otherwise
+
+
 def test_a_crash_after_journaling_but_mid_step_still_resumes_correctly(tmp_path) -> None:
     # journal.run_once() durably records the step BEFORE the caller's own
     # bookkeeping (budget.spend, transcript.append, the tool_result event) can

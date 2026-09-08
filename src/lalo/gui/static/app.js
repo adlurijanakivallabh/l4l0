@@ -329,6 +329,19 @@
       const resumeBtn = item.querySelector(".run-resume-btn");
       resumeBtn.hidden = false;
       resumeBtn.dataset.runId = run.run_id;
+      // Never hidden or disabled for a run with a valid report - resuming
+      // one is a cheap, harmless no-op (the backend adopts the existing
+      // report instead of redoing anything), and CLAUDE.md's own maximum-
+      // agent-freedom stance rules out ever blocking the action outright.
+      // This is purely informational: it stops the button from silently
+      // implying more work remains when none does.
+      if (run.report_valid) {
+        resumeBtn.textContent = "Resume (already finished)";
+        resumeBtn.title = "This run already has a verified final report - resuming will not redo it.";
+      } else {
+        resumeBtn.textContent = "Resume";
+        resumeBtn.title = "";
+      }
     }
     return item;
   }
