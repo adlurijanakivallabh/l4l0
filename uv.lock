@@ -597,6 +597,7 @@ dependencies = [
     { name = "pyyaml" },
     { name = "uvicorn", extra = ["standard"] },
     { name = "weasyprint" },
+    { name = "websockets" },
 ]
 
 [package.dev-dependencies]
@@ -623,6 +624,7 @@ requires-dist = [
     { name = "pyyaml", specifier = ">=6.0,<7.0" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.30,<1.0" },
     { name = "weasyprint", specifier = ">=69.0" },
+    { name = "websockets", specifier = ">=17.1" },
 ]
 
 [package.metadata.requires-dev]

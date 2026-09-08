@@ -11,10 +11,13 @@ request/response shape.
 
 from __future__ import annotations
 
+import asyncio
 import difflib
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+
+import websockets
 
 from ..agent.tools import FunctionTool, ToolResult, str_arg
 from ..identity.role_matrix import RoleMatrixEntry, build_role_matrix
@@ -327,4 +330,55 @@ def build_raw_tcp_tool(scope: ScopeGuard) -> FunctionTool:
             '(optional, sent as raw bytes), "timeout": number (optional, seconds, default 5.0)}'
         ),
         func=_raw_tcp,
+    )
+
+
+def build_ws_fire_tool(scope: ScopeGuard) -> FunctionTool:
+    """Connect to a WebSocket endpoint, send one message, read back whatever
+    arrives - many modern API targets (chat, live dashboards, GraphQL
+    subscriptions) are WebSocket-native and were previously only reachable
+    via the free shell writing a throwaway client script.
+
+    Scope-checked the same way ``HttpFirer.fire()`` checks a URL, but NOT
+    pinned-IP-dialed the way HTTP is: ``websockets.connect`` doesn't expose
+    the same low-level socket-injection seam ``httpx`` does. The URL-level
+    ``scope.check()`` still blocks an out-of-scope host from ever being
+    dialed - it just lacks HTTP's TOCTOU-closing pinned-IP guarantee against
+    DNS rebinding between the check and the connect. A real, honestly
+    smaller guarantee than HTTP gets, not a silent gap.
+    """
+
+    def _ws_fire(args: dict[str, object]) -> ToolResult:
+        url = str_arg(args, "url", "")
+        message = str_arg(args, "message", "")
+        if not url:
+            return ToolResult(observation="error: 'url' is required", ok=False)
+        decision = scope.check(url.replace("ws://", "http://").replace("wss://", "https://"))
+        if not decision.allowed:
+            return ToolResult(observation=f"error: scope {decision.reason}", ok=False)
+        timeout = float(args.get("timeout", 5.0) or 5.0)  # type: ignore[arg-type]
+
+        async def _run() -> str:
+            async with websockets.connect(url, open_timeout=timeout) as conn:
+                if message:
+                    await conn.send(message)
+                try:
+                    return str(await asyncio.wait_for(conn.recv(), timeout=timeout))
+                except TimeoutError:
+                    return "(no response within timeout)"
+
+        try:
+            response = asyncio.run(_run())
+        except Exception as exc:  # noqa: BLE001 - report every connection failure, never crash the agent
+            return ToolResult(observation=f"error: {type(exc).__name__}: {exc}", ok=False)
+        return ToolResult(observation=response[:_MAX_BODY_CHARS], ok=True)
+
+    return FunctionTool(
+        name="ws_fire",
+        description=(
+            "Connect to a WebSocket endpoint, send one message, and return whatever comes "
+            'back. args: {"url": str (ws:// or wss://), "message": str (optional), '
+            '"timeout": number (optional, seconds, default 5.0)}'
+        ),
+        func=_ws_fire,
     )

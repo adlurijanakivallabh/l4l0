@@ -21,6 +21,7 @@ from lalo.execution.tool import (
     build_diff_responses_tool,
     build_fire_concurrent_tool,
     build_raw_tcp_tool,
+    build_ws_fire_tool,
 )
 
 
@@ -500,3 +501,85 @@ def test_raw_tcp_rejects_a_non_integer_port() -> None:
     result = registry.dispatch("raw_tcp", {"host": "10.0.0.1", "port": "not-a-port"})
     assert result.ok is False
     assert "port" in result.observation
+
+
+# --- ws_fire ----------------------------------------------------------------
+
+
+def _ws_scope() -> ScopeGuard:
+    eng = Engagement.from_specs(["app.example.com"])
+    return ScopeGuard(engagement=eng, resolver=lambda h: frozenset({"93.184.216.34"}))
+
+
+class _FakeWSConnection:
+    def __init__(self, reply: str = "pong") -> None:
+        self.reply = reply
+        self.sent: str | None = None
+
+    async def send(self, message: str) -> None:
+        self.sent = message
+
+    async def recv(self) -> str:
+        return self.reply
+
+    async def __aenter__(self) -> _FakeWSConnection:
+        return self
+
+    async def __aexit__(self, *exc: object) -> bool:
+        return False
+
+
+def test_ws_fire_sends_a_message_and_returns_the_response(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # websockets.connect() itself is a plain (non-async) call that returns an
+    # object supporting `async with` - a fake that's `async def` instead
+    # would hand `async with` a coroutine, which has no __aenter__.
+    def fake_connect(url: str, **kwargs: object) -> _FakeWSConnection:
+        return _FakeWSConnection()
+
+    monkeypatch.setattr(execution_tool_module.websockets, "connect", fake_connect)
+    registry = ToolRegistry([build_ws_fire_tool(_ws_scope())])
+    result = registry.dispatch("ws_fire", {"url": "ws://app.example.com/socket", "message": "ping"})
+    assert result.ok is True
+    assert "pong" in result.observation
+
+
+def test_ws_fire_sends_the_given_message(monkeypatch: pytest.MonkeyPatch) -> None:
+    conn = _FakeWSConnection()
+
+    def fake_connect(url: str, **kwargs: object) -> _FakeWSConnection:
+        return conn
+
+    monkeypatch.setattr(execution_tool_module.websockets, "connect", fake_connect)
+    registry = ToolRegistry([build_ws_fire_tool(_ws_scope())])
+    registry.dispatch("ws_fire", {"url": "ws://app.example.com/socket", "message": "hello"})
+    assert conn.sent == "hello"
+
+
+def test_ws_fire_rejects_an_out_of_scope_url() -> None:
+    registry = ToolRegistry([build_ws_fire_tool(_ws_scope())])
+    result = registry.dispatch(
+        "ws_fire", {"url": "ws://evil.example.org/socket", "message": "ping"}
+    )
+    assert not result.ok
+    assert "scope" in result.observation.lower()
+
+
+def test_ws_fire_requires_url() -> None:
+    registry = ToolRegistry([build_ws_fire_tool(_ws_scope())])
+    result = registry.dispatch("ws_fire", {})
+    assert result.ok is False
+
+
+def test_ws_fire_reports_a_connection_failure_instead_of_crashing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_connect(url: str, **kwargs: object) -> _FakeWSConnection:
+        raise OSError("connection refused")
+
+    monkeypatch.setattr(execution_tool_module.websockets, "connect", fake_connect)
+    registry = ToolRegistry([build_ws_fire_tool(_ws_scope())])
+    result = registry.dispatch("ws_fire", {"url": "ws://app.example.com/socket"})
+    assert result.ok is False
+    assert "OSError" in result.observation
