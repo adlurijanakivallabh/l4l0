@@ -219,6 +219,54 @@ def test_spawn_agent_role_defaults_to_full_when_omitted() -> None:
     assert coord.node(child_id).role == "full"
 
 
+def test_spawn_agent_resumes_a_real_orphan_using_its_original_task() -> None:
+    coord = AgentCoordinator(max_depth=5)
+    root = coord.register_root("root", "mission")
+    coord.register_orphan(
+        "agent-7",
+        "Source Reviewer",
+        "the ORIGINAL task text",
+        parent_id=root,
+        depth=1,
+        role="source_reviewer",
+    )
+    calls: list[tuple[str, str, str]] = []
+
+    def run_child(child_id: str, name: str, task: str) -> tuple[str, list[str], bool]:
+        calls.append((child_id, name, task))
+        return "continued and confirmed", ["f-1"], True
+
+    spawn_tool, _ = build_spawn_tools(coord, run_child, self_id=root)
+    registry = ToolRegistry([spawn_tool])
+    result = registry.dispatch(
+        "spawn_agent",
+        {"resume_agent_id": "agent-7", "task": "a DIFFERENT task the model tried to give"},
+    )
+    assert result.ok is True
+    assert calls == [("agent-7", "Source Reviewer", "the ORIGINAL task text")]
+    assert coord.node("agent-7").status is AgentStatus.COMPLETED
+
+
+def test_spawn_agent_rejects_a_resume_agent_id_that_is_not_a_known_orphan() -> None:
+    coord = AgentCoordinator(max_depth=5)
+    root = coord.register_root("root", "mission")
+    spawn_tool, _ = build_spawn_tools(coord, lambda *_a: ("", [], True), self_id=root)
+    registry = ToolRegistry([spawn_tool])
+    result = registry.dispatch("spawn_agent", {"resume_agent_id": "agent-999"})
+    assert result.ok is False
+
+
+def test_spawn_agent_rejects_resuming_a_node_that_is_not_orphaned() -> None:
+    coord = AgentCoordinator(max_depth=5)
+    root = coord.register_root("root", "mission")
+    child = coord.spawn(root, "child", "subtask")
+    coord.record_result(child, summary="done", finding_ids=[])
+    spawn_tool, _ = build_spawn_tools(coord, lambda *_a: ("", [], True), self_id=root)
+    registry = ToolRegistry([spawn_tool])
+    result = registry.dispatch("spawn_agent", {"resume_agent_id": child})
+    assert result.ok is False
+
+
 def test_spawn_agent_tool_requires_name_and_task() -> None:
     coord = AgentCoordinator()
     root = coord.register_root("root", "mission")

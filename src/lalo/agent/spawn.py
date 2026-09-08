@@ -360,6 +360,47 @@ def build_spawn_tools(
     """
 
     def _spawn(args: dict[str, object]) -> ToolResult:
+        resume_agent_id = str_arg(args, "resume_agent_id", "").strip()
+        if resume_agent_id:
+            if not coordinator.has_node(resume_agent_id):
+                return ToolResult(
+                    observation=(
+                        f"error: {resume_agent_id!r} is not a known agent - "
+                        "call view_agent_graph to see valid ids"
+                    ),
+                    ok=False,
+                )
+            node = coordinator.node(resume_agent_id)
+            if node.status is not AgentStatus.ORPHANED:
+                return ToolResult(
+                    observation=(
+                        f"error: {resume_agent_id!r} is not orphaned (status: "
+                        f"{node.status.value}) - only an orphaned agent can be resumed"
+                    ),
+                    ok=False,
+                )
+            try:
+                summary, finding_ids, success = run_child(resume_agent_id, node.name, node.task)
+            except Exception as exc:  # noqa: BLE001 - a crashed child must still reach a
+                # terminal status, matching the fresh-spawn path's own crash handling.
+                error = f"child crashed: {type(exc).__name__}: {exc}"
+                coordinator.record_result(
+                    resume_agent_id, summary=error, finding_ids=[], success=False
+                )
+                return ToolResult(
+                    observation=f"error resuming {resume_agent_id}: {error}", ok=False
+                )
+            coordinator.record_result(
+                resume_agent_id, summary=summary, finding_ids=finding_ids, success=success
+            )
+            report = {
+                "agent_id": resume_agent_id,
+                "success": success,
+                "summary": summary,
+                "filed_finding_ids": finding_ids,
+            }
+            return ToolResult(observation=json.dumps(report), ok=success)
+
         name = str_arg(args, "name").strip()
         task = str_arg(args, "task").strip()
         role = str_arg(args, "role", "full").strip() or "full"
@@ -411,7 +452,11 @@ def build_spawn_tools(
             'default "full" - source_reviewer confines the child to run_command/'
             "record_finding/recall/query_graph/note only, no live-firing tools and no "
             "further spawning - use it for a subtask that's purely reading and reasoning "
-            "about source code)}"
+            'about source code), "resume_agent_id": str (optional - resume an orphaned '
+            "agent shown by view_agent_graph as [orphaned] (interrupted by a crash on a "
+            "prior run) instead of starting a new one; when set, 'name'/'task'/'role' are "
+            "ignored and the agent's own original task continues from its last completed "
+            "step)}"
         ),
         func=_spawn,
     )
