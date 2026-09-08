@@ -12,7 +12,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 import lalo.gui.app as app_module
-from lalo.core.errors import AllProvidersFailedError
+from lalo.core.errors import AllProvidersFailedError, LoginFailedError
+from lalo.core.redaction import safe_error_from_code
 from lalo.gui.app import build_app
 from lalo.gui.events import EventLog
 from lalo.scan import ScanConfig
@@ -785,6 +786,7 @@ def test_a_failed_scan_with_all_providers_failed_surfaces_structured_per_provide
         assert _wait_until(lambda: _failed_event() is not None)
         payload = _failed_event()
         assert payload is not None
+        assert payload["error"] == "All configured model providers failed."
         assert payload["role"] == "reasoning"
         assert payload["failures"] == [
             {"provider": "anthropic", "reason": "401 unauthorized"},
@@ -815,6 +817,58 @@ def test_a_failed_scan_with_a_plain_error_has_no_role_or_failures_fields(
         assert payload is not None
         assert "role" not in payload
         assert "failures" not in payload
+    finally:
+        _FakeScanRunner.raises = None
+
+
+def test_a_failed_scan_never_leaks_the_raw_exception_string(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _FakeScanRunner.raises = RuntimeError("boom: connection to postgres://user:hunter2@db failed")
+    monkeypatch.setattr(app_module, "ScanRunner", _FakeScanRunner)
+    try:
+        client, event_log = _client(runs_dir=tmp_path)
+        client.post("/scan", json={"mission": "find a bug", "targets": ["example.com"]})
+
+        def _failed_event() -> dict | None:
+            _cursor, events = event_log.snapshot()
+            for e in events:
+                if e.category == "status" and e.payload.get("event") == "scan_failed":
+                    return e.payload
+            return None
+
+        assert _wait_until(lambda: _failed_event() is not None)
+        payload = _failed_event()
+        assert payload is not None
+        assert payload["error"] == "An unexpected error occurred."
+        assert "hunter2" not in payload["error"]
+    finally:
+        _FakeScanRunner.raises = None
+
+
+def test_a_failed_scan_maps_a_lalo_error_through_its_own_code(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _FakeScanRunner.raises = LoginFailedError(
+        "login for identity admin failed: fired=True status=401 body=secret-debug-token-xyz"
+    )
+    monkeypatch.setattr(app_module, "ScanRunner", _FakeScanRunner)
+    try:
+        client, event_log = _client(runs_dir=tmp_path)
+        client.post("/scan", json={"mission": "find a bug", "targets": ["example.com"]})
+
+        def _failed_event() -> dict | None:
+            _cursor, events = event_log.snapshot()
+            for e in events:
+                if e.category == "status" and e.payload.get("event") == "scan_failed":
+                    return e.payload
+            return None
+
+        assert _wait_until(lambda: _failed_event() is not None)
+        payload = _failed_event()
+        assert payload is not None
+        assert payload["error"] == safe_error_from_code("login_failed")
+        assert "secret-debug-token-xyz" not in payload["error"]
     finally:
         _FakeScanRunner.raises = None
 

@@ -120,6 +120,7 @@ from ..core.env_file import merge_env_file
 from ..core.errors import AllProvidersFailedError
 from ..core.logging import get_logger
 from ..core.providers import build_router, verify_router
+from ..core.redaction import safe_error_from_code
 from ..intake import parse_scan_intent
 from ..report.manifest import verify_report_manifest
 from ..report.writer import (
@@ -395,12 +396,25 @@ def build_app(event_log: EventLog, *, runs_dir: Path | None = None) -> FastAPI:
                 # only place this failure can surface, so it must be a status
                 # event, never a silently dead thread.
                 _log.exception("scan failed")
-                payload: dict[str, object] = {"event": "scan_failed", "error": str(exc)}
+                # str(exc) put whatever the raising code chose to interpolate -
+                # a provider's raw error body, a stack-trace fragment, a
+                # credential caught mid-request - straight onto the dashboard,
+                # which is exactly what safe_error_from_code's own docstring
+                # says it exists to prevent. The full exception is still on
+                # disk via _log.exception above; only the GUI-facing payload
+                # is sanitized. A plain (non-LaloError) exception has no
+                # `.code` attribute at all, hence the getattr fallback to the
+                # same "unknown" bucket every unmapped code already resolves to.
+                code = getattr(exc, "code", "unknown")
+                payload: dict[str, object] = {
+                    "event": "scan_failed",
+                    "error": safe_error_from_code(code),
+                }
                 # AllProvidersFailedError already carries its per-provider
-                # detail as real attributes (see core/errors.py) - str(exc)
-                # alone flattens them into one line the frontend can't
-                # re-segment, so surface role/failures as their own fields
-                # too for a structured, per-provider rendering in the GUI.
+                # detail as real attributes (see core/errors.py) - the fixed
+                # message above alone would flatten them into one generic
+                # line, so surface role/failures as their own fields too for
+                # a structured, per-provider rendering in the GUI.
                 if isinstance(exc, AllProvidersFailedError):
                     payload["role"] = exc.role
                     payload["failures"] = [

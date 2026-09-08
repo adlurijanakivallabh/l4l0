@@ -91,8 +91,30 @@ _ERROR_MESSAGES: dict[str, str] = {
     "all_providers_failed": "All configured model providers failed.",
     "scope_error": "A scope check failed.",
     "scope_violation": "Target is outside the declared engagement scope.",
+    "target_unreachable": (
+        "The target failed its reachability preflight; confirm it is up, or turn "
+        "off fail_on_unreachable_targets to proceed anyway."
+    ),
     "container_error": "The runtime container failed.",
+    "spawn_depth_exceeded": (
+        "A spawned agent hit the depth ceiling; raise spawn_max_depth if deeper "
+        "nesting is expected for this mission."
+    ),
+    "login_failed": (
+        "Login did not produce a usable session; check the identity's "
+        "credentials, or turn off fail_on_broken_login to proceed anyway."
+    ),
+    "session_not_mirrored": (
+        "No graph node exists for this session; re-run login for this identity."
+    ),
+    "jwt_malformed": "The JWT string was not well-formed; capture a fresh token from the target.",
+    "totp_secret_invalid": (
+        "The TOTP secret is not valid base32; check the seed configured for this identity."
+    ),
     "resume_config_mismatch": "This scan's saved state doesn't match the current config.",
+    "cost_limit_exceeded": (
+        "The run's spend crossed the configured cost ceiling; raise or clear the limit to continue."
+    ),
     "unknown": "An unexpected error occurred.",
 }
 

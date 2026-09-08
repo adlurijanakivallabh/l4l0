@@ -125,3 +125,58 @@ def test_set_redaction_enabled_true_restores_normal_redaction() -> None:
     set_redaction_enabled(False)
     set_redaction_enabled(True)
     assert REDACTION_PLACEHOLDER in redact(text)
+
+
+def test_safe_error_from_code_covers_every_lalo_error_code() -> None:
+    """Every concrete LaloError subclass's `code` needs its own entry in
+    _ERROR_MESSAGES - an uncovered code silently falls back to the generic
+    "unknown" message, and nothing else in the codebase would ever notice
+    the table had drifted out of sync with core/errors.py."""
+    from lalo.core import errors
+
+    codes = {
+        obj.code
+        for obj in vars(errors).values()
+        if isinstance(obj, type) and issubclass(obj, errors.LaloError)
+    }
+    assert codes == {
+        "unknown",
+        "config_error",
+        "provider_error",
+        "provider_refusal",
+        "provider_unavailable",
+        "all_providers_failed",
+        "scope_error",
+        "scope_violation",
+        "target_unreachable",
+        "container_error",
+        "spawn_depth_exceeded",
+        "login_failed",
+        "session_not_mirrored",
+        "jwt_malformed",
+        "totp_secret_invalid",
+        "resume_config_mismatch",
+        "cost_limit_exceeded",
+    }
+    fallback = safe_error_from_code("definitely-not-a-real-code")
+    for code in sorted(codes - {"unknown"}):
+        assert safe_error_from_code(code) != fallback, (
+            f"{code!r} has no dedicated entry in _ERROR_MESSAGES and silently "
+            "falls back to the generic unknown-error message"
+        )
+
+
+def test_safe_error_from_code_remediation_hints_name_the_real_opt_in_knobs() -> None:
+    """target_unreachable/login_failed are the two LaloError codes that can
+    actually reach a live scan_failed event today (via ScanConfig's
+    fail_on_unreachable_targets/fail_on_broken_login, both opt-in and False
+    by default) - lock the wording so a future rename of either field is
+    caught here instead of silently going stale in the message text."""
+    assert safe_error_from_code("target_unreachable") == (
+        "The target failed its reachability preflight; confirm it is up, or turn "
+        "off fail_on_unreachable_targets to proceed anyway."
+    )
+    assert safe_error_from_code("login_failed") == (
+        "Login did not produce a usable session; check the identity's "
+        "credentials, or turn off fail_on_broken_login to proceed anyway."
+    )
