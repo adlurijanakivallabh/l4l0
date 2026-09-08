@@ -947,6 +947,54 @@ def test_scan_runner_emits_agent_events_for_a_spawned_childs_lifecycle(
     assert agent_events[0].payload["task"] == "CHILD-C-TASK: test host c.example.com"
 
 
+def test_scan_runner_still_emits_a_failed_agent_event_when_a_child_raises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """_run_child's terminal "agent" event was only ever reached if
+    child_loop.run() returned normally - if it raised (a real, anticipated
+    path: agent/spawn.py's own _spawn wraps exactly this call in its own
+    except Exception, with a comment saying so), the child's GUI status
+    line got stuck showing "running" forever even though the coordinator
+    itself correctly marked the node failed. The overall scan still
+    completes normally (spawn_agent's own crash handling lets the root
+    continue) - only the missing terminal GUI event is what this proves
+    is now fixed.
+    """
+    monkeypatch.setattr(scan_module, "docker_available", lambda: True)
+    monkeypatch.setattr(scan_module, "RuntimeContainer", _FakeContainer)
+
+    def _respond_with_a_crashing_child(call_index: int, prompt: str) -> str:
+        if "MISSION:" not in prompt:
+            return "ok"
+        if prompt.startswith("MISSION:\nCHILD-C-TASK"):
+            raise RuntimeError("simulated child crash")
+        if "HISTORY (most recent last):" not in prompt:
+            return _spawn_agent_call()
+        return _finish_call()
+
+    router = ModelRouter(
+        providers={"fake": _ScriptedProvider(_respond_with_a_crashing_child)},
+        routes={"reasoning": ("fake",), "review": ("fake",)},
+        default_route=("fake",),
+    )
+    monkeypatch.setattr(scan_module, "build_router", lambda _settings: router)
+
+    event_log = EventLog()
+    config = ScanConfig(
+        mission="find a bug, spawning one child for a focused subtask",
+        target_specs=["c.example.com"],
+        run_dir=tmp_path / "run",
+        usage_path=tmp_path / "usage.json",
+    )
+    outcome = ScanRunner(config, env={"ANTHROPIC_API_KEY": "sk-test"}, event_log=event_log).run()
+    assert outcome.status is RunStatus.COMPLETED  # the root recovers; only the child crashed
+
+    _cursor, events = event_log.snapshot()
+    agent_events = [e for e in events if e.category == "agent"]
+    assert [e.payload["status"] for e in agent_events] == ["running", "failed"]
+    assert all(e.payload["agent_id"] == "agent-2" for e in agent_events)
+
+
 def test_run_child_journals_a_spawned_breadcrumb_before_running_and_a_finished_one_after(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

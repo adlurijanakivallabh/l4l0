@@ -1085,7 +1085,29 @@ class ScanRunner:
                         "role": role,
                     },
                 )
-                result = child_loop.run(task, journal=journal, agent_key=child_id)
+                try:
+                    result = child_loop.run(task, journal=journal, agent_key=child_id)
+                except Exception:
+                    # child_loop.run() can genuinely raise (agent/spawn.py's
+                    # own _spawn/_run_one wrap this exact call in their own
+                    # except Exception specifically to handle it) - without
+                    # this, the terminal "agent" event below never fires and
+                    # the GUI's live console shows this child stuck on
+                    # "running" forever, even though the coordinator itself
+                    # (via the caller's own except block) correctly marks it
+                    # failed. Re-raised unchanged: the caller's own crash
+                    # handling (coordinator.record_result, the returned
+                    # error observation) is untouched by this.
+                    self._emit(
+                        "agent",
+                        {
+                            "agent_id": child_id,
+                            "name": node.name,
+                            "task": task,
+                            "status": "failed",
+                        },
+                    )
+                    raise
                 journal.record(
                     f"{child_id}:finished",
                     {"stop_reason": result.stop_reason, "summary": result.summary},
