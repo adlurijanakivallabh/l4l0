@@ -1,17 +1,19 @@
 ---
 name: jwt
 category: vulnerability
-description: JWT/OIDC token forgery, algorithm confusion, header manipulation, and claim validation gaps with a per-class proof ladder
-keywords: [jwt, json web token, oidc, oauth, algorithm confusion, alg none, token forgery]
+description: JWT/OIDC token forgery, weak-secret cracking, algorithm confusion, header manipulation, and claim validation gaps with a per-class proof ladder
+keywords: [jwt, json web token, oidc, oauth, algorithm confusion, alg none, token forgery, weak secret, hmac crack]
 ---
 
 # JWT and OIDC
 
 A JWT is only as trustworthy as the verification path that checks it —
 signature, issuer, audience, key, and context all have to bind correctly on
-*every* acceptance path. This project's own `jwt_decode`/`jwt_alg_none`/
-`jwt_with_claim` helpers give you the pure decode/tamper primitives; this
-skill is the methodology for what to try and how to prove it matters.
+*every* acceptance path. This project's own `jwt` tool's `decode`/
+`crack_secret`/`alg_none`/`with_claim` ops give you the decode/crack/tamper
+primitives (the last three are pure - they never decide anything is
+vulnerable, only produce or check a candidate); this skill is the
+methodology for what to try and how to prove it matters.
 
 ## Attack Surface
 
@@ -41,28 +43,46 @@ skill is the methodology for what to try and how to prove it matters.
 
 ## Techniques (start quiet, escalate only as needed)
 
-1. **Algorithm-confusion and none-algorithm probes.** If the algorithm is
+1. **Weak or guessable signing secret (check this first for any HS256/384/512
+   token).** A symmetric secret that's a default, a common word, or drawn
+   from the target's own visible strings (its name, its framework, a value
+   seen in source/config/error output) is, in practice, the single most
+   common way a JWT-using target actually gets fully compromised — more
+   common than algorithm confusion. Use `jwt`'s own `crack_secret` op with a
+   SMALL, curated candidate list: a dozen or so likely defaults (the
+   target's own name/framework/environment terms, plus generic ones like
+   `secret`, `changeme`, `dev`) — build the list from what you already know
+   about this specific target, don't reach for an entire wordlist file.
+   `crack_secret` enforces a hard cap and refuses an oversized list for
+   exactly this reason: loading a whole wordlist file into memory via
+   `run_command` instead (rather than a short, targeted list through this
+   op) is a real way to exhaust the container's own memory budget, not a
+   hypothetical risk — a live run did exactly this once. If a short,
+   targeted list finds nothing, that is real signal the secret is NOT
+   trivially weak; move on to other techniques rather than escalating to a
+   massive wordlist attempt of marginal value.
+2. **Algorithm-confusion and none-algorithm probes.** If the algorithm is
    not strictly pinned server-side, test whether an asymmetric-to-symmetric
    algorithm swap (using a public key as a symmetric secret) or an
    unsigned (`alg: none`) token is accepted — `jwt_alg_none` produces the
    candidate token; whether it is accepted is what you are testing.
-2. **Claim manipulation on an otherwise-valid signature path.** Where you
+3. **Claim manipulation on an otherwise-valid signature path.** Where you
    cannot forge a valid signature, test whether a claim change survives
    anyway — a service that decodes but does not fully re-verify, or one
    using a still-valid stale token structure — via `jwt_with_claim`.
-3. **Header-driven key-selection abuse.** If the header carries a key
+4. **Header-driven key-selection abuse.** If the header carries a key
    identifier or an embedded/remote key reference, test whether the
    service actually restricts which keys or sources it will trust, or
    whether it can be steered to a key you control.
-4. **Cross-context and cross-service replay.** Try the same token against
+5. **Cross-context and cross-service replay.** Try the same token against
    every service that accepts tokens from the same issuer — a token
    correctly scoped for one audience being silently accepted by another is
    a distinct, often-missed finding from any single-service test.
-5. **Type confusion between token kinds.** If both access and ID tokens
+6. **Type confusion between token kinds.** If both access and ID tokens
    exist, test whether a service that expects one will accept the other —
    this is a common gap when a service verifies signature and expiry but
    not the token's declared type.
-6. **Refresh-token reuse.** If refresh tokens are in scope, test whether a
+7. **Refresh-token reuse.** If refresh tokens are in scope, test whether a
    previously-used refresh token is still accepted (no rotation
    enforcement) — this is a durable-access finding distinct from anything
    about the access token itself.
