@@ -365,6 +365,22 @@ def _journal_path(run_dir: Path) -> Path:
     return run_dir / "journal.jsonl"
 
 
+def _max_spawned_agent_number(journal: DurableJournal) -> int:
+    """The highest N already used by an ``agent-N`` child anywhere in
+    ``journal`` -- used to reseed :class:`AgentCoordinator`'s child-id
+    counter on resume (see :meth:`AgentCoordinator.seed_counter`), since a
+    fresh process has no memory of ids a crashed attempt's replayed-not-
+    respawned steps already used.
+    """
+    numbers: list[int] = []
+    for key in journal.completed_keys():
+        prefix, _, _ = key.partition(":")
+        suffix = prefix.removeprefix("agent-")
+        if suffix != prefix and suffix.isdigit():
+            numbers.append(int(suffix))
+    return max(numbers, default=0)
+
+
 def _events_path(run_dir: Path) -> Path:
     return run_dir / "events.jsonl"
 
@@ -1021,6 +1037,11 @@ class ScanRunner:
 
         self._emit("status", {"event": "scan_started", "targets": self.config.target_specs})
         root_id = coordinator.register_root("root", self.config.mission)
+        # Resume: reseed the child-id counter past whatever a crashed attempt
+        # already used (see _max_spawned_agent_number/seed_counter's own
+        # docstrings) BEFORE any live dispatch can call coordinator.spawn() --
+        # a no-op on a fresh run, where the journal has no "agent-N:..." keys.
+        coordinator.seed_counter(_max_spawned_agent_number(journal))
         root_registry = _build_registry(graph, root_id)
         root_loop = AgentLoop(
             router,

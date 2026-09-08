@@ -48,14 +48,31 @@ for that key straight into ``transcript`` (and reconstructs ``budget.spent``
 to match) without calling the model or dispatching a single tool, then
 continues live from the first step that was never journaled. Each new live
 dispatch is wrapped in ``journal.run_once`` so a subsequent crash can resume
-past it too. Scoped deliberately to ONE agent's own steps, not the whole
-spawn tree: a spawned child that was still mid-execution when the crash
-happened is not resumed granularly and simply restarts from scratch on the
+past it too. Originally scoped deliberately to ONE agent's own steps, not the
+whole spawn tree: a spawned child that was still mid-execution when the crash
+happened was not resumed granularly and simply restarted from scratch on the
 next ``spawn_agent`` call — matching a different reference's own actual
 resume granularity (its coarser task/subtask units are reset to "Created"
 and restarted from the top on reload, not resumed mid-unit either), and
-avoiding the much larger scope of threading a live journal down through
-every spawned descendant for a proportionally small additional benefit.
+avoiding what looked at the time like the much larger scope of threading a
+live journal down through every spawned descendant for a proportionally
+small additional benefit.
+
+That scope turned out to be small after all: :mod:`lalo.scan` now also wires
+every spawned child's own ``child_loop.run()`` call with ``journal=``/
+``agent_key=child_id`` (sharing this same journal instance), so a child's own
+steps are durably resumable too, replayed on retry under its own namespace.
+Nothing above needed to change for that — ``agent_key`` was already an
+opaque per-caller namespace, never special-cased for "root" — only the one
+call site in ``scan.py`` that constructs each child's ``AgentLoop`` did. The
+one thing that DID need new work belongs to the coordinator that mints
+child ids, not this loop: a resumed process's id counter starts fresh with
+no memory of ids a crashed attempt's replayed-not-respawned steps already
+used, so it must be reseeded past the journal's own already-recorded
+``agent-N:...`` keys before any live dispatch can spawn again — otherwise a
+genuinely new child could be minted a stale, already-used id and its own
+resume-replay would splice an unrelated prior child's history into a
+brand-new task.
 
 A live-scan comparison against a reference agent surfaced a real,
 previously dead-on-arrival wire: the GUI's own ``POST /steer`` endpoint

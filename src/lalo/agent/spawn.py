@@ -181,6 +181,24 @@ class AgentCoordinator:
         # the same dict) are all unsafe against that without this.
         self._lock = threading.Lock()
 
+    def seed_counter(self, minimum: int) -> None:
+        """Advance the child-id counter to at least ``minimum``, never lower it.
+
+        On a resumed process this counter starts fresh at 0 with no memory of
+        ids a crashed attempt's already-journaled spawn steps used — those
+        steps are replayed straight from the journal (see agent/loop.py's
+        resume-replay loop) without ever calling :meth:`spawn` again, so the
+        counter is under-incremented relative to the journal's own recorded
+        ``agent-N:...`` keys. Called once, right after :meth:`register_root`
+        and before any live dispatch can call :meth:`spawn`, seeded from the
+        max N already present in the journal — otherwise the next genuinely
+        new spawn mints an already-used id and its child_loop's own
+        resume-replay silently splices an unrelated prior child's transcript
+        into a brand-new task.
+        """
+        with self._lock:
+            self._counter = max(self._counter, minimum)
+
     def register_root(self, name: str, task: str) -> str:
         with self._lock:
             self._counter += 1

@@ -888,12 +888,13 @@ def test_scan_runner_persists_a_spawned_childs_tool_observation_in_the_event_log
 ) -> None:
     """The actual gap this closes (not just a root-only proof): before, the
     full {tool, args, observation, ok} shape only ever reached the root's own
-    local transcript/journal (a spawned child is always constructed with
-    journal=None), so a child's own "tool_result" event carried only
-    {tool, ok} - its observation was visible nowhere durable. AgentLoop._emit
-    is the identical code path for every agent regardless of role, so this
-    proves the fix for a REAL spawned child (agent-2), not just the root
-    (agent-1)."""
+    local transcript/journal (at the time, a spawned child's own AgentLoop
+    was always constructed with journal=None -- children are journaled too
+    now, under their own agent_key, but that's a separate, later fix), so a
+    child's own "tool_result" event carried only {tool, ok} - its observation
+    was visible nowhere durable. AgentLoop._emit is the identical code path
+    for every agent regardless of role, so this proves the fix for a REAL
+    spawned child (agent-2), not just the root (agent-1)."""
     monkeypatch.setattr(scan_module, "docker_available", lambda: True)
     monkeypatch.setattr(scan_module, "RuntimeContainer", _FakeContainer)
     router = ModelRouter(
@@ -1607,6 +1608,129 @@ def test_resume_after_a_crash_does_not_redispatch_the_completed_step(
     # every finding always gets.
     assert resumed_provider.calls == 3
     assert len(ReachabilityGraph.load(run_dir / "graph.json").nodes_of_kind(NodeKind.FINDING)) == 1
+
+
+def test_resume_reseeds_the_spawn_counter_so_a_second_child_gets_a_fresh_agent_id(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression test for a bug this task's own per-child journaling wiring
+    turned into an active corruption path: AgentCoordinator's child-id
+    counter starts fresh at 0 on every process start, and AgentLoop.run()'s
+    resume-replay loop reconstructs already-journaled steps straight from
+    the journal without ever calling coordinator.spawn() again -- so if the
+    root already completed one spawn (Child C, fully journaled under
+    "agent-2") before crashing, and needs to dispatch a genuinely NEW second
+    spawn after resuming, an under-seeded counter would mint "agent-2" a
+    second time. Since child_loop.run() now passes agent_key=child_id, that
+    collision would silently splice Child C's own already-journaled history
+    into the unrelated second child's brand-new transcript.
+    """
+    monkeypatch.setattr(scan_module, "docker_available", lambda: True)
+    monkeypatch.setattr(scan_module, "RuntimeContainer", _FakeContainer)
+
+    def _crash_before_the_second_spawn(_call_index: int, prompt: str) -> str:
+        if "FINDING TO REVIEW" in prompt:
+            return '{"verdict": "confirmed", "proof_level": "L3", "reasoning": "grounded"}'
+        if "MISSION:" not in prompt:
+            return "ok"  # the preflight verify_router() health-check call
+        if prompt.startswith("MISSION:\nCHILD-C-TASK"):
+            # Child C runs to completion -- both of its own steps land in the
+            # journal under "agent-2" before the crash below. Anchored on the
+            # MISSION line itself (not a bare substring check) -- the root's
+            # OWN history recap of its spawn_agent call echoes the child's
+            # task text verbatim, so a bare "CHILD-C-TASK" in prompt check
+            # would misfire on the root's own later turns too.
+            if "HISTORY (most recent last):" not in prompt:
+                return _record_finding_call_for("https://c.example.com/search")
+            return _finish_call()
+        # root's own turns: step 0 spawns Child C (fully completes, fully
+        # journaled); step 1 crashes before ever attempting the second spawn.
+        if "HISTORY (most recent last):" not in prompt:
+            return _spawn_agent_call()
+        return "CRASH"
+
+    crashing_provider = _CrashingProvider(_crash_before_the_second_spawn)
+    router1 = ModelRouter(
+        providers={"fake": crashing_provider},
+        routes={"reasoning": ("fake",), "review": ("fake",)},
+        default_route=("fake",),
+    )
+    monkeypatch.setattr(scan_module, "build_router", lambda _settings: router1)
+
+    run_dir = tmp_path / "run"
+    config = ScanConfig(
+        mission="find a bug, spawning two children", target_specs=["example.com"], run_dir=run_dir
+    )
+    with pytest.raises(RuntimeError, match="simulated crash"):
+        ScanRunner(config, env={"ANTHROPIC_API_KEY": "sk-test"}).run()
+
+    crashed_journal = DurableJournal(run_dir / "journal.jsonl")
+    assert crashed_journal.has("root:0")
+    # Child C's own record_finding step landed under "agent-2" -- its "finish"
+    # turn never journals at all (AgentLoop.run() returns straight from the
+    # "finish" branch without ever calling journal.run_once for it, mirroring
+    # the root's own never-journaled "finish" step), so "agent-2:0" alone is
+    # the complete set of pre-crash journal entries for this child.
+    assert crashed_journal.has("agent-2:0")
+
+    def _respond_after_resume(_call_index: int, prompt: str) -> str:
+        if "FINDING TO REVIEW" in prompt:
+            return '{"verdict": "confirmed", "proof_level": "L3", "reasoning": "grounded"}'
+        if prompt.startswith("MISSION:\nCHILD-D-TASK"):
+            if "HISTORY (most recent last):" not in prompt:
+                return _record_finding_call_for("https://d.example.com/search")
+            return _finish_call()
+        # root's own turns. Resume already replays root:0 (the Child C spawn)
+        # straight into history, so "HISTORY (most recent last):" is present
+        # from root's very first LIVE turn onward here -- "Child D" appearing
+        # in that history is what actually distinguishes "already spawned the
+        # second child, now finish" from "haven't yet".
+        if "Child D" in prompt:
+            return _finish_call()
+        return json.dumps(
+            {
+                "tool": "spawn_agent",
+                "args": {"name": "Child D", "task": "CHILD-D-TASK: test host d.example.com"},
+            }
+        )
+
+    resumed_provider = _ScriptedProvider(_respond_after_resume)
+    router2 = ModelRouter(
+        providers={"fake": resumed_provider},
+        routes={"reasoning": ("fake",), "review": ("fake",)},
+        default_route=("fake",),
+    )
+    monkeypatch.setattr(scan_module, "build_router", lambda _settings: router2)
+
+    event_log = EventLog()
+    # SAME config/run_dir -- ScanRunner auto-detects the existing journal +
+    # manifest and resumes rather than starting fresh.
+    outcome = ScanRunner(config, env={"ANTHROPIC_API_KEY": "sk-test"}, event_log=event_log).run()
+    assert outcome.status is RunStatus.COMPLETED
+
+    final_journal = DurableJournal(run_dir / "journal.jsonl")
+    # The second child must get a genuinely new id -- never the already-used
+    # "agent-2" a pre-fix, under-seeded counter would have reminted.
+    assert final_journal.has("agent-3:0")
+
+    _cursor, events = event_log.snapshot()
+    child_d_finding = next(
+        e
+        for e in events
+        if e.category == "log"
+        and e.payload.get("event") == "tool_call"
+        and e.payload.get("tool") == "record_finding"
+        and e.payload.get("args", {}).get("target") == "https://d.example.com/search"
+    )
+    assert child_d_finding.payload["agent_id"] == "agent-3"  # not the reused "agent-2"
+    # No unrelated history was spliced in: agent-3 never replayed anything --
+    # a "resumed" event only fires when start_step > 0 (AgentLoop.run()'s own
+    # resume-replay loop), which would only happen if agent-3 collided with
+    # an id the journal already had entries for.
+    assert not any(
+        e.payload.get("agent_id") == "agent-3" and e.payload.get("event") == "resumed"
+        for e in events
+    )
 
 
 def test_resume_manifest_without_the_exclude_field_still_resumes(tmp_path: Path) -> None:

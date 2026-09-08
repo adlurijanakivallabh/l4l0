@@ -51,13 +51,14 @@ from that run's own locked record automatically — you don't retype them,
 and the server won't let you accidentally continue it under different
 parameters than what it originally started with.
 
-What actually happens on resume: every step the root agent already
-completed is replayed straight from the journal (no tool re-fires, no
-model call happens for it) until the live loop reaches the first step
-that was never journaled, then continues from there as a normal run. A
-spawned child sub-agent that was still mid-execution when the crash
-happened is not resumed granularly — it simply restarts from scratch the
-next time the root agent spawns it.
+What actually happens on resume: every step any agent — the root, or a
+spawned child — already completed is replayed straight from its own
+section of the journal (no tool re-fires, no model call happens for it)
+until that agent's live loop reaches the first step it never journaled,
+then continues from there as a normal run. A spawned child sub-agent that
+was still mid-execution when the crash happened resumes from its own
+last completed step too, the next time the root re-spawns it — not a
+full restart of its task from scratch.
 
 ## Pointing a scan at a target on your own machine
 
