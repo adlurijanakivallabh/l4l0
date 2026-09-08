@@ -144,6 +144,46 @@ def test_build_spawn_tools_dispatches_a_real_child_run() -> None:
     assert "XSS Specialist" in graph_result.observation
 
 
+def test_spawn_agent_rejects_an_unknown_role_without_registering_a_child() -> None:
+    coord = AgentCoordinator(max_depth=5)
+    root = coord.register_root("root", "mission")
+    spawn_tool, _ = build_spawn_tools(
+        coord,
+        lambda *_a: ("", [], True),
+        self_id=root,
+        valid_roles=frozenset({"full", "source_reviewer"}),
+    )
+    registry = ToolRegistry([spawn_tool])
+    result = registry.dispatch("spawn_agent", {"name": "x", "task": "y", "role": "not-a-real-role"})
+    assert result.ok is False
+    assert coord.children_of(root) == []
+
+
+def test_spawn_agent_passes_a_valid_role_through_to_the_coordinator() -> None:
+    coord = AgentCoordinator(max_depth=5)
+    root = coord.register_root("root", "mission")
+    spawn_tool, _ = build_spawn_tools(
+        coord,
+        lambda *_a: ("", [], True),
+        self_id=root,
+        valid_roles=frozenset({"full", "source_reviewer"}),
+    )
+    registry = ToolRegistry([spawn_tool])
+    registry.dispatch("spawn_agent", {"name": "x", "task": "y", "role": "source_reviewer"})
+    child_id = coord.children_of(root)[0]
+    assert coord.node(child_id).role == "source_reviewer"
+
+
+def test_spawn_agent_role_defaults_to_full_when_omitted() -> None:
+    coord = AgentCoordinator(max_depth=5)
+    root = coord.register_root("root", "mission")
+    spawn_tool, _ = build_spawn_tools(coord, lambda *_a: ("", [], True), self_id=root)
+    registry = ToolRegistry([spawn_tool])
+    registry.dispatch("spawn_agent", {"name": "x", "task": "y"})
+    child_id = coord.children_of(root)[0]
+    assert coord.node(child_id).role == "full"
+
+
 def test_spawn_agent_tool_requires_name_and_task() -> None:
     coord = AgentCoordinator()
     root = coord.register_root("root", "mission")
@@ -388,6 +428,52 @@ def test_spawn_agents_validates_each_tasks_name_and_task() -> None:
         "spawn_agents", {"tasks": [{"name": "a", "task": "t"}, {"name": "", "task": ""}]}
     )
     assert result.ok is False
+
+
+def test_spawn_agents_rejects_the_whole_batch_when_any_role_is_invalid() -> None:
+    coord = AgentCoordinator(max_depth=5)
+    root = coord.register_root("root", "mission")
+    parallel_tool = build_parallel_spawn_tool(
+        coord,
+        lambda *_a: ("", [], True),
+        self_id=root,
+        valid_roles=frozenset({"full", "source_reviewer"}),
+    )
+    registry = ToolRegistry([parallel_tool])
+    result = registry.dispatch(
+        "spawn_agents",
+        {
+            "tasks": [
+                {"name": "a", "task": "task a", "role": "full"},
+                {"name": "b", "task": "task b", "role": "not-a-real-role"},
+            ]
+        },
+    )
+    assert result.ok is False
+    assert coord.children_of(root) == []
+
+
+def test_spawn_agents_passes_each_tasks_own_role_through() -> None:
+    coord = AgentCoordinator(max_depth=5)
+    root = coord.register_root("root", "mission")
+    parallel_tool = build_parallel_spawn_tool(
+        coord,
+        lambda *_a: ("", [], True),
+        self_id=root,
+        valid_roles=frozenset({"full", "source_reviewer"}),
+    )
+    registry = ToolRegistry([parallel_tool])
+    registry.dispatch(
+        "spawn_agents",
+        {
+            "tasks": [
+                {"name": "a", "task": "task a", "role": "full"},
+                {"name": "b", "task": "task b", "role": "source_reviewer"},
+            ]
+        },
+    )
+    roles = {coord.node(cid).role for cid in coord.children_of(root)}
+    assert roles == {"full", "source_reviewer"}
 
 
 def test_spawn_agents_reports_depth_ceiling_as_a_failed_result_not_an_exception() -> None:

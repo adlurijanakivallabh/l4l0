@@ -316,6 +316,7 @@ def build_spawn_tools(
     run_child: ChildRunner,
     *,
     self_id: str,
+    valid_roles: frozenset[str] = frozenset({"full"}),
 ) -> tuple[Tool, Tool]:
     """Build the ``spawn_agent``/``view_agent_graph`` tools for one agent's registry.
 
@@ -329,11 +330,16 @@ def build_spawn_tools(
     def _spawn(args: dict[str, object]) -> ToolResult:
         name = str_arg(args, "name").strip()
         task = str_arg(args, "task").strip()
+        role = str_arg(args, "role", "full").strip() or "full"
         if not name or not task:
             return ToolResult(observation="error: 'name' and 'task' are required", ok=False)
+        if role not in valid_roles:
+            return ToolResult(
+                observation=f"error: 'role' must be one of {sorted(valid_roles)}", ok=False
+            )
         warning = _duplicate_task_warning(coordinator, self_id, task)
         try:
-            child_id = coordinator.spawn(self_id, name, task)
+            child_id = coordinator.spawn(self_id, name, task, role=role)
         except SpawnDepthExceededError as exc:
             return ToolResult(observation=f"error: {exc}", ok=False)
         try:
@@ -369,7 +375,11 @@ def build_spawn_tools(
             "scope — a duplicate specialist wastes turns. In 'task', state what is ALREADY "
             "KNOWN (what recon already mapped, which surfaces are already covered) so the "
             "child builds on it instead of rediscovering it from scratch. "
-            'args: {"name": str, "task": str}'
+            'args: {"name": str, "task": str, "role": "full"|"source_reviewer" (optional, '
+            'default "full" - source_reviewer confines the child to run_command/'
+            "record_finding/recall/query_graph/note only, no live-firing tools and no "
+            "further spawning - use it for a subtask that's purely reading and reasoning "
+            "about source code)}"
         ),
         func=_spawn,
     )
@@ -386,6 +396,7 @@ def build_parallel_spawn_tool(
     run_child: ChildRunner,
     *,
     self_id: str,
+    valid_roles: frozenset[str] = frozenset({"full"}),
 ) -> Tool:
     """Build ``spawn_agents`` — a bounded fan-out/join over the SAME
     ``run_child`` seam ``spawn_agent`` uses, additive on top of it rather
@@ -416,7 +427,7 @@ def build_parallel_spawn_tool(
                 ),
                 ok=False,
             )
-        parsed: list[tuple[str, str]] = []
+        parsed: list[tuple[str, str, str]] = []
         for item in raw_tasks:
             if not isinstance(item, dict):
                 return ToolResult(
@@ -425,20 +436,25 @@ def build_parallel_spawn_tool(
                 )
             name = str_arg(item, "name").strip()
             task = str_arg(item, "task").strip()
+            role = str_arg(item, "role", "full").strip() or "full"
             if not name or not task:
                 return ToolResult(
                     observation="error: every task needs a non-empty 'name' and 'task'", ok=False
                 )
-            parsed.append((name, task))
+            if role not in valid_roles:
+                return ToolResult(
+                    observation=f"error: 'role' must be one of {sorted(valid_roles)}", ok=False
+                )
+            parsed.append((name, task, role))
 
         warnings = [
             _duplicate_task_warning(
                 coordinator,
                 self_id,
                 task,
-                extra_tasks=tuple(t for j, (_, t) in enumerate(parsed) if j != i),
+                extra_tasks=tuple(t for j, (_, t, _r) in enumerate(parsed) if j != i),
             )
-            for i, (_, task) in enumerate(parsed)
+            for i, (_, task, _role) in enumerate(parsed)
         ]
 
         # Registered up front, sequentially, before any thread starts: every
@@ -446,7 +462,9 @@ def build_parallel_spawn_tool(
         # all pass or all fail the depth ceiling identically - no partial
         # batch to reconcile if one raised partway through.
         try:
-            child_ids = [coordinator.spawn(self_id, name, task) for name, task in parsed]
+            child_ids = [
+                coordinator.spawn(self_id, name, task, role=role) for name, task, role in parsed
+            ]
         except SpawnDepthExceededError as exc:
             return ToolResult(observation=f"error: {exc}", ok=False)
 
@@ -461,7 +479,7 @@ def build_parallel_spawn_tool(
         with ThreadPoolExecutor(max_workers=min(len(parsed), _MAX_PARALLEL_WORKERS)) as pool:
             futures = [
                 pool.submit(_run_one, child_id, name, task)
-                for child_id, (name, task) in zip(child_ids, parsed, strict=True)
+                for child_id, (name, task, _role) in zip(child_ids, parsed, strict=True)
             ]
             results = [future.result() for future in futures]
 
@@ -492,7 +510,9 @@ def build_parallel_spawn_tool(
             "investigation (e.g. the same vuln class across several distinct hosts) that "
             "don't depend on each other's findings. Use spawn_agent instead for a single "
             "child, or when a later child's task depends on an earlier one's result. "
-            'args: {"tasks": [{"name": str, "task": str}, ...]} (at least 2 entries)'
+            'args: {"tasks": [{"name": str, "task": str, "role": "full"|"source_reviewer" '
+            '(optional, default "full", same meaning as spawn_agent\'s own role arg)}, ...]} '
+            "(at least 2 entries)"
         ),
         func=_spawn_agents,
     )
