@@ -77,6 +77,7 @@ class AgentStatus(StrEnum):
     RUNNING = "running"
     COMPLETED = "completed"
     FAILED = "failed"
+    ORPHANED = "orphaned"
 
 
 @runtime_checkable
@@ -238,6 +239,37 @@ class AgentCoordinator:
 
     def node(self, agent_id: str) -> AgentNode:
         return self._nodes[agent_id]
+
+    def has_node(self, agent_id: str) -> bool:
+        return agent_id in self._nodes
+
+    def register_orphan(
+        self,
+        agent_id: str,
+        name: str,
+        task: str,
+        *,
+        parent_id: str | None,
+        depth: int,
+        role: str,
+    ) -> None:
+        """Reconstruct a child that was genuinely mid-execution when the
+        process crashed - its own journal entries survive under its
+        original agent_id, but nothing durable ever recorded it as a node
+        in THIS coordinator (a fresh instance every process start). Called
+        once per detected orphan, before any live dispatch, from
+        scan.py's own resume path - see _find_orphaned_children there.
+        """
+        with self._lock:
+            self._nodes[agent_id] = AgentNode(
+                agent_id,
+                name,
+                task,
+                parent_id=parent_id,
+                depth=depth,
+                status=AgentStatus.ORPHANED,
+                role=role,
+            )
 
     def children_of(self, agent_id: str) -> list[str]:
         with self._lock:

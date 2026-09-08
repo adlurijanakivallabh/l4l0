@@ -92,6 +92,41 @@ def test_register_root_defaults_to_the_full_role() -> None:
     assert coord.node(root).role == "full"
 
 
+def test_register_orphan_creates_a_node_with_orphaned_status() -> None:
+    coord = AgentCoordinator(max_depth=5)
+    coord.register_orphan(
+        "agent-7",
+        "Source Reviewer",
+        "read the repo",
+        parent_id="agent-1",
+        depth=1,
+        role="source_reviewer",
+    )
+    node = coord.node("agent-7")
+    assert node.status is AgentStatus.ORPHANED
+    assert node.name == "Source Reviewer"
+    assert node.task == "read the repo"
+    assert node.parent_id == "agent-1"
+    assert node.depth == 1
+    assert node.role == "source_reviewer"
+
+
+def test_has_node_reports_existence() -> None:
+    coord = AgentCoordinator(max_depth=5)
+    root = coord.register_root("root", "mission")
+    assert coord.has_node(root) is True
+    assert coord.has_node("agent-999") is False
+
+
+def test_render_tree_shows_an_orphaned_node() -> None:
+    coord = AgentCoordinator(max_depth=5)
+    coord.register_orphan(
+        "agent-7", "Source Reviewer", "read the repo", parent_id=None, depth=0, role="full"
+    )
+    tree = coord.render_tree()
+    assert "Source Reviewer (agent-7) [orphaned]" in tree
+
+
 def test_render_tree_shows_hierarchy_status_and_highlight() -> None:
     coord = AgentCoordinator(max_depth=5)
     root = coord.register_root("root", "mission")
