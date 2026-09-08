@@ -913,9 +913,16 @@ class AgentLoop:
                         is_root=self.config.is_root
                     ).name
 
-        return self._final_turn(mission, transcript)
+        return self._final_turn(mission, transcript, journal=journal, agent_key=agent_key)
 
-    def _final_turn(self, mission: str, transcript: list[dict[str, object]]) -> AgentResult:
+    def _final_turn(
+        self,
+        mission: str,
+        transcript: list[dict[str, object]],
+        *,
+        journal: DurableJournal | None = None,
+        agent_key: str = "root",
+    ) -> AgentResult:
         """One guaranteed extra turn beyond max_steps, reserved purely for the
         model to transmit a summary — it may not call any other tool here. A
         non-compliant response (no tool call, or anything but finish) just
@@ -929,6 +936,27 @@ class AgentLoop:
         call = parse_tool_call(response.text)
         if call is not None and call.name == "finish":
             summary = str_arg(call.args, "summary")
+            finish_args = call.args
+
+            def _final_finish_once(
+                _args: dict[str, object] = finish_args, _summary: str = summary
+            ) -> dict[str, object]:
+                return {"tool": "finish", "args": _args, "observation": _summary}
+
+            # Journaled exactly like an ordinary mid-loop finish (see
+            # _finish_once above) under the step index the reserved turn
+            # conceptually occupies (max_steps) -- otherwise a resumed
+            # run_dir that already replayed every numbered step still falls
+            # through to a live call here, re-spending a real LLM call to
+            # hear the model declare the same already-finished mission
+            # finished a second time, on every future resume. The replay
+            # loop's own existing "tool == finish" branch (above) then
+            # adopts this exactly like any other journaled finish -- no new
+            # special-casing needed there, and the adopted stop_reason on
+            # resume reads "finished" rather than "max_steps_reserved_turn";
+            # scan.py's own _TERMINAL_SUCCESS already treats both the same.
+            if journal is not None:
+                journal.run_once(f"{agent_key}:{self.config.max_steps}", _final_finish_once)
             self._emit("finished", {"step": self.config.max_steps, "reserved_turn": True})
             return AgentResult(
                 "max_steps_reserved_turn", self.config.max_steps, transcript, summary=summary

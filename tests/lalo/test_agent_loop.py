@@ -352,6 +352,50 @@ def test_max_steps_grants_one_reserved_final_turn_for_a_summary() -> None:
     assert router.calls == 3  # 2 work turns + 1 reserved turn
 
 
+def test_resuming_a_run_that_finished_via_the_reserved_final_turn_makes_no_new_llm_call(
+    tmp_path,
+) -> None:
+    # A real cost bug found by review: the reserved final turn's own finish
+    # was never journaled, so resuming an already-finished (via that turn)
+    # run silently re-spent a fresh LLM call on every single resume, forever.
+    tool, _ = _counting_tool("noop")
+    registry = ToolRegistry([tool])
+    journal = DurableJournal(tmp_path / "j.jsonl")
+
+    router1 = _FakeRouter(
+        lambda i, _p: (
+            f'{{"tool": "noop", "args": {{"i": {i}}}}}'
+            if i < 2
+            else '{"tool": "finish", "args": {"summary": "found XSS, IDOR still open"}}'
+        )
+    )
+    loop1 = AgentLoop(
+        router1,  # type: ignore[arg-type]
+        registry,
+        system_prompt="",
+        config=AgentConfig(max_steps=2),
+    )
+    result1 = loop1.run("mission", journal=journal, agent_key="root")
+    assert result1.stop_reason == "max_steps_reserved_turn"
+    assert router1.calls == 3  # 2 work turns + 1 reserved turn, as before
+
+    # "Resume": a brand-new AgentLoop/router, same journal + agent_key. This
+    # router is never expected to actually be asked anything -- if it were,
+    # router2.calls would be nonzero below.
+    router2 = _scripted(['{"tool": "noop", "args": {}}'])
+    loop2 = AgentLoop(
+        router2,  # type: ignore[arg-type]
+        registry,
+        system_prompt="",
+        config=AgentConfig(max_steps=2),
+    )
+    result2 = loop2.run("mission", journal=journal, agent_key="root")
+
+    assert result2.stop_reason == "finished"  # adopted via the ordinary finish-replay path
+    assert result2.summary == "found XSS, IDOR still open"
+    assert router2.calls == 0  # no fresh LLM call was made
+
+
 def test_max_steps_final_turn_falls_back_cleanly_if_model_does_not_comply() -> None:
     tool, _ = _counting_tool("noop")
     registry = ToolRegistry([tool])

@@ -76,3 +76,40 @@ def test_read_report_manifest_paths_on_a_run_with_no_manifest_is_none(tmp_path: 
     from lalo.report.manifest import read_report_manifest_paths
 
     assert read_report_manifest_paths(tmp_path) is None
+
+
+def test_verify_report_manifest_treats_malformed_json_as_drift_not_a_crash(
+    tmp_path: Path,
+) -> None:
+    from lalo.report.manifest import verify_report_manifest
+
+    (tmp_path / "report_manifest.json").write_text("{not valid json", encoding="utf-8")
+
+    drift = verify_report_manifest(tmp_path)
+    assert len(drift) == 1
+    assert "malformed" in drift[0]
+
+
+def test_verify_report_manifest_treats_a_missing_required_key_as_drift_not_a_crash(
+    tmp_path: Path,
+) -> None:
+    from lalo.report.manifest import verify_report_manifest
+
+    # A real artifact entry with no "sha256" key -- e.g. hand-edited or
+    # written by a future/older schema version.
+    (tmp_path / "report_manifest.json").write_text(
+        json.dumps({"artifacts": {"md": {"path": "report.md"}}}), encoding="utf-8"
+    )
+    (tmp_path / "report.md").write_text("hello", encoding="utf-8")
+
+    drift = verify_report_manifest(tmp_path)
+    assert len(drift) == 1
+    assert "malformed" in drift[0]
+
+
+def test_read_report_manifest_paths_returns_none_on_malformed_json(tmp_path: Path) -> None:
+    from lalo.report.manifest import read_report_manifest_paths
+
+    (tmp_path / "report_manifest.json").write_text("{not valid json", encoding="utf-8")
+
+    assert read_report_manifest_paths(tmp_path) is None
