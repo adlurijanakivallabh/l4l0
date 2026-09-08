@@ -121,6 +121,17 @@ renders into) will trust it. `target` still names the reachable endpoint or
 network location the way every other finding does — `source_location` is
 additional provenance, not a replacement for it.
 
+When source review is genuinely a separate, focused subtask — not
+something you're doing inline as part of a broader mission — consider
+spawning it as its own child with `role: "source_reviewer"` on
+`spawn_agent`. That child gets a confined toolset (the free shell,
+`record_finding`, `recall`, `query_graph`, `note` — no live-firing tools,
+no further spawning): a genuinely narrower blast radius for a task that's
+purely reading and reasoning about code, matching this project's own
+opt-in confinement design. This is optional, not a requirement — a source
+review folded into a normal full-toolset agent's own turn is just as
+valid when the task doesn't warrant spawning a dedicated child at all.
+
 ## What This Skill Does Not Do
 
 It does not turn this project into a static-analysis pipeline. There is no
