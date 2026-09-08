@@ -912,6 +912,38 @@ def test_scan_runner_emits_usage_delta_by_agent_for_a_sequentially_spawned_child
     assert by_agent["agent-2"]["requests"] >= 1
 
 
+def test_run_child_journals_a_spawned_breadcrumb_before_running_and_a_finished_one_after(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(scan_module, "docker_available", lambda: True)
+    monkeypatch.setattr(scan_module, "RuntimeContainer", _FakeContainer)
+    router = ModelRouter(
+        providers={"fake": _ScriptedProvider(_respond_with_a_sequential_spawn)},
+        routes={"reasoning": ("fake",), "review": ("fake",)},
+        default_route=("fake",),
+    )
+    monkeypatch.setattr(scan_module, "build_router", lambda _settings: router)
+
+    run_dir = tmp_path / "run"
+    config = ScanConfig(
+        mission="find a bug, spawning one child for a focused subtask",
+        target_specs=["c.example.com"],
+        run_dir=run_dir,
+        usage_path=tmp_path / "usage.json",
+    )
+    ScanRunner(config, env={"ANTHROPIC_API_KEY": "sk-test"}).run()
+
+    journal = DurableJournal(run_dir / "journal.jsonl")
+    assert journal.has("agent-2:spawned")
+    spawned = journal.get("agent-2:spawned")
+    assert spawned["name"] == "Child C"
+    assert spawned["task"] == "CHILD-C-TASK: test host c.example.com"
+    assert spawned["parent_id"] == "agent-1"
+    assert spawned["depth"] == 1
+    assert spawned["role"] == "full"
+    assert journal.has("agent-2:finished")
+
+
 def _spawn_source_reviewer_call() -> str:
     return json.dumps(
         {

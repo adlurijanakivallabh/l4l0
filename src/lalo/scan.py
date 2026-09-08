@@ -1013,7 +1013,8 @@ class ScanRunner:
                 with self._graph_lock:
                     before = set(agent_graph.nodes_of_kind(NodeKind.FINDING))
                     child_graph = isolate_for_child(agent_graph)
-                role = coordinator.node(child_id).role
+                node = coordinator.node(child_id)
+                role = node.role
                 child_registry = _build_registry(
                     child_graph, child_id, tool_names=_ROLE_TOOL_NAMES[role]
                 )
@@ -1031,7 +1032,29 @@ class ScanRunner:
                     get_steering=self._pending_steering,
                     pricing_table=self.config.pricing_table,
                 )
+                # Durable breadcrumbs for orphan detection on a future resume
+                # (see _find_orphaned_children) - a crash between these two
+                # journal.record calls leaves ":spawned" with no matching
+                # ":finished", the unambiguous signal that this specific
+                # child never reached ANY terminal AgentResult (finished,
+                # budget-exhausted, cancelled all return normally from
+                # run() below and DO get ":finished" - only a genuine
+                # process-level crash mid-run skips it).
+                journal.record(
+                    f"{child_id}:spawned",
+                    {
+                        "name": node.name,
+                        "task": task,
+                        "parent_id": node.parent_id,
+                        "depth": node.depth,
+                        "role": role,
+                    },
+                )
                 result = child_loop.run(task, journal=journal, agent_key=child_id)
+                journal.record(
+                    f"{child_id}:finished",
+                    {"stop_reason": result.stop_reason, "summary": result.summary},
+                )
                 after = set(child_graph.nodes_of_kind(NodeKind.FINDING))
                 new_ids = list(after - before)
                 with self._graph_lock:
