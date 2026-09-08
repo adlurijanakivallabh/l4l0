@@ -182,6 +182,17 @@ class RuntimeConfig:
     from inside the container too. Purely additive reachability, never a
     restriction, so it defaults on; set ``False`` only if a specific entry
     ever gets in the way of a scan.
+    ``keep_on_failure`` is a separate opt-in, read by :meth:`RuntimeContainer.stop`
+    only when its caller passes ``failed=True`` (i.e. the run being torn down
+    actually raised): skips the ``docker rm -f`` and logs a hint with the real
+    container name instead of destroying the only copy of whatever was on disk
+    or in the process list at failure time. Off by default and irrelevant to a
+    normal, successful ``stop()`` -- a run that completes cleanly is always
+    removed exactly as before, regardless of this flag. Doesn't touch host
+    isolation: the container still has zero bind-mounts, no Docker socket, and
+    every cap-drop/cap-add rule this module already enforces -- this only
+    delays removal of an already-isolated container, and only when explicitly
+    asked for.
     No restart policy is set on purpose: this is a single-shot disposable
     container — a crash should surface immediately, not silently retry and mask
     a fast-crash-loop.
@@ -195,6 +206,7 @@ class RuntimeConfig:
     pids_limit: int = 2048  # caps fork bombs
     cap_add: tuple[str, ...] = ()
     enable_vpn: bool = False
+    keep_on_failure: bool = False
     forward_etc_hosts: bool = True
     log_max_size: str = "10m"
     log_max_files: int = 3
@@ -471,17 +483,35 @@ class RuntimeContainer:
             timed_out=timed_out,
         )
 
-    def stop(self) -> None:
+    def stop(self, *, failed: bool = False) -> None:
         if self._started:
-            try:
-                self._run(["rm", "-f", self._name], timeout=30)
-            except subprocess.TimeoutExpired:
-                _log.warning("removal of %s timed out; it may be orphaned", self._name)
+            if failed and self.config.keep_on_failure:
+                # Opt-in (RuntimeConfig.keep_on_failure): the caller is telling
+                # us the run being torn down actually raised, so skip the
+                # removal and leave the container up for post-mortem
+                # inspection instead of destroying the only copy of whatever
+                # was on disk/running at failure time. A normal, successful
+                # stop() never passes failed=True, so this branch never fires
+                # on a healthy run -- that path always removes, unchanged.
+                _log.warning(
+                    "runtime container %s kept alive after a failed run (keep_on_failure=True) -- "
+                    "inspect with `docker logs %s`, remove with `docker rm -f %s` when done",
+                    self._name,
+                    self._name,
+                    self._name,
+                )
+            else:
+                try:
+                    self._run(["rm", "-f", self._name], timeout=30)
+                except subprocess.TimeoutExpired:
+                    _log.warning("removal of %s timed out; it may be orphaned", self._name)
+                _log.info("runtime container %s removed", self._name)
             # Either way, this wrapper no longer treats the container as usable —
-            # a timed-out removal leaves its actual state unknown, and retrying
-            # exec() against it would be worse than refusing further use.
+            # a timed-out removal leaves its actual state unknown (and a
+            # kept-alive container is intentionally off-limits to further
+            # exec() calls too), and retrying exec() against it would be worse
+            # than refusing further use.
             self._started = False
-            _log.info("runtime container %s removed", self._name)
 
     def __enter__(self) -> RuntimeContainer:
         self.start()

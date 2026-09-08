@@ -118,6 +118,7 @@ change this without touching anything else here.
 from __future__ import annotations
 
 import json
+import sys
 import threading
 import time
 from collections.abc import Callable, Mapping
@@ -1021,7 +1022,17 @@ class ScanRunner:
             finally:
                 oast.stop()
         finally:
-            container.stop()
+            # sys.exc_info() is populated here whenever an exception is still
+            # propagating through this finally clause (a plain `return` from
+            # _run_inside() above clears it first) -- this is the only signal
+            # available at this point for "did the run actually fail" without
+            # restructuring the whole nested try/finally chain into
+            # try/except/else. A successful run always passes failed=False
+            # and is completely unaffected: container.stop() always removes
+            # then, exactly as before. keep_on_failure itself is an opt-in
+            # RuntimeConfig field the operator sets on container_config (off
+            # by default) -- see RuntimeContainer.stop().
+            container.stop(failed=sys.exc_info()[0] is not None)
             self._container = None
 
     def _run_inside(

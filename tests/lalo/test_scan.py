@@ -55,8 +55,8 @@ from lalo.scan import (
 
 @pytest.fixture(autouse=True)
 def _no_real_network_reachability_probe(monkeypatch: pytest.MonkeyPatch) -> None:
-    """ScanRunner's preflight target-reachability probe (Phase 4, shannon
-    pass) fires a REAL outbound HTTP request via an unmocked HttpFirer --
+    """ScanRunner's preflight target-reachability probe (Phase 4, a studied
+    reference agent's own pass) fires a REAL outbound HTTP request via an unmocked HttpFirer --
     every test in this file must stay hermetic (see the module docstring's
     own guarantee), so this is disabled globally here rather than repeated
     per test. Its own behavior is covered by execution/firer.py's unit tests,
@@ -284,12 +284,14 @@ class _FakeContainer:
 
     def __init__(self, config: object = None) -> None:
         self.started = False
+        self.stopped_with_failed: bool | None = None
 
     def start(self) -> None:
         self.started = True
 
-    def stop(self) -> None:
+    def stop(self, *, failed: bool = False) -> None:
         self.started = False
+        self.stopped_with_failed = failed
 
     def exec(self, command: object, *, timeout: float = 120.0) -> SimpleNamespace:
         return SimpleNamespace(exit_code=0, stdout="", stderr="", ok=True, timed_out=False)
@@ -1590,7 +1592,8 @@ def test_cancel_before_run_stops_on_the_first_step(
     outcome = runner.run()
 
     assert outcome.status is RunStatus.UNVERIFIED_STOP
-    # 1, not 0: the preflight provider health-check (Phase 4, shannon pass)
+    # 1, not 0: the preflight provider health-check (Phase 4, a studied
+    # reference agent's own pass)
     # runs regardless of a pre-set cancel flag -- the agent loop itself still
     # never took a real step, which is the actual property this test checks.
     assert provider.calls == 1
@@ -1774,7 +1777,7 @@ def test_scan_runner_wires_live_steering_into_the_agents_prompt(
     assert all("focus on the API endpoints" in p for p in mission_prompts)
 
 
-# --- Phase 2, shannon pass: cancel force-stops the container, not just a flag -
+# --- Phase 2, a studied reference agent's own pass: cancel force-stops the container -----
 
 
 def test_cancel_before_a_container_exists_does_not_raise(tmp_path: Path) -> None:
@@ -1844,7 +1847,7 @@ def test_find_orphaned_children_excludes_one_with_a_matching_finished(tmp_path: 
     assert scan_module._find_orphaned_children(journal) == []  # noqa: SLF001
 
 
-# --- Phase 2, pentagi/PentestGPT pass: crash-mid-scan resume -----------------
+# --- Phase 2, another studied reference agent's own pass: crash-mid-scan resume -----
 
 
 class _CrashingProvider:
@@ -1923,6 +1926,41 @@ def test_resume_after_a_crash_does_not_redispatch_the_completed_step(
     # every finding always gets.
     assert resumed_provider.calls == 3
     assert len(ReachabilityGraph.load(run_dir / "graph.json").nodes_of_kind(NodeKind.FINDING)) == 1
+
+
+def test_scan_runner_stops_the_container_with_failed_true_when_the_run_raises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(scan_module, "docker_available", lambda: True)
+    created: list[_FakeContainer] = []
+
+    class _TrackingContainer(_FakeContainer):
+        def __init__(self, config: object = None) -> None:
+            super().__init__(config)
+            created.append(self)
+
+    monkeypatch.setattr(scan_module, "RuntimeContainer", _TrackingContainer)
+
+    def _crash_on_the_first_mission_turn(_call_index: int, prompt: str) -> str:
+        if "MISSION:" not in prompt:
+            return "ok"  # the preflight verify_router() health-check call
+        return "CRASH"  # well after container.start() -- inside the real mission
+
+    router = ModelRouter(
+        providers={"fake": _CrashingProvider(_crash_on_the_first_mission_turn)},
+        routes={"reasoning": ("fake",)},
+        default_route=("fake",),
+    )
+    monkeypatch.setattr(scan_module, "build_router", lambda _settings: router)
+
+    config = ScanConfig(
+        mission="find a bug", target_specs=["example.com"], run_dir=tmp_path / "run"
+    )
+    with pytest.raises(RuntimeError, match="simulated crash"):
+        ScanRunner(config, env={"ANTHROPIC_API_KEY": "sk-test"}).run()
+
+    assert len(created) == 1
+    assert created[0].stopped_with_failed is True
 
 
 def test_resuming_an_already_finished_run_adopts_the_report_with_no_new_llm_work(
