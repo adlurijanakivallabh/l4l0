@@ -32,6 +32,12 @@ fixture: the whole point (per scoring.py's own append_composite_history
 docstring, "the project's own eval trend across its development") is a
 durable record that survives across runs and across commits. Each real
 run appends one dated entry; nothing already there is ever overwritten.
+
+Scored against VAMPI_DESTRUCTIVE (eval/targets.py), a 7-class superset of
+VAMPI's default 5 - the operator explicitly authorized destructive/
+DoS-adjacent testing against this disposable container, so regex-dos and
+rate-limiting (real, sourced VAmPI vulnerabilities normally excluded from
+default, non-destructive scoring) are in scope for this specific test.
 """
 
 from __future__ import annotations
@@ -45,7 +51,7 @@ import pytest
 from lalo.core.config import load_settings
 from lalo.eval.cases import run_case
 from lalo.eval.scoring import append_composite_history, score_composite
-from lalo.eval.targets import VAMPI
+from lalo.eval.targets import VAMPI_DESTRUCTIVE
 from lalo.graph.model import ReachabilityGraph
 from lalo.runtime.container import docker_available
 from lalo.scan import ScanConfig, ScanRunner
@@ -79,29 +85,60 @@ def test_live_autonomous_agent_run_against_vampi_is_scored_and_recorded(tmp_path
     config = ScanConfig(
         mission=(
             "Assess the VAmPI REST API at http://127.0.0.1:5000 for OWASP API "
-            "Top 10 vulnerabilities. Focus on broken access control (one user "
-            "reading or modifying another user's data), SQL injection, mass "
-            "assignment (undocumented fields accepted on registration/update), "
-            "weak credentials (password policy, username enumeration), and JWT "
-            "weaknesses (a weak or guessable signing secret). Use the http tool "
-            "directly against http://127.0.0.1:5000 - this is a REST API, no "
-            "browser needed. Register findings as you confirm them."
+            "Top 10 vulnerabilities. Investigate every one of these seven "
+            "classes, spawning one dedicated agent per class so each gets its "
+            "own full step budget: (1) broken access control - one user "
+            "reading or modifying another user's data, including any "
+            "debug/admin-only endpoint reachable without a proper role check; "
+            "(2) SQL injection; (3) mass assignment - undocumented fields "
+            "accepted on registration/update, e.g. an admin flag; (4) weak "
+            "credentials - password policy, username/password enumeration; "
+            "(5) JWT weaknesses - a weak or guessable signing secret, use the "
+            "jwt tool's crack_secret op with a small curated list of likely "
+            "defaults before trying anything else; (6) regex denial-of-service "
+            "on any regex-validated input field, following the regex-dos "
+            "skill's proof ladder exactly - confirm a hang exactly once, never "
+            "repeat or scale up further; and (7) lack of rate limiting on the "
+            "login endpoint - send a genuinely large sustained volume of login "
+            "attempts to conclusively prove the absence of throttling, not "
+            "just a handful of probes. Use the http tool directly against "
+            "http://127.0.0.1:5000 - this is a REST API, no browser needed. "
+            "Register findings as you confirm them."
+        ),
+        # This container is stood up solely for this authorized live-eval run
+        # and torn down immediately after (see this project's own "eval
+        # targets on-demand only" convention) - a disposable, non-production
+        # target is exactly the case CLAUDE.md's own "prompt-guided, not
+        # mechanically blocked" no-DoS discipline means to allow an explicit
+        # opt-in for. rules_of_engagement (not mission) carries this, since
+        # it's a guaranteed, always-injected prompt block rather than
+        # free-form mission text a long run could otherwise drift past.
+        rules_of_engagement=(
+            "Destructive and DoS-adjacent testing IS explicitly authorized "
+            "against this specific target for this run: it is a disposable "
+            "lab container with no other clients depending on it."
         ),
         target_specs=[f"{VAMPI_HOST}:{VAMPI_PORT}"],
         run_dir=tmp_path / "run",
-        max_steps=20,
-        max_duration_s=900.0,  # a hard 15-real-minute ceiling on one live eval run
+        max_steps=40,
+        # 7 lanes (up from 3-4 in earlier runs) at 40 steps each need real
+        # headroom in both the shared budget and the wall-clock ceiling.
+        budget_ceiling=400,
+        max_duration_s=1800.0,  # a hard 30-real-minute ceiling on this run
     )
     outcome = ScanRunner(config, env=None).run()
 
     graph = ReachabilityGraph.load(config.run_dir / "graph.json")
-    case_result = run_case(VAMPI, graph)
+    case_result = run_case(VAMPI_DESTRUCTIVE, graph)
     composite = score_composite([case_result])
 
     append_composite_history(
         composite,
         _HISTORY_PATH,
-        label="vampi-live-agent",
+        # Distinct label from "vampi-live-agent": this run is scored against
+        # VAMPI_DESTRUCTIVE's 7-class superset, not VAMPI's default 5 - mixing
+        # the two into one trend line would misrepresent both.
+        label="vampi-live-agent-destructive",
         recorded_at=datetime.now(UTC).isoformat(),
     )
 

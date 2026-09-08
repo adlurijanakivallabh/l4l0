@@ -68,6 +68,13 @@ usually matters more than the size of the wordlist.
    addresses/proxies), on a header value the client controls, or on the
    username with no cross-username correlation (allowing an unthrottled
    spray across many accounts even with per-account lockout in place).
+   The quiet, always-in-scope version of this check is the handful-of-probes
+   fingerprint from Recon above. **Only when the mission text explicitly
+   authorizes destructive or DoS-adjacent testing** does this escalate to
+   sending a genuinely large, sustained volume of requests — enough to
+   conclusively rule out throttling rather than just sample it — since
+   that volume is itself a mild denial-of-service load on the target and,
+   like [[regex-dos]], is never a default technique.
 6. **Multi-step flow bypass.** For a username-then-password flow, test
    whether the password step can be reached directly (skipping the
    username step's own separate throttling), and whether a session/step

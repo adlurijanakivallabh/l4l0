@@ -20,6 +20,8 @@ convention (``pyproject.toml``) rather than introducing a second one.
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 from .cases import BenchmarkCase
 
 VAMPI = BenchmarkCase(
@@ -76,6 +78,21 @@ VAMPI = BenchmarkCase(
             "jwt",  # forge a valid token via a guessed weak/default signing secret
         }
     ),
+)
+
+# A separate case, not part of LAB_TARGETS' default rotation, for the one
+# scenario where scoring the two excluded classes IS honest: an operator
+# explicitly authorizing destructive/DoS-adjacent testing for this specific,
+# disposable run (see regex-dos.md's own opt-in-only gate). Kept distinct
+# from VAMPI itself rather than folding these into its default set, because
+# baking them in would misscore every ordinary, non-destructive-by-default
+# run against two classes it was never asked to attempt - exactly the
+# "misleading, not honest" scoring VAMPI's own comment above warns against.
+VAMPI_DESTRUCTIVE = replace(
+    VAMPI,
+    name="vampi-destructive",
+    description=VAMPI.description + " (destructive/DoS-adjacent testing authorized)",
+    ground_truth_classes=VAMPI.ground_truth_classes | {"regex-dos", "rate-limiting"},
 )
 
 CRAPI = BenchmarkCase(

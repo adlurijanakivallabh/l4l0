@@ -176,6 +176,28 @@ expected, not a regression: the agent dynamically chooses which
 vulnerability classes to spawn children for, rather than following a fixed
 checklist, matching this project's own "the agent decides" design center.
 
+**A 4th change, not yet live-run**: the operator explicitly authorized
+destructive/DoS-adjacent testing against this specific disposable
+container and asked for full coverage. `test_eval_live_vampi_agent.py`
+now scores against `VAMPI_DESTRUCTIVE` (`eval/targets.py`) — the same
+5-class set plus `regex-dos` and `rate-limiting`, the two classes real
+in the source writeups but excluded from VAmPI's default, non-destructive
+ground truth. Its mission now names all 7 classes explicitly and asks for
+one spawned agent per class (rather than leaving lane selection fully to
+the model, per the "run-to-run variance" paragraph above) specifically to
+maximize the odds of full coverage in one run — a genuine trade of some
+agent autonomy for completeness, made deliberately for this benchmark
+only, not a change to the product's own default mission-prompt discipline.
+A new `regex-dos.md` skill was added (opt-in-gated: it refuses to be used
+unless the mission explicitly authorizes destructive testing), and
+`weak-credentials.md` gained an equivalent opt-in escalation from
+"fingerprint rate-limiting with a handful of probes" (the default) to
+"send a genuinely large sustained volume" (only once authorized). `40`
+steps/agent and a `400`-budget/`1800`s ceiling replace the smaller
+values used for the 5-class runs above, since 7 lanes need more headroom
+than 3-4 did. This entry will be replaced with real results the next time
+this test is actually run.
+
 ## Reproducing this
 
 ```bash
