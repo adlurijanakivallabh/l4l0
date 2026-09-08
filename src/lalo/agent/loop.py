@@ -694,6 +694,17 @@ class AgentLoop:
 
                 if call is None:
                     no_tool_call_retries += 1
+                    # Only ever a truncated log line, never durably recorded
+                    # anywhere else - a run that dies this way previously
+                    # left zero trace of what the model actually said
+                    # instead of a tool call, making the failure mode
+                    # itself undebuggable after the fact.
+                    _log.info(
+                        "model produced no parseable tool call (attempt %d/%d): %r",
+                        no_tool_call_retries,
+                        self.config.max_no_tool_call_retries,
+                        response.text[:500],
+                    )
                     if no_tool_call_retries > self.config.max_no_tool_call_retries:
                         _log.info("agent produced no tool call after retries; stopping")
                         return AgentResult(
