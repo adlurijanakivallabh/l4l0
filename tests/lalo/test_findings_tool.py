@@ -251,3 +251,34 @@ def test_record_finding_redacts_a_secret_embedded_in_source_location() -> None:
     )
     node = graph.node(graph.nodes_of_kind(NodeKind.FINDING)[0])
     assert "unique-marker-source-loc-9c3d1" not in node["source_location"]
+
+
+def test_record_finding_drops_a_path_traversal_shaped_source_location() -> None:
+    graph = ReachabilityGraph()
+    result = _registry(graph).dispatch(
+        "record_finding", _args(source_location="../../etc/hostname:5")
+    )
+    assert result.ok is True
+    assert "recorded finding-" in result.observation
+    assert "dropped" in result.observation
+    node = graph.node(graph.nodes_of_kind(NodeKind.FINDING)[0])
+    assert node["source_location"] is None
+    # everything else about the finding still landed, untouched
+    assert node["vuln_class"] == "sql-injection"
+    assert node["cvss_severity"] == "high"
+
+
+def test_record_finding_drops_an_absolute_path_source_location() -> None:
+    graph = ReachabilityGraph()
+    _registry(graph).dispatch("record_finding", _args(source_location="/etc/hostname:3"))
+    node = graph.node(graph.nodes_of_kind(NodeKind.FINDING)[0])
+    assert node["source_location"] is None
+
+
+def test_record_finding_drops_a_windows_drive_letter_source_location() -> None:
+    graph = ReachabilityGraph()
+    _registry(graph).dispatch(
+        "record_finding", _args(source_location="C:\\Windows\\System32\\config\\SAM:1")
+    )
+    node = graph.node(graph.nodes_of_kind(NodeKind.FINDING)[0])
+    assert node["source_location"] is None

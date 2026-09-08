@@ -46,6 +46,24 @@ def _as_str_dict(raw: object) -> dict[str, str]:
     return {str(k): str(v) for k, v in raw.items()}
 
 
+def _sanitize_source_location(value: str) -> str | None:
+    """Reject a ``source_location`` shaped like a path-traversal or
+    filesystem-escape attempt rather than an ordinary repo-relative
+    ``path/to/file.py:123`` reference: a ``..`` segment, a leading ``/``
+    (absolute path), or a backslash (a Windows drive-letter/UNC path).
+
+    This is report-output data integrity, not a testing restriction: it never
+    rejects the finding, never blocks the agent, and carries no allowlist of
+    "acceptable" paths - it only stops :mod:`~lalo.report.sarif` from ever
+    embedding an escape-shaped string verbatim into SARIF's
+    ``artifactLocation.uri``. A value that fails this shape check is simply
+    dropped by the caller; every other field the agent reported still lands.
+    """
+    if ".." in value or value.startswith("/") or "\\" in value:
+        return None
+    return value
+
+
 def _link_enabling_finding(
     graph: ReachabilityGraph, finding_id: str, args: dict[str, object]
 ) -> str:
@@ -108,9 +126,16 @@ def build_record_finding_tool(graph: ReachabilityGraph) -> FunctionTool:
         identities_raw = args.get("identities_confirmed")
         identities = [str(i) for i in identities_raw] if isinstance(identities_raw, list) else []
         reproduced = bool(args.get("reproduced", False))
-        source_location = (
-            redact(str(args["source_location"])) if args.get("source_location") else None
-        )
+        source_location = None
+        source_location_note = ""
+        if args.get("source_location"):
+            candidate = redact(str(args["source_location"]))
+            source_location = _sanitize_source_location(candidate)
+            if source_location is None:
+                source_location_note = (
+                    f" (WARNING: source_location {candidate!r} looked like a path-escape "
+                    "attempt - dropped, finding recorded without it)"
+                )
 
         key = dedup_key(vuln_class, target, param)
         existing_id = find_duplicate(graph, key)
@@ -196,7 +221,8 @@ def build_record_finding_tool(graph: ReachabilityGraph) -> FunctionTool:
         return ToolResult(
             observation=(
                 f"recorded {finding_id}: {vuln_class} on {target} - "
-                f"cvss={cvss.score:.1f} ({cvss.severity}){grounding_note}{chain_note}"
+                f"cvss={cvss.score:.1f} ({cvss.severity}){grounding_note}"
+                f"{source_location_note}{chain_note}"
             ),
             ok=True,
         )
@@ -230,7 +256,10 @@ def build_record_finding_tool(graph: ReachabilityGraph) -> FunctionTool:
             "list[str] (optional, identity names this was reproduced under), "
             '"source_location": str (optional, "path/to/file.py:123" - set this when '
             "you traced the vulnerability to a specific line in a source repository "
-            "you were given access to; omit it entirely when working black-box), "
+            "you were given access to; omit it entirely when working black-box; a value "
+            "shaped like a path escape - containing '..', starting with '/', or containing "
+            "a backslash - is dropped rather than recorded, the rest of the finding is "
+            "unaffected), "
             '"enabled_by_finding_id": str (optional - the id of an already-recorded '
             "finding whose exploitation is what let you reach THIS one, e.g. an IDOR "
             "that exposed the credentials used here. Only declare a real attack-chain "

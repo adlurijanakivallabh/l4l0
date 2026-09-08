@@ -211,3 +211,15 @@ def test_render_sarif_result_degrades_gracefully_on_a_malformed_source_location(
     doc = render_sarif(_records(graph))
     locations = doc["runs"][0]["results"][0]["locations"]
     assert all("physicalLocation" not in loc for loc in locations)
+
+
+def test_render_sarif_drops_traversal_source_location_but_keeps_sibling_result_intact() -> None:
+    graph = ReachabilityGraph()
+    _file(graph, source_location="app/routes.py:42")
+    _file(graph, target="https://x.example.com/other", source_location="../../etc/hostname:5")
+    doc = render_sarif(_records(graph))
+    good_locations, bad_locations = (r["locations"] for r in doc["runs"][0]["results"])
+    physical = next(loc["physicalLocation"] for loc in good_locations if "physicalLocation" in loc)
+    assert physical["artifactLocation"]["uri"] == "app/routes.py"
+    assert physical["region"]["startLine"] == 42
+    assert all("physicalLocation" not in loc for loc in bad_locations)
