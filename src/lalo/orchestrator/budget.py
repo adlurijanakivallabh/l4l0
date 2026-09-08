@@ -45,6 +45,13 @@ class RunStatus(StrEnum):
     # otherwise healthy and cooperating normally with should_stop(), this
     # was a real-time deadline, not an unconfirmed/ambiguous termination.
     WALL_CLOCK_EXCEEDED = "wall_clock_exceeded"
+    # An opt-in lifetime-spend ceiling (ScanConfig.cost_limit_usd) tripped -
+    # same reasoning as WALL_CLOCK_EXCEEDED immediately above: the step/
+    # budget loop was otherwise healthy and cooperating normally with
+    # should_stop(), this was a real-dollar spend ceiling crossed by
+    # core.usage.record_usage's own cost_limit_usd check, not an
+    # unconfirmed/ambiguous termination.
+    COST_EXCEEDED = "cost_exceeded"
 
 
 class BudgetExceededError(RuntimeError):

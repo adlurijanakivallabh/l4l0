@@ -185,7 +185,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from ..core.errors import AllProvidersFailedError
+from ..core.errors import AllProvidersFailedError, CostLimitExceededError
 from ..core.logging import get_logger
 from ..core.model_router import CompletionRequest, CompletionResponse, ModelRouter
 from ..core.pricing import PricingTable
@@ -429,6 +429,7 @@ class AgentLoop:
         sleep: Callable[[float], None] = time.sleep,
         get_steering: Callable[[], list[str]] | None = None,
         pricing_table: PricingTable | None = None,
+        cost_limit_usd: float | None = None,
     ) -> None:
         self.router = router
         self.registry = registry
@@ -466,6 +467,13 @@ class AgentLoop:
         # actually passed from here, the one real call site - every live run
         # left UsageStats.total_cost_usd permanently at 0.0.
         self.pricing_table = pricing_table
+        # None (the default) means record_usage's own cost_limit_usd check
+        # never fires - every existing caller that doesn't opt in keeps
+        # today's unbounded-spend behavior, the exact same opt-in shape as
+        # usage_path/pricing_table above and ScanConfig.max_duration_s.
+        # ScanRunner is the one real caller that threads a live value
+        # through, from ScanConfig.cost_limit_usd.
+        self.cost_limit_usd = cost_limit_usd
         # This loop's own identity (the root agent, or a spawned child) for
         # UsageStats.by_agent - None is a legitimate value here too, meaning
         # "record lifetime/by_provider totals but attribute nothing to a
@@ -519,10 +527,23 @@ class AgentLoop:
         real completion response, root or child, already passes through.
         ``usage_path`` defaults to ``None`` (recording off) so every existing
         caller that doesn't opt in stays hermetic; :class:`~lalo.scan.
-        ScanRunner` opts in for a real run. Never allowed to affect the
-        agent's own control flow: a usage-recording failure (a disk error, a
-        future cost-limit raise) is logged and swallowed, not propagated --
-        this is a best-effort side observation, not a correctness path.
+        ScanRunner` opts in for a real run. A plain usage-recording failure
+        (a disk error) is logged and swallowed, not propagated -- a
+        best-effort side observation must never crash the agent's own
+        control flow. :class:`~lalo.core.errors.CostLimitExceededError` is
+        the one exception NOT swallowed the same way: it means the ledger
+        write already succeeded and the operator's own ``cost_limit_usd``
+        ceiling was genuinely crossed, so it's turned into a
+        ``cost_limit_exceeded`` event instead (see :meth:`_emit`) --
+        :class:`~lalo.scan.ScanRunner` listens for exactly that event to
+        set its own stop flag, the same "flag set somewhere, read back once
+        run() returns" shape ``_should_stop``'s wall-clock check already
+        uses. The triggering step still completes normally (the API call
+        already happened and already cost real money - see
+        :class:`~lalo.core.errors.CostLimitExceededError`'s own docstring);
+        only the NEXT step boundary actually stops the loop, the identical
+        cooperative should_stop() contract every other ceiling in this loop
+        already honors.
         """
         effective_system = system if system is not None else self.system_prompt
         try:
@@ -538,7 +559,13 @@ class AgentLoop:
                     path=self.usage_path,
                     agent_id=self.agent_id,
                     pricing_table=self.pricing_table,
+                    cost_limit_usd=self.cost_limit_usd,
                     step_key=step_key,
+                )
+            except CostLimitExceededError as exc:
+                self._emit(
+                    "cost_limit_exceeded",
+                    {"total_cost_usd": exc.total_cost_usd, "limit_usd": exc.limit_usd},
                 )
             except Exception:
                 _log.exception("usage recording failed; continuing without it")

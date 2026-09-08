@@ -1669,6 +1669,40 @@ def test_should_stop_is_false_before_run_has_ever_started(tmp_path: Path) -> Non
     assert runner._should_stop() is False
 
 
+def test_cost_limit_usd_kills_a_run_and_reports_cost_exceeded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """cost_limit_usd threads all the way through to record_usage's own
+    cost_limit_usd parameter (core/usage.py) and back out as its own
+    honest RunStatus - not the ambiguous UNVERIFIED_STOP a plain
+    cooperative stop gets folded into by _terminal_status alone."""
+    monkeypatch.setattr(scan_module, "docker_available", lambda: True)
+    monkeypatch.setattr(scan_module, "RuntimeContainer", _FakeContainer)
+    provider = _ScriptedProvider(_respond)
+    router = ModelRouter(
+        providers={"fake": provider}, routes={"reasoning": ("fake",)}, default_route=("fake",)
+    )
+    monkeypatch.setattr(scan_module, "build_router", lambda _settings: router)
+
+    config = ScanConfig(
+        mission="find a bug",
+        target_specs=["example.com"],
+        run_dir=tmp_path / "run",
+        usage_path=tmp_path / "usage.json",
+        # Already "exceeded" the instant a single completion is recorded:
+        # a fresh usage.json ledger starts at total_cost_usd == 0.0, and
+        # record_usage's own check is a strict `>`, so any negative
+        # ceiling trips on the very first LLM completion regardless of
+        # real token counts - the same pre-tripped-ceiling trick
+        # test_max_duration_s_kills_a_run_and_reports_wall_clock_exceeded
+        # uses with max_duration_s=0.0.
+        cost_limit_usd=-1.0,
+    )
+    outcome = ScanRunner(config, env={"ANTHROPIC_API_KEY": "sk-test"}).run()
+
+    assert outcome.status is RunStatus.COST_EXCEEDED
+
+
 # --- live operator steering: closes a real dead-on-arrival wire (POST /steer
 # already logged these, nothing ever read them back into a running agent) ---
 

@@ -259,6 +259,26 @@ class ScanConfig:
     # the SAME per-completion token counts usage recording already captures,
     # never computed independently.
     pricing_table: PricingTable | None = None
+    # None (the default) preserves today's unbounded-spend behavior, the
+    # exact same opt-in shape as max_duration_s below: nothing else
+    # anywhere enforces a real-dollar ceiling on a scan, only max_steps/
+    # budget_ceiling (turn counts) and max_duration_s (wall-clock) can ever
+    # stop one on their own terms. Set to opt into a hard cost-based kill,
+    # threaded straight through to core.usage.record_usage's own
+    # cost_limit_usd parameter (built and unit-tested there since Phase 0,
+    # never actually passed a real value by any live caller until now) --
+    # compared against record_usage's own LIFETIME ledger total at
+    # usage_path, so this is meaningless without usage_path also being
+    # set, same as pricing_table above; a stale ledger from an earlier run
+    # sharing that same usage_path can make this trip before this run has
+    # spent anything itself. Reuses the SAME cooperative should_stop() kill
+    # switch max_duration_s already shares across every AgentLoop in the
+    # spawn tree (see ScanRunner._should_stop). Deliberately excluded from
+    # _ResumeManifest and NOT persisted across a resume, same reasoning as
+    # max_duration_s: an operational spend knob an operator may
+    # deliberately raise to resume a cost-stopped scan, not a locked
+    # scope/safety field.
+    cost_limit_usd: float | None = None
     # False (the default) preserves probe_reachability's own advisory-only
     # design -- an in-engagement network/infra or raw-TCP target may simply
     # not speak HTTP, so "unreachable" is never assumed to mean
@@ -708,6 +728,14 @@ class ScanRunner:
         # yet" for "the deadline already passed".
         self._start_time: float | None = None
         self._wall_clock_exceeded = False
+        # Set from _on_agent_event, not here in _should_stop unlike
+        # _wall_clock_exceeded above - a cost crossing is only known once
+        # record_usage() has actually persisted a completion's usage, deep
+        # inside some AgentLoop._complete() call (root's or a spawned
+        # child's), which reports it back out as a "cost_limit_exceeded"
+        # event through the same on_event pipeline every agent already
+        # uses.
+        self._cost_limit_exceeded = False
 
     def cancel(self) -> None:
         self._cancelled = True
@@ -717,6 +745,8 @@ class ScanRunner:
 
     def _should_stop(self) -> bool:
         if self._cancelled:
+            return True
+        if self._cost_limit_exceeded:
             return True
         max_duration = self.config.max_duration_s
         if (
@@ -839,6 +869,19 @@ class ScanRunner:
                 self.event_log.append(category, payload)
 
     def _on_agent_event(self, agent_id: str, event: str, payload: dict[str, object]) -> None:
+        if event == "cost_limit_exceeded":
+            # Same "flag set somewhere, read back once run() returns" shape
+            # _wall_clock_exceeded already uses in _should_stop() - the
+            # only difference is WHERE the crossing is detected: a
+            # wall-clock check runs inline inside _should_stop() itself,
+            # but a cost crossing is only known once some AgentLoop (root
+            # or a spawned child - this method is shared by both, see
+            # _on_root_event) has actually persisted a completion's usage
+            # via record_usage(), so its own on_event pipeline is what
+            # carries the crossing back out here. Still falls through to
+            # the generic "status" emit below - nothing about this is
+            # hidden from the operator.
+            self._cost_limit_exceeded = True
         if event in ("tool_call", "tool_result"):
             self._emit("log", {"agent_id": agent_id, "event": event, **payload})
         else:
@@ -1074,6 +1117,7 @@ class ScanRunner:
                     agent_id=child_id,
                     get_steering=self._pending_steering,
                     pricing_table=self.config.pricing_table,
+                    cost_limit_usd=self.config.cost_limit_usd,
                 )
                 # Durable breadcrumbs for orphan detection on a future resume
                 # (see _find_orphaned_children) - a crash between these two
@@ -1208,6 +1252,7 @@ class ScanRunner:
             agent_id=root_id,
             get_steering=self._pending_steering,
             pricing_table=self.config.pricing_table,
+            cost_limit_usd=self.config.cost_limit_usd,
         )
         # Every spawned child also journals its own steps now (agent_key=
         # child_id, wired in _run_child above), sharing this same journal
@@ -1289,17 +1334,18 @@ class ScanRunner:
             for chain in graph.all_enabling_chains():
                 self._emit("chain", {"node_ids": chain.node_ids})
 
-        # Checked ahead of the ordinary stop_reason mapping: a wall-clock
-        # kill goes through the exact same cooperative should_stop()/
-        # "cancelled" path as a manual stop, so _terminal_status alone
-        # cannot tell the two apart - this reclassifies it into its own
-        # honest RunStatus rather than reporting it as an ambiguous,
+        # Checked ahead of the ordinary stop_reason mapping: a wall-clock or
+        # cost-ceiling kill goes through the exact same cooperative
+        # should_stop()/"cancelled" path as a manual stop, so _terminal_status
+        # alone cannot tell any of them apart - this reclassifies each into
+        # its own honest RunStatus rather than reporting it as an ambiguous,
         # unconfirmed stop.
-        status = (
-            RunStatus.WALL_CLOCK_EXCEEDED
-            if self._wall_clock_exceeded
-            else _terminal_status(result.stop_reason)
-        )
+        if self._wall_clock_exceeded:
+            status = RunStatus.WALL_CLOCK_EXCEEDED
+        elif self._cost_limit_exceeded:
+            status = RunStatus.COST_EXCEEDED
+        else:
+            status = _terminal_status(result.stop_reason)
         # Built before write_report, not after: usage_path is a LIFETIME
         # ledger potentially shared across many scans, so the report must
         # show this run's own delta, not the ledger's cumulative total -
