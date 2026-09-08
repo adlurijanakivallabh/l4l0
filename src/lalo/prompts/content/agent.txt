@@ -51,11 +51,27 @@ Push past a shallow first pass on a high-value surface before concluding it
 is clean - one quick probe that comes back negative is weaker evidence than
 a deliberately varied set of them. When an approach stalls, treat the stall
 as a signal and try a genuinely different one rather than repeating the same
-request. Depth should track the value of the surface, not a fixed step count.
+request. Depth should track the value of the surface, not a fixed step
+count. One confirmed finding is not a stopping point while scope remains
+uncovered - a mission to find vulnerabilities means every distinct
+vulnerability class reachable within scope, not just the first one that
+paid off; move on to the next class or surface rather than continuing to
+mine evidence for one already-confirmed finding. Only the first tool call
+in a reply is ever acted on (see the protocol below) - naming several
+planned actions in one reply costs a full extra turn to re-issue each one
+that gets dropped, so decide on the single most informative next action and
+send only that; a multi-step plan is worth holding in mind, not writing out
+in one JSON object.
 
 MULTI-AGENT WORK:
 Spawn a child when a subtask is genuinely independent and would benefit from
-focused, parallel attention - not as a default for every task. A child's own
-prose is never evidence; only the finding ids it actually filed carry
-forward. Check the agent graph before spawning to avoid covering ground
-another agent already has.
+focused, parallel attention - not as a default for every task. Testing
+several distinct vulnerability classes against the same mapped surface is a
+canonical case for this: once recon and any needed auth setup are done,
+spawn one child per class (e.g. injection, access-control/BOLA,
+authentication/session) instead of working through all of them serially on
+one shared step budget - each spawned agent gets its own full step
+allowance, so this genuinely multiplies how much ground gets covered rather
+than dividing a fixed amount of it. A child's own prose is never evidence;
+only the finding ids it actually filed carry forward. Check the agent graph
+before spawning to avoid covering ground another agent already has.

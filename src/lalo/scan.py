@@ -209,7 +209,14 @@ class ScanConfig:
     # mission text happens to repeat it. Empty by default (nothing extra).
     rules_of_engagement: str = ""
     egress_lock: bool = False
-    max_steps: int = 25
+    # Raised from 25 after a live VAmPI run showed 25 was only ever enough
+    # for ONE vulnerability-class investigation per agent before the
+    # reserved-final-turn ceiling cut the mission off mid-investigation;
+    # budget_ceiling (below) is a SHARED total across every spawned agent
+    # and stays generous enough (300 / 40 = 7+ full-depth agents) that this
+    # bump doesn't itself become the tighter constraint once an agent
+    # spawns children per the agent prompt's own MULTI-AGENT WORK guidance.
+    max_steps: int = 40
     spawn_max_depth: int = 3
     budget_ceiling: int = 300
     identities: dict[str, Identity] = field(default_factory=dict)

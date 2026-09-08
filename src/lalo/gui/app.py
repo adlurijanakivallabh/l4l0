@@ -342,6 +342,12 @@ def build_app(event_log: EventLog, *, runs_dir: Path | None = None) -> FastAPI:
                 )
             run_id = uuid.uuid4().hex[:12]
             run_dir = runs_dir / run_id
+            # Read ScanConfig's own dataclass defaults rather than
+            # hardcoding a fallback number here - a hardcoded 25 here once
+            # silently drifted out of sync with ScanConfig.max_steps' own
+            # default after that was raised, caught by this project's own
+            # test suite. This is the only spot that needs it: the resume
+            # branch above never overrides either field at all.
             config = ScanConfig(
                 mission=mission,
                 target_specs=targets,
@@ -349,10 +355,14 @@ def build_app(event_log: EventLog, *, runs_dir: Path | None = None) -> FastAPI:
                 rules_of_engagement=rules_of_engagement,
                 run_dir=run_dir,
                 usage_path=run_dir / "usage.json",
-                max_steps=request.max_steps if request.max_steps is not None else 25,
-                budget_ceiling=request.budget_ceiling
-                if request.budget_ceiling is not None
-                else 300,
+                max_steps=(
+                    request.max_steps if request.max_steps is not None else ScanConfig.max_steps
+                ),
+                budget_ceiling=(
+                    request.budget_ceiling
+                    if request.budget_ceiling is not None
+                    else ScanConfig.budget_ceiling
+                ),
                 redact_findings=request.redact_findings,
                 egress_lock=request.egress_lock,
             )

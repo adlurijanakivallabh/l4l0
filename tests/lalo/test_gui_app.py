@@ -883,7 +883,7 @@ def test_scan_request_advanced_options_default_to_scan_configs_own_defaults(
     client, _ = _client(runs_dir=tmp_path)
     client.post("/scan", json={"mission": "find a bug", "targets": ["example.com"]})
     config = current_config()
-    assert config.max_steps == 25
+    assert config.max_steps == 40
     assert config.budget_ceiling == 300
     assert config.egress_lock is False
     assert config.redact_findings is False

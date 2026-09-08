@@ -297,7 +297,13 @@ _MAX_EMITTED_OBSERVATION_CHARS = 2000
 @dataclass
 class AgentConfig:
     role: str = "reasoning"
-    max_steps: int = 25
+    # Kept in sync with ScanConfig.max_steps' own default (scan.py) - see
+    # that field's comment for why 25 was raised. This default only
+    # matters for an AgentLoop built directly, without going through
+    # ScanRunner (every real scan passes its own ScanConfig.max_steps
+    # explicitly) - kept equal anyway so there's a single number to reason
+    # about, not two silently different "default depth" values.
+    max_steps: int = 40
     max_observation_chars: int = 4000
     is_root: bool = True
     # A tool call identical to the previous one this many times in a row is
