@@ -385,13 +385,28 @@ def _max_spawned_agent_number(journal: DurableJournal) -> int:
 
 
 def _filter_tools(tools: list[Tool], tool_names: frozenset[str] | None) -> list[Tool]:
-    """Opt-in tool confinement: every call site today passes ``None`` (every
-    agent, root and every spawned child, keeps the full unrestricted
-    toolset) - this exists purely as infrastructure a future narrow,
-    explicitly-opt-in role could use, never applied automatically."""
+    """Opt-in tool confinement: the default "full" role passes ``None``
+    (every agent, root and every spawned child, keeps the full unrestricted
+    toolset) - a narrow role like "source_reviewer" (see _ROLE_TOOL_NAMES)
+    is the only thing that ever narrows this, and only for a child an
+    agent explicitly chose to spawn that way."""
     if tool_names is None:
         return tools
     return [tool for tool in tools if tool.name in tool_names]
+
+
+_SOURCE_REVIEWER_TOOL_NAMES = frozenset(
+    {"run_command", "record_finding", "recall", "query_graph", "note"}
+)
+
+# The single source of truth mapping an opt-in spawn role (see
+# agent/spawn.py's own role/valid_roles) to its tool-name preset. "full" is
+# every existing agent's only role prior to this - unaffected by this
+# mapping's existence.
+_ROLE_TOOL_NAMES: dict[str, frozenset[str] | None] = {
+    "full": None,
+    "source_reviewer": _SOURCE_REVIEWER_TOOL_NAMES,
+}
 
 
 def _events_path(run_dir: Path) -> Path:
@@ -998,7 +1013,10 @@ class ScanRunner:
                 with self._graph_lock:
                     before = set(agent_graph.nodes_of_kind(NodeKind.FINDING))
                     child_graph = isolate_for_child(agent_graph)
-                child_registry = _build_registry(child_graph, child_id)
+                role = coordinator.node(child_id).role
+                child_registry = _build_registry(
+                    child_graph, child_id, tool_names=_ROLE_TOOL_NAMES[role]
+                )
                 child_loop = AgentLoop(
                     router,
                     child_registry,
@@ -1054,10 +1072,10 @@ class ScanRunner:
                 tools.append(build_session_check_tool(firer, sessions))
             tools += [build_mcp_tool(conn) for conn in self.config.mcp_connections.values()]
             spawn_tool, view_graph_tool = build_spawn_tools(
-                coordinator, _run_child, self_id=self_id
+                coordinator, _run_child, self_id=self_id, valid_roles=frozenset(_ROLE_TOOL_NAMES)
             )
             parallel_spawn_tool = build_parallel_spawn_tool(
-                coordinator, _run_child, self_id=self_id
+                coordinator, _run_child, self_id=self_id, valid_roles=frozenset(_ROLE_TOOL_NAMES)
             )
             tools += [spawn_tool, parallel_spawn_tool, view_graph_tool]
             return ToolRegistry(_filter_tools(tools, tool_names))

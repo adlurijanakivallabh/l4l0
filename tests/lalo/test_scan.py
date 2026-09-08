@@ -22,7 +22,7 @@ import json
 import stat
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -910,6 +910,72 @@ def test_scan_runner_emits_usage_delta_by_agent_for_a_sequentially_spawned_child
     assert set(by_agent) == {"agent-1", "agent-2"}
     assert by_agent["agent-1"]["requests"] >= 1
     assert by_agent["agent-2"]["requests"] >= 1
+
+
+def _spawn_source_reviewer_call() -> str:
+    return json.dumps(
+        {
+            "tool": "spawn_agent",
+            "args": {
+                "name": "Source Reviewer",
+                "task": "SOURCE-REVIEW-TASK: read the repo for injection sinks",
+                "role": "source_reviewer",
+            },
+        }
+    )
+
+
+def _respond_with_a_source_reviewer_spawn(
+    captured_child_prompts: list[str],
+) -> Callable[[int, str], str]:
+    def _respond(call_index: int, prompt: str) -> str:
+        if "MISSION:" not in prompt:
+            return "ok"  # the preflight verify_router() health-check call
+        # Anchored on the MISSION line itself (not a bare substring check):
+        # the root's OWN history recap of its spawn_agent call echoes the
+        # child's task text verbatim, so a bare "SOURCE-REVIEW-TASK in
+        # prompt" check would misfire on the root's own later turn too.
+        if prompt.startswith("MISSION:\nSOURCE-REVIEW-TASK"):
+            captured_child_prompts.append(prompt)
+            return _finish_call()
+        # the root's own turns
+        if "HISTORY (most recent last):" not in prompt:
+            return _spawn_source_reviewer_call()
+        return _finish_call()
+
+    return _respond
+
+
+def test_a_source_reviewer_child_gets_a_confined_toolset(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(scan_module, "docker_available", lambda: True)
+    monkeypatch.setattr(scan_module, "RuntimeContainer", _FakeContainer)
+    captured_child_prompts: list[str] = []
+    router = ModelRouter(
+        providers={
+            "fake": _ScriptedProvider(_respond_with_a_source_reviewer_spawn(captured_child_prompts))
+        },
+        routes={"reasoning": ("fake",), "review": ("fake",)},
+        default_route=("fake",),
+    )
+    monkeypatch.setattr(scan_module, "build_router", lambda _settings: router)
+
+    config = ScanConfig(
+        mission="find a bug, spawning a source reviewer",
+        target_specs=["c.example.com"],
+        run_dir=tmp_path / "run",
+        usage_path=tmp_path / "usage.json",
+    )
+    ScanRunner(config, env={"ANTHROPIC_API_KEY": "sk-test"}).run()
+
+    assert len(captured_child_prompts) == 1
+    child_prompt = captured_child_prompts[0]
+    assert "run_command" in child_prompt
+    assert "record_finding" in child_prompt
+    assert "recall" in child_prompt
+    assert "http:" not in child_prompt  # the http tool's own name-colon form in the tool list
+    assert "spawn_agent:" not in child_prompt
 
 
 def _respond_with_a_sequentially_spawned_child_running_a_command(
