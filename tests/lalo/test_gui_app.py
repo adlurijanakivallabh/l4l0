@@ -887,3 +887,100 @@ def test_scan_request_advanced_options_default_to_scan_configs_own_defaults(
     assert config.budget_ceiling == 300
     assert config.egress_lock is False
     assert config.redact_findings is False
+
+
+def test_scan_derives_targets_from_mission_when_none_are_given(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(app_module, "ScanRunner", _FakeScanRunner)
+
+    def fake_parse_scan_intent(mission, router):
+        from lalo.intake import ParsedIntent
+
+        assert mission == "test this website localhost:5000, focus on api"
+        return ParsedIntent(
+            targets=["localhost:5000"],
+            exclude_targets=[],
+            rules_of_engagement="Focus on API endpoints.",
+        )
+
+    monkeypatch.setattr(app_module, "parse_scan_intent", fake_parse_scan_intent)
+    client, _ = _client(runs_dir=tmp_path)
+    response = client.post(
+        "/scan", json={"mission": "test this website localhost:5000, focus on api"}
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["resolved_targets"] == ["localhost:5000"]
+    assert body["resolved_rules_of_engagement"] == "Focus on API endpoints."
+    assert current_config().target_specs == ["localhost:5000"]
+    assert current_config().rules_of_engagement == "Focus on API endpoints."
+
+
+def test_scan_skips_the_parser_entirely_when_targets_are_explicit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(app_module, "ScanRunner", _FakeScanRunner)
+    called = False
+
+    def fake_parse_scan_intent(mission, router):
+        nonlocal called
+        called = True
+        raise AssertionError("must not be called when targets are already explicit")
+
+    monkeypatch.setattr(app_module, "parse_scan_intent", fake_parse_scan_intent)
+    client, _ = _client(runs_dir=tmp_path)
+    response = client.post("/scan", json={"mission": "find a bug", "targets": ["example.com"]})
+    assert response.status_code == 200
+    assert called is False
+    assert response.json()["resolved_targets"] == ["example.com"]
+
+
+def test_scan_still_400s_when_the_parser_finds_no_target_either(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(app_module, "ScanRunner", _FakeScanRunner)
+
+    def fake_parse_scan_intent(mission, router):
+        from lalo.intake import ParsedIntent
+
+        return ParsedIntent(targets=[], exclude_targets=[], rules_of_engagement="")
+
+    monkeypatch.setattr(app_module, "parse_scan_intent", fake_parse_scan_intent)
+    client, _ = _client(runs_dir=tmp_path)
+    response = client.post("/scan", json={"mission": "what can you do?"})
+    assert response.status_code == 400
+    assert "required" in response.json()["error"]
+
+
+def test_scan_surfaces_a_structured_503_when_every_provider_fails_during_parse(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(app_module, "ScanRunner", _FakeScanRunner)
+
+    def fake_parse_scan_intent(mission, router):
+        raise AllProvidersFailedError(role="intake", failures=[("anthropic", "401 unauthorized")])
+
+    monkeypatch.setattr(app_module, "parse_scan_intent", fake_parse_scan_intent)
+    client, _ = _client(runs_dir=tmp_path)
+    response = client.post("/scan", json={"mission": "test localhost:5000"})
+    assert response.status_code == 503
+    body = response.json()
+    assert body["role"] == "intake"
+    assert body["failures"] == [{"provider": "anthropic", "reason": "401 unauthorized"}]
+
+
+def test_scan_resume_response_also_carries_resolved_fields(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(app_module, "ScanRunner", _FakeScanRunner)
+    run_dir = tmp_path / "abc123"
+    run_dir.mkdir()
+    (run_dir / "resume_manifest.json").write_text(
+        '{"mission": "m", "target_specs": ["example.com"], "egress_lock": false}',
+        encoding="utf-8",
+    )
+    client, _ = _client(runs_dir=tmp_path)
+    response = client.post("/scan", json={"resume_run_id": "abc123"})
+    assert response.status_code == 200
+    assert response.json()["resolved_targets"] == ["example.com"]

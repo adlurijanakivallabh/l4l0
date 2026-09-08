@@ -120,6 +120,7 @@ from ..core.env_file import merge_env_file
 from ..core.errors import AllProvidersFailedError
 from ..core.logging import get_logger
 from ..core.providers import build_router, verify_router
+from ..intake import parse_scan_intent
 from ..report.writer import (
     CSV_FILENAME,
     DOCX_FILENAME,
@@ -311,7 +312,31 @@ def build_app(event_log: EventLog, *, runs_dir: Path | None = None) -> FastAPI:
             mission = request.mission.strip()
             targets = [t.strip() for t in request.targets if t.strip()]
             exclude_targets = [t.strip() for t in request.exclude_targets if t.strip()]
-            if not mission or not targets:
+            rules_of_engagement = request.rules_of_engagement.strip()
+            if not mission:
+                return JSONResponse(
+                    {"error": "'mission' and 'targets' are required"}, status_code=400
+                )
+            if not targets:
+                router = build_router(load_settings(os.environ))
+                try:
+                    parsed = parse_scan_intent(mission, router)
+                except AllProvidersFailedError as exc:
+                    return JSONResponse(
+                        {
+                            "error": "could not understand the request: every LLM provider failed",
+                            "role": exc.role,
+                            "failures": [
+                                {"provider": name, "reason": reason}
+                                for name, reason in exc.failures
+                            ],
+                        },
+                        status_code=503,
+                    )
+                targets = parsed.targets
+                exclude_targets = exclude_targets or parsed.exclude_targets
+                rules_of_engagement = rules_of_engagement or parsed.rules_of_engagement
+            if not targets:
                 return JSONResponse(
                     {"error": "'mission' and 'targets' are required"}, status_code=400
                 )
@@ -321,7 +346,7 @@ def build_app(event_log: EventLog, *, runs_dir: Path | None = None) -> FastAPI:
                 mission=mission,
                 target_specs=targets,
                 exclude_target_specs=exclude_targets,
-                rules_of_engagement=request.rules_of_engagement.strip(),
+                rules_of_engagement=rules_of_engagement,
                 run_dir=run_dir,
                 usage_path=run_dir / "usage.json",
                 max_steps=request.max_steps if request.max_steps is not None else 25,
@@ -370,7 +395,16 @@ def build_app(event_log: EventLog, *, runs_dir: Path | None = None) -> FastAPI:
                 current_runners.pop(run_id, None)
 
         threading.Thread(target=_run_and_clear, daemon=True).start()
-        return JSONResponse({"ok": True, "run_dir": str(run_dir), "run_id": run_id})
+        return JSONResponse(
+            {
+                "ok": True,
+                "run_dir": str(run_dir),
+                "run_id": run_id,
+                "resolved_targets": config.target_specs,
+                "resolved_exclude_targets": config.exclude_target_specs,
+                "resolved_rules_of_engagement": config.rules_of_engagement,
+            }
+        )
 
     @app.get("/status")
     def status(run_id: str | None = Query(default=None)) -> JSONResponse:
