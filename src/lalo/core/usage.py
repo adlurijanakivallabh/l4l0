@@ -15,11 +15,16 @@ Deliberately NOT ported: ``fcntl`` inter-process locking. A read-modify-write
 race here needs two callers touching the same usage file at once, and this
 project's own established convention (this file's persistence pattern
 mirrors :func:`~lalo.eval.scoring.append_composite_history`'s already-
-accepted decision) is that L4L0's own single-active-scan design (one GUI,
-one mutable "is a scan running" slot, per :mod:`lalo.gui.app`) makes that
-race a real but low-probability edge case, not a normal path — worth naming
-here rather than silently assumed away, not worth the complexity of adding
-process-level file locking for.
+accepted decision) is that this is a real but low-probability edge case,
+not worth the complexity of process-level file locking for. Every scan the
+GUI launches (:mod:`lalo.gui.app`) passes its own ``run_dir / "usage.json"``
+rather than this module's shared ``DEFAULT_USAGE_PATH``, so two GUI-launched
+scans — even genuinely concurrent ones — never share a file. The race is
+narrower than "any two scans," not eliminated: a direct/CLI ``ScanConfig``
+construction that doesn't pass its own ``usage_path`` still defaults to the
+single shared ``DEFAULT_USAGE_PATH``, so two such processes run concurrently
+by an operator (never by the GUI itself) could still race on it — worth
+naming here rather than silently assumed away.
 """
 
 from __future__ import annotations

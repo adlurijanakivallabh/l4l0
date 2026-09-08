@@ -58,13 +58,27 @@ avoiding what looked at the time like the much larger scope of threading a
 live journal down through every spawned descendant for a proportionally
 small additional benefit.
 
-That scope turned out to be small after all: :mod:`lalo.scan` now also wires
-every spawned child's own ``child_loop.run()`` call with ``journal=``/
-``agent_key=child_id`` (sharing this same journal instance), so a child's own
-steps are durably resumable too, replayed on retry under its own namespace.
-Nothing above needed to change for that — ``agent_key`` was already an
-opaque per-caller namespace, never special-cased for "root" — only the one
-call site in ``scan.py`` that constructs each child's ``AgentLoop`` did. The
+That scope turned out to be small after all, though not in the way "durably
+resumable child steps" first suggests: :mod:`lalo.scan` now also wires every
+spawned child's own ``child_loop.run()`` call with ``journal=``/
+``agent_key=child_id`` (sharing this same journal instance), which durably
+records a completed child's own steps in the shared journal file alongside
+the root's, under its own namespace. But since ``_run_child`` runs a whole
+spawn — dispatch, run to completion, graph merge — synchronously inside ONE
+of the root's own ``journal.run_once`` calls, a child that was still
+genuinely mid-execution when the crash happened is never resumed granularly
+either: the root's own not-yet-completed spawn step simply re-runs in full
+on resume, which spawns a brand-new child under a fresh id and redoes that
+task from scratch, discarding whatever the abandoned child had already done.
+The real, load-bearing benefit is narrower and still genuine: a child that
+DID run to completion before an unrelated LATER crash needs no resume at
+all (its result is already part of the root's own replayed history), and
+the reseeding fix below is what stops a fresh id minted after resume from
+colliding with that completed child's own already-journaled one. Nothing
+above needed to change for the per-child journaling itself — ``agent_key``
+was already an opaque per-caller namespace, never special-cased for "root"
+— only the one call site in ``scan.py`` that constructs each child's
+``AgentLoop`` did. The
 one thing that DID need new work belongs to the coordinator that mints
 child ids, not this loop: a resumed process's id counter starts fresh with
 no memory of ids a crashed attempt's replayed-not-respawned steps already

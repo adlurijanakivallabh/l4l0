@@ -51,14 +51,48 @@ from that run's own locked record automatically — you don't retype them,
 and the server won't let you accidentally continue it under different
 parameters than what it originally started with.
 
-What actually happens on resume: every step any agent — the root, or a
-spawned child — already completed is replayed straight from its own
-section of the journal (no tool re-fires, no model call happens for it)
-until that agent's live loop reaches the first step it never journaled,
-then continues from there as a normal run. A spawned child sub-agent that
-was still mid-execution when the crash happened resumes from its own
-last completed step too, the next time the root re-spawns it — not a
-full restart of its task from scratch.
+What actually happens on resume: every step the root agent already
+completed is replayed straight from the journal (no tool re-fires, no
+model call happens for it) until the root's own live loop reaches the
+first step it never journaled, then continues from there as a normal
+run. A spawned child whose task had already fully finished before the
+crash needs no resume at all — its result is already part of the root's
+own replayed history, recorded as the single root step that spawned it.
+A child that was still genuinely mid-execution when the crash happened
+is *not* resumed granularly: the root's own not-yet-completed spawn step
+simply re-runs in full on resume, spawning a brand-new child under a
+fresh id (never the abandoned one) that redoes that task from scratch.
+
+Usage accounting under resume is narrower than "any resumed step might
+double-count" — a resumed step whose result is already in the journal is
+purely replayed (no model call, no `record_usage`), so it never
+double-counts. The one real window is a crash between a step's own LLM
+call recording its usage and that same step's tool-dispatch result
+finishing its journal write: on resume that ONE step re-runs in full (a
+genuinely new LLM call), double-recording that single step's usage.
+Accepted as-is rather than built around, matching this project's own
+precedent for a structurally similar narrow race in `core/usage.py`'s own
+module docstring.
+
+## Gaps this project intentionally does not close
+
+A few items a comparison against another agent's own architecture might
+flag as missing are addressed here once, so they aren't re-proposed as
+gaps without a fresh, explicit reason:
+
+- **Finding reconciliation across producers** doesn't apply to L4L0's
+  architecture. `dedup_key(vuln_class, target, param)` computed at
+  `record_finding` time is the only producer this project has — the
+  attribution-leak problem a multi-pipeline architecture (a separate
+  dynamic-testing pipeline and a separate static-analysis pipeline, each
+  filing its own findings) has to solve with a dedicated reconciliation
+  stage never arises here, since there's only ever one producer to begin
+  with.
+- **GUI authentication** was deliberately removed, not merely never
+  built — the server binds to `127.0.0.1` only regardless, and re-adding
+  a connection token was explicitly declined by the operator when asked
+  directly, specifically to make watching a live scan easier. Don't
+  re-propose it without a fresh, explicit ask.
 
 ## Pointing a scan at a target on your own machine
 
