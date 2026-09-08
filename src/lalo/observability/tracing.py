@@ -67,6 +67,31 @@ class Tracer:
             self.counters[name] = self.counters.get(name, 0.0) + value
 
 
+def wall_clock_union(spans: list[Span]) -> float:
+    """Total real-world seconds actually covered by ``spans``, merging any
+    overlapping intervals — a spawn_agents fan-out's several concurrent
+    spans must not be summed independently (that overcounts wall time by
+    however much they overlapped); this reports what a wall clock watching
+    the whole run would actually have shown."""
+    intervals = sorted(
+        (span.wall_start, span.wall_start + span.duration_ms / 1000.0)
+        for span in spans
+        if span.end is not None and span.duration_ms is not None
+    )
+    if not intervals:
+        return 0.0
+    total = 0.0
+    current_start, current_end = intervals[0]
+    for start, end in intervals[1:]:
+        if start <= current_end:
+            current_end = max(current_end, end)
+        else:
+            total += current_end - current_start
+            current_start, current_end = start, end
+    total += current_end - current_start
+    return total
+
+
 _DEFAULT_TRACER = Tracer()
 
 

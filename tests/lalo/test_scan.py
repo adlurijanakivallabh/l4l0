@@ -554,6 +554,34 @@ def test_scan_runner_emits_a_trace_summary_on_the_completed_event(
     assert summary["counters"].get("tool_calls", 0) > 0
 
 
+def test_scan_runner_emits_wall_clock_seconds_alongside_summed_span_durations(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """wall_clock_seconds is the interval-union across spans, distinct from
+    summing every span's own duration - a spawn_agents fan-out's concurrent
+    spans overlap in real time, so a plain sum overcounts wall-clock elapsed."""
+    monkeypatch.setattr(scan_module, "docker_available", lambda: True)
+    monkeypatch.setattr(scan_module, "RuntimeContainer", _FakeContainer)
+    router = ModelRouter(
+        providers={"fake": _ScriptedProvider(_respond)},
+        routes={"reasoning": ("fake",), "review": ("fake",)},
+        default_route=("fake",),
+    )
+    monkeypatch.setattr(scan_module, "build_router", lambda _settings: router)
+
+    event_log = EventLog()
+    config = ScanConfig(
+        mission="find a bug", target_specs=["example.com"], run_dir=tmp_path / "run"
+    )
+    ScanRunner(config, env={"ANTHROPIC_API_KEY": "sk-test"}, event_log=event_log).run()
+
+    _cursor, events = event_log.snapshot()
+    completed = next(e for e in events if e.payload.get("event") == "scan_completed")
+    summary = completed.payload["trace_summary"]
+    assert isinstance(summary["wall_clock_seconds"], float)
+    assert summary["wall_clock_seconds"] >= 0.0
+
+
 def test_scan_runner_emits_shell_events_for_a_real_run_command_call(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

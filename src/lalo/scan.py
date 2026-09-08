@@ -172,7 +172,7 @@ from .identity.tool import build_jwt_tool, build_login_tool, build_session_check
 from .integrations.mcp_client import MCPServerConfig, build_mcp_tool
 from .oast.server import OASTServer
 from .oast.tool import build_oast_tools
-from .observability.tracing import Tracer
+from .observability.tracing import Tracer, wall_clock_union
 from .orchestrator.budget import Budget, RunStatus
 from .orchestrator.journal import DurableJournal
 from .prompts import render_prompt
@@ -402,7 +402,14 @@ def _trace_summary(tracer: Tracer) -> dict[str, object]:
         agg = by_name.setdefault(s.name, {"count": 0.0, "total_duration_ms": 0.0})
         agg["count"] += 1
         agg["total_duration_ms"] += s.duration_ms or 0.0
-    return {"spans": by_name, "counters": dict(tracer.counters)}
+    return {
+        "spans": by_name,
+        "counters": dict(tracer.counters),
+        # Distinct from summing every span's own duration above: concurrent
+        # spawn_agents work overlaps in real time, so a plain sum overcounts
+        # wall-clock elapsed by however much it overlapped.
+        "wall_clock_seconds": wall_clock_union(tracer.spans),
+    }
 
 
 def _write_trace_file(run_dir: Path, tracer: Tracer) -> None:

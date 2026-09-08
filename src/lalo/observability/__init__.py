@@ -5,6 +5,6 @@ tracing exporter later without changing call sites). Long autonomous runs are
 hard to debug without this, so instrument liberally.
 """
 
-from .tracing import Span, Tracer, get_tracer
+from .tracing import Span, Tracer, get_tracer, wall_clock_union
 
-__all__ = ["Span", "Tracer", "get_tracer"]
+__all__ = ["Span", "Tracer", "get_tracer", "wall_clock_union"]

@@ -5,7 +5,7 @@ from __future__ import annotations
 import threading
 import time
 
-from lalo.observability import Tracer
+from lalo.observability import Span, Tracer, wall_clock_union
 
 
 def test_span_records_duration_and_attributes() -> None:
@@ -48,6 +48,27 @@ def test_counter_is_thread_safe_under_concurrent_increments() -> None:
     for t in threads:
         t.join()
     assert tracer.counters["tool_calls"] == 500.0
+
+
+def test_wall_clock_union_of_non_overlapping_spans_sums_durations() -> None:
+    a = Span(name="a", start=0.0, end=1.0, wall_start=100.0)
+    b = Span(name="b", start=1.0, end=2.0, wall_start=200.0)
+    assert wall_clock_union([a, b]) == (a.duration_ms or 0.0) / 1000 + (b.duration_ms or 0.0) / 1000
+
+
+def test_wall_clock_union_of_overlapping_spans_counts_the_overlap_once() -> None:
+    a = Span(name="a", start=0.0, end=10.0, wall_start=100.0)  # covers [100, 110)
+    b = Span(name="b", start=0.0, end=10.0, wall_start=102.0)  # covers [102, 112), overlaps a
+    assert wall_clock_union([a, b]) == 12.0  # union of [100,110) and [102,112) is [100,112)
+
+
+def test_wall_clock_union_ignores_spans_with_no_end() -> None:
+    unfinished = Span(name="a", start=0.0, end=None, wall_start=100.0)
+    assert wall_clock_union([unfinished]) == 0.0
+
+
+def test_wall_clock_union_of_empty_list_is_zero() -> None:
+    assert wall_clock_union([]) == 0.0
 
 
 def test_span_wall_start_is_a_real_wall_clock_time() -> None:
