@@ -1671,6 +1671,28 @@ def test_container_reference_is_cleared_after_a_completed_run(
     assert runner._container is None
 
 
+def test_find_orphaned_children_returns_a_spawned_with_no_matching_finished(
+    tmp_path: Path,
+) -> None:
+    journal = DurableJournal(tmp_path / "journal.jsonl")
+    journal.record(
+        "agent-2:spawned",
+        {"name": "n", "task": "t", "parent_id": "agent-1", "depth": 1, "role": "full"},
+    )
+    orphans = scan_module._find_orphaned_children(journal)  # noqa: SLF001
+    assert [child_id for child_id, _ in orphans] == ["agent-2"]
+
+
+def test_find_orphaned_children_excludes_one_with_a_matching_finished(tmp_path: Path) -> None:
+    journal = DurableJournal(tmp_path / "journal.jsonl")
+    journal.record(
+        "agent-2:spawned",
+        {"name": "n", "task": "t", "parent_id": "agent-1", "depth": 1, "role": "full"},
+    )
+    journal.record("agent-2:finished", {"stop_reason": "finished", "summary": "done"})
+    assert scan_module._find_orphaned_children(journal) == []  # noqa: SLF001
+
+
 # --- Phase 2, pentagi/PentestGPT pass: crash-mid-scan resume -----------------
 
 
@@ -1873,6 +1895,88 @@ def test_resume_reseeds_the_spawn_counter_so_a_second_child_gets_a_fresh_agent_i
         e.payload.get("agent_id") == "agent-3" and e.payload.get("event") == "resumed"
         for e in events
     )
+
+
+def test_a_crashed_mid_child_scan_can_be_resumed_under_the_same_agent_id(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(scan_module, "docker_available", lambda: True)
+    monkeypatch.setattr(scan_module, "RuntimeContainer", _FakeContainer)
+
+    def _crash_mid_child(call_index: int, prompt: str) -> str:
+        if "MISSION:" not in prompt:
+            return "ok"  # the preflight verify_router() health-check call
+        if prompt.startswith("MISSION:\nCHILD-C-TASK"):
+            # The child's very first turn - simulate an unrecoverable process
+            # kill while child_loop.run() is still in progress. Deliberately
+            # a BaseException, NOT a plain Exception: agent/spawn.py's own
+            # _spawn wraps its run_child(...) call in "except Exception as
+            # exc" (comment: "a crashed child must still reach a terminal
+            # status") specifically so an ordinary child failure never takes
+            # the whole scan down - an ordinary RuntimeError here would be
+            # caught right there and the scan would finish normally, proving
+            # nothing about orphan detection. Only something outside
+            # Exception's hierarchy models a real, uncatchable process death.
+            raise BaseException("simulated crash mid-child")  # noqa: TRY002, BLE001
+        if "HISTORY (most recent last):" not in prompt:
+            return _spawn_agent_call()
+        return "CRASH"  # unreachable: root never gets a second turn before the crash
+
+    router1 = ModelRouter(
+        providers={"fake": _ScriptedProvider(_crash_mid_child)},
+        routes={"reasoning": ("fake",), "review": ("fake",)},
+        default_route=("fake",),
+    )
+    monkeypatch.setattr(scan_module, "build_router", lambda _settings: router1)
+
+    run_dir = tmp_path / "run"
+    config = ScanConfig(
+        mission="find a bug, spawning one child", target_specs=["c.example.com"], run_dir=run_dir
+    )
+    with pytest.raises(BaseException, match="simulated crash mid-child"):  # noqa: PT011
+        ScanRunner(config, env={"ANTHROPIC_API_KEY": "sk-test"}).run()
+
+    crashed_journal = DurableJournal(run_dir / "journal.jsonl")
+    assert crashed_journal.has("agent-2:spawned")
+    assert not crashed_journal.has("agent-2:finished")
+
+    def _respond_after_resume(call_index: int, prompt: str) -> str:
+        if "FINDING TO REVIEW" in prompt:
+            return '{"verdict": "confirmed", "proof_level": "L3", "reasoning": "grounded"}'
+        if prompt.startswith("MISSION:\nCHILD-C-TASK"):
+            if "HISTORY (most recent last):" not in prompt:
+                return _record_finding_call_for("https://c.example.com/search")
+            return _finish_call()
+        # The root's OWN turns after resume. "root:0" (the crashed spawn
+        # step) was never journaled - the crash happened before that whole
+        # tool dispatch (spawn + run the child to completion) ever
+        # returned, and a step only gets journaled once its dispatch
+        # returns - so the root's first LIVE turn here has NO history at
+        # all, exactly like a fresh run's very first turn. It must
+        # explicitly resume the orphan (a real agent would call
+        # view_agent_graph first and see agent-2 as [orphaned]; this
+        # scripted turn already "knows" to resume it). Its SECOND turn
+        # (now WITH history, since the successful resume just journaled
+        # "root:0") finishes.
+        if "HISTORY (most recent last):" not in prompt:
+            return json.dumps({"tool": "spawn_agent", "args": {"resume_agent_id": "agent-2"}})
+        return _finish_call()
+
+    resumed_provider = _ScriptedProvider(_respond_after_resume)
+    router2 = ModelRouter(
+        providers={"fake": resumed_provider},
+        routes={"reasoning": ("fake",), "review": ("fake",)},
+        default_route=("fake",),
+    )
+    monkeypatch.setattr(scan_module, "build_router", lambda _settings: router2)
+
+    outcome = ScanRunner(config, env={"ANTHROPIC_API_KEY": "sk-test"}).run()
+    assert outcome.status is RunStatus.COMPLETED
+
+    final_journal = DurableJournal(run_dir / "journal.jsonl")
+    # The SAME id as before the crash - never a fresh "agent-3".
+    assert final_journal.has("agent-2:0")
+    assert final_journal.has("agent-2:finished")
 
 
 def test_resume_manifest_without_the_exclude_field_still_resumes(tmp_path: Path) -> None:

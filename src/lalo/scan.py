@@ -384,6 +384,24 @@ def _max_spawned_agent_number(journal: DurableJournal) -> int:
     return max(numbers, default=0)
 
 
+def _find_orphaned_children(journal: DurableJournal) -> list[tuple[str, dict[str, object]]]:
+    """Every child whose own ``:spawned`` breadcrumb has no matching
+    ``:finished`` one - genuinely still mid-execution when the process
+    crashed, per _run_child's own two-breadcrumb discipline. Order is not
+    significant (depth is stored directly in the breadcrumb, never derived
+    by looking up a parent during reconstruction), so this returns
+    whatever order completed_keys() itself iterates in.
+    """
+    orphans: list[tuple[str, dict[str, object]]] = []
+    for key in journal.completed_keys():
+        if not key.endswith(":spawned"):
+            continue
+        child_id = key.removesuffix(":spawned")
+        if not journal.has(f"{child_id}:finished"):
+            orphans.append((child_id, journal.get(key)))
+    return orphans
+
+
 def _filter_tools(tools: list[Tool], tool_names: frozenset[str] | None) -> list[Tool]:
     """Opt-in tool confinement: the default "full" role passes ``None``
     (every agent, root and every spawned child, keeps the full unrestricted
@@ -1110,6 +1128,15 @@ class ScanRunner:
         # docstrings) BEFORE any live dispatch can call coordinator.spawn() --
         # a no-op on a fresh run, where the journal has no "agent-N:..." keys.
         coordinator.seed_counter(_max_spawned_agent_number(journal))
+        for orphan_id, spawned in _find_orphaned_children(journal):
+            coordinator.register_orphan(
+                orphan_id,
+                str(spawned["name"]),
+                str(spawned["task"]),
+                parent_id=spawned.get("parent_id"),  # type: ignore[arg-type]
+                depth=int(spawned["depth"]),  # type: ignore[call-overload]
+                role=str(spawned["role"]),
+            )
         root_registry = _build_registry(graph, root_id)
         root_loop = AgentLoop(
             router,
