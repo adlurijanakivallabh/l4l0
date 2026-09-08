@@ -1164,3 +1164,59 @@ def test_a_crash_after_journaling_but_mid_step_still_resumes_correctly(tmp_path)
     result = resumed_loop.run("mission", journal=journal, agent_key="root")
     assert result.stop_reason == "finished"
     assert calls["n"] == 1  # the already-journaled step was never re-dispatched
+
+
+class _CrashOnFirstJournalWrite(DurableJournal):
+    """Lets the step's own tool dispatch genuinely run (a real side
+    effect, exactly like a real crash landing after the LLM call already
+    succeeded) but fails durably recording it - the precise window this
+    task closes a usage-double-count in, matching this project's own
+    established practice of testing an exact crash-timing window directly
+    rather than approximating it.
+    """
+
+    def __init__(self, path) -> None:
+        super().__init__(path)
+        self._raised = False
+
+    def record(self, key: str, result: object) -> None:
+        if not self._raised:
+            self._raised = True
+            raise RuntimeError("simulated crash mid tool-dispatch-journal-write")
+        super().record(key, result)
+
+
+def test_a_step_redone_after_a_crash_before_its_journal_write_is_not_double_billed(
+    tmp_path,
+) -> None:
+    tool, calls = _counting_tool("probe")
+    registry = ToolRegistry([tool])
+    usage_path = tmp_path / "usage.json"
+    journal = _CrashOnFirstJournalWrite(tmp_path / "j.jsonl")
+    router1 = _scripted(['{"tool": "probe", "args": {}}'])
+    loop1 = AgentLoop(router1, registry, system_prompt="", usage_path=usage_path)  # type: ignore[arg-type]
+    with pytest.raises(RuntimeError, match="simulated crash"):
+        loop1.run("mission", journal=journal, agent_key="root")
+    # The real side effect happened (the tool actually ran) and usage was
+    # actually recorded, but the step's own journal entry never landed.
+    assert calls["n"] == 1
+    assert load_usage(usage_path).total_requests == 1
+    assert not journal.has("root:0")
+
+    # Resume: the un-journaled step redoes in full - a genuinely new
+    # completion, a genuinely new usage record for the SAME step_key.
+    router2 = _scripted(
+        ['{"tool": "probe", "args": {}}', '{"tool": "finish", "args": {"summary": "done"}}']
+    )
+    loop2 = AgentLoop(router2, registry, system_prompt="", usage_path=usage_path)  # type: ignore[arg-type]
+    result = loop2.run("mission", journal=journal, agent_key="root")
+
+    assert result.stop_reason == "finished"
+    assert calls["n"] == 2  # the tool really did run twice (a real re-dispatch)
+    # Without the fix this would be 3 (crashed "root:0" attempt + redone
+    # "root:0" attempt + the new "root:1" finish step, all summed). With
+    # recompute-from-attempts, "root:0"'s two attempts collapse into one:
+    # 1 deduped probe step + 1 genuinely new finish step = 2, not 3.
+    stats = load_usage(usage_path)
+    assert stats.total_requests == 2
+    assert set(stats.by_step) == {"root:0", "root:1"}

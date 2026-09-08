@@ -451,7 +451,9 @@ class AgentLoop:
         if self.on_event is not None:
             self.on_event(event, payload)
 
-    def _complete(self, prompt: str, *, system: str | None = None) -> CompletionResponse | None:
+    def _complete(
+        self, prompt: str, *, system: str | None = None, step_key: str | None = None
+    ) -> CompletionResponse | None:
         """Call the router; classify a total provider failure instead of
         letting it crash the run uncaught. Mirrors a reference agent
         executor's own result shape (a `retryable` classification returned to
@@ -497,6 +499,7 @@ class AgentLoop:
                     path=self.usage_path,
                     agent_id=self.agent_id,
                     pricing_table=self.pricing_table,
+                    step_key=step_key,
                 )
             except Exception:
                 _log.exception("usage recording failed; continuing without it")
@@ -520,7 +523,9 @@ class AgentLoop:
             remaining -= chunk
         return True
 
-    def _retry_through_provider_outage(self, prompt: str) -> CompletionResponse | None:
+    def _retry_through_provider_outage(
+        self, prompt: str, *, step_key: str | None = None
+    ) -> CompletionResponse | None:
         """Wait out a total provider-chain failure, in case it's a transient
         multi-minute outage rather than a permanent one - see this module's
         own module docstring for the rationale, and ``AgentConfig.
@@ -537,7 +542,7 @@ class AgentLoop:
             self._emit("provider_outage_retry", {"attempt": attempt + 1, "delay_s": delay})
             if not self._interruptible_sleep(delay):
                 return None
-            response = self._complete(prompt)
+            response = self._complete(prompt, step_key=step_key)
             if response is not None:
                 self._emit("provider_outage_recovered", {"attempt": attempt + 1})
                 return response
@@ -671,10 +676,11 @@ class AgentLoop:
             with self.tracer.span("agent_step", step=step, agent_id=self.agent_id) as span:
                 directive = self._budget_directive()
                 prompt = self._render_prompt(mission, transcript, directive)
+                step_key = f"{agent_key}:{step}"
                 with self.tracer.span("llm_completion", step=step, agent_id=self.agent_id):
-                    response = self._complete(prompt)
+                    response = self._complete(prompt, step_key=step_key)
                 if response is None:
-                    response = self._retry_through_provider_outage(prompt)
+                    response = self._retry_through_provider_outage(prompt, step_key=step_key)
                 if response is None:
                     self._emit("provider_failed", {"step": step})
                     return AgentResult("provider_failed", step, transcript)
