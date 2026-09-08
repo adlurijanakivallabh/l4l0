@@ -174,6 +174,27 @@ class ReportUsage:
 
 
 @dataclass(frozen=True)
+class ReportMetadata:
+    """Which engagement and which model actually produced this report.
+
+    Unlike :class:`ReportUsage` (populated only when the operator opts into
+    usage_path tracking - off by default), both fields here are always real
+    and available at the one real write_report() call site: the engagement
+    scope is already computed for the agent system prompt
+    (``Engagement.describe()``, see scan.py's own render_prompt call), and
+    the resolved provider chain is already a precondition of starting the
+    scan at all (load_settings() is checked non-empty before anything else
+    runs). Kept as its own dataclass rather than folded into ReportUsage -
+    target/scope has nothing to do with LLM token spend, and bundling them
+    would silently hide the engagement/model info on every scan that
+    doesn't opt into usage tracking, which is most of them.
+    """
+
+    engagement_scope: str
+    model_provider: str
+
+
+@dataclass(frozen=True)
 class ChainRecord:
     """One resolved attack chain, ready to render — the graph's raw finding
     ids (:data:`~lalo.graph.model.EdgeKind.ENABLES` order) plus their

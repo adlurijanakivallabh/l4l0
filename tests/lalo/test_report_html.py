@@ -11,6 +11,7 @@ from lalo.report.collect import (
     ChainRecord,
     ExecutiveSummary,
     FindingRecord,
+    ReportMetadata,
     ReportUsage,
     collect_findings,
 )
@@ -242,6 +243,34 @@ def test_render_report_html_with_no_summary_has_no_executive_summary_section() -
     coverage = CoverageSummary(assessed=[], not_assessed=[])
     rendered = render_report_html([], coverage)
     assert "Executive Summary" not in rendered
+
+
+def test_render_report_html_shows_engagement_scope_and_model_in_the_executive_summary() -> None:
+    coverage = CoverageSummary(assessed=[], not_assessed=[])
+    summary = ExecutiveSummary(
+        total_findings=1,
+        by_severity={"high": 1},
+        by_vuln_class={"sql-injection": 1},
+        highest_severity="high",
+    )
+    metadata = ReportMetadata(
+        engagement_scope="- example.com", model_provider="anthropic:claude-sonnet-5"
+    )
+    rendered = render_report_html([], coverage, summary=summary, metadata=metadata)
+    assert "<h2>Executive Summary</h2>" in rendered
+    assert "<strong>Model / Provider:</strong> anthropic:claude-sonnet-5" in rendered
+    assert "<strong>Target / Scope:</strong>" in rendered
+    assert "<pre>- example.com</pre>" in rendered
+
+
+def test_render_report_html_with_no_metadata_has_no_scope_or_model_lines() -> None:
+    coverage = CoverageSummary(assessed=[], not_assessed=[])
+    summary = ExecutiveSummary(
+        total_findings=0, by_severity={}, by_vuln_class={}, highest_severity=None
+    )
+    rendered = render_report_html([], coverage, summary=summary)
+    assert "Model / Provider" not in rendered
+    assert "Target / Scope" not in rendered
 
 
 def test_render_report_html_omits_stat_chips_when_no_findings() -> None:

@@ -11,6 +11,7 @@ from lalo.report.collect import (
     ChainRecord,
     ExecutiveSummary,
     FindingRecord,
+    ReportMetadata,
     ReportUsage,
     collect_findings,
 )
@@ -255,3 +256,32 @@ def test_render_report_md_with_no_summary_has_no_executive_summary_section() -> 
     coverage = CoverageSummary(assessed=[], not_assessed=[])
     rendered = render_report_md([], coverage)
     assert "Executive Summary" not in rendered
+
+
+def test_render_report_md_shows_engagement_scope_and_model_in_the_executive_summary() -> None:
+    coverage = CoverageSummary(assessed=[], not_assessed=[])
+    summary = ExecutiveSummary(
+        total_findings=1,
+        by_severity={"high": 1},
+        by_vuln_class={"sql-injection": 1},
+        highest_severity="high",
+    )
+    metadata = ReportMetadata(
+        engagement_scope="- example.com\n- *.internal.example.com",
+        model_provider="anthropic:claude-sonnet-5",
+    )
+    rendered = render_report_md([], coverage, summary=summary, metadata=metadata)
+    assert "## Executive Summary" in rendered
+    assert "**Model / Provider:** anthropic:claude-sonnet-5" in rendered
+    assert "**Target / Scope:**" in rendered
+    assert "- example.com\n- *.internal.example.com" in rendered
+
+
+def test_render_report_md_with_no_metadata_has_no_scope_or_model_lines() -> None:
+    coverage = CoverageSummary(assessed=[], not_assessed=[])
+    summary = ExecutiveSummary(
+        total_findings=0, by_severity={}, by_vuln_class={}, highest_severity=None
+    )
+    rendered = render_report_md([], coverage, summary=summary)
+    assert "Model / Provider" not in rendered
+    assert "Target / Scope" not in rendered

@@ -37,7 +37,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from .collect import ChainRecord, ExecutiveSummary, FindingRecord, ReportUsage
+from .collect import ChainRecord, ExecutiveSummary, FindingRecord, ReportMetadata, ReportUsage
 from .coverage import CoverageSummary
 from .taxonomy import cwe_for
 
@@ -149,6 +149,7 @@ def render_report_md(
     status: str | None = None,
     summary: ExecutiveSummary | None = None,
     usage: ReportUsage | None = None,
+    metadata: ReportMetadata | None = None,
 ) -> str:
     lines = ["# L4L0 Security Assessment Report", ""]
     if generated_at:
@@ -183,6 +184,10 @@ def render_report_md(
         lines.append(f"**By category:** {category_line}")
         if summary.highest_severity:
             lines.append(f"**Highest severity:** {summary.highest_severity.upper()}")
+        if metadata is not None:
+            lines.append(f"**Model / Provider:** {metadata.model_provider}")
+            lines.append("**Target / Scope:**")
+            lines.append(metadata.engagement_scope)
         lines.append("")
 
     lines.append("## Coverage\n")

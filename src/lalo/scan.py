@@ -137,7 +137,7 @@ from .agent.tools import Tool, ToolRegistry
 from .browser.session import BrowserSession
 from .browser.tool import build_browser_tool
 from .core.atomic_io import append_owner_only_line, atomic_write_verified
-from .core.config import load_settings
+from .core.config import Settings, load_settings
 from .core.errors import (
     AllProvidersFailedError,
     ConfigError,
@@ -179,7 +179,7 @@ from .orchestrator.budget import Budget, RunStatus
 from .orchestrator.journal import DurableJournal
 from .prompts import render_prompt
 from .recon.tool import build_recon_tool
-from .report.collect import ReportUsage
+from .report.collect import ReportMetadata, ReportUsage
 from .report.manifest import (
     read_report_manifest_paths,
     verify_report_manifest,
@@ -970,7 +970,9 @@ class ScanRunner:
                 # doesn't otherwise need to know how to tear down.
                 browser = BrowserSession(scope)
                 try:
-                    return self._run_inside(router, scope, engagement, container, oast, browser)
+                    return self._run_inside(
+                        router, settings, scope, engagement, container, oast, browser
+                    )
                 finally:
                     browser.close()
             finally:
@@ -982,6 +984,7 @@ class ScanRunner:
     def _run_inside(
         self,
         router: ModelRouter,
+        settings: Settings,
         scope: ScopeGuard,
         engagement: Engagement,
         container: RuntimeContainer,
@@ -1319,8 +1322,23 @@ class ScanRunner:
                 ),
             )
         if report_paths is None:
+            # Always built (unlike report_usage above, gated on the operator
+            # opting into usage_path tracking) - the engagement scope is a
+            # cheap, pure re-derivation of the same describe() already
+            # rendered into the agent system prompt, and settings.resolved is
+            # already a precondition of starting the scan at all (checked
+            # non-empty in run()), so both are always real values here.
+            metadata = ReportMetadata(
+                engagement_scope=engagement.describe(),
+                model_provider=", ".join(f"{p.id}:{p.model}" for p in settings.resolved),
+            )
             report_paths = write_report(
-                self.config.run_dir, graph, skills, status=status, usage=report_usage
+                self.config.run_dir,
+                graph,
+                skills,
+                status=status,
+                usage=report_usage,
+                metadata=metadata,
             )
             write_report_manifest(self.config.run_dir, report_paths)
         graph.save(self.config.run_dir / "graph.json")

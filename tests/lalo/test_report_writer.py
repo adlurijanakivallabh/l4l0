@@ -12,7 +12,7 @@ from lalo.agent.tools import ToolRegistry
 from lalo.findings.tool import build_record_finding_tool
 from lalo.graph.model import NodeKind, ReachabilityGraph
 from lalo.orchestrator.budget import RunStatus
-from lalo.report.collect import ReportUsage
+from lalo.report.collect import ReportMetadata, ReportUsage
 from lalo.report.overrides import SeverityOverride
 from lalo.report.writer import (
     CSV_FILENAME,
@@ -432,3 +432,31 @@ def test_write_report_a_csv_failure_still_propagates_uncaught(
     graph, _ = _graph_with_finding()
     with pytest.raises(RuntimeError, match="csv builder blew up"):
         write_report(tmp_path, graph, _SKILLS)
+
+
+def test_write_report_threads_engagement_metadata_into_json_and_markdown(tmp_path: Path) -> None:
+    """Closes the sibling gap to ReportUsage: an operator reading a report
+    days later, or handing it to someone who never saw the launch command,
+    previously had no way to tell which engagement/target or which model
+    produced it - write_report() never threaded either through."""
+    graph, _ = _graph_with_finding()
+    metadata = ReportMetadata(
+        engagement_scope="- https://x.example.com", model_provider="anthropic:claude-sonnet-5"
+    )
+    paths = write_report(tmp_path, graph, _SKILLS, metadata=metadata)
+
+    doc = json.loads(paths["json"].read_text(encoding="utf-8"))
+    assert doc["engagement"] == {
+        "engagement_scope": "- https://x.example.com",
+        "model_provider": "anthropic:claude-sonnet-5",
+    }
+    markdown = paths["markdown"].read_text(encoding="utf-8")
+    assert "**Model / Provider:** anthropic:claude-sonnet-5" in markdown
+    assert "- https://x.example.com" in markdown
+
+
+def test_write_report_with_no_metadata_omits_it_from_json(tmp_path: Path) -> None:
+    graph, _ = _graph_with_finding()
+    paths = write_report(tmp_path, graph, _SKILLS)
+    doc = json.loads(paths["json"].read_text(encoding="utf-8"))
+    assert doc["engagement"] is None

@@ -30,7 +30,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from html import escape
 
-from .collect import ChainRecord, ExecutiveSummary, FindingRecord, ReportUsage
+from .collect import ChainRecord, ExecutiveSummary, FindingRecord, ReportMetadata, ReportUsage
 from .coverage import CoverageSummary
 from .taxonomy import cwe_for
 
@@ -143,6 +143,7 @@ def render_report_html(
     status: str | None = None,
     summary: ExecutiveSummary | None = None,
     usage: ReportUsage | None = None,
+    metadata: ReportMetadata | None = None,
 ) -> str:
     parts = [
         "<!doctype html>",
@@ -177,6 +178,10 @@ def render_report_html(
             parts.append(
                 f"<p><strong>Highest severity:</strong> {_e(summary.highest_severity.upper())}</p>"
             )
+        if metadata is not None:
+            parts.append(f"<p><strong>Model / Provider:</strong> {_e(metadata.model_provider)}</p>")
+            parts.append("<p><strong>Target / Scope:</strong></p>")
+            parts.append(f"<pre>{_e(metadata.engagement_scope)}</pre>")
 
     parts.append("<h2>Coverage</h2>")
     parts.append(

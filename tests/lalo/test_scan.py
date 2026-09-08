@@ -329,8 +329,8 @@ def _respond(call_index: int, prompt: str) -> str:
     if "FINDING TO REVIEW" in prompt:
         return '{"verdict": "confirmed", "proof_level": "L3", "reasoning": "grounded"}'
     if "MISSION:" not in prompt:
-        # The preflight verify_router() health-check call (Phase 4, shannon
-        # pass) -- content-based, not call_index-based, since exactly how
+        # The preflight verify_router() health-check call (Phase 4, a studied
+        # reference agent's own pass) -- content-based, not call_index-based, since exactly how
         # many of these precede the real agent loop is an implementation
         # detail this test shouldn't need to track.
         return "ok"
@@ -539,6 +539,40 @@ def test_scan_runner_wires_every_phase_into_one_completed_run(
     # A span's own attributes can carry the same confidential engagement/
     # target data the graph and report files do - same owner-only guarantee.
     assert stat.S_IMODE(trace_path.stat().st_mode) == 0o600
+
+
+def test_scan_runner_threads_real_engagement_scope_and_model_into_the_report(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """End-to-end: the real write_report() call site in _run_inside must
+    build ReportMetadata from the SAME engagement.describe() already
+    computed for the agent prompt, and from the resolved provider chain -
+    never a second, independently-guessed value. Deliberately does NOT set
+    usage_path, to prove engagement/model metadata appears even when the
+    operator never opted into usage tracking (unlike ReportUsage, which is
+    absent here on purpose)."""
+    monkeypatch.setattr(scan_module, "docker_available", lambda: True)
+    monkeypatch.setattr(scan_module, "RuntimeContainer", _FakeContainer)
+    router = ModelRouter(
+        providers={"fake": _ScriptedProvider(_respond)},
+        routes={"reasoning": ("fake",), "review": ("fake",), "triage": ("fake",)},
+        default_route=("fake",),
+    )
+    monkeypatch.setattr(scan_module, "build_router", lambda _settings: router)
+
+    config = ScanConfig(
+        mission="find a bug", target_specs=["example.com"], run_dir=tmp_path / "run"
+    )
+    outcome = ScanRunner(config, env={"ANTHROPIC_API_KEY": "sk-test"}).run()
+
+    report_json = json.loads(outcome.report_paths["json"].read_text())
+    assert report_json["engagement"] == {
+        "engagement_scope": "- example.com",
+        "model_provider": "anthropic:claude-sonnet-5",
+    }
+    markdown = outcome.report_paths["markdown"].read_text()
+    assert "**Model / Provider:** anthropic:claude-sonnet-5" in markdown
+    assert "- example.com" in markdown
 
 
 def test_scan_runner_emits_a_trace_summary_on_the_completed_event(

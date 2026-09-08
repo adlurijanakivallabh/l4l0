@@ -61,6 +61,7 @@ from ..graph.model import ReachabilityGraph
 from ..orchestrator.budget import RunStatus
 from ..skills.loader import Skill
 from .collect import (
+    ReportMetadata,
     ReportUsage,
     build_chain_records,
     build_executive_summary,
@@ -95,6 +96,7 @@ def write_report(
     generated_at: str | None = None,
     status: RunStatus | None = None,
     usage: ReportUsage | None = None,
+    metadata: ReportMetadata | None = None,
 ) -> dict[str, Path]:
     """Assemble every format from ``graph`` and write them, byte-verified.
 
@@ -108,6 +110,10 @@ def write_report(
     report - an audit found this was previously only ever visible as a
     transient GUI toast, never persisted anywhere an operator could read it
     after the fact.
+
+    ``metadata`` (optional) surfaces which engagement/target and which model
+    produced the run - always available at the real scan.py call site,
+    independent of whether usage_path tracking is configured.
 
     Returns the written path for each format, keyed by ``"markdown"``,
     ``"json"``, ``"sarif"``, and ``"csv"`` (always present - a failure here
@@ -134,6 +140,7 @@ def write_report(
         status=status_value,
         summary=summary,
         usage=usage,
+        metadata=metadata,
     )
     json_document = {
         "generated_at": generated_at,
@@ -143,6 +150,7 @@ def write_report(
         "coverage": asdict(coverage),
         "chains": [asdict(chain) for chain in chains],
         "usage": asdict(usage) if usage is not None else None,
+        "engagement": asdict(metadata) if metadata is not None else None,
     }
     # Only a genuinely COMPLETED run is a successful execution for SARIF's
     # purposes here - BUDGET_EXHAUSTED/UNVERIFIED_STOP/ERROR (and RUNNING,
@@ -166,6 +174,7 @@ def write_report(
         status=status_value,
         summary=summary,
         usage=usage,
+        metadata=metadata,
     )
     csv_document = build_csv(records)
 
