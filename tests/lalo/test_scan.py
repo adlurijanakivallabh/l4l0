@@ -40,6 +40,7 @@ from lalo.identity.credentials import Credential, CredentialKind, Identity
 from lalo.identity.login import LoginScheme, SessionSource
 from lalo.integrations.mcp_client import MCPServerConfig
 from lalo.orchestrator.budget import RunStatus
+from lalo.orchestrator.journal import DurableJournal
 from lalo.scan import (
     ScanConfig,
     ScanRunner,
@@ -920,6 +921,44 @@ def test_scan_runner_persists_a_spawned_childs_tool_observation_in_the_event_log
     assert child_result.payload["agent_id"] == "agent-2"  # the spawned child, not the root
     observation = child_result.payload.get("observation")
     assert isinstance(observation, str) and observation
+
+
+def test_scan_runner_journals_a_spawned_childs_own_steps(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Before this fix, child_loop.run(task) never passed journal=/agent_key=,
+    so only the root's own steps were durably resumable - a spawned child
+    still mid-execution at crash time silently restarted from scratch. Reuses
+    the same fixture as the test above (a sequential spawn whose child runs
+    one real run_command call) to prove the child's own step now lands in the
+    SAME journal file under its own agent_id ("agent-2"), alongside the root's
+    pre-existing "root:0", "root:1", ... entries.
+    """
+    monkeypatch.setattr(scan_module, "docker_available", lambda: True)
+    monkeypatch.setattr(scan_module, "RuntimeContainer", _FakeContainer)
+    router = ModelRouter(
+        providers={
+            "fake": _ScriptedProvider(_respond_with_a_sequentially_spawned_child_running_a_command)
+        },
+        routes={"reasoning": ("fake",), "review": ("fake",)},
+        default_route=("fake",),
+    )
+    monkeypatch.setattr(scan_module, "build_router", lambda _settings: router)
+
+    run_dir = tmp_path / "run"
+    event_log = EventLog()
+    config = ScanConfig(
+        mission="find a bug, spawning one child for a focused subtask",
+        target_specs=["c.example.com"],
+        run_dir=run_dir,
+    )
+    ScanRunner(config, env={"ANTHROPIC_API_KEY": "sk-test"}, event_log=event_log).run()
+
+    journal = DurableJournal(run_dir / "journal.jsonl")
+    assert journal.has("root:0")  # pre-existing behavior: the root's own step
+    # The new requirement: the spawned child's own step must ALSO be present,
+    # under its own agent_id ("agent-2" - agent-1 is the root).
+    assert journal.has("agent-2:0")
 
 
 def test_scan_runner_estimates_cost_when_a_pricing_table_is_configured(

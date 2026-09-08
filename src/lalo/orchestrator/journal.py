@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -63,6 +64,7 @@ class DurableJournal:
         self.path = Path(path)
         self._entries: dict[str, Any] = {}
         self._ts: dict[str, float] = {}
+        self._lock = threading.Lock()
         self._load()
 
     def _load(self) -> None:
@@ -107,11 +109,22 @@ class DurableJournal:
         # process wouldn't see the key at all, and within the same process the
         # step would never be retried. This ordering makes an unrecorded step
         # look exactly like it never ran, which is the truth.
+        #
+        # Locked because spawn_agents' concurrent children now all journal
+        # through this same instance (each under its own child_id namespace) -
+        # matches this project's existing Budget/Tracer/ScanRunner._graph_lock/
+        # HttpFirer._breaker_lock pattern for state shared across spawn_agents'
+        # ThreadPoolExecutor workers. has()/get()/ts_for()/completed_keys()
+        # stay unlocked reads of self._entries/self._ts - plain dict reads are
+        # safe under the GIL, matching Tracer.span()'s own unlocked
+        # self.spans.append() (only its counter()'s read-modify-write is
+        # guarded).
         ts = time.time()
         line = json.dumps({"key": key, "result": result, "ts": ts}, sort_keys=True)
-        append_owner_only_line(self.path, line)
-        self._entries[key] = result
-        self._ts[key] = ts
+        with self._lock:
+            append_owner_only_line(self.path, line)
+            self._entries[key] = result
+            self._ts[key] = ts
 
     def run_once(self, key: str, fn: Callable[[], Any]) -> Any:
         """Execute ``fn`` once ever for ``key``; on resume return the cached result

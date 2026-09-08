@@ -972,7 +972,7 @@ class ScanRunner:
                     get_steering=self._pending_steering,
                     pricing_table=self.config.pricing_table,
                 )
-                result = child_loop.run(task)
+                result = child_loop.run(task, journal=journal, agent_key=child_id)
                 after = set(child_graph.nodes_of_kind(NodeKind.FINDING))
                 new_ids = list(after - before)
                 with self._graph_lock:
@@ -1036,11 +1036,15 @@ class ScanRunner:
             get_steering=self._pending_steering,
             pricing_table=self.config.pricing_table,
         )
-        # Only the root agent's own steps are journaled/resumable -- a spawned
-        # child still mid-execution at crash time simply restarts from scratch
-        # on the next spawn_agent call (see agent/loop.py's own Phase 2 note
-        # for why this granularity was chosen over threading a live journal
-        # down through every descendant).
+        # Every spawned child also journals its own steps now (agent_key=
+        # child_id, wired in _run_child above), sharing this same journal
+        # instance -- if a crash happens mid-child-execution, the root's own
+        # not-yet-journaled spawn_agent step retries on resume, coordinator
+        # child-id minting is deterministic (a fresh per-process counter
+        # incremented only on real, non-replayed dispatch, so it reproduces
+        # the same child_id), and the new child_loop.run() call resumes that
+        # SAME child_id's own already-journaled steps instead of restarting
+        # its task from scratch.
         result = root_loop.run(self.config.mission, journal=journal, agent_key="root")
         coordinator.record_result(
             root_id,

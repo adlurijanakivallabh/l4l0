@@ -146,6 +146,33 @@ def test_journal_ts_survives_a_reload_after_a_crash(tmp_path) -> None:
     assert reloaded.ts_for("fire:1") == original_ts
 
 
+def test_durable_journal_record_is_thread_safe_under_concurrent_writers(tmp_path) -> None:
+    journal = DurableJournal(tmp_path / "journal.jsonl")
+    barrier = threading.Barrier(8)
+    errors: list[BaseException] = []
+
+    def _writer(agent_key: str) -> None:
+        barrier.wait()
+        for step in range(50):
+            try:
+                journal.record(f"{agent_key}:{step}", {"ok": True})
+            except BaseException as exc:  # noqa: BLE001 - capture, don't hide, for the assertion below
+                errors.append(exc)
+
+    threads = [threading.Thread(target=_writer, args=(f"agent-{i}",)) for i in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert not errors
+    # Every one of the 8*50 keys must be present and independently readable -
+    # a lost write under a race would show up as a missing key here.
+    for i in range(8):
+        for step in range(50):
+            assert journal.has(f"agent-{i}:{step}")
+
+
 def test_highest_band_wins_not_first() -> None:
     # A sudden jump straight to 96% must read CRITICAL, not NOTICE.
     b = Budget(ceiling=100, spent=96)
