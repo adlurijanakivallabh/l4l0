@@ -912,6 +912,41 @@ def test_scan_runner_emits_usage_delta_by_agent_for_a_sequentially_spawned_child
     assert by_agent["agent-2"]["requests"] >= 1
 
 
+def test_scan_runner_emits_agent_events_for_a_spawned_childs_lifecycle(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The GUI's own "Agents" sidebar count and per-agent status line
+    (app.js's "agent" websocket category) had a full frontend handler but
+    nothing ever emitted that category - the counter silently read 0 even
+    with real children running. This proves a spawned child's running/
+    completed transition actually reaches the event log now.
+    """
+    monkeypatch.setattr(scan_module, "docker_available", lambda: True)
+    monkeypatch.setattr(scan_module, "RuntimeContainer", _FakeContainer)
+    router = ModelRouter(
+        providers={"fake": _ScriptedProvider(_respond_with_a_sequential_spawn)},
+        routes={"reasoning": ("fake",), "review": ("fake",)},
+        default_route=("fake",),
+    )
+    monkeypatch.setattr(scan_module, "build_router", lambda _settings: router)
+
+    event_log = EventLog()
+    config = ScanConfig(
+        mission="find a bug, spawning one child for a focused subtask",
+        target_specs=["c.example.com"],
+        run_dir=tmp_path / "run",
+        usage_path=tmp_path / "usage.json",
+    )
+    ScanRunner(config, env={"ANTHROPIC_API_KEY": "sk-test"}, event_log=event_log).run()
+
+    _cursor, events = event_log.snapshot()
+    agent_events = [e for e in events if e.category == "agent"]
+    assert [e.payload["status"] for e in agent_events] == ["running", "completed"]
+    assert all(e.payload["agent_id"] == "agent-2" for e in agent_events)
+    assert agent_events[0].payload["name"] == "Child C"
+    assert agent_events[0].payload["task"] == "CHILD-C-TASK: test host c.example.com"
+
+
 def test_run_child_journals_a_spawned_breadcrumb_before_running_and_a_finished_one_after(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

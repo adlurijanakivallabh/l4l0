@@ -1040,6 +1040,16 @@ class ScanRunner:
                     child_graph = isolate_for_child(agent_graph)
                 node = coordinator.node(child_id)
                 role = node.role
+                # The GUI's own "Agents" sidebar count and per-agent status
+                # line (app.js's "agent" websocket category, previously
+                # never emitted by anything - the counter silently read 0
+                # even with several real children running) - name/task come
+                # from the coordinator's own node, the one place they're
+                # already recorded, rather than duplicating them here.
+                self._emit(
+                    "agent",
+                    {"agent_id": child_id, "name": node.name, "task": task, "status": "running"},
+                )
                 child_registry = _build_registry(
                     child_graph, child_id, tool_names=_ROLE_TOOL_NAMES[role]
                 )
@@ -1084,7 +1094,17 @@ class ScanRunner:
                 new_ids = list(after - before)
                 with self._graph_lock:
                     merge_finding_nodes(agent_graph, child_graph, new_ids)
-                return result.summary, new_ids, result.stop_reason in _TERMINAL_SUCCESS
+                succeeded = result.stop_reason in _TERMINAL_SUCCESS
+                self._emit(
+                    "agent",
+                    {
+                        "agent_id": child_id,
+                        "name": node.name,
+                        "task": task,
+                        "status": "completed" if succeeded else "failed",
+                    },
+                )
+                return result.summary, new_ids, succeeded
 
             # Coalesced (not passed straight to self._emit) so a single
             # verbose command's thousands of one-line chunk events can't

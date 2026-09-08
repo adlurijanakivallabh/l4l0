@@ -84,15 +84,57 @@ convention — it doesn't call `append_composite_history` either.
 | `vampi-live-agent` | 2026-09-06T13:57:40Z | 0.0 | 0.0 | 1 |
 | `vampi-live-agent` | 2026-09-06T14:27:03Z | 0.25 | 1.0 | 1 |
 
-VAmPI's own ground-truth set (`eval/targets.py`) is
-`{access-control, sql-injection, jwt, insecure-deserialization}` — four
-classes. A real run finding one of them (recall 0.25) with no false
-positives (precision 1.0) is a genuine, moderate result for an autonomous
-run with no prior knowledge of which four classes were planted, run under
-a hard 15-minute/20-step ceiling. These two entries were produced in an
-earlier session (not this pass) and are reproduced here rather than
-re-run, since the point of a durable history file is exactly this: not
-re-deriving the trend on every read.
+VAmPI's own ground-truth set (`eval/targets.py`) was originally recorded here
+as `{access-control, sql-injection, jwt, insecure-deserialization}` — four
+classes. **That set was wrong and has since been corrected** (a later
+session re-verified it against VAmPI's own README/blog and an independent
+researcher's exploitation writeup after a live run's own results prompted
+double-checking it): `insecure-deserialization` was never a real VAmPI
+vulnerability at all — no source connects it to pickle/deserialization —
+and `jwt` was never one of the target's documented *intended* planted
+vulnerabilities either (VAmPI does use real JWTs, and an agent can
+legitimately find a real weakness there, but it isn't a "known answer" to
+score recall against). The corrected set is
+`{access-control, sql-injection, mass-assignment, weak-credentials}` — see
+`eval/targets.py`'s own comment for the full sourcing and for why the
+target's other two real, documented issues (a RegexDoS and no rate
+limiting) are deliberately excluded from ground truth (both need
+DoS-adjacent request patterns this project's own mission-prompt discipline
+treats as opt-in, not default).
+
+The historical numbers below were scored against the ORIGINAL (wrong) set
+and are kept as-is rather than retroactively rescored — recomputing recall
+against a corrected ground truth for a run that already happened would be
+indistinguishable from quietly rewriting history; the correction is the
+important thing to record, not a revised number for a run nobody can
+re-observe. A real run finding one of the (nominally four, actually
+partly-wrong) classes with no false positives is still a genuine signal:
+a live autonomous run under a hard 15-minute/20-step ceiling found
+*something* real. These two entries were produced in an earlier session
+(not this pass) and are reproduced here rather than re-run, since the
+point of a durable history file is exactly this: not re-deriving the trend
+on every read.
+
+**A separate, later live run (this pass, GUI-driven, not the automated
+`test_eval_live_vampi_agent.py` harness above — so not appended to
+`eval_history.json`, which only ever holds harness-scored entries) is
+worth recording in prose here instead.** After two fixes (encouraging
+`spawn_agents` per vulnerability class in the agent's own system prompt,
+and raising `max_steps` 25→40), a broad, unrestricted mission against the
+same target spawned 3 concurrent children and found 10 findings across
+3 of the 4 *corrected* ground-truth classes (`access-control` x5,
+`sql-injection` x1, `weak-credentials` x2) plus a real bonus class outside
+ground truth (`jwt`, the alg=none finding mentioned above) —
+`mass-assignment` was the one corrected-ground-truth class no spawned
+child happened to be tasked with. Recall against the corrected 4-class set:
+0.75 (3/4), against the ORIGINAL wrong set it would have read as 0.5 (2/4,
+crediting `jwt` but never crediting the nonexistent `insecure-deserialization`)
+— a concrete illustration of why the ground-truth correction matters: it
+changes what "how well did this run do" honestly means, not just whether
+one target class happens to exist. Real cost: ~1.3M input / 71K output
+tokens, ~21 minutes wall-clock, roughly 8x the tokens of the single-agent,
+25-step run above for that improvement — not free, and worth knowing
+before assuming deeper coverage is a pure win with no tradeoff.
 
 ## Reproducing this
 

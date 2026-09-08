@@ -214,7 +214,11 @@ def build_record_finding_tool(graph: ReachabilityGraph) -> FunctionTool:
             'reporting and eval scoring both match this field by exact name), "target": str, '
             '"evidence": list[str] (raw captured proof - response bodies, OAST hits, '
             'command output), "evidence_excerpt": str (the specific proof text - must '
-            'literally appear in one of the evidence entries), "counterevidence": str '
+            "literally appear in one of the evidence entries: copy it verbatim, "
+            "character-for-character, from that entry - do not paraphrase it, wrap it in "
+            "your own label or brackets, or re-pretty-print JSON with different spacing "
+            "than you wrote in evidence itself; an excerpt that only LOOKS like the proof "
+            'is flagged as ungrounded and scored lower), "counterevidence": str '
             "(the strongest case against this finding, or what you checked and found "
             'none of), "severity_change_conditions": str (what would raise/lower '
             'severity), "remediation": str (concrete steps to fix or mitigate this), '

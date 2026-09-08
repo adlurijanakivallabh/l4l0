@@ -16,21 +16,34 @@ nothing is withheld) — it is flagged, and :mod:`~lalo.findings.confidence`
 scores it lower for the gap.
 
 Normalization is whitespace-only (CRLF/LF plus any run of whitespace
-collapsed to one space), extended from an original CRLF-only version after a
-real live run against a local target surfaced a genuine false negative: the
-model's own ``evidence_excerpt`` was pretty-printed multi-line JSON quoting
-the same object a captured HTTP response's ``evidence`` blob also contained
-as compact single-line JSON — identical content, different formatting, and
-the excerpt-only-differs-in-whitespace case is exactly what CRLF-normalization
-already existed to handle for a narrower cause (transport line endings).
-Collapsing whitespace runs generally does not weaken the anti-fabrication
-property this check exists for: it can only make two strings compare equal
-where every actual character *token* still appears in the same order in
-both — it can never let a claim contain a character sequence (a value, a
-field name, a status code) that never occurred in the real evidence. The
-existing "partially laundered claim" test below is the concrete guard this
-must never break: a genuinely fabricated tail appended to real text stays
-un-groundable regardless of how its whitespace is arranged.
+collapsed to one space, plus whitespace immediately touching JSON structural
+punctuation collapsed away entirely), extended twice now after two separate
+real live runs against VAmPI each surfaced a genuine false negative of a
+different shape:
+
+1. The model's own ``evidence_excerpt`` was pretty-printed multi-line JSON
+   quoting the same object a captured HTTP response's ``evidence`` blob also
+   contained as compact single-line JSON — identical content, differing only
+   in how many newlines/spaces separated tokens. General whitespace-run
+   collapsing (not just CRLF) closed this one.
+2. A LATER run surfaced a narrower gap that same fix couldn't reach: the
+   excerpt used JSON's conventional ``"key": value`` spacing, but the
+   model's OWN ``evidence`` blob (also its own words, not a raw capture)
+   quoted the identical object as fully compact JSON with NO space after
+   the colon at all (``"admin":true``, not ``"admin": true``). Collapsing a
+   whitespace *run* to one space cannot bridge "one space exists here" vs
+   "zero spaces exist here" — there is no run to collapse on the zero-space
+   side. Closed by also stripping whitespace immediately adjacent to JSON
+   structural punctuation (``{ } [ ] : ,``) on both sides before comparing.
+
+Neither extension weakens the anti-fabrication property this check exists
+for: each can only make two strings compare equal where every actual
+character *token* still appears in the same order in both — never let a
+claim contain a character sequence (a value, a field name, a status code)
+that never occurred in the real evidence. The existing "partially laundered
+claim" test below is the concrete guard this must never break: a genuinely
+fabricated tail appended to real text stays un-groundable regardless of how
+its whitespace is arranged.
 """
 
 from __future__ import annotations
@@ -38,10 +51,16 @@ from __future__ import annotations
 import re
 
 _WHITESPACE_RUN = re.compile(r"\s+")
+# Whitespace touching a JSON structural character, either side - stripped
+# to NOTHING (not collapsed to one space) since the two conventions this
+# closes the gap between are "one space here" and "no space here", not
+# "one space" vs "several".
+_JSON_PUNCTUATION_WHITESPACE = re.compile(r"\s*([{}\[\]:,])\s*")
 
 
 def _normalize_whitespace(value: str) -> str:
-    return _WHITESPACE_RUN.sub(" ", value).strip()
+    collapsed = _WHITESPACE_RUN.sub(" ", value).strip()
+    return _JSON_PUNCTUATION_WHITESPACE.sub(r"\1", collapsed)
 
 
 def is_grounded(excerpt: str, evidence: list[str]) -> bool:

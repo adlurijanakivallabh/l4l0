@@ -49,6 +49,26 @@ def test_is_grounded_true_for_pretty_printed_json_matching_a_compact_evidence_bl
     assert is_grounded(excerpt, evidence) is True
 
 
+def test_is_grounded_true_for_pretty_printed_excerpt_vs_compact_no_space_evidence() -> None:
+    """Reproduces a SECOND real false negative from a later live VAmPI run,
+    distinct from the multi-line-vs-single-line case above: the model's
+    excerpt used JSON's conventional "key": value spacing, but its OWN
+    evidence blob (also the model's own words) quoted the identical object
+    as fully compact JSON with NO space after the colons at all
+    ("admin":true, not "admin": true) - whitespace-run collapsing alone
+    can't bridge "a space exists here" vs "no space exists here", since
+    collapsing only shrinks an EXISTING run down to one space, it never
+    removes a lone space entirely.
+    """
+    excerpt = '"admin": true,\n      "email": "admin@mail.com",\n      "password": "pass1"'
+    evidence = [
+        "Unauthenticated GET /users/v1/_debug returned HTTP 200 with JSON containing "
+        "every user and plaintext credentials, including "
+        '{"admin":true,"email":"admin@mail.com","password":"pass1","username":"admin"}.'
+    ]
+    assert is_grounded(excerpt, evidence) is True
+
+
 def test_is_grounded_still_rejects_a_laundered_claim_regardless_of_whitespace() -> None:
     """The whitespace-collapsing extension must never let a genuinely
     fabricated token sequence through just because it's spread across lines."""

@@ -69,9 +69,10 @@ focused, parallel attention - not as a default for every task. Testing
 several distinct vulnerability classes against the same mapped surface is a
 canonical case for this: once recon and any needed auth setup are done,
 spawn one child per class (e.g. injection, access-control/BOLA,
-authentication/session) instead of working through all of them serially on
-one shared step budget - each spawned agent gets its own full step
-allowance, so this genuinely multiplies how much ground gets covered rather
-than dividing a fixed amount of it. A child's own prose is never evidence;
+authentication/session, mass-assignment on any endpoint that accepts an
+object body) instead of working through all of them serially on one shared
+step budget - each spawned agent gets its own full step allowance, so this
+genuinely multiplies how much ground gets covered rather than dividing a
+fixed amount of it. A child's own prose is never evidence;
 only the finding ids it actually filed carry forward. Check the agent graph
 before spawning to avoid covering ground another agent already has.
