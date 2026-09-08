@@ -103,3 +103,15 @@ def test_recall_surfaces_the_source_aware_review_skill_for_a_relevant_query() ->
     skills = load_skills()
     results = recall("source code attack surface routes handlers dangerous sink", skills, top_k=3)
     assert any(r.skill.name == "source-aware-review" for r in results)
+
+
+def test_recall_surfaces_websocket_issues_for_a_relevant_query() -> None:
+    skills = load_skills()
+    results = recall("origin validation handshake cross-site websocket hijacking", skills, top_k=3)
+    assert any(r.skill.name == "websocket-issues" for r in results)
+
+
+def test_recall_surfaces_cloud_iam_privilege_escalation_for_a_relevant_query() -> None:
+    skills = load_skills()
+    results = recall("passrole policy attachment escalation chain iam", skills, top_k=3)
+    assert any(r.skill.name == "cloud-iam-privilege-escalation" for r in results)
