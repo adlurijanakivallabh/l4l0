@@ -1,11 +1,12 @@
 """Concrete provider adapters + router/redactor assembly from :mod:`config`.
 
-Two adapter kinds cover every curated provider: a native Anthropic Messages API
-adapter, and one generic OpenAI-compatible adapter (chat/completions schema)
+Three adapter kinds cover every curated provider: a native Anthropic Messages
+API adapter, one generic OpenAI-compatible adapter (chat/completions schema)
 that serves OpenAI itself, a local gateway, Gemini's OpenAI-compat endpoint, or
 any custom endpoint — generalizing the "one generic credential for anything not
 specially curated" idea into a real, reusable adapter rather than a bespoke
-class per name.
+class per name — and one OpenAI-Responses-API adapter (``/v1/responses``, a
+different wire shape) for gateways exposing that newer API instead.
 
 A safety refusal maps to :class:`ProviderRefusalError` so the router fails over
 to another provider rather than aborting the run.
@@ -37,6 +38,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable
+from typing import Any
 
 import httpx
 
@@ -148,12 +150,15 @@ class AnthropicProvider:
         )
 
 
-class OpenAICompatibleProvider:
-    """Generic chat/completions-schema adapter — OpenAI/local-gateway/Gemini/custom.
-
-    The auth header name/prefix are configurable per provider (most use
-    ``Authorization: Bearer <key>``; a local gateway may use its own header),
-    so this one class serves every ``openai_compatible`` curated entry.
+class _OpenAIStyleProvider:
+    """Shared plumbing for every OpenAI-family adapter (auth header/prefix,
+    retry-on-transient-status POST, httpx client lifecycle) — the part that
+    was byte-for-byte identical across :class:`OpenAICompatibleProvider` and
+    :class:`OpenAIResponsesProvider` before this base absorbed it. A new
+    adapter for a genuinely new OpenAI-family wire shape only ever needs to
+    implement ``complete()``'s payload-building and response-parsing;
+    everything about getting a POST there and back (auth, retry, transport
+    errors) is written once, here.
     """
 
     def __init__(
@@ -177,21 +182,18 @@ class OpenAICompatibleProvider:
         self._client = client or httpx.Client(timeout=120.0)
         self._sleep = sleep
 
-    def complete(self, request: CompletionRequest) -> CompletionResponse:
-        messages: list[dict[str, str]] = []
-        if request.system:
-            messages.append({"role": "system", "content": request.system})
-        messages.append({"role": "user", "content": request.prompt})
-        payload = {
-            "model": self.model,
-            "messages": messages,
-            "max_tokens": request.max_tokens,
-            "temperature": request.temperature,
-        }
+    def _post(self, path: str, payload: dict[str, object]) -> dict[str, Any]:
+        """POST ``payload`` to ``{base_url}{path}`` with this provider's own
+        auth header, retrying transient failures. Raises
+        :class:`ProviderUnavailableError` for a transport error or a
+        non-retryable-exhausted/4xx+ status; returns the parsed JSON body on
+        any other response, leaving refusal/shape interpretation to the
+        caller since that's the one genuinely wire-shape-specific part.
+        """
         try:
             resp = _post_with_retry(
                 self._client,
-                f"{self._base_url}/v1/chat/completions",
+                f"{self._base_url}{path}",
                 json=payload,
                 headers={
                     self._auth_header: f"{self._auth_prefix}{self._api_key}",
@@ -203,7 +205,30 @@ class OpenAICompatibleProvider:
             raise ProviderUnavailableError(type(exc).__name__, provider=self.name) from exc
         if resp.status_code in _RETRYABLE_STATUS or resp.status_code >= 400:
             raise ProviderUnavailableError(f"http {resp.status_code}", provider=self.name)
-        data = resp.json()
+        result: dict[str, Any] = resp.json()
+        return result
+
+
+class OpenAICompatibleProvider(_OpenAIStyleProvider):
+    """Generic chat/completions-schema adapter — OpenAI/local-gateway/Gemini/custom.
+
+    The auth header name/prefix are configurable per provider (most use
+    ``Authorization: Bearer <key>``; a local gateway may use its own header),
+    so this one class serves every ``openai_compatible`` curated entry.
+    """
+
+    def complete(self, request: CompletionRequest) -> CompletionResponse:
+        messages: list[dict[str, str]] = []
+        if request.system:
+            messages.append({"role": "system", "content": request.system})
+        messages.append({"role": "user", "content": request.prompt})
+        payload = {
+            "model": self.model,
+            "messages": messages,
+            "max_tokens": request.max_tokens,
+            "temperature": request.temperature,
+        }
+        data = self._post("/v1/chat/completions", payload)
         choices = data.get("choices", [])
         finish = choices[0].get("finish_reason") if choices else None
         if finish == "content_filter":
@@ -225,11 +250,71 @@ class OpenAICompatibleProvider:
         )
 
 
+class OpenAIResponsesProvider(_OpenAIStyleProvider):
+    """OpenAI Responses-API adapter (``/v1/responses``) — a distinct wire
+    shape from Chat Completions: ``input`` items instead of ``messages``,
+    ``output`` items instead of ``choices``, ``max_output_tokens`` instead of
+    ``max_tokens``. Used by gateways exposing the newer Responses API (the
+    ``@ai-sdk/openai`` client convention is one such caller) rather than the
+    older chat/completions endpoint :class:`OpenAICompatibleProvider` speaks.
+
+    :class:`~lalo.core.model_router.CompletionRequest`/``Response`` stay
+    identical either way — L4L0's own tool-calling protocol is a plain-text
+    convention the agent loop itself parses out of ``text``, not either
+    API's native structured function-calling, so this adapter only needs to
+    translate one plain-text turn in and out, exactly like its sibling.
+    """
+
+    def complete(self, request: CompletionRequest) -> CompletionResponse:
+        input_items: list[dict[str, str]] = []
+        if request.system:
+            input_items.append({"role": "system", "content": request.system})
+        input_items.append({"role": "user", "content": request.prompt})
+        payload = {
+            "model": self.model,
+            "input": input_items,
+            "max_output_tokens": request.max_tokens,
+            "temperature": request.temperature,
+        }
+        data = self._post("/v1/responses", payload)
+        # Output is a list of typed items (a "reasoning" item may precede the
+        # "message" item for a reasoning model) - only "message" items carry
+        # the actual reply text, as one or more content blocks.
+        text_parts: list[str] = []
+        for item in data.get("output", []):
+            if item.get("type") != "message":
+                continue
+            for block in item.get("content", []):
+                if block.get("type") == "refusal":
+                    raise ProviderRefusalError(
+                        block.get("refusal") or "model returned a refusal", provider=self.name
+                    )
+                if block.get("type") == "output_text":
+                    text_parts.append(block.get("text", ""))
+        usage = data.get("usage") or {}
+        return CompletionResponse(
+            text="".join(text_parts),
+            provider=self.name,
+            model=self.model,
+            input_tokens=usage.get("input_tokens"),
+            output_tokens=usage.get("output_tokens"),
+        )
+
+
 def _build_adapter(resolved: ResolvedProvider) -> Provider:
     if resolved.kind == "anthropic":
         return AnthropicProvider(resolved.api_key, model=resolved.model)
     if not resolved.base_url:
         raise ValueError(f"provider {resolved.id!r} is missing a base_url")
+    if resolved.kind == "openai_responses":
+        return OpenAIResponsesProvider(
+            resolved.id,
+            resolved.api_key,
+            model=resolved.model,
+            base_url=resolved.base_url,
+            auth_header=resolved.auth_header,
+            auth_prefix=resolved.auth_prefix,
+        )
     return OpenAICompatibleProvider(
         resolved.id,
         resolved.api_key,

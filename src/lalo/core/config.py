@@ -3,13 +3,16 @@
 Design, informed by a reference CLI's config resolver (env-first, a declarative
 table mapping each credential to its candidate env vars, a human-readable
 credential hint per provider, and a `<provider>:<model>` single spec string for
-picking the active model): every curated entry beyond the native Anthropic one
-is an instance of one generic OpenAI-compatible adapter kind (works for OpenAI
-itself, a local gateway, OpenRouter, Ollama, vLLM — anything speaking the
-OpenAI chat/completions schema), not a bespoke one-off class per name. A second
-reference agent's own multi-provider layer achieves the same "no bespoke class
-per provider name" property, just via a third-party routing library instead of
-a hand-rolled HTTP adapter — this module's contribution is the curated table +
+picking the active model): most curated entries beyond the native Anthropic
+one are instances of one generic OpenAI-compatible adapter kind (works for
+OpenAI itself, a local gateway, OpenRouter, Ollama, vLLM — anything speaking
+the OpenAI chat/completions schema), not a bespoke one-off class per name. A
+third kind, ``openai_responses``, covers gateways speaking the newer OpenAI
+Responses API (``/v1/responses``) instead — a different wire shape, still one
+shared adapter class rather than per-provider code. A second reference
+agent's own multi-provider layer achieves the same "no bespoke class per
+provider name" property, just via a third-party routing library instead of a
+hand-rolled HTTP adapter — this module's contribution is the curated table +
 multi-env-var + explicit-spec-override shape, not the generic-adapter idea in
 isolation. A curated provider can also require MORE than one env var (mirrors
 the first reference's region+token style multi-var providers) via
@@ -24,7 +27,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Literal
 
-ProviderKind = Literal["anthropic", "openai_compatible"]
+ProviderKind = Literal["anthropic", "openai_compatible", "openai_responses"]
 
 # Explicit single-spec override: LALO_MODEL="<provider>:<model>" forces that
 # provider (if configured) to the front of the failover chain with that model.
@@ -63,6 +66,21 @@ CURATED_PROVIDERS: tuple[ProviderSpec, ...] = (
         auth_header="x-opencodex-api-key",
         auth_prefix="",
         model_env="OPENCODEX_MODEL",
+    ),
+    ProviderSpec(
+        id="musespark",
+        # This gateway speaks the OpenAI Responses API (/v1/responses --
+        # "input" items + "output" items), a different wire shape from the
+        # Chat Completions schema every other openai_compatible entry above
+        # speaks -- a distinct ProviderKind rather than forcing it through
+        # OpenAICompatibleProvider's chat/completions-only adapter.
+        kind="openai_responses",
+        candidate_key_envs=("MUSE_SPARK_API_KEY",),
+        credential_hint="MUSE_SPARK_API_KEY",
+        default_model="muse-spark-1.3-contributor-free",
+        default_base_url="https://opencode.ai/zen",
+        base_url_env="MUSE_SPARK_BASE_URL",
+        model_env="MUSE_SPARK_MODEL",
     ),
     ProviderSpec(
         id="anthropic",

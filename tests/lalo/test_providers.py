@@ -11,6 +11,7 @@ from lalo.core.model_router import CompletionRequest, ModelRouter
 from lalo.core.providers import (
     AnthropicProvider,
     OpenAICompatibleProvider,
+    OpenAIResponsesProvider,
     build_router,
     verify_provider,
     verify_router,
@@ -253,6 +254,88 @@ def test_openai_compatible_treats_explicit_null_content_as_empty_text() -> None:
     response = provider.complete(CompletionRequest(prompt="x"))
     assert response.text == ""
     assert isinstance(response.text, str)
+
+
+def test_openai_responses_success_extracts_message_text() -> None:
+    def ok(request: httpx.Request) -> httpx.Response:
+        assert request.url == "http://x/v1/responses"
+        assert request.headers["authorization"] == "Bearer k"
+        return httpx.Response(
+            200,
+            json={
+                "output": [
+                    {"type": "reasoning", "content": []},
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": "hi"}],
+                    },
+                ]
+            },
+        )
+
+    provider = OpenAIResponsesProvider(
+        "gw",
+        "k",
+        model="m",
+        base_url="http://x",
+        client=httpx.Client(transport=httpx.MockTransport(ok)),
+    )
+    assert provider.complete(CompletionRequest(prompt="x")).text == "hi"
+
+
+def test_openai_responses_reports_real_token_usage() -> None:
+    def ok(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "output": [{"type": "message", "content": [{"type": "output_text", "text": "hi"}]}],
+                "usage": {"input_tokens": 11, "output_tokens": 3},
+            },
+        )
+
+    provider = OpenAIResponsesProvider(
+        "gw",
+        "k",
+        model="m",
+        base_url="http://x",
+        client=httpx.Client(transport=httpx.MockTransport(ok)),
+    )
+    response = provider.complete(CompletionRequest(prompt="x"))
+    assert response.input_tokens == 11
+    assert response.output_tokens == 3
+
+
+def test_openai_responses_refusal_raises() -> None:
+    def refused(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "output": [
+                    {
+                        "type": "message",
+                        "content": [{"type": "refusal", "refusal": "cannot help with that"}],
+                    }
+                ]
+            },
+        )
+
+    blocked = OpenAIResponsesProvider(
+        "gw",
+        "k",
+        model="m",
+        base_url="http://x",
+        client=httpx.Client(transport=httpx.MockTransport(refused)),
+    )
+    with pytest.raises(ProviderRefusalError):
+        blocked.complete(CompletionRequest(prompt="x"))
+
+
+def test_build_router_wires_the_openai_responses_kind() -> None:
+    settings = load_settings({"MUSE_SPARK_API_KEY": "sk-fake-super-secret-value-123456"})
+    router = build_router(settings)
+    assert "musespark" in router.providers
+    assert isinstance(router.providers["musespark"], OpenAIResponsesProvider)
 
 
 def test_build_router_wires_configured_providers_and_registers_secrets() -> None:

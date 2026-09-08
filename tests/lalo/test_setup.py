@@ -98,12 +98,16 @@ def test_merge_env_file_replaces_a_matching_key_in_place(tmp_path: Path) -> None
     assert lines == ["ANTHROPIC_API_KEY=sk-ant-new", "OTHER=kept"]
 
 
+def _menu_index_of(provider_id: str) -> str:
+    return str(next(i for i, s in enumerate(CURATED_PROVIDERS, start=1) if s.id == provider_id))
+
+
 def test_main_writes_the_env_file_on_a_successful_verification(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     env_path = tmp_path / ".env"
     monkeypatch.setattr(lalo_setup, "_ENV_PATH", env_path)
-    monkeypatch.setattr("builtins.input", lambda _prompt="": "2")  # anthropic
+    monkeypatch.setattr("builtins.input", lambda _prompt="": _menu_index_of("anthropic"))
     monkeypatch.setattr(lalo_setup.getpass, "getpass", lambda _prompt="": "sk-ant-real-key")
     monkeypatch.setattr(lalo_setup, "build_router", lambda _settings: object())
     monkeypatch.setattr(lalo_setup, "verify_router", lambda _router: {"anthropic": (True, "ok")})
@@ -119,7 +123,7 @@ def test_main_writes_nothing_when_verification_fails(
 ) -> None:
     env_path = tmp_path / ".env"
     monkeypatch.setattr(lalo_setup, "_ENV_PATH", env_path)
-    monkeypatch.setattr("builtins.input", lambda _prompt="": "2")  # anthropic
+    monkeypatch.setattr("builtins.input", lambda _prompt="": _menu_index_of("anthropic"))
     monkeypatch.setattr(lalo_setup.getpass, "getpass", lambda _prompt="": "sk-ant-bad-key")
     monkeypatch.setattr(lalo_setup, "build_router", lambda _settings: object())
     monkeypatch.setattr(
