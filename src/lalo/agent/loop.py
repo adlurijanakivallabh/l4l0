@@ -749,9 +749,29 @@ class AgentLoop:
                         return AgentResult(
                             "no_tool_call", step + 1, transcript, summary=response.text
                         )
+
+                    def _nudge_once() -> dict[str, object]:
+                        return {"tool": "_nudge", "args": {}, "observation": _NO_TOOL_CALL_NUDGE}
+
+                    # Journaled like any other step - see the module docstring's
+                    # own note on why a step that consumes a loop index without
+                    # ever writing a journal entry is a real, previously-real
+                    # bug (a key gap that let resume silently drop everything
+                    # after it, then let a later live step collide with an
+                    # unrelated stale journal entry from a divergent history).
+                    if journal is not None:
+                        nudge_entry = journal.run_once(f"{agent_key}:{step}", _nudge_once)
+                    else:
+                        nudge_entry = _nudge_once()
                     transcript.append(
-                        {"tool": "_nudge", "args": {}, "observation": _NO_TOOL_CALL_NUDGE}
+                        {
+                            "tool": nudge_entry["tool"],
+                            "args": nudge_entry["args"],
+                            "observation": nudge_entry["observation"],
+                        }
                     )
+                    if self.budget is not None:
+                        self.budget.spend(1)
                     continue
                 no_tool_call_retries = 0
 
@@ -772,17 +792,31 @@ class AgentLoop:
                     self._emit("repeating_tool_call_aborted", {"tool": call.name})
                     return AgentResult("repeating_tool_call_aborted", step + 1, transcript)
 
+                tool_name, tool_args = call.name, call.args
                 if repeat_count >= self.config.repeat_soft_threshold:
                     # Skip re-execution — do not repeat a side effect the model
                     # is stuck looping on; nudge it toward a different approach.
-                    observation = (
-                        f"tool call '{call.name}' repeated {repeat_count} times with "
-                        "identical arguments; try a different approach or target"
-                    )
-                    ok = False
+                    def _skip_once(
+                        _name: str = tool_name,
+                        _args: dict[str, object] = tool_args,
+                        _count: int = repeat_count,
+                    ) -> dict[str, object]:
+                        return {
+                            "tool": _name,
+                            "args": _args,
+                            "observation": (
+                                f"tool call '{_name}' repeated {_count} times with identical "
+                                "arguments; try a different approach or target"
+                            ),
+                            "ok": False,
+                        }
+
+                    if journal is not None:
+                        entry = journal.run_once(f"{agent_key}:{step}", _skip_once)
+                    else:
+                        entry = _skip_once()
                 else:
                     self._emit("tool_call", {"tool": call.name, "args": call.args})
-                    tool_name, tool_args = call.name, call.args
 
                     def _dispatch_once(
                         _name: str = tool_name, _args: dict[str, object] = tool_args
@@ -804,19 +838,18 @@ class AgentLoop:
                             entry = journal.run_once(f"{agent_key}:{step}", _dispatch_once)
                         else:
                             entry = _dispatch_once()
-                    observation = str(entry["observation"])
-                    ok = bool(entry["ok"])
                     self._emit(
                         "tool_result",
                         {
                             "tool": call.name,
-                            "ok": ok,
+                            "ok": bool(entry["ok"]),
                             "observation": _truncate_observation(
-                                observation, _MAX_EMITTED_OBSERVATION_CHARS
+                                str(entry["observation"]), _MAX_EMITTED_OBSERVATION_CHARS
                             ),
                         },
                     )
 
+                observation = str(entry["observation"])
                 if call.dropped_calls > 0:
                     # The model itself must be told, in its own context, not
                     # just an operator reading server logs (parse_tool_call's
@@ -828,8 +861,13 @@ class AgentLoop:
                         "call(s) that were NOT executed - only ONE call runs per turn. Wait "
                         "for this result before issuing your next call.]\n" + observation
                     )
+                # entry's own tool/args, not call.name/call.args directly: on a
+                # replay hit these are identical to what was actually recorded
+                # anyway, but using entry's own fields keeps this transcript
+                # line internally self-consistent by construction rather than
+                # by the journal-key-collision bug never happening to occur.
                 transcript.append(
-                    {"tool": call.name, "args": call.args, "observation": observation}
+                    {"tool": entry["tool"], "args": entry["args"], "observation": observation}
                 )
                 self.tracer.counter("tool_calls")
                 self.tracer.counter(f"tool_calls:{call.name}")

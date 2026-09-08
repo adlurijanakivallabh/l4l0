@@ -1222,6 +1222,98 @@ def test_a_crash_after_journaling_but_mid_step_still_resumes_correctly(tmp_path)
     assert calls["n"] == 1  # the already-journaled step was never re-dispatched
 
 
+def test_a_no_tool_call_nudge_and_a_repeat_skip_are_both_journaled_leaving_no_key_gap(
+    tmp_path,
+) -> None:
+    """A journal key gap (a loop iteration that consumed a step index
+    without ever writing a journal entry for it) let resume silently drop
+    every already-journaled entry AFTER the gap, and let a later live step
+    collide with a stale journal key from a divergent pre-crash history -
+    returning that stale entry's OWN observation for a completely
+    different tool the model actually just called. Journaling every loop
+    iteration (nudge and skip included, not just a real dispatch) closes
+    the gap at its source."""
+    registry = ToolRegistry([])
+    journal = DurableJournal(tmp_path / "j.jsonl")
+    router = _scripted(["not a tool call at all", "still not one"])
+    loop = AgentLoop(
+        router,  # type: ignore[arg-type]
+        registry,
+        system_prompt="",
+        config=AgentConfig(max_steps=5, repeat_soft_threshold=2, repeat_abort_threshold=5),
+    )
+    loop.run("mission", journal=journal, agent_key="root")
+    # Both no-tool-call turns landed in the journal under their own step
+    # index - no gap for either one.
+    assert journal.has("root:0")
+    assert journal.has("root:1")
+    assert journal.get("root:0")["tool"] == "_nudge"
+    assert journal.get("root:1")["tool"] == "_nudge"
+
+
+def test_a_crash_right_after_a_nudge_does_not_corrupt_a_later_resumed_steps_dispatch(
+    tmp_path,
+) -> None:
+    """The real end-to-end scenario the gap caused: step 0 dispatches
+    toolA, step 1 is a no-tool-call nudge, step 2 dispatches toolB, then
+    the process stops (should_stop trips cooperatively, matching this
+    file's own established crash-simulation convention). Before the fix,
+    resume would silently drop step 2 from replay (root:1 was never
+    journaled, so the contiguous-key replay loop stopped at root:0), and
+    the LIVE run's own step 2 would then collide with the still-on-disk
+    root:2 key from the pre-crash toolB call - returning toolB's stale
+    result for whatever the model's new step 2 actually calls, without
+    ever dispatching it for real.
+    """
+    probe, probe_calls = _counting_tool("probe")
+    other, other_calls = _counting_tool("other")
+    registry = ToolRegistry([probe, other])
+    journal = DurableJournal(tmp_path / "j.jsonl")
+    checks = {"n": 0}
+
+    def _stop_after_three_real_steps() -> bool:
+        checks["n"] += 1
+        return checks["n"] > 3
+
+    router = _scripted(
+        [
+            '{"tool": "probe", "args": {"x": 1}}',
+            "not a tool call at all",
+            '{"tool": "probe", "args": {"x": 2}}',
+        ]
+    )
+    loop = AgentLoop(
+        router,  # type: ignore[arg-type]
+        registry,
+        system_prompt="",
+        should_stop=_stop_after_three_real_steps,
+    )
+    loop.run("mission", journal=journal, agent_key="root")
+    assert probe_calls["n"] == 2  # both real dispatches actually ran before the "crash"
+    assert journal.has("root:0")
+    assert journal.has("root:1")  # the nudge - THIS is the key gap that used to exist
+    assert journal.has("root:2")
+
+    resumed_router = _scripted(
+        ['{"tool": "other", "args": {"y": 9}}', '{"tool": "finish", "args": {"summary": "done"}}']
+    )
+    resumed_loop = AgentLoop(resumed_router, registry, system_prompt="")  # type: ignore[arg-type]
+    result = resumed_loop.run("mission", journal=journal, agent_key="root")
+
+    assert result.stop_reason == "finished"
+    assert probe_calls["n"] == 2  # neither pre-crash probe call was ever re-dispatched
+    assert other_calls["n"] == 1  # the genuinely new step-3 call to "other" actually ran
+    # The reconstructed transcript has all 3 replayed steps plus the 1 new
+    # one - none silently dropped, none corrupted with a foreign tool's
+    # stale observation.
+    assert len(result.transcript) == 4
+    assert result.transcript[0]["tool"] == "probe"
+    assert result.transcript[1]["tool"] == "_nudge"
+    assert result.transcript[2]["tool"] == "probe"
+    assert result.transcript[3]["tool"] == "other"
+    assert "other ran" in result.transcript[3]["observation"]
+
+
 class _CrashOnFirstJournalWrite(DurableJournal):
     """Lets the step's own tool dispatch genuinely run (a real side
     effect, exactly like a real crash landing after the LLM call already
