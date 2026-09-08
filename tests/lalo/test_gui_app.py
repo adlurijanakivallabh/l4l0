@@ -150,6 +150,7 @@ def test_status_with_no_scan_run_yet() -> None:
         "cursor": 0,
         "findings_count": 0,
         "last_status": None,
+        "active_run_ids": [],
     }
 
 
@@ -460,7 +461,149 @@ def test_scan_request_defaults_rules_of_engagement_to_empty(
     assert current_config().rules_of_engagement == ""
 
 
-def test_scan_refuses_a_second_launch_while_one_is_running(
+def test_scan_resume_refuses_relaunching_the_same_run_id_while_running(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A fresh launch always mints a new run_id (never a collision, see
+    test_scan_allows_two_concurrent_fresh_launches below) - the 409 only
+    guards against relaunching the SAME run_id (via resume_run_id) while
+    it's already running."""
+    block = threading.Event()
+    _FakeScanRunner.block = block
+    monkeypatch.setattr(app_module, "ScanRunner", _FakeScanRunner)
+    run_dir = tmp_path / "abc123"
+    run_dir.mkdir()
+    (run_dir / "resume_manifest.json").write_text(
+        '{"mission": "find a bug", "target_specs": ["example.com"], "egress_lock": false}',
+        encoding="utf-8",
+    )
+    try:
+        client, _ = _client(runs_dir=tmp_path)
+        first = client.post("/scan", json={"resume_run_id": "abc123"})
+        assert first.status_code == 200
+        second = client.post("/scan", json={"resume_run_id": "abc123"})
+        assert second.status_code == 409
+    finally:
+        block.set()
+        _FakeScanRunner.block = None
+
+
+def test_scan_allows_two_concurrent_fresh_launches(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Superset of the old single-scan ceiling: the GUI supports genuinely
+    concurrent scans, each with its own run_id and its own live event
+    stream (see test_status_scoped_to_a_specific_non_primary_run_id,
+    test_ws_streams_a_specific_non_primary_run_id below)."""
+    block = threading.Event()
+    _FakeScanRunner.block = block
+    monkeypatch.setattr(app_module, "ScanRunner", _FakeScanRunner)
+    try:
+        client, _ = _client(runs_dir=tmp_path)
+        body = {"mission": "find a bug", "targets": ["example.com"]}
+        first = client.post("/scan", json=body)
+        second = client.post("/scan", json=body)
+        assert first.status_code == 200
+        assert second.status_code == 200
+        first_id, second_id = first.json()["run_id"], second.json()["run_id"]
+        assert first_id != second_id
+        active = client.get("/status").json()["active_run_ids"]
+        assert set(active) == {first_id, second_id}
+    finally:
+        block.set()
+        _FakeScanRunner.block = None
+
+
+def test_status_scoped_to_a_specific_non_primary_run_id(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    block = threading.Event()
+    _FakeScanRunner.block = block
+    monkeypatch.setattr(app_module, "ScanRunner", _FakeScanRunner)
+    try:
+        client, primary_log = _client(runs_dir=tmp_path)
+        body = {"mission": "find a bug", "targets": ["example.com"]}
+        client.post("/scan", json=body)
+        second_id = client.post("/scan", json=body).json()["run_id"]
+        primary_log.append("finding", {"finding_id": "only-in-primary"})
+        assert client.get("/status").json()["findings_count"] == 1
+        assert client.get(f"/status?run_id={second_id}").json()["findings_count"] == 0
+    finally:
+        block.set()
+        _FakeScanRunner.block = None
+
+
+def test_ws_streams_a_specific_non_primary_run_id(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    block = threading.Event()
+    _FakeScanRunner.block = block
+    monkeypatch.setattr(app_module, "ScanRunner", _FakeScanRunner)
+    try:
+        client, primary_log = _client(runs_dir=tmp_path)
+        body = {"mission": "find a bug", "targets": ["example.com"]}
+        client.post("/scan", json=body)
+        second_id = client.post("/scan", json=body).json()["run_id"]
+        primary_log.append("log", {"text": "primary-only"})
+        with client.websocket_connect(f"/ws?run_id={second_id}") as ws:
+            message = ws.receive_json()
+        assert message["events"] == []
+    finally:
+        block.set()
+        _FakeScanRunner.block = None
+
+
+def test_ws_closes_with_an_error_for_an_unknown_run_id() -> None:
+    client, _ = _client()
+    with client.websocket_connect("/ws?run_id=no-such-run") as ws:
+        data = ws.receive()
+    assert data["type"] == "websocket.close"
+    assert data["code"] == 4404
+
+
+def test_scan_stop_is_scoped_to_the_named_run_id(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    block = threading.Event()
+    _FakeScanRunner.block = block
+    monkeypatch.setattr(app_module, "ScanRunner", _FakeScanRunner)
+    try:
+        client, _ = _client(runs_dir=tmp_path)
+        body = {"mission": "find a bug", "targets": ["example.com"]}
+        client.post("/scan", json=body)
+        second_id = client.post("/scan", json=body).json()["run_id"]
+        # An unrelated/unknown run_id is refused even though scans are
+        # genuinely running.
+        assert client.post("/scan/stop?run_id=not-a-real-run").status_code == 400
+        assert client.post(f"/scan/stop?run_id={second_id}").status_code == 200
+    finally:
+        block.set()
+        _FakeScanRunner.block = None
+
+
+def test_steer_is_scoped_to_the_named_run_id(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    block = threading.Event()
+    _FakeScanRunner.block = block
+    monkeypatch.setattr(app_module, "ScanRunner", _FakeScanRunner)
+    try:
+        client, primary_log = _client(runs_dir=tmp_path)
+        body = {"mission": "find a bug", "targets": ["example.com"]}
+        client.post("/scan", json=body)
+        second_id = client.post("/scan", json=body).json()["run_id"]
+        response = client.post(f"/steer?run_id={second_id}", json={"text": "check admin panel"})
+        assert response.status_code == 200
+        with client.websocket_connect(f"/ws?run_id={second_id}") as ws:
+            message = ws.receive_json()
+        assert message["events"][-1]["payload"] == {"text": "check admin panel"}
+        assert primary_log.snapshot()[1] == []
+    finally:
+        block.set()
+        _FakeScanRunner.block = None
+
+
+def test_list_runs_marks_multiple_concurrently_running_runs(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     block = threading.Event()
@@ -470,9 +613,12 @@ def test_scan_refuses_a_second_launch_while_one_is_running(
         client, _ = _client(runs_dir=tmp_path)
         body = {"mission": "find a bug", "targets": ["example.com"]}
         first = client.post("/scan", json=body)
-        assert first.status_code == 200
         second = client.post("/scan", json=body)
-        assert second.status_code == 409
+        for response in (first, second):
+            Path(response.json()["run_dir"]).mkdir(parents=True, exist_ok=True)
+        runs = {r["run_id"]: r["running"] for r in client.get("/runs").json()["runs"]}
+        assert runs[first.json()["run_id"]] is True
+        assert runs[second.json()["run_id"]] is True
     finally:
         block.set()
         _FakeScanRunner.block = None

@@ -66,6 +66,11 @@
   let socket = null;
   let reconnectDelayMs = 500;
   let viewingRunId = null; // null = live; otherwise the run_id currently displayed
+  // Non-null only when the WS socket itself is scoped to a NON-primary run's
+  // live feed (a second concurrently-running scan opened from the rail) -
+  // distinct from viewingRunId, which is also set for a completed run's
+  // static replay (where the socket stays on the primary feed, unscoped).
+  let liveWatchRunId = null;
   let pendingLiveCount = 0;
 
   function isNearBottom() {
@@ -313,6 +318,7 @@
     item.querySelector(".run-meta").textContent = parts.filter(Boolean).join(" · ");
     item.dataset.runId = run.run_id;
     item.dataset.missionText = run.mission || "(no mission recorded)";
+    item.dataset.running = run.running ? "true" : "false";
     const link = item.querySelector(".run-report-link");
     const fmt = preferredReportFormat(run.report_formats || []);
     if (fmt) {
@@ -352,40 +358,7 @@
     }
   }
 
-  async function openRun(runId, missionText) {
-    try {
-      const response = await fetch(`/runs/${encodeURIComponent(runId)}/events`);
-      if (!response.ok) return;
-      const body = await response.json();
-      threadEl.replaceChildren();
-      agents.clear();
-      findingCards.clear();
-      shellOutputListEl.replaceChildren();
-      shellBlocks.clear();
-      findingCount = 0;
-      chainCount = 0;
-      statFindingsEl.textContent = "0";
-      statChainsEl.textContent = "0";
-      statAgentsEl.textContent = "0";
-      openLogBlock = null;
-      for (const event of body.events || []) {
-        applyEvent(event);
-      }
-      viewingRunId = runId;
-      pendingLiveCount = 0;
-      historyBannerText.textContent = `Viewing: ${missionText || runId}`;
-      historyBanner.hidden = false;
-      composerInput.placeholder = "Continue this run…";
-    } catch {
-      // best-effort - the live view is unaffected by a failed history fetch
-    }
-  }
-
-  function returnToLive() {
-    viewingRunId = null;
-    pendingLiveCount = 0;
-    historyBanner.hidden = true;
-    composerInput.placeholder = scanActive ? "Message this run…" : "Tell me what to test…";
+  function _resetThreadForNewView() {
     threadEl.replaceChildren();
     agents.clear();
     findingCards.clear();
@@ -393,9 +366,54 @@
     shellBlocks.clear();
     findingCount = 0;
     chainCount = 0;
+    statFindingsEl.textContent = "0";
+    statChainsEl.textContent = "0";
+    statAgentsEl.textContent = "0";
     openLogBlock = null;
+  }
+
+  async function openRun(runId, missionText, isRunning) {
+    _resetThreadForNewView();
+    viewingRunId = runId;
+    pendingLiveCount = 0;
+    historyBannerText.textContent = isRunning
+      ? `Watching live: ${missionText || runId}`
+      : `Viewing: ${missionText || runId}`;
+    historyBanner.hidden = false;
+    composerInput.placeholder = isRunning ? "Message this run…" : "Continue this run…";
+
+    if (isRunning) {
+      // Reconnect the socket scoped to this specific run's own live feed -
+      // its own "send a full snapshot on connect" behavior replays history
+      // AND keeps receiving further live updates, for a genuinely
+      // concurrently-running scan the operator wasn't already watching.
+      liveWatchRunId = runId;
+      lastCursor = null;
+      socket.close();
+      return;
+    }
+    try {
+      const response = await fetch(`/runs/${encodeURIComponent(runId)}/events`);
+      if (!response.ok) return;
+      const body = await response.json();
+      for (const event of body.events || []) {
+        applyEvent(event);
+      }
+    } catch {
+      // best-effort - the completed-run static replay is unaffected by a
+      // failed history fetch; the thread was already reset above
+    }
+  }
+
+  function returnToLive() {
+    viewingRunId = null;
+    liveWatchRunId = null;
+    pendingLiveCount = 0;
+    historyBanner.hidden = true;
+    composerInput.placeholder = scanActive ? "Message this run…" : "Tell me what to test…";
+    _resetThreadForNewView();
     lastCursor = null;
-    socket.close(); // triggers the existing reconnect-with-no-cursor full snapshot
+    socket.close(); // reconnects to the primary (no run_id) feed
   }
 
   historyBackToLiveBtn.addEventListener("click", returnToLive);
@@ -615,6 +633,9 @@
   function connect() {
     const url = new URL("/ws", window.location.href);
     url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+    if (liveWatchRunId !== null) {
+      url.searchParams.set("run_id", liveWatchRunId);
+    }
     if (lastCursor !== null) {
       url.searchParams.set("cursor", String(lastCursor));
     }
@@ -629,7 +650,10 @@
       const data = JSON.parse(ev.data);
       lastCursor = data.cursor;
       const events = data.events || [];
-      if (viewingRunId !== null) {
+      // Suppress only when looking at something OTHER than what this socket
+      // is actually streaming right now (a completed run's static replay,
+      // where the socket stays on the primary/default feed unscoped).
+      if (viewingRunId !== null && viewingRunId !== liveWatchRunId) {
         pendingLiveCount += events.length;
         if (pendingLiveCount > 0) {
           historyBannerText.textContent = `${pendingLiveCount} new live event(s) — `;
@@ -699,8 +723,17 @@
       if (!response.ok) {
         throw new Error(body.error || `request failed (${response.status})`);
       }
+      // A fresh launch always becomes the thread's new focus, live - the
+      // very first scan of the process happens to be the backend's
+      // "primary" (see gui/app.py's own primary_run_id), but every launch
+      // after that must be explicitly watched or its progress would only
+      // ever surface by clicking into Past Runs.
+      _resetThreadForNewView();
+      liveWatchRunId = body.run_id;
+      lastCursor = null;
       appendUserMessage(text);
       composerInput.value = "";
+      socket.close(); // reconnects scoped to body.run_id
       onScanStarted();
     } catch (err) {
       appendUserMessage(`[scan not started: ${err.message}] ${text}`, { error: true });
@@ -760,7 +793,10 @@
     composerSendBtn.disabled = true;
     composerInput.disabled = true;
     try {
-      const response = await fetch("/steer", {
+      const url = liveWatchRunId !== null
+        ? `/steer?run_id=${encodeURIComponent(liveWatchRunId)}`
+        : "/steer";
+      const response = await fetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ text }),
@@ -798,7 +834,10 @@
   stopScanBtn.addEventListener("click", async () => {
     stopScanBtn.disabled = true;
     try {
-      const response = await fetch("/scan/stop", {
+      const url = liveWatchRunId !== null
+        ? `/scan/stop?run_id=${encodeURIComponent(liveWatchRunId)}`
+        : "/scan/stop";
+      const response = await fetch(url, {
         method: "POST",
       });
       const body = await response.json().catch(() => ({}));
@@ -859,7 +898,7 @@
     if (!item) return;
     document.querySelectorAll(".run-item.viewing").forEach((el) => el.classList.remove("viewing"));
     item.classList.add("viewing");
-    openRun(item.dataset.runId, item.dataset.missionText);
+    openRun(item.dataset.runId, item.dataset.missionText, item.dataset.running === "true");
   });
 
   // Duplicate: pre-fill the composer with a past run's original mission text

@@ -120,7 +120,6 @@ from ..core.env_file import merge_env_file
 from ..core.errors import AllProvidersFailedError
 from ..core.logging import get_logger
 from ..core.providers import build_router, verify_router
-from ..core.usage import DEFAULT_USAGE_PATH
 from ..report.writer import (
     CSV_FILENAME,
     DOCX_FILENAME,
@@ -192,18 +191,18 @@ def _event_to_json(event: Any) -> dict[str, Any]:
     return asdict(event)
 
 
-def _list_runs(runs_dir: Path, *, running_run_id: str | None = None) -> list[dict[str, Any]]:
+def _list_runs(runs_dir: Path, *, running_run_ids: set[str] | None = None) -> list[dict[str, Any]]:
     """Every run directory under ``runs_dir``, most recently modified first -
     pure filesystem enumeration, no separate run-index state to keep in sync.
     A directory missing/unreadable ``resume_manifest.json`` (a run that never
     got past the earliest preflight checks) still lists, just without a
     mission/targets summary.
 
-    ``running_run_id``, if given, marks that one entry ``"running": True`` -
-    the caller derives it from ``current_runner`` (the single mutable
-    "is a scan already running" slot this module already keeps), since
-    filesystem state alone can't distinguish a completed run from one still
-    in progress.
+    ``running_run_ids``, if given, marks each matching entry ``"running":
+    True`` - multiple entries can be True at once, since several scans can
+    now run concurrently (the caller derives this set from
+    ``current_runners``), since filesystem state alone can't distinguish a
+    completed run from one still in progress.
     """
     if not runs_dir.exists():
         return []
@@ -240,7 +239,7 @@ def _list_runs(runs_dir: Path, *, running_run_id: str | None = None) -> list[dic
                 "has_report": "json" in report_formats,
                 "report_formats": report_formats,
                 "modified_at": entry.stat().st_mtime,
-                "running": entry.name == running_run_id,
+                "running": entry.name in (running_run_ids or set()),
             }
         )
     summaries.sort(key=lambda s: s["modified_at"], reverse=True)
@@ -252,9 +251,22 @@ def build_app(event_log: EventLog, *, runs_dir: Path | None = None) -> FastAPI:
     runs_dir = runs_dir or _DEFAULT_RUNS_DIR
     # A single mutable slot, not a list/registry: this GUI is a single-operator
     # local tool (CLAUDE.md's own design center) with one dashboard watching
-    # one scan at a time, so "is a scan already running" is a plain None-check,
-    # not a scheduler. /scan refuses a second launch while this is set.
-    current_runner: dict[str, ScanRunner | None] = {"runner": None}
+    # Multiple scans CAN run concurrently, each keyed by its own run_id -
+    # `event_log` (the instance this function was constructed with) is
+    # always used for the first ("primary") scan launched, so every
+    # existing caller/test that reads it directly keeps working unchanged.
+    # Any ADDITIONAL concurrent scan gets its own fresh EventLog (tracked in
+    # `extra_event_logs`), so two engagements' live events never interleave
+    # into one indistinguishable stream. `/scan` refuses a second launch of
+    # the SAME run_id, never a second run_id.
+    current_runners: dict[str, ScanRunner] = {}
+    extra_event_logs: dict[str, EventLog] = {}
+    primary_run_id: list[str | None] = [None]  # single-element cell, closure-mutable
+
+    def _event_log_for(run_id: str | None) -> EventLog | None:
+        if run_id == primary_run_id[0]:
+            return event_log
+        return extra_event_logs.get(run_id) if run_id is not None else None
 
     @app.get("/")
     def index() -> FileResponse:
@@ -262,13 +274,14 @@ def build_app(event_log: EventLog, *, runs_dir: Path | None = None) -> FastAPI:
 
     @app.post("/scan")
     async def start_scan(request: ScanRequest) -> JSONResponse:
-        if current_runner["runner"] is not None:
-            return JSONResponse({"error": "a scan is already running"}, status_code=409)
-
         if request.resume_run_id:
             run_id = request.resume_run_id
             if not _SAFE_RUN_ID.match(run_id):
                 return JSONResponse({"error": "invalid run_id"}, status_code=400)
+            if run_id in current_runners:
+                return JSONResponse(
+                    {"error": f"run {run_id!r} is already running"}, status_code=409
+                )
             run_dir = runs_dir / run_id
             manifest = read_resume_manifest(run_dir)
             if manifest is None:
@@ -292,7 +305,7 @@ def build_app(event_log: EventLog, *, runs_dir: Path | None = None) -> FastAPI:
                 rules_of_engagement=str(manifest.get("rules_of_engagement", "")),
                 egress_lock=bool(manifest["egress_lock"]),
                 run_dir=run_dir,
-                usage_path=DEFAULT_USAGE_PATH,
+                usage_path=run_dir / "usage.json",
             )
         else:
             mission = request.mission.strip()
@@ -302,14 +315,15 @@ def build_app(event_log: EventLog, *, runs_dir: Path | None = None) -> FastAPI:
                 return JSONResponse(
                     {"error": "'mission' and 'targets' are required"}, status_code=400
                 )
-            run_dir = runs_dir / uuid.uuid4().hex[:12]
+            run_id = uuid.uuid4().hex[:12]
+            run_dir = runs_dir / run_id
             config = ScanConfig(
                 mission=mission,
                 target_specs=targets,
                 exclude_target_specs=exclude_targets,
                 rules_of_engagement=request.rules_of_engagement.strip(),
                 run_dir=run_dir,
-                usage_path=DEFAULT_USAGE_PATH,
+                usage_path=run_dir / "usage.json",
                 max_steps=request.max_steps if request.max_steps is not None else 25,
                 budget_ceiling=request.budget_ceiling
                 if request.budget_ceiling is not None
@@ -318,8 +332,15 @@ def build_app(event_log: EventLog, *, runs_dir: Path | None = None) -> FastAPI:
                 egress_lock=request.egress_lock,
             )
 
-        runner = ScanRunner(config, event_log=event_log)
-        current_runner["runner"] = runner
+        if primary_run_id[0] is None:
+            this_event_log = event_log
+            primary_run_id[0] = run_id
+        else:
+            this_event_log = EventLog()
+            extra_event_logs[run_id] = this_event_log
+
+        runner = ScanRunner(config, event_log=this_event_log)
+        current_runners[run_id] = runner
 
         def _run_and_clear() -> None:
             try:
@@ -340,32 +361,37 @@ def build_app(event_log: EventLog, *, runs_dir: Path | None = None) -> FastAPI:
                     payload["failures"] = [
                         {"provider": name, "reason": reason} for name, reason in exc.failures
                     ]
-                event_log.append("status", payload)
+                this_event_log.append("status", payload)
             finally:
-                current_runner["runner"] = None
+                # Only the running-scan slot is cleared - this_event_log stays
+                # reachable (via primary_run_id/extra_event_logs) for the rest
+                # of the process's life, so a completed run's live-scoped
+                # WebSocket view still works exactly like its static replay.
+                current_runners.pop(run_id, None)
 
         threading.Thread(target=_run_and_clear, daemon=True).start()
-        return JSONResponse({"ok": True, "run_dir": str(run_dir)})
+        return JSONResponse({"ok": True, "run_dir": str(run_dir), "run_id": run_id})
 
     @app.get("/status")
-    def status() -> JSONResponse:
-        cursor, events = event_log.snapshot()
+    def status(run_id: str | None = Query(default=None)) -> JSONResponse:
+        target_run_id = run_id or primary_run_id[0]
+        target_log = _event_log_for(target_run_id)
+        cursor, events = target_log.snapshot() if target_log is not None else (0, [])
         findings_count = sum(1 for e in events if e.category == "finding")
         last_status = next((e.payload for e in reversed(events) if e.category == "status"), None)
         return JSONResponse(
             {
-                "running": current_runner["runner"] is not None,
+                "running": target_run_id in current_runners,
                 "cursor": cursor,
                 "findings_count": findings_count,
                 "last_status": last_status,
+                "active_run_ids": list(current_runners),
             }
         )
 
     @app.get("/runs")
     def list_runs() -> JSONResponse:
-        runner = current_runner["runner"]
-        running_run_id = runner.config.run_dir.name if runner is not None else None
-        return JSONResponse({"runs": _list_runs(runs_dir, running_run_id=running_run_id)})
+        return JSONResponse({"runs": _list_runs(runs_dir, running_run_ids=set(current_runners))})
 
     @app.get("/runs/{run_id}/events")
     def run_events(run_id: str) -> JSONResponse:
@@ -441,27 +467,43 @@ def build_app(event_log: EventLog, *, runs_dir: Path | None = None) -> FastAPI:
         return JSONResponse({"ok": True, "provider_id": spec.id})
 
     @app.post("/scan/stop")
-    async def stop_scan() -> JSONResponse:
-        runner = current_runner["runner"]
+    async def stop_scan(run_id: str | None = Query(default=None)) -> JSONResponse:
+        target_run_id = run_id or primary_run_id[0]
+        runner = current_runners.get(target_run_id) if target_run_id is not None else None
         if runner is None:
             return JSONResponse({"error": "no scan is running"}, status_code=400)
         runner.cancel()
         return JSONResponse({"ok": True})
 
     @app.post("/steer")
-    async def steer(message: SteeringMessage) -> JSONResponse:
+    async def steer(
+        message: SteeringMessage, run_id: str | None = Query(default=None)
+    ) -> JSONResponse:
         text = message.text.strip()
         if not text:
             return JSONResponse({"error": "'text' is required"}, status_code=400)
-        event_log.append("steering", {"text": text})
+        target_run_id = run_id or primary_run_id[0]
+        target_log = _event_log_for(target_run_id)
+        if target_log is None:
+            return JSONResponse({"error": "no scan is running"}, status_code=400)
+        target_log.append("steering", {"text": text})
         return JSONResponse({"ok": True})
 
     @app.websocket("/ws")
-    async def ws(websocket: WebSocket, cursor: int | None = Query(default=None)) -> None:
+    async def ws(
+        websocket: WebSocket,
+        cursor: int | None = Query(default=None),
+        run_id: str | None = Query(default=None),
+    ) -> None:
+        target_run_id = run_id or primary_run_id[0]
+        target_log = _event_log_for(target_run_id)
         await websocket.accept()
+        if target_log is None:
+            await websocket.close(code=4404, reason=f"no such run {run_id!r}")
+            return
         try:
             current, events = (
-                event_log.changes_since(cursor) if cursor is not None else event_log.snapshot()
+                target_log.changes_since(cursor) if cursor is not None else target_log.snapshot()
             )
         except ValueError as exc:
             await websocket.close(code=4400, reason=str(exc))
@@ -474,7 +516,7 @@ def build_app(event_log: EventLog, *, runs_dir: Path | None = None) -> FastAPI:
         try:
             while True:
                 await asyncio.sleep(_POLL_INTERVAL_S)
-                new_cursor, changed = event_log.changes_since(last_cursor)
+                new_cursor, changed = target_log.changes_since(last_cursor)
                 if changed:
                     await websocket.send_json(
                         {"cursor": new_cursor, "events": [_event_to_json(e) for e in changed]}
