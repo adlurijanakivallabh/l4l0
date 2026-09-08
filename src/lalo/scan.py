@@ -178,6 +178,7 @@ from .orchestrator.journal import DurableJournal
 from .prompts import render_prompt
 from .recon.tool import build_recon_tool
 from .report.collect import ReportUsage
+from .report.manifest import write_report_manifest
 from .report.writer import write_report
 from .runtime.container import RuntimeConfig, RuntimeContainer, docker_available
 from .runtime.tool import build_run_command_tool
@@ -1140,6 +1141,7 @@ class ScanRunner:
         report_paths = write_report(
             self.config.run_dir, graph, skills, status=status, usage=report_usage
         )
+        write_report_manifest(self.config.run_dir, report_paths)
         graph.save(self.config.run_dir / "graph.json")
         _write_trace_file(self.config.run_dir, tracer)
         completed_payload: dict[str, object] = {
