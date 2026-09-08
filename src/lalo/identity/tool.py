@@ -43,7 +43,7 @@ from ..core.errors import JwtMalformedError, LoginFailedError, SessionNotMirrore
 from ..core.redaction import shared_redactor
 from ..execution.firer import HttpFirer
 from .credentials import IdentityStore
-from .jwt_tools import jwt_alg_none, jwt_decode, jwt_with_claim
+from .jwt_tools import jwt_alg_none, jwt_crack_secret, jwt_decode, jwt_with_claim
 from .login import LoginScheme, SessionRegistry, login
 
 
@@ -162,19 +162,49 @@ def build_jwt_tool() -> FunctionTool:
                         observation="error: 'claim' is required for op=with_claim", ok=False
                     )
                 return ToolResult(observation=jwt_with_claim(token, claim, args.get("value")))
+            if op == "crack_secret":
+                raw_candidates = args.get("candidates")
+                if not isinstance(raw_candidates, list) or not raw_candidates:
+                    return ToolResult(
+                        observation=(
+                            "error: 'candidates' (a non-empty list of strings) is required "
+                            "for op=crack_secret"
+                        ),
+                        ok=False,
+                    )
+                candidates = [str(c) for c in raw_candidates]
+                algorithm = str_arg(args, "algorithm", "HS256").strip() or "HS256"
+                try:
+                    found = jwt_crack_secret(token, candidates, algorithm=algorithm)
+                except ValueError as exc:
+                    return ToolResult(observation=f"error: {exc}", ok=False)
+                if found is None:
+                    return ToolResult(observation=f"no match among {len(candidates)} candidate(s)")
+                return ToolResult(observation=f"MATCH: secret is {found!r}")
         except JwtMalformedError as exc:
             return ToolResult(observation=f"error: {exc}", ok=False)
         return ToolResult(
-            observation=f"error: unknown op {op!r} (valid: decode, alg_none, with_claim)", ok=False
+            observation=(
+                f"error: unknown op {op!r} (valid: decode, alg_none, with_claim, crack_secret)"
+            ),
+            ok=False,
         )
 
     return FunctionTool(
         name="jwt",
         description=(
-            "Decode or tamper a JWT (no signature verification - these are pure helpers, "
-            "you decide what to do with the result via the http tool). args: "
-            '{"op": "decode"|"alg_none"|"with_claim", "token": str, '
-            '"claim": str (required for with_claim), "value": any (required for with_claim)}'
+            "Decode or tamper a JWT (no signature verification for decode/alg_none/with_claim "
+            "- those are pure helpers, you decide what to do with the result via the http "
+            "tool). crack_secret DOES verify: it HMACs each candidate against the token's own "
+            "signing input and reports a real match. args: "
+            '{"op": "decode"|"alg_none"|"with_claim"|"crack_secret", "token": str, '
+            '"claim": str (required for with_claim), "value": any (required for with_claim), '
+            '"candidates": list[str] (required for crack_secret - a SMALL, curated list of '
+            "likely weak/default secrets, e.g. a dozen common defaults or ones seen in this "
+            "engagement's own source/config - never load an entire wordlist file into one "
+            "list: that both defeats the point of a curated guess and risks exhausting "
+            'container memory), "algorithm": "HS256"|"HS384"|"HS512" (optional for '
+            "crack_secret, default HS256)}"
         ),
         func=_jwt,
     )

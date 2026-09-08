@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import base64
+import hashlib
+import hmac as hmac_module
 import json
 
 import pytest
 
 from lalo.core.errors import JwtMalformedError
-from lalo.identity.jwt_tools import jwt_alg_none, jwt_decode, jwt_with_claim
+from lalo.identity.jwt_tools import jwt_alg_none, jwt_crack_secret, jwt_decode, jwt_with_claim
 
 
 def _b64url(obj: object) -> str:
@@ -65,3 +67,45 @@ def test_jwt_with_claim_substitutes_one_claim_and_keeps_signature() -> None:
     assert decoded.payload == {"sub": "user-1", "role": "admin"}
     assert decoded.header == {"alg": "HS256"}
     assert decoded.signature == "orig-sig"
+
+
+def _make_signed_token(secret: str, *, algorithm: str = "HS256") -> str:
+    hash_fn = {"HS256": hashlib.sha256, "HS384": hashlib.sha384, "HS512": hashlib.sha512}[algorithm]
+    header_b = _b64url({"alg": algorithm, "typ": "JWT"})
+    payload_b = _b64url({"sub": "admin"})
+    signing_input = f"{header_b}.{payload_b}".encode("ascii")
+    sig = (
+        base64.urlsafe_b64encode(hmac_module.new(secret.encode(), signing_input, hash_fn).digest())
+        .rstrip(b"=")
+        .decode("ascii")
+    )
+    return f"{header_b}.{payload_b}.{sig}"
+
+
+def test_jwt_crack_secret_finds_the_matching_secret_among_candidates() -> None:
+    token = _make_signed_token("vampi-secret")
+    found = jwt_crack_secret(token, ["wrong1", "wrong2", "vampi-secret", "wrong3"])
+    assert found == "vampi-secret"
+
+
+def test_jwt_crack_secret_returns_none_when_no_candidate_matches() -> None:
+    token = _make_signed_token("the-real-secret")
+    assert jwt_crack_secret(token, ["a", "b", "c"]) is None
+
+
+def test_jwt_crack_secret_supports_hs384_and_hs512() -> None:
+    for algorithm in ("HS384", "HS512"):
+        token = _make_signed_token("another-secret", algorithm=algorithm)
+        found = jwt_crack_secret(token, ["wrong", "another-secret"], algorithm=algorithm)
+        assert found == "another-secret"
+
+
+def test_jwt_crack_secret_rejects_a_malformed_token() -> None:
+    with pytest.raises(JwtMalformedError):
+        jwt_crack_secret("not.a.valid.jwt", ["secret"])
+
+
+def test_jwt_crack_secret_rejects_too_many_candidates() -> None:
+    token = _make_signed_token("irrelevant")
+    with pytest.raises(ValueError, match="too many candidates"):
+        jwt_crack_secret(token, (str(i) for i in range(5001)))

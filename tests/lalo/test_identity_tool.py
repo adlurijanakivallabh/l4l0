@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac as hmac_module
+import json
+
 import httpx
 
 from lalo.core.redaction import shared_redactor
@@ -32,6 +37,24 @@ _TOKEN = (
     "eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIn0."
     "SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"
 )
+
+
+def _b64url(obj: object) -> str:
+    return base64.urlsafe_b64encode(json.dumps(obj).encode("utf-8")).rstrip(b"=").decode("ascii")
+
+
+def _signed_token(secret: str) -> str:
+    header_b = _b64url({"alg": "HS256", "typ": "JWT"})
+    payload_b = _b64url({"sub": "admin"})
+    signing_input = f"{header_b}.{payload_b}".encode("ascii")
+    sig = (
+        base64.urlsafe_b64encode(
+            hmac_module.new(secret.encode(), signing_input, hashlib.sha256).digest()
+        )
+        .rstrip(b"=")
+        .decode("ascii")
+    )
+    return f"{header_b}.{payload_b}.{sig}"
 
 
 def _firer(handler: httpx.MockTransport) -> HttpFirer:
@@ -154,6 +177,41 @@ def test_jwt_rejects_an_unknown_op() -> None:
     tool = build_jwt_tool()
     result = tool.run({"op": "not-a-real-op", "token": _TOKEN})
     assert result.ok is False
+
+
+def test_jwt_crack_secret_finds_the_real_secret_among_candidates() -> None:
+    tool = build_jwt_tool()
+    result = tool.run(
+        {
+            "op": "crack_secret",
+            "token": _signed_token("vampi-secret"),
+            "candidates": ["wrong", "vampi-secret", "also-wrong"],
+        }
+    )
+    assert result.ok is True
+    assert "vampi-secret" in result.observation
+
+
+def test_jwt_crack_secret_reports_no_match_without_failing_the_tool_call() -> None:
+    tool = build_jwt_tool()
+    result = tool.run({"op": "crack_secret", "token": _TOKEN, "candidates": ["a", "b"]})
+    assert result.ok is True
+    assert "no match" in result.observation.lower()
+
+
+def test_jwt_crack_secret_requires_candidates() -> None:
+    tool = build_jwt_tool()
+    result = tool.run({"op": "crack_secret", "token": _TOKEN})
+    assert result.ok is False
+
+
+def test_jwt_crack_secret_surfaces_the_too_many_candidates_error_as_a_failed_result() -> None:
+    tool = build_jwt_tool()
+    result = tool.run(
+        {"op": "crack_secret", "token": _TOKEN, "candidates": [str(i) for i in range(5001)]}
+    )
+    assert result.ok is False
+    assert "too many candidates" in result.observation
 
 
 # --- check_session_valid ------------------------------------------------
