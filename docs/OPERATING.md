@@ -59,9 +59,18 @@ run. A spawned child whose task had already fully finished before the
 crash needs no resume at all — its result is already part of the root's
 own replayed history, recorded as the single root step that spawned it.
 A child that was still genuinely mid-execution when the crash happened
-is *not* resumed granularly: the root's own not-yet-completed spawn step
-simply re-runs in full on resume, spawning a brand-new child under a
-fresh id (never the abandoned one) that redoes that task from scratch.
+does NOT resume automatically the way the root does — the root's own
+not-yet-completed spawn step still re-runs in full on the next live turn.
+But `view_agent_graph` now shows that child as `[orphaned]` (durably
+detected from the journal, not guessed), and the agent can explicitly
+continue it with `spawn_agent`'s `resume_agent_id` argument instead of
+starting a new one — the orphan's own original task and every step it
+already completed carry forward under its own unchanged agent id, at no
+extra LLM cost for the replayed portion. Nothing does this automatically;
+an agent that doesn't call `view_agent_graph` after a resume, or chooses
+not to resume a shown orphan, gets the old fresh-restart behavior exactly
+as before — a deliberate choice, not an oversight, matching this
+project's "the agent decides" design center.
 
 Usage accounting under resume is narrower than "any resumed step might
 double-count" — a resumed step whose result is already in the journal is
