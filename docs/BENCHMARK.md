@@ -84,57 +84,97 @@ convention — it doesn't call `append_composite_history` either.
 | `vampi-live-agent` | 2026-09-06T13:57:40Z | 0.0 | 0.0 | 1 |
 | `vampi-live-agent` | 2026-09-06T14:27:03Z | 0.25 | 1.0 | 1 |
 
-VAmPI's own ground-truth set (`eval/targets.py`) was originally recorded here
-as `{access-control, sql-injection, jwt, insecure-deserialization}` — four
-classes. **That set was wrong and has since been corrected** (a later
-session re-verified it against VAmPI's own README/blog and an independent
-researcher's exploitation writeup after a live run's own results prompted
-double-checking it): `insecure-deserialization` was never a real VAmPI
-vulnerability at all — no source connects it to pickle/deserialization —
-and `jwt` was never one of the target's documented *intended* planted
-vulnerabilities either (VAmPI does use real JWTs, and an agent can
-legitimately find a real weakness there, but it isn't a "known answer" to
-score recall against). The corrected set is
-`{access-control, sql-injection, mass-assignment, weak-credentials}` — see
-`eval/targets.py`'s own comment for the full sourcing and for why the
-target's other two real, documented issues (a RegexDoS and no rate
-limiting) are deliberately excluded from ground truth (both need
-DoS-adjacent request patterns this project's own mission-prompt discipline
-treats as opt-in, not default).
+VAmPI's own ground-truth set (`eval/targets.py`) has been corrected TWICE
+now, each time by real evidence, not assumption — see that file's own
+comment on `VAMPI` for the full account. It was originally recorded here as
+`{access-control, sql-injection, jwt, insecure-deserialization}`. **Pass 1**
+(prompted by a live run's own results) found `insecure-deserialization` was
+never a real VAmPI vulnerability at all (no source connects it to
+deserialization), and — based on a web-research pass over the author's own
+blog and one independent writeup — also dropped `jwt` as "not one of the
+target's documented intended vulnerabilities," landing on
+`{access-control, sql-injection, mass-assignment, weak-credentials}`.
+**Pass 2** (four independent, detailed, hands-on exploitation writeups
+supplied directly by the operator, spanning April 2025 to March 2026, each
+showing real commands/payloads/results) found pass 1's `jwt` removal was
+itself wrong: all four writeups independently forge a valid JWT against the
+real, default `erev0s/vampi` image using a guessed weak secret (most
+commonly the literal string `"secret"`) and use it to reach protected/admin
+endpoints — one names it explicitly as one of erev0s.com's own documented
+vulnerabilities, directly contradicting pass 1's summary of that same
+source. The current, twice-corrected set is
+`{access-control, sql-injection, mass-assignment, weak-credentials, jwt}` —
+five classes. None of the four writeups mention insecure-deserialization at
+all, reaffirming pass 1 was right about that half. The target's other two
+real, documented issues (a RegexDoS and no rate limiting — confirmed
+reproducible in two of the four writeups, not reproducible in a third,
+apparently environment-dependent but genuinely real either way) stay
+deliberately excluded from ground truth: both need DoS-adjacent request
+patterns this project's own mission-prompt discipline treats as opt-in, not
+default black-box testing.
 
-The historical numbers below were scored against the ORIGINAL (wrong) set
-and are kept as-is rather than retroactively rescored — recomputing recall
-against a corrected ground truth for a run that already happened would be
-indistinguishable from quietly rewriting history; the correction is the
-important thing to record, not a revised number for a run nobody can
-re-observe. A real run finding one of the (nominally four, actually
-partly-wrong) classes with no false positives is still a genuine signal:
-a live autonomous run under a hard 15-minute/20-step ceiling found
-*something* real. These two entries were produced in an earlier session
-(not this pass) and are reproduced here rather than re-run, since the
-point of a durable history file is exactly this: not re-deriving the trend
-on every read.
+The historical numbers below were scored against the ORIGINAL (twice-wrong)
+set and are kept as-is rather than retroactively rescored — recomputing
+recall for a run that already happened would be indistinguishable from
+quietly rewriting history; the correction is the important thing to record,
+not a revised number for a run nobody can re-observe. A real run finding
+one of the (nominally four, actually partly-wrong) classes with no false
+positives is still a genuine signal: a live autonomous run under a hard
+15-minute/20-step ceiling found *something* real. These two entries were
+produced in an earlier session (not this pass) and are reproduced here
+rather than re-run, since the point of a durable history file is exactly
+this: not re-deriving the trend on every read.
 
-**A separate, later live run (this pass, GUI-driven, not the automated
+**Three separate, later live runs (GUI-driven, not the automated
 `test_eval_live_vampi_agent.py` harness above — so not appended to
-`eval_history.json`, which only ever holds harness-scored entries) is
-worth recording in prose here instead.** After two fixes (encouraging
-`spawn_agents` per vulnerability class in the agent's own system prompt,
-and raising `max_steps` 25→40), a broad, unrestricted mission against the
-same target spawned 3 concurrent children and found 10 findings across
-3 of the 4 *corrected* ground-truth classes (`access-control` x5,
-`sql-injection` x1, `weak-credentials` x2) plus a real bonus class outside
-ground truth (`jwt`, the alg=none finding mentioned above) —
-`mass-assignment` was the one corrected-ground-truth class no spawned
-child happened to be tasked with. Recall against the corrected 4-class set:
-0.75 (3/4), against the ORIGINAL wrong set it would have read as 0.5 (2/4,
-crediting `jwt` but never crediting the nonexistent `insecure-deserialization`)
-— a concrete illustration of why the ground-truth correction matters: it
-changes what "how well did this run do" honestly means, not just whether
-one target class happens to exist. Real cost: ~1.3M input / 71K output
-tokens, ~21 minutes wall-clock, roughly 8x the tokens of the single-agent,
-25-step run above for that improvement — not free, and worth knowing
-before assuming deeper coverage is a pure win with no tradeoff.
+`eval_history.json`, which only ever holds harness-scored entries) are
+worth recording in prose here instead**, since they exercised three
+different fixes in sequence:
+
+1. After encouraging `spawn_agents` per vulnerability class in the agent's
+   own system prompt and raising `max_steps` 25→40: a broad, unrestricted
+   mission spawned 3 concurrent children and found 10 findings across 4 of
+   the (now correctly) 5 corrected ground-truth classes (`access-control`
+   x5, `jwt` x2, `sql-injection` x1, `weak-credentials` x2) — missing only
+   `mass-assignment`. Recall against the corrected 5-class set: **0.8
+   (4/5)**. (This finding was originally reported against the pass-1 set as
+   "a bonus class outside ground truth" at 0.75 recall — pass 2's
+   correction reclassifies it as a genuine ground-truth hit, at 0.8.) Real
+   cost: ~1.3M input / 71K output tokens, ~21 minutes wall-clock, roughly
+   8x the tokens of the single-agent, 25-step run above for that
+   improvement — not free, and worth knowing before assuming deeper
+   coverage is a pure win with no tradeoff.
+2. After also fixing a per-agent step-ceiling gap (spawned children got no
+   advance warning as they approached their OWN `max_steps`, independent of
+   the shared cross-agent budget, and often failed to comply with the
+   single abrupt final-turn cutoff) and a journal-gap resume bug (a
+   no-tool-call nudge or a repeat-skip could leave a gap in a per-agent
+   journal's key sequence, letting a later resumed step collide with a
+   stale entry from an abandoned history): 2 concurrent children found 5
+   findings across 3 of 5 classes (`access-control` x3, `mass-assignment`
+   x1, `sql-injection` x1); recall 0.6 (3/5).
+3. A follow-up re-run of the same broad mission: 2 concurrent children
+   found 7 findings across 2 of 5 classes (`access-control` x5,
+   `mass-assignment` x1) plus a bonus class outside ground truth
+   (`debug-exposure`); recall 0.4 (2/5). **The real point of this run**:
+   both spawned children reached `status: "completed"` (not `"failed"`) in
+   the GUI's own agent-lifecycle event — one at its exact 40-step ceiling,
+   one one step short — and the WHOLE scan reached `status: "completed"`
+   (not `unverified_stop`), live-proving the step-ceiling fix actually
+   works. A genuinely eventful, non-code incident during this run: a
+   child's own JWT-cracking script loaded the ENTIRE seclists wordlist
+   collection into memory unbounded, pushing its runtime container to its
+   3GB Docker memory limit and exhausting the host's swap — legitimate
+   agent behavior (JWT cracking via wordlist is a real technique this
+   project's "run/install anything" design intentionally allows), not a
+   code bug; killing the specific runaway process (not the whole
+   container) let the agent recover gracefully and continue with smaller,
+   targeted wordlists instead.
+
+Run-to-run coverage variance here (which classes get found each time) is
+expected, not a regression: the agent dynamically chooses which
+vulnerability classes to spawn children for, rather than following a fixed
+checklist, matching this project's own "the agent decides" design center.
 
 ## Reproducing this
 

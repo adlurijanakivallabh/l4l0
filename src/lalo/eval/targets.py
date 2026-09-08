@@ -25,25 +25,41 @@ from .cases import BenchmarkCase
 VAMPI = BenchmarkCase(
     name="vampi",
     description="VAmPI - a deliberately vulnerable API for API-security tool evaluation.",
-    # Corrected after a live scan's own results prompted re-verifying this
-    # set against real sources rather than assuming it was right: the
-    # author's own README/blog (erev0s.com) and an independent researcher's
-    # full exploitation writeup (csbygb.gitbook.io/pentips) both confirm
-    # VAmPI plants exactly 8 vulnerabilities, mapped to OWASP API Security
-    # Top 10:2019 - SQL injection, unauthorized password change (BOLA),
-    # BOLA on books, mass assignment on registration, excessive data
-    # exposure via /users/v1/_debug, user/password enumeration, a RegexDoS
-    # on the email-update endpoint, and no rate limiting anywhere.
-    # "insecure-deserialization" was NEVER a real VAmPI vulnerability - no
-    # source anywhere connects it to pickle/deserialization; it was wrong
-    # in this set from the start. "jwt" is dropped too: VAmPI uses real
-    # JWTs for auth (an agent CAN legitimately find a real weakness there,
-    # as one live run did - alg=none acceptance - and that finding is
-    # genuine and valuable), but no source documents JWT weakness as one
-    # of the target's own INTENDED planted vulnerabilities, so it doesn't
-    # belong in a ground-truth set used to score recall against known
-    # answers. The RegexDoS and rate-limiting items are deliberately
-    # excluded from ground_truth_classes even though real: both need
+    # Corrected TWICE now, each time after real evidence surfaced a gap in
+    # the prior pass rather than assuming either version was right:
+    #
+    # Pass 1 (a live scan's own results prompted re-verifying this set
+    # against real sources at all): the author's own README/blog
+    # (erev0s.com) and an independent researcher's writeup
+    # (csbygb.gitbook.io/pentips) were read and summarized as showing 8
+    # vulnerabilities with NO documented JWT weakness and NO
+    # insecure-deserialization at all. "insecure-deserialization" being
+    # wrong held up (see below) - "jwt" being dropped did NOT.
+    #
+    # Pass 2 (four independent, detailed, hands-on exploitation writeups
+    # supplied directly by the operator - not blog summaries, actual
+    # commands/payloads/results, spanning Apr 2025 to Mar 2026) ALL FOUR
+    # independently forge a valid JWT against the real, default
+    # `erev0s/vampi` image using a guessed weak secret (most commonly the
+    # literal string "secret") and use the forged token to access
+    # protected/admin endpoints - one of them explicitly names "JWT
+    # authentication bypass via weak signing key" as one of erev0s.com's
+    # OWN documented vulnerabilities, directly contradicting pass 1's own
+    # summary of that same source. Four independent reproductions across
+    # nearly a year is strong, corroborated evidence pass 1's web research
+    # simply missed or misread this - "jwt" belongs back in ground truth.
+    # None of the four writeups mention insecure-deserialization at all,
+    # reaffirming pass 1 was right to remove that one.
+    #
+    # Real, sourced, and remaining classes: SQL injection, unauthorized
+    # password change (BOLA), BOLA on books, mass assignment on
+    # registration, excessive data exposure via /users/v1/_debug,
+    # user/password enumeration, JWT forgery via a weak/guessable signing
+    # secret, a RegexDoS on the email-update endpoint, and no rate
+    # limiting anywhere. The RegexDoS and rate-limiting items stay
+    # deliberately excluded from ground_truth_classes even though real
+    # (confirmed reproducible in 2 of the 4 writeups, not vulnerable in a
+    # 3rd - environment-dependent, but genuinely real): both need
     # DoS-adjacent request patterns (a resource-exhaustion payload, or
     # genuinely bulk sequential requests) that this project's own
     # mission-prompt discipline treats as opt-in/exceptional, not default
@@ -57,6 +73,7 @@ VAMPI = BenchmarkCase(
             "sql-injection",
             "mass-assignment",  # undocumented fields (e.g. an admin flag) accepted at registration
             "weak-credentials",  # trivially weak password policy + username enumeration
+            "jwt",  # forge a valid token via a guessed weak/default signing secret
         }
     ),
 )
@@ -72,11 +89,14 @@ CRAPI = BenchmarkCase(
     # access, JWT forgery, and LLM prompt injection. "command-injection" was
     # WRONG here: it's not an officially documented crAPI challenge - the
     # real chain (mass-assignment+SSRF into a shell via conversion_params)
-    # is only reported in third-party writeups, exactly the same real-but-
-    # undocumented situation this file already excludes JWT-in-VAmPI for by
-    # its own established precedent, so dropped rather than kept as ground
-    # truth. Rate limiting (challenge 6, DoS) excluded for the same non-
-    # destructive/no-DoS reason VAmPI's own RegexDoS/rate-limiting items are.
+    # is only reported in third-party writeups, not crAPI's own
+    # docs/challenges.md, so dropped rather than kept as ground truth
+    # (unlike VAmPI's own "jwt" - see that entry's own comment for why
+    # four independent hands-on writeups made that one a keep, not a
+    # drop: undocumented-by-the-primary-source is a reason to look
+    # harder for corroboration, not an automatic exclusion). Rate
+    # limiting (challenge 6, DoS) excluded for the same non-destructive/
+    # no-DoS reason VAmPI's own RegexDoS/rate-limiting items are.
     ground_truth_classes=frozenset(
         {
             "access-control",  # BOLA (vehicle/mechanic reports) + BFLA (delete others' video)

@@ -82,9 +82,10 @@ def test_live_autonomous_agent_run_against_vampi_is_scored_and_recorded(tmp_path
             "Top 10 vulnerabilities. Focus on broken access control (one user "
             "reading or modifying another user's data), SQL injection, mass "
             "assignment (undocumented fields accepted on registration/update), "
-            "and weak credentials (password policy, username enumeration). Use "
-            "the http tool directly against http://127.0.0.1:5000 - this is a "
-            "REST API, no browser needed. Register findings as you confirm them."
+            "weak credentials (password policy, username enumeration), and JWT "
+            "weaknesses (a weak or guessable signing secret). Use the http tool "
+            "directly against http://127.0.0.1:5000 - this is a REST API, no "
+            "browser needed. Register findings as you confirm them."
         ),
         target_specs=[f"{VAMPI_HOST}:{VAMPI_PORT}"],
         run_dir=tmp_path / "run",
