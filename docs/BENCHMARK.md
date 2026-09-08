@@ -176,13 +176,14 @@ expected, not a regression: the agent dynamically chooses which
 vulnerability classes to spawn children for, rather than following a fixed
 checklist, matching this project's own "the agent decides" design center.
 
-**A 4th change, not yet live-run**: the operator explicitly authorized
+**A 4th change, live-run and scored — the best result of any run this
+project has recorded**: the operator explicitly authorized
 destructive/DoS-adjacent testing against this specific disposable
 container and asked for full coverage. `test_eval_live_vampi_agent.py`
 now scores against `VAMPI_DESTRUCTIVE` (`eval/targets.py`) — the same
 5-class set plus `regex-dos` and `rate-limiting`, the two classes real
 in the source writeups but excluded from VAmPI's default, non-destructive
-ground truth. Its mission now names all 7 classes explicitly and asks for
+ground truth. Its mission names all 7 classes explicitly and asks for
 one spawned agent per class (rather than leaving lane selection fully to
 the model, per the "run-to-run variance" paragraph above) specifically to
 maximize the odds of full coverage in one run — a genuine trade of some
@@ -193,10 +194,37 @@ unless the mission explicitly authorizes destructive testing), and
 `weak-credentials.md` gained an equivalent opt-in escalation from
 "fingerprint rate-limiting with a handful of probes" (the default) to
 "send a genuinely large sustained volume" (only once authorized). `40`
-steps/agent and a `400`-budget/`1800`s ceiling replace the smaller
+steps/agent and a `400`-budget/`1800`s ceiling replaced the smaller
 values used for the 5-class runs above, since 7 lanes need more headroom
-than 3-4 did. This entry will be replaced with real results the next time
-this test is actually run.
+than 3-4 did.
+
+**Real result** (recorded in `docs/eval_history.json` as
+`vampi-live-agent-destructive`, 2026-09-08): the model spawned exactly the
+7 requested lanes (one per class) and all 7 reached `status: "completed"`
+— **6 of 7 classes found, recall 0.857, precision 1.0** (every one of the
+16 recorded findings matched a real ground-truth class; zero false
+positives) — `access-control` x3, `weak-credentials` x7, `jwt` x3,
+`sql-injection` x1, `mass-assignment` x1, `rate-limiting` x1. Only
+`regex-dos` found nothing — and that lane still completed cleanly rather
+than failing, meaning the agent ran its timing-curve probes (registering
+usernames of increasing length, per the new skill's own methodology) and
+correctly reported a real negative rather than fabricating a hang, exactly
+per that skill's "a flat timing curve is a real, informative negative
+result — stop here" guidance. The `jwt` class was proven via a different,
+arguably stronger technique than the writeups' weak-secret guess: the
+agent tried `crack_secret` first (three separate candidate-list attempts,
+correctly small and curated per the skill, ~12-14 candidates each,
+including `secret` itself) but this deployment's actual secret didn't
+match any of them, so it fell through to algorithm-confusion and
+signature-verification testing and found the server accepts unsigned
+(`alg: none`) and tampered-signature tokens outright — full signature
+bypass, not just a guessable key. One transient LLM-provider outage during
+the `regex-dos` lane auto-retried after 30s and recovered with no impact
+on the run. Memory stayed stable throughout (no repeat of the earlier
+wordlist-loading incident) — real evidence the `crack_secret` primitive
+and the skill's "small curated list" guidance are doing their job.
+Total cost: 232 agent steps, ~1481s (24.7 min) wall-clock, well under the
+1800s ceiling.
 
 ## Reproducing this
 

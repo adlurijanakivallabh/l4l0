@@ -14,5 +14,13 @@
     "mean_precision": 1.0,
     "calibration_gap": null,
     "case_count": 1
+  },
+  {
+    "label": "vampi-live-agent-destructive",
+    "recorded_at": "2026-09-08T12:10:48.983453+00:00",
+    "mean_recall": 0.8571428571428571,
+    "mean_precision": 1.0,
+    "calibration_gap": null,
+    "case_count": 1
   }
 ]
