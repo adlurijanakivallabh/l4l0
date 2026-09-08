@@ -17,6 +17,9 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
+import dns.query
+import dns.resolver
+import dns.zone
 import websockets
 
 from ..agent.tools import FunctionTool, ToolResult, str_arg
@@ -381,4 +384,78 @@ def build_ws_fire_tool(scope: ScopeGuard) -> FunctionTool:
             '"timeout": number (optional, seconds, default 5.0)}'
         ),
         func=_ws_fire,
+    )
+
+
+_ALLOWED_DNS_RECORD_TYPES = frozenset({"A", "AAAA", "CNAME", "TXT", "NS", "MX"})
+
+
+def build_dns_query_tool(scope: ScopeGuard) -> FunctionTool:
+    """Direct resolver queries for subdomain/DNS-based recon, plus a
+    zone-transfer attempt - scope-checked the same way every other firing
+    tool is, closing the gap where DNS recon otherwise only happens if the
+    agent thinks to shell out to dig/nslookup itself.
+
+    A zone transfer's expected, secure outcome is refusal (reported as a
+    real informative answer, never a tool failure, the same way NXDOMAIN
+    isn't) - a SUCCEEDED transfer is itself the finding worth recording.
+    """
+
+    def _dns_query(args: dict[str, object]) -> ToolResult:
+        host = str_arg(args, "host", "")
+        record_type = str_arg(args, "record_type", "A").upper()
+        if not host:
+            return ToolResult(observation="error: 'host' is required", ok=False)
+        decision = scope.check(f"dns://{host}")
+        if not decision.allowed:
+            return ToolResult(observation=f"error: scope {decision.reason}", ok=False)
+        timeout = float(args.get("timeout", 5.0) or 5.0)  # type: ignore[arg-type]
+
+        if record_type == "AXFR":
+            zone = str_arg(args, "zone", host)
+            try:
+                transferred = dns.zone.from_xfr(dns.query.xfr(host, zone, lifetime=timeout))
+            except Exception as exc:  # noqa: BLE001 - a refusal is a real, informative answer
+                return ToolResult(
+                    observation=f"zone transfer refused or failed: {type(exc).__name__}: {exc}",
+                    ok=True,
+                )
+            records = transferred.to_text()
+            return ToolResult(
+                observation=(
+                    f"zone transfer SUCCEEDED for {zone!r} via {host} - a correctly "
+                    "configured nameserver refuses this to non-secondaries:\n"
+                    f"{records[:_MAX_BODY_CHARS]}"
+                ),
+                ok=True,
+            )
+
+        if record_type not in _ALLOWED_DNS_RECORD_TYPES:
+            allowed = sorted({*_ALLOWED_DNS_RECORD_TYPES, "AXFR"})
+            return ToolResult(
+                observation=f"error: 'record_type' must be one of {allowed}", ok=False
+            )
+        try:
+            answers = dns.resolver.resolve(host, record_type, lifetime=timeout)
+            records_found = [str(a) for a in answers]
+        except dns.resolver.NXDOMAIN:
+            observation = f"no {record_type} record for {host} (NXDOMAIN)"
+            return ToolResult(observation=observation, ok=True)
+        except dns.resolver.NoAnswer:
+            observation = f"no {record_type} record for {host} (no answer)"
+            return ToolResult(observation=observation, ok=True)
+        except Exception as exc:  # noqa: BLE001 - report every resolver failure, never crash the agent
+            return ToolResult(observation=f"error: {type(exc).__name__}: {exc}", ok=False)
+        return ToolResult(observation="\n".join(records_found)[:_MAX_BODY_CHARS], ok=True)
+
+    return FunctionTool(
+        name="dns_query",
+        description=(
+            "Resolve a DNS record for an in-scope host, or attempt a zone transfer. "
+            'args: {"host": str, "record_type": "A"|"AAAA"|"CNAME"|"TXT"|"NS"|"MX"|"AXFR" '
+            '(optional, default "A"), "zone": str (optional, AXFR only - the zone to '
+            "request from host acting as a nameserver; defaults to host itself), "
+            '"timeout": number (optional, seconds, default 5.0)}'
+        ),
+        func=_dns_query,
     )

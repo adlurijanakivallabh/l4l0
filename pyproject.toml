@@ -29,6 +29,7 @@ dependencies = [
     # CVSS v3 base-score computation (compute-don't-trust)
     "cvss>=3.0,<4.0",
     "websockets>=17.1",
+    "dnspython>=2.8.0",
 ]
 
 [project.scripts]

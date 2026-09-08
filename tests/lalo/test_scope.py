@@ -53,6 +53,14 @@ def test_non_http_scheme_denied() -> None:
     assert _guard().check("gopher://example.com/x").decision is Decision.DENIED
 
 
+def test_scheme_neutral_checks_are_engagement_only_not_scheme_restricted() -> None:
+    """tcp:// (raw_tcp) and dns:// (dns_query) reuse this same check() for a
+    plain hostname with no real URL scheme of its own - neither should be
+    rejected as an unrecognized scheme the way file:// genuinely is."""
+    assert _guard().check("tcp://app.example.com:22").decision is Decision.ALLOWED
+    assert _guard().check("dns://app.example.com").decision is Decision.ALLOWED
+
+
 def test_local_lab_target_allowed_no_blanket_private_ip_block() -> None:
     # Deliberate divergence from a general-purpose fetch tool's default-deny-
     # private-ranges policy: L4L0 must be able to test local lab targets.

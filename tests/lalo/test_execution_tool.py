@@ -9,6 +9,7 @@ from collections.abc import Callable
 from itertools import count
 from types import SimpleNamespace
 
+import dns.resolver
 import httpx
 import pytest
 
@@ -19,6 +20,7 @@ from lalo.execution.target import Engagement
 from lalo.execution.tool import (
     build_access_control_matrix_tool,
     build_diff_responses_tool,
+    build_dns_query_tool,
     build_fire_concurrent_tool,
     build_raw_tcp_tool,
     build_ws_fire_tool,
@@ -583,3 +585,90 @@ def test_ws_fire_reports_a_connection_failure_instead_of_crashing(
     result = registry.dispatch("ws_fire", {"url": "ws://app.example.com/socket"})
     assert result.ok is False
     assert "OSError" in result.observation
+
+
+# --- dns_query ----------------------------------------------------------
+
+
+def test_dns_query_returns_records_for_an_in_scope_host(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_resolve(host: str, record_type: str, lifetime: float) -> list[str]:
+        return ["93.184.216.34"]
+
+    monkeypatch.setattr(execution_tool_module.dns.resolver, "resolve", fake_resolve)
+    registry = ToolRegistry([build_dns_query_tool(_ws_scope())])
+    result = registry.dispatch("dns_query", {"host": "app.example.com", "record_type": "A"})
+    assert result.ok
+    assert "93.184.216.34" in result.observation
+
+
+def test_dns_query_rejects_an_out_of_scope_host() -> None:
+    registry = ToolRegistry([build_dns_query_tool(_ws_scope())])
+    result = registry.dispatch("dns_query", {"host": "evil.example.org", "record_type": "A"})
+    assert not result.ok
+    assert "scope" in result.observation.lower()
+
+
+def test_dns_query_reports_nxdomain_as_a_clean_non_error_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def raise_nxdomain(host: str, record_type: str, lifetime: float) -> list[str]:
+        raise dns.resolver.NXDOMAIN()
+
+    monkeypatch.setattr(execution_tool_module.dns.resolver, "resolve", raise_nxdomain)
+    registry = ToolRegistry([build_dns_query_tool(_ws_scope())])
+    result = registry.dispatch("dns_query", {"host": "app.example.com", "record_type": "A"})
+    assert result.ok  # a real, informative "no such record" answer, not a tool failure
+    assert "no" in result.observation.lower()
+
+
+def test_dns_query_reports_no_answer_as_a_clean_non_error_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def raise_no_answer(host: str, record_type: str, lifetime: float) -> list[str]:
+        raise dns.resolver.NoAnswer()
+
+    monkeypatch.setattr(execution_tool_module.dns.resolver, "resolve", raise_no_answer)
+    registry = ToolRegistry([build_dns_query_tool(_ws_scope())])
+    result = registry.dispatch("dns_query", {"host": "app.example.com", "record_type": "MX"})
+    assert result.ok
+    assert "no" in result.observation.lower()
+
+
+def test_dns_query_requires_host() -> None:
+    registry = ToolRegistry([build_dns_query_tool(_ws_scope())])
+    result = registry.dispatch("dns_query", {})
+    assert result.ok is False
+
+
+def test_dns_query_rejects_an_unknown_record_type() -> None:
+    registry = ToolRegistry([build_dns_query_tool(_ws_scope())])
+    result = registry.dispatch("dns_query", {"host": "app.example.com", "record_type": "BOGUS"})
+    assert result.ok is False
+    assert "record_type" in result.observation
+
+
+def test_dns_query_zone_transfer_reports_success_when_the_server_allows_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_zone = SimpleNamespace(to_text=lambda: "app.example.com. 3600 IN A 93.184.216.34")
+
+    monkeypatch.setattr(execution_tool_module.dns.query, "xfr", lambda *a, **kw: iter([]))
+    monkeypatch.setattr(execution_tool_module.dns.zone, "from_xfr", lambda xfr: fake_zone)
+    registry = ToolRegistry([build_dns_query_tool(_ws_scope())])
+    result = registry.dispatch("dns_query", {"host": "app.example.com", "record_type": "AXFR"})
+    assert result.ok
+    assert "SUCCEEDED" in result.observation
+    assert "93.184.216.34" in result.observation
+
+
+def test_dns_query_zone_transfer_refusal_is_a_clean_non_error_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_xfr(host: str, zone: str, lifetime: float) -> object:
+        raise ConnectionRefusedError("refused")
+
+    monkeypatch.setattr(execution_tool_module.dns.query, "xfr", fake_xfr)
+    registry = ToolRegistry([build_dns_query_tool(_ws_scope())])
+    result = registry.dispatch("dns_query", {"host": "app.example.com", "record_type": "AXFR"})
+    assert result.ok  # refusal is the secure, expected outcome - not a tool failure
+    assert "refused" in result.observation.lower()

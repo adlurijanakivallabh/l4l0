@@ -157,6 +157,7 @@ from .execution.target import Engagement
 from .execution.tool import (
     build_access_control_matrix_tool,
     build_diff_responses_tool,
+    build_dns_query_tool,
     build_fire_concurrent_tool,
     build_http_tool,
     build_raw_tcp_tool,
@@ -1035,6 +1036,7 @@ class ScanRunner:
                 build_diff_responses_tool(firer),
                 build_raw_tcp_tool(scope),
                 build_ws_fire_tool(scope),
+                build_dns_query_tool(scope),
                 access_control_matrix_tool,
                 build_record_finding_tool(agent_graph),
                 *build_oast_tools(oast),

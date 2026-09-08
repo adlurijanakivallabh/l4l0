@@ -58,6 +58,14 @@ _METADATA_HOSTS: frozenset[str] = frozenset(
 # gopher://, ...) is never a legitimate target regardless of engagement.
 _ALLOWED_SCHEMES: frozenset[str] = frozenset({"http", "https"})
 
+# Non-HTTP tools that still route through this same check() reuse a scheme
+# tag purely to name what kind of probe this is for check()'s own logging
+# and for TargetRule.matches()'s scheme-restriction comparison (an operator
+# scoping "https://app.example.com" only, not "app.example.com" bare, means
+# these should also be excluded) — never scheme-restricted the way the HTTP
+# firer is.
+_SCHEME_NEUTRAL_CHECKS: frozenset[str] = frozenset({"tcp", "dns"})
+
 # A URL with no explicit port relies on the scheme's well-known default; a
 # port-restricted engagement rule has to be checked against THAT port, not
 # against None (which TargetRule.matches() treats as "this rule doesn't
@@ -135,9 +143,7 @@ class ScopeGuard:
         host = parts.hostname
         scheme = (parts.scheme or "").lower()
         if scheme and scheme not in _ALLOWED_SCHEMES and parts.scheme:
-            # tcp:// (used by the raw-TCP path) is checked by engagement only,
-            # not scheme-restricted the way the HTTP firer is.
-            if scheme != "tcp":
+            if scheme not in _SCHEME_NEUTRAL_CHECKS:
                 return ScopeDecision(Decision.DENIED, "scheme_not_allowed")
         try:
             explicit_port = parts.port  # lazily parsed; raises ValueError if non-numeric
