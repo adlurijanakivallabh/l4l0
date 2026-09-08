@@ -66,6 +66,7 @@ from enum import StrEnum
 from pathlib import Path
 
 from ..core.errors import AllProvidersFailedError
+from ..core.json_response import extract_json_object
 from ..core.model_router import CompletionRequest, ModelRouter
 from ..graph.model import NodeKind, ReachabilityGraph
 from ..prompts import render_prompt
@@ -126,19 +127,6 @@ def _build_user_prompt(node: dict[str, object]) -> str:
         "cvss_severity": node.get("cvss_severity"),
     }
     return "FINDING TO REVIEW:\n" + json.dumps(payload, indent=2, default=str)
-
-
-def _extract_json_object(text: str) -> dict[str, object] | None:
-    stripped = text.strip()
-    start = stripped.find("{")
-    end = stripped.rfind("}")
-    if start == -1 or end == -1 or end <= start:
-        return None
-    try:
-        parsed = json.loads(stripped[start : end + 1])
-    except json.JSONDecodeError:
-        return None
-    return parsed if isinstance(parsed, dict) else None
 
 
 def _fallback(reasoning: str, score: int) -> ReviewResult:
@@ -217,7 +205,7 @@ def _parse_review_response(text: str) -> tuple[dict[str, object] | None, str]:
     ``(None, reason)`` otherwise - ``reason`` becomes the eventual fallback's
     reasoning if every attempt fails.
     """
-    parsed = _extract_json_object(text)
+    parsed = extract_json_object(text)
     if parsed is None:
         return None, "review response was not valid JSON"
     raw_verdict = str(parsed.get("verdict", ""))
