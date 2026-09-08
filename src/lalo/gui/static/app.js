@@ -681,25 +681,7 @@
     socket.addEventListener("error", () => socket.close());
   }
 
-  // A URL (scheme required) or an IPv4/CIDR - a bare hostname with no
-  // scheme isn't recognized. ponytail: narrower than what an operator might
-  // type, but a bare word is too easily confused with ordinary mission
-  // prose to guess at reliably; broaden this if bare hostnames turn out to
-  // be the common case in practice.
-  const TARGET_PATTERN = /\bhttps?:\/\/\S+|\b(?:\d{1,3}\.){3}\d{1,3}(?:\/\d{1,2})?\b/g;
-
-  function extractTargets(text) {
-    const matches = text.match(TARGET_PATTERN) || [];
-    return [...new Set(matches.map((t) => t.replace(/[.,;:)]+$/, "")))];
-  }
-
   async function launchFromPrompt(text) {
-    const targets = extractTargets(text);
-    if (!targets.length) {
-      appendUserMessage(text, { error: true });
-      appendAgentText('I need a target to scope this to — include a URL or IP, e.g. "https://example.com".');
-      return;
-    }
     composerSendBtn.disabled = true;
     composerInput.disabled = true;
     try {
@@ -712,7 +694,6 @@
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           mission: text,
-          targets,
           ...(maxSteps ? { max_steps: Number(maxSteps) } : {}),
           ...(budgetCeiling ? { budget_ceiling: Number(budgetCeiling) } : {}),
           egress_lock: egressLock,
@@ -732,6 +713,14 @@
       liveWatchRunId = body.run_id;
       lastCursor = null;
       appendUserMessage(text);
+      const parts = [`Understood — target(s): ${body.resolved_targets.join(", ")}`];
+      if (body.resolved_exclude_targets && body.resolved_exclude_targets.length) {
+        parts.push(`excluding: ${body.resolved_exclude_targets.join(", ")}`);
+      }
+      if (body.resolved_rules_of_engagement) {
+        parts.push(`rules of engagement: ${body.resolved_rules_of_engagement}`);
+      }
+      appendAgentText(parts.join(" · "));
       composerInput.value = "";
       socket.close(); // reconnects scoped to body.run_id
       onScanStarted();
@@ -915,8 +904,9 @@
   });
 
   // Bulk target import: pasted lines just become more text in the same
-  // composer box a normal scan launch already parses via extractTargets, so
-  // no backend/endpoint change is needed here either.
+  // composer box a normal scan launch already understands via the
+  // backend's LLM intake parse, so no backend/endpoint change is needed
+  // here either.
   bulkImportAddBtn.addEventListener("click", () => {
     const lines = bulkImportTextarea.value
       .split("\n")
