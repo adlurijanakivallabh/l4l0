@@ -108,6 +108,9 @@ def build_record_finding_tool(graph: ReachabilityGraph) -> FunctionTool:
         identities_raw = args.get("identities_confirmed")
         identities = [str(i) for i in identities_raw] if isinstance(identities_raw, list) else []
         reproduced = bool(args.get("reproduced", False))
+        source_location = (
+            redact(str(args["source_location"])) if args.get("source_location") else None
+        )
 
         key = dedup_key(vuln_class, target, param)
         existing_id = find_duplicate(graph, key)
@@ -158,6 +161,7 @@ def build_record_finding_tool(graph: ReachabilityGraph) -> FunctionTool:
             param=param,
             reproduced=reproduced,
             identities_confirmed=identities,
+            source_location=source_location,
         )
         finding_id = f"finding-{uuid.uuid4().hex[:12]}"
         attrs: dict[str, Any] = {
@@ -179,6 +183,7 @@ def build_record_finding_tool(graph: ReachabilityGraph) -> FunctionTool:
             "cvss_vector": cvss.vector,
             "reproduced": finding.reproduced,
             "identities_confirmed": finding.identities_confirmed,
+            "source_location": finding.source_location,
         }
         graph.add_node(finding_id, NodeKind.FINDING, **attrs)
         for i, blob in enumerate(evidence):
@@ -219,6 +224,9 @@ def build_record_finding_tool(graph: ReachabilityGraph) -> FunctionTool:
             '"integrity": "N|L|H", "availability": "N|L|H"}, "param": str (optional), '
             '"reproduced": bool (optional, default false), "identities_confirmed": '
             "list[str] (optional, identity names this was reproduced under), "
+            '"source_location": str (optional, "path/to/file.py:123" - set this when '
+            "you traced the vulnerability to a specific line in a source repository "
+            "you were given access to; omit it entirely when working black-box), "
             '"enabled_by_finding_id": str (optional - the id of an already-recorded '
             "finding whose exploitation is what let you reach THIS one, e.g. an IDOR "
             "that exposed the credentials used here. Only declare a real attack-chain "

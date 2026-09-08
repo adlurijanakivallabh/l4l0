@@ -185,3 +185,29 @@ def test_render_sarif_security_severity_preserves_a_real_zero_score() -> None:
     doc = render_sarif(_records(graph))
     result = doc["runs"][0]["results"][0]
     assert result["properties"]["security-severity"] == "0.0"
+
+
+def test_render_sarif_result_includes_physical_location_when_source_location_present() -> None:
+    graph = ReachabilityGraph()
+    _file(graph, source_location="app/routes.py:42")
+    doc = render_sarif(_records(graph))
+    locations = doc["runs"][0]["results"][0]["locations"]
+    physical = next(loc["physicalLocation"] for loc in locations if "physicalLocation" in loc)
+    assert physical["artifactLocation"]["uri"] == "app/routes.py"
+    assert physical["region"]["startLine"] == 42
+
+
+def test_render_sarif_result_has_no_physical_location_when_source_location_absent() -> None:
+    graph = ReachabilityGraph()
+    _file(graph)
+    doc = render_sarif(_records(graph))
+    locations = doc["runs"][0]["results"][0]["locations"]
+    assert all("physicalLocation" not in loc for loc in locations)
+
+
+def test_render_sarif_result_degrades_gracefully_on_a_malformed_source_location() -> None:
+    graph = ReachabilityGraph()
+    _file(graph, source_location="app/routes.py:not-a-line-number")
+    doc = render_sarif(_records(graph))
+    locations = doc["runs"][0]["results"][0]["locations"]
+    assert all("physicalLocation" not in loc for loc in locations)

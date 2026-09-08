@@ -69,6 +69,7 @@ class Finding:
     param: str | None = None
     reproduced: bool = False
     identities_confirmed: list[str] = field(default_factory=list)
+    source_location: str | None = None
 
 
 def validate_finding_fields(fields: dict[str, object]) -> list[str]:

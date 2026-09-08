@@ -101,14 +101,26 @@ def _result_markdown(record: FindingRecord) -> str:
 def _build_result(record: FindingRecord, rule_index: int) -> dict[str, Any]:
     logical_name = record.target + (f"#{record.param}" if record.param else "")
     message = f"{record.title}\n\n{record.description}" if record.description else record.title
+    locations: list[dict[str, Any]] = [
+        {"logicalLocations": [{"fullyQualifiedName": logical_name, "kind": "target"}]}
+    ]
+    if record.source_location and ":" in record.source_location:
+        path, _, line_str = record.source_location.rpartition(":")
+        if line_str.isdigit():
+            locations.append(
+                {
+                    "physicalLocation": {
+                        "artifactLocation": {"uri": path},
+                        "region": {"startLine": int(line_str)},
+                    }
+                }
+            )
     return {
         "ruleId": _rule_id(record),
         "ruleIndex": rule_index,
         "level": _sarif_level(record),
         "message": {"text": message or record.finding_id, "markdown": _result_markdown(record)},
-        "locations": [
-            {"logicalLocations": [{"fullyQualifiedName": logical_name, "kind": "target"}]}
-        ],
+        "locations": locations,
         "partialFingerprints": {
             "lalo/dedupKey": dedup_key(record.vuln_class, record.target, record.param)
         },

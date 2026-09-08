@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from lalo.findings.model import validate_finding_fields
+from lalo.findings.model import Finding, validate_finding_fields
 
 _VALID_CVSS = {
     "attack_vector": "N",
@@ -62,3 +62,13 @@ def test_validate_finding_fields_rejects_an_incomplete_cvss_breakdown() -> None:
 def test_validate_finding_fields_rejects_a_missing_cvss_breakdown() -> None:
     errors = validate_finding_fields(_full_fields(cvss_breakdown=None))
     assert any("cvss_breakdown" in e for e in errors)
+
+
+def test_finding_accepts_an_optional_source_location() -> None:
+    f = Finding(**_full_fields(), source_location="app/routes.py:42")  # type: ignore[arg-type]
+    assert f.source_location == "app/routes.py:42"
+
+
+def test_finding_source_location_defaults_to_none() -> None:
+    f = Finding(**_full_fields())  # type: ignore[arg-type]
+    assert f.source_location is None

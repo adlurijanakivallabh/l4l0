@@ -226,3 +226,28 @@ def test_record_finding_links_a_chain_predecessor_even_on_a_merge() -> None:
     assert "merged into existing finding" in merged.observation
     assert "chained: enabled by" in merged.observation
     assert graph.has_edge_of_kind(predecessor_id, EdgeKind.ENABLES)
+
+
+def test_record_finding_stores_an_optional_source_location() -> None:
+    graph = ReachabilityGraph()
+    _registry(graph).dispatch("record_finding", _args(source_location="app/routes.py:42"))
+    node = graph.node(graph.nodes_of_kind(NodeKind.FINDING)[0])
+    assert node["source_location"] == "app/routes.py:42"
+
+
+def test_record_finding_source_location_defaults_to_none() -> None:
+    graph = ReachabilityGraph()
+    _registry(graph).dispatch("record_finding", _args())
+    node = graph.node(graph.nodes_of_kind(NodeKind.FINDING)[0])
+    assert node["source_location"] is None
+
+
+def test_record_finding_redacts_a_secret_embedded_in_source_location() -> None:
+    shared_redactor().register_secret("unique-marker-source-loc-9c3d1")
+    graph = ReachabilityGraph()
+    _registry(graph).dispatch(
+        "record_finding",
+        _args(source_location="app/unique-marker-source-loc-9c3d1/routes.py:42"),
+    )
+    node = graph.node(graph.nodes_of_kind(NodeKind.FINDING)[0])
+    assert "unique-marker-source-loc-9c3d1" not in node["source_location"]

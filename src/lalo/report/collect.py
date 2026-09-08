@@ -70,6 +70,7 @@ class FindingRecord:
     review_proof_level: str | None = None
     dedup_key: str = ""
     status: str = "open"
+    source_location: str | None = None
 
     @property
     def effective_severity(self) -> str:
@@ -108,6 +109,7 @@ def collect_findings(graph: ReachabilityGraph) -> list[FindingRecord]:
                 review_verdict=node.get("review_verdict"),
                 review_proof_level=node.get("review_proof_level"),
                 dedup_key=dedup_key(vuln_class, target, param),
+                source_location=node.get("source_location"),
             )
         )
     return records
