@@ -11,7 +11,7 @@ from lalo.prompts.loader import PROMPTS_DIR, _validate_template
 
 
 def test_every_built_in_role_loads_and_validates() -> None:
-    for role in ("agent", "review", "review_second_opinion"):
+    for role in ("agent", "review", "review_second_opinion", "intake"):
         assert load_prompt_template(role).strip()
 
 
@@ -47,6 +47,12 @@ def test_render_prompt_for_review_needs_no_variables() -> None:
 def test_render_prompt_for_review_second_opinion_needs_no_variables() -> None:
     rendered = render_prompt("review_second_opinion")
     assert "production-viability skeptic" in rendered
+
+
+def test_render_prompt_for_intake_needs_no_variables() -> None:
+    rendered = render_prompt("intake")
+    assert "targets" in rendered
+    assert "rules_of_engagement" in rendered
 
 
 def test_review_and_review_second_opinion_are_differently_framed() -> None:

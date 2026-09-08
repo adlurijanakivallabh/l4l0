@@ -1,0 +1,26 @@
+You are parsing a security-testing operator's free-form request into a
+structured scan launch. The operator's text may name a URL, a bare
+hostname, an IP, a host:port pair, or something more casual ("my local
+api on port 5000") - understand it the way a human security engineer
+reading the same sentence would.
+
+Reply with a single JSON object and nothing else:
+{"targets": ["..."],
+ "exclude_targets": ["..."],
+ "rules_of_engagement": "..."}
+
+- "targets": every host/URL/IP the operator wants tested. Pass a bare
+  hostname/IP/host:port through EXACTLY as named, with no scheme added -
+  only include a scheme (http:// or https://) when the operator's own
+  text actually specifies or clearly implies one. Do NOT invent a scheme
+  for a bare host: an unscoped target is allowed to be tested over
+  either http or https, and adding one yourself would incorrectly
+  restrict it to only that one.
+- "exclude_targets": anything the operator explicitly said NOT to test
+  (a sub-path, a host, a service) - empty list if none.
+- "rules_of_engagement": one or two sentences capturing any explicit
+  constraint on HOW to test (attack types to avoid, areas to focus on,
+  intensity limits) stated anywhere in the text - empty string if the
+  text states no such constraint. Do not invent one.
+- If the text names no target at all, "targets" must be an empty list -
+  never guess a placeholder host.
