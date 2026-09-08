@@ -382,6 +382,16 @@ def _max_spawned_agent_number(journal: DurableJournal) -> int:
     return max(numbers, default=0)
 
 
+def _filter_tools(tools: list[Tool], tool_names: frozenset[str] | None) -> list[Tool]:
+    """Opt-in tool confinement: every call site today passes ``None`` (every
+    agent, root and every spawned child, keeps the full unrestricted
+    toolset) - this exists purely as infrastructure a future narrow,
+    explicitly-opt-in role could use, never applied automatically."""
+    if tool_names is None:
+        return tools
+    return [tool for tool in tools if tool.name in tool_names]
+
+
 def _events_path(run_dir: Path) -> Path:
     return run_dir / "events.jsonl"
 
@@ -969,7 +979,12 @@ class ScanRunner:
             ),
         )
 
-        def _build_registry(agent_graph: ReachabilityGraph, self_id: str) -> ToolRegistry:
+        def _build_registry(
+            agent_graph: ReachabilityGraph,
+            self_id: str,
+            *,
+            tool_names: frozenset[str] | None = None,
+        ) -> ToolRegistry:
             def _run_child(child_id: str, _name: str, task: str) -> tuple[str, list[str], bool]:
                 # Locked: spawn_agents can run several _run_child calls for
                 # SIBLING children on real OS threads at once. agent_graph is
@@ -1041,7 +1056,7 @@ class ScanRunner:
                 coordinator, _run_child, self_id=self_id
             )
             tools += [spawn_tool, parallel_spawn_tool, view_graph_tool]
-            return ToolRegistry(tools)
+            return ToolRegistry(_filter_tools(tools, tool_names))
 
         self._emit("status", {"event": "scan_started", "targets": self.config.target_specs})
         root_id = coordinator.register_root("root", self.config.mission)

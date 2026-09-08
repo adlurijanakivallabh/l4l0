@@ -45,6 +45,7 @@ from lalo.scan import (
     ScanConfig,
     ScanRunner,
     _diff_by_agent,
+    _filter_tools,
     _ShellChunkCoalescer,
     _terminal_status,
     load_run_events,
@@ -221,6 +222,21 @@ def test_terminal_status_never_claims_completed_for_an_unconfirmed_stop() -> Non
         "max_steps",
     ):
         assert _terminal_status(reason) is RunStatus.UNVERIFIED_STOP
+
+
+def _tool(name: str) -> FunctionTool:
+    return FunctionTool(name=name, description="", func=lambda args: ToolResult(observation=""))
+
+
+def test_filter_tools_with_no_tool_names_includes_everything() -> None:
+    tools = [_tool("record_finding"), _tool("recall"), _tool("http")]
+    assert _filter_tools(tools, None) is tools
+
+
+def test_filter_tools_with_a_tool_names_filter_only_includes_those_tools() -> None:
+    tools = [_tool("record_finding"), _tool("recall"), _tool("http")]
+    filtered = _filter_tools(tools, frozenset({"record_finding", "recall"}))
+    assert {t.name for t in filtered} == {"record_finding", "recall"}
 
 
 # --- guard clauses: no Docker required ---------------------------------------
