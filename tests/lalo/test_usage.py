@@ -91,6 +91,59 @@ def test_record_usage_tracks_a_per_agent_breakdown(tmp_path: Path) -> None:
     assert stats.by_agent["child-1"]["requests"] == 1
 
 
+def test_record_usage_with_a_step_key_replaces_not_adds_a_second_attempt(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "usage.json"
+    record_usage(
+        _response(input_tokens=1000, output_tokens=500),
+        path=path,
+        pricing_table=_PRICING,
+        agent_id="root",
+        step_key="root:0",
+    )
+    # The crash-timing race this closes: the SAME step is redone (a
+    # genuinely new completion, different token counts here to prove it's
+    # not coincidentally identical) after a crash that landed between the
+    # first attempt's usage recording and its own journal write.
+    stats = record_usage(
+        _response(input_tokens=200, output_tokens=100),
+        path=path,
+        pricing_table=_PRICING,
+        agent_id="root",
+        step_key="root:0",
+    )
+    assert stats.total_requests == 1  # not 2
+    assert stats.total_input_tokens == 200  # the SECOND attempt's numbers only
+    assert stats.total_output_tokens == 100
+    assert stats.by_provider["anthropic"]["requests"] == 1
+    assert stats.by_agent["root"]["requests"] == 1
+    assert stats.by_agent["root"]["input_tokens"] == 200
+
+
+def test_record_usage_with_different_step_keys_both_count(tmp_path: Path) -> None:
+    path = tmp_path / "usage.json"
+    record_usage(_response(input_tokens=100), path=path, step_key="root:0")
+    stats = record_usage(_response(input_tokens=200), path=path, step_key="root:1")
+    assert stats.total_requests == 2
+    assert stats.total_input_tokens == 300
+
+
+def test_record_usage_without_a_step_key_still_accumulates_normally(tmp_path: Path) -> None:
+    path = tmp_path / "usage.json"
+    record_usage(_response(input_tokens=100), path=path)
+    stats = record_usage(_response(input_tokens=200), path=path)
+    assert stats.total_requests == 2  # no step_key -> no dedup, exactly today's behavior
+    assert stats.total_input_tokens == 300
+
+
+def test_usage_stats_round_trips_by_step(tmp_path: Path) -> None:
+    path = tmp_path / "usage.json"
+    record_usage(_response(input_tokens=100), path=path, step_key="root:0")
+    stats = load_usage(path)
+    assert stats.by_step["root:0"]["input_tokens"] == 100
+
+
 def test_record_usage_with_no_agent_id_leaves_by_agent_empty(tmp_path: Path) -> None:
     path = tmp_path / "usage.json"
     stats = record_usage(_response(), path=path)
