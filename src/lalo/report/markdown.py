@@ -37,9 +37,17 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from .collect import ChainRecord, ExecutiveSummary, FindingRecord, ReportMetadata, ReportUsage
+from .collect import (
+    ChainRecord,
+    ExecutiveSummary,
+    FindingRecord,
+    ReportMetadata,
+    ReportUsage,
+    first_finding_id_by_vuln_class,
+    group_by_verdict,
+)
 from .coverage import CoverageSummary
-from .taxonomy import cwe_for
+from .taxonomy import cwe_for, owasp_api_for, owasp_api_name_for
 
 
 def safe_fence(content: str) -> str:
@@ -80,6 +88,7 @@ def _render_chains_mermaid(chains: Sequence[ChainRecord]) -> str:
 
 def render_finding_md(record: FindingRecord) -> str:
     lines = [
+        f'<a id="{record.finding_id}"></a>',
         f"## {record.title or record.finding_id}",
         f"**ID:** {record.finding_id}",
         f"**Class:** {record.vuln_class}",
@@ -87,6 +96,10 @@ def render_finding_md(record: FindingRecord) -> str:
     cwe = cwe_for(record.vuln_class)
     if cwe:
         lines.append(f"**CWE:** {cwe}")
+    owasp = owasp_api_for(record.vuln_class)
+    if owasp:
+        owasp_name = owasp_api_name_for(record.vuln_class)
+        lines.append(f"**OWASP API Top 10:** {owasp}" + (f" — {owasp_name}" if owasp_name else ""))
     lines += [
         f"**Target:** {record.target}" + (f" (param: `{record.param}`)" if record.param else ""),
         f"**Severity:** {record.effective_severity.upper()}"
@@ -190,6 +203,17 @@ def render_report_md(
             lines.append(metadata.engagement_scope)
         lines.append("")
 
+        lines.append("## Summary by Vulnerability Type\n")
+        if not summary.by_vuln_class:
+            lines.append("(none)")
+        else:
+            anchor_by_class = first_finding_id_by_vuln_class(records)
+            for cls, count in summary.by_vuln_class.items():
+                anchor = anchor_by_class.get(cls)
+                label = f"{cls} ({count})"
+                lines.append(f"- [{label}](#{anchor})" if anchor else f"- {label}")
+        lines.append("")
+
     lines.append("## Coverage\n")
     lines.append(f"**Assessed:** {', '.join(coverage.assessed) or '(none)'}")
     lines.append(f"**Not assessed:** {', '.join(coverage.not_assessed) or '(none)'}")
@@ -216,10 +240,18 @@ def render_report_md(
     lines.append("## Findings\n")
     if not records:
         lines.append("No findings recorded.")
-    for record in records:
-        try:
-            lines.append(render_finding_md(record))
-        except Exception as exc:  # noqa: BLE001 - one malformed finding must not blank the report
-            lines.append(f"## {record.finding_id}\n\n_Failed to render this finding: {exc}_\n")
+    else:
+        for label, group in group_by_verdict(records):
+            lines.append(f"### Verdict: {label} ({len(group)})\n")
+            if not group:
+                lines.append("_None._\n")
+                continue
+            for record in group:
+                try:
+                    lines.append(render_finding_md(record))
+                except Exception as exc:  # noqa: BLE001 - malformed finding must not blank the report
+                    lines.append(
+                        f"## {record.finding_id}\n\n_Failed to render this finding: {exc}_\n"
+                    )
 
     return "\n".join(lines)

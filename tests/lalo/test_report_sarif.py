@@ -9,7 +9,12 @@ from lalo.findings.dedup import dedup_key
 from lalo.findings.tool import build_record_finding_tool
 from lalo.graph.model import ReachabilityGraph
 from lalo.report.collect import FindingRecord, collect_findings
-from lalo.report.sarif import SARIF_SCHEMA, SARIF_VERSION, render_sarif
+from lalo.report.sarif import (
+    _OWASP_API_TAXONOMY_NAME,  # noqa: SLF001 - same access pattern test_report_pdf.py uses for pdf_module._deny_all_external_resources
+    SARIF_SCHEMA,
+    SARIF_VERSION,
+    render_sarif,
+)
 
 _VALID_CVSS = {
     "attack_vector": "N",
@@ -223,3 +228,54 @@ def test_render_sarif_drops_traversal_source_location_but_keeps_sibling_result_i
     assert physical["artifactLocation"]["uri"] == "app/routes.py"
     assert physical["region"]["startLine"] == 42
     assert all("physicalLocation" not in loc for loc in bad_locations)
+
+
+def test_render_sarif_rule_includes_an_owasp_relationship_when_mapped() -> None:
+    graph = ReachabilityGraph()
+    _file(graph, vuln_class="idor")
+    doc = render_sarif(_records(graph))
+    rule = doc["runs"][0]["tool"]["driver"]["rules"][0]
+    owasp_rel = next(
+        r
+        for r in rule["relationships"]
+        if r["target"]["toolComponent"]["name"] == _OWASP_API_TAXONOMY_NAME
+    )
+    assert owasp_rel == {
+        "target": {"id": "API1:2023", "toolComponent": {"name": _OWASP_API_TAXONOMY_NAME}},
+        "kinds": ["relevant"],
+    }
+
+
+def test_render_sarif_rule_keeps_the_cwe_relationship_alongside_owasp() -> None:
+    graph = ReachabilityGraph()
+    _file(graph, vuln_class="idor")  # idor maps to both CWE-639 and API1:2023
+    doc = render_sarif(_records(graph))
+    rule = doc["runs"][0]["tool"]["driver"]["rules"][0]
+    names = {r["target"]["toolComponent"]["name"] for r in rule["relationships"]}
+    assert names == {"CWE", _OWASP_API_TAXONOMY_NAME}
+
+
+def test_render_sarif_omits_owasp_relationship_when_unmapped() -> None:
+    graph = ReachabilityGraph()
+    _file(graph, vuln_class="sql-injection")  # has a CWE but no 2023 API category
+    doc = render_sarif(_records(graph))
+    rule = doc["runs"][0]["tool"]["driver"]["rules"][0]
+    names = {r["target"]["toolComponent"]["name"] for r in rule["relationships"]}
+    assert names == {"CWE"}
+
+
+def test_render_sarif_declares_the_owasp_taxonomy_only_when_used() -> None:
+    graph = ReachabilityGraph()
+    _file(graph, vuln_class="sql-injection")  # never touches OWASP
+    doc = render_sarif(_records(graph))
+    assert "taxonomies" not in doc["runs"][0]
+
+
+def test_render_sarif_declares_the_owasp_taxonomy_component_when_a_rule_uses_it() -> None:
+    graph = ReachabilityGraph()
+    _file(graph, vuln_class="idor")
+    doc = render_sarif(_records(graph))
+    taxonomies = doc["runs"][0]["taxonomies"]
+    assert len(taxonomies) == 1
+    assert taxonomies[0]["name"] == _OWASP_API_TAXONOMY_NAME
+    assert {"id": "API1:2023", "name": "Broken Object Level Authorization"} in taxonomies[0]["taxa"]

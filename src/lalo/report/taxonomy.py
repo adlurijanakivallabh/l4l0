@@ -62,3 +62,58 @@ CWE_BY_VULN_CLASS: dict[str, str] = {
 def cwe_for(vuln_class: str) -> str | None:
     """Best-effort CWE ID for a vuln_class slug, or None if unmapped."""
     return CWE_BY_VULN_CLASS.get(vuln_class.strip().lower())
+
+
+# --- OWASP API Security Top 10 (2023 edition) ---------------------------
+# Curated the same way as CWE_BY_VULN_CLASS above: only vuln_class slugs
+# with a genuinely clean fit to a real 2023 category are mapped - BOLA is
+# textbook IDOR, "mass assignment" was folded into "Broken Object Property
+# Level Authorization" by name in the 2023 edition, SSRF keeps its own
+# dedicated category unchanged, and so on. The 2023 edition dropped the old
+# 2019 catch-all "Injection" category entirely, so sql-injection/
+# command-injection/ssti/xxe/nosql-injection - a real, accurate CWE match
+# each - have no honest 2023 API-Top-10 home and are deliberately left
+# unmapped here, exactly like subdomain-takeover is left unmapped in
+# CWE_BY_VULN_CLASS above.
+OWASP_API_TOP10_NAMES: dict[str, str] = {
+    "API1:2023": "Broken Object Level Authorization",
+    "API2:2023": "Broken Authentication",
+    "API3:2023": "Broken Object Property Level Authorization",
+    "API4:2023": "Unrestricted Resource Consumption",
+    "API5:2023": "Broken Function Level Authorization",
+    "API6:2023": "Unrestricted Access to Sensitive Business Flows",
+    "API7:2023": "Server Side Request Forgery",
+    "API8:2023": "Security Misconfiguration",
+    "API9:2023": "Improper Inventory Management",
+    "API10:2023": "Unsafe Consumption of APIs",
+}
+
+OWASP_API_BY_VULN_CLASS: dict[str, str] = {
+    "idor": "API1:2023",
+    "authentication-bypass": "API2:2023",
+    "weak-credentials": "API2:2023",
+    "jwt": "API2:2023",
+    "mass-assignment": "API3:2023",
+    "broken-access-control": "API5:2023",
+    "access-control": "API5:2023",
+    "ssrf": "API7:2023",
+    "cors-misconfiguration": "API8:2023",
+    "cloud-iam-storage-misconfiguration": "API8:2023",
+    "kubernetes-serverless-assessment": "API8:2023",
+    "graphql": "API9:2023",
+    "subdomain-takeover": "API9:2023",
+}
+
+
+def owasp_api_for(vuln_class: str) -> str | None:
+    """Best-effort OWASP API Security Top 10 (2023) category id for a
+    vuln_class slug (e.g. "API1:2023"), or None if unmapped - same
+    degrade-to-nothing contract as cwe_for above."""
+    return OWASP_API_BY_VULN_CLASS.get(vuln_class.strip().lower())
+
+
+def owasp_api_name_for(vuln_class: str) -> str | None:
+    """The mapped category's human-readable name (e.g. "Broken Object Level
+    Authorization"), or None if unmapped."""
+    category = owasp_api_for(vuln_class)
+    return OWASP_API_TOP10_NAMES.get(category) if category else None

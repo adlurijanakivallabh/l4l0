@@ -37,6 +37,7 @@ from dataclasses import dataclass
 
 from ..findings.confidence import ConfidenceScore, compute_confidence
 from ..findings.dedup import dedup_key
+from ..findings.review import ReviewVerdict
 from ..graph.model import Chain, NodeKind, ReachabilityGraph
 
 SEVERITY_ORDER: dict[str, int] = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
@@ -217,3 +218,48 @@ def build_chain_records(chains: Sequence[Chain], records: list[FindingRecord]) -
         )
         for chain in chains
     ]
+
+
+# One section per real ReviewVerdict value, plus a 4th bucket for a finding
+# that was never reviewed at all (review_verdict is None - the review step
+# is opt-in and non-blocking per CLAUDE.md, so plenty of real findings will
+# never carry one). Order is "most immediately actionable first": CONFIRMED,
+# then the ones the review step never weighed in on, then the two verdicts a
+# reviewer actually returned doubt about - RULED_OUT last since CLAUDE.md's
+# "neither layer ever removes a finding" means it still has to be shown,
+# just not first.
+VERDICT_SECTIONS: list[tuple[str | None, str]] = [
+    (ReviewVerdict.CONFIRMED.value, "Confirmed"),
+    (None, "Not Reviewed"),
+    (ReviewVerdict.OPEN_PROOF_GAP.value, "Open Proof Gap"),
+    (ReviewVerdict.RULED_OUT.value, "Ruled Out"),
+]
+
+
+def group_by_verdict(
+    records: list[FindingRecord],
+) -> list[tuple[str, list[FindingRecord]]]:
+    """Bucket ``records`` by ``review_verdict``, in :data:`VERDICT_SECTIONS`
+    order - every section is present in the result even when its bucket is
+    empty, so a renderer can print its header unconditionally and nothing
+    ever looks silently hidden. Filtering (not re-sorting) preserves
+    whatever order ``records`` already came in - callers that pre-sort via
+    :func:`sort_findings` keep that severity ordering within each bucket."""
+    return [
+        (label, [record for record in records if record.review_verdict == verdict_value])
+        for verdict_value, label in VERDICT_SECTIONS
+    ]
+
+
+def first_finding_id_by_vuln_class(records: list[FindingRecord]) -> dict[str, str]:
+    """The id of the first (in ``records`` order) finding for each
+    ``vuln_class`` - the anchor target a "Summary by Vulnerability Type"
+    quick-index link jumps to. Only ever the first occurrence: once
+    :func:`group_by_verdict` scatters same-category findings across
+    different verdict sections, a single in-page anchor can't reach all of
+    them at once - landing on the first is enough for a reader to find the
+    rest from there."""
+    first_id: dict[str, str] = {}
+    for record in records:
+        first_id.setdefault(record.vuln_class, record.finding_id)
+    return first_id

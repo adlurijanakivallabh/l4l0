@@ -74,6 +74,11 @@ _PAGE_STYLE = """
     content: "Page " counter(page) " of " counter(pages); font-size: 8pt; color: #888;
   }
 }
+/* The cover page (report/html.py's own .cover-page section) is a PDF-paged
+   -medium concept - on its own page in the PDF, exactly one on-screen HTML
+   block everywhere else. PDF-only, same reasoning as the rest of this
+   file's own @page rule: html2docx has no notion of CSS pagination. */
+.cover-page { page-break-after: always; }
 """
 
 

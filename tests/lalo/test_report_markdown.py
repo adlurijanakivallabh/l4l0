@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import replace
 
 from lalo.agent.tools import ToolRegistry
+from lalo.findings.review import ReviewVerdict
 from lalo.findings.tool import build_record_finding_tool
 from lalo.graph.model import ReachabilityGraph
 from lalo.report.collect import (
@@ -285,3 +286,52 @@ def test_render_report_md_with_no_metadata_has_no_scope_or_model_lines() -> None
     rendered = render_report_md([], coverage, summary=summary)
     assert "Model / Provider" not in rendered
     assert "Target / Scope" not in rendered
+
+
+def test_render_finding_md_includes_the_owasp_line_when_mapped() -> None:
+    record = replace(_record(), vuln_class="idor")
+    rendered = render_finding_md(record)
+    assert "**OWASP API Top 10:** API1:2023 — Broken Object Level Authorization" in rendered
+
+
+def test_render_finding_md_omits_the_owasp_line_when_unmapped() -> None:
+    rendered = render_finding_md(_record())  # sql-injection has a CWE but no 2023 API category
+    assert "OWASP API Top 10" not in rendered
+
+
+def test_render_finding_md_has_an_anchor_for_the_quick_index_to_target() -> None:
+    record = _record()
+    assert f'<a id="{record.finding_id}"></a>' in render_finding_md(record)
+
+
+def test_render_report_md_groups_findings_by_review_verdict() -> None:
+    confirmed = replace(_record(), review_verdict=ReviewVerdict.CONFIRMED.value)
+    not_reviewed = replace(
+        _record(evidence=["e2"]), review_verdict=None, finding_id="f-not-reviewed"
+    )
+    coverage = CoverageSummary(assessed=["sql-injection"], not_assessed=[])
+    rendered = render_report_md([confirmed, not_reviewed], coverage)
+    assert "### Verdict: Confirmed (1)" in rendered
+    assert "### Verdict: Not Reviewed (1)" in rendered
+    assert "### Verdict: Open Proof Gap (0)" in rendered
+    assert "### Verdict: Ruled Out (0)" in rendered
+    assert "f-not-reviewed" in rendered
+
+
+def test_render_report_md_with_no_findings_has_no_verdict_sections() -> None:
+    coverage = CoverageSummary(assessed=[], not_assessed=[])
+    assert "Verdict:" not in render_report_md([], coverage)
+
+
+def test_render_report_md_quick_index_links_to_the_first_finding_of_each_category() -> None:
+    record = _record()
+    coverage = CoverageSummary(assessed=["sql-injection"], not_assessed=[])
+    summary = ExecutiveSummary(
+        total_findings=1,
+        by_severity={"high": 1},
+        by_vuln_class={"sql-injection": 1},
+        highest_severity="high",
+    )
+    rendered = render_report_md([record], coverage, summary=summary)
+    assert "## Summary by Vulnerability Type" in rendered
+    assert f"- [sql-injection (1)](#{record.finding_id})" in rendered

@@ -124,3 +124,18 @@ def test_encrypt_pdf_rejects_the_wrong_password() -> None:
     reader = PdfReader(BytesIO(encrypted))
     result = reader.decrypt("definitely-not-the-real-password")
     assert result == 0  # PasswordType.NOT_DECRYPTED
+
+
+def test_render_report_pdf_puts_the_cover_page_on_its_own_page() -> None:
+    html = (
+        "<!doctype html><html><head><style>body{color:#000;}</style></head>"
+        '<body><div class="cover-page"><h1>L4L0 Security Assessment Report</h1>'
+        "<p>cover-marker-abc</p></div>"
+        "<h2>Executive Summary</h2><p>findings-marker-xyz</p></body></html>"
+    )
+    pdf_bytes = render_report_pdf(html)
+    reader = PdfReader(BytesIO(pdf_bytes))
+    assert len(reader.pages) >= 2
+    assert "cover-marker-abc" in reader.pages[0].extract_text()
+    assert "findings-marker-xyz" not in reader.pages[0].extract_text()
+    assert "findings-marker-xyz" in reader.pages[1].extract_text()

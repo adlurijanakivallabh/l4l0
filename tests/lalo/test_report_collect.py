@@ -2,14 +2,19 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 from lalo.agent.tools import ToolRegistry
 from lalo.findings.dedup import dedup_key
+from lalo.findings.review import ReviewVerdict
 from lalo.findings.tool import build_record_finding_tool
 from lalo.graph.model import Chain, EdgeKind, NodeKind, ReachabilityGraph
 from lalo.report.collect import (
     build_chain_records,
     build_executive_summary,
     collect_findings,
+    first_finding_id_by_vuln_class,
+    group_by_verdict,
     sort_findings,
 )
 
@@ -215,3 +220,46 @@ def test_build_chain_records_falls_back_to_the_bare_id_for_an_unknown_finding() 
 
 def test_build_chain_records_on_no_chains_is_empty() -> None:
     assert build_chain_records([], []) == []
+
+
+def test_group_by_verdict_buckets_every_real_verdict_plus_not_reviewed() -> None:
+    graph = ReachabilityGraph()
+    _file_finding(graph, target="https://x.example.com/a")
+    _file_finding(graph, target="https://x.example.com/b")
+    records = collect_findings(graph)
+    confirmed = replace(records[0], review_verdict=ReviewVerdict.CONFIRMED.value)
+    not_reviewed = replace(records[1], review_verdict=None)
+    groups = group_by_verdict([confirmed, not_reviewed])
+    assert [label for label, _ in groups] == [
+        "Confirmed",
+        "Not Reviewed",
+        "Open Proof Gap",
+        "Ruled Out",
+    ]
+    by_label = dict(groups)
+    assert by_label["Confirmed"] == [confirmed]
+    assert by_label["Not Reviewed"] == [not_reviewed]
+    assert by_label["Open Proof Gap"] == []
+    assert by_label["Ruled Out"] == []
+
+
+def test_group_by_verdict_preserves_input_order_within_a_bucket() -> None:
+    graph = ReachabilityGraph()
+    _file_finding(graph, target="https://x.example.com/a")
+    _file_finding(graph, target="https://x.example.com/b")
+    records = collect_findings(graph)
+    first = replace(records[0], review_verdict=ReviewVerdict.RULED_OUT.value, finding_id="f-first")
+    second = replace(
+        records[1], review_verdict=ReviewVerdict.RULED_OUT.value, finding_id="f-second"
+    )
+    groups = dict(group_by_verdict([first, second]))
+    assert [r.finding_id for r in groups["Ruled Out"]] == ["f-first", "f-second"]
+
+
+def test_first_finding_id_by_vuln_class_keeps_the_first_occurrence() -> None:
+    graph = ReachabilityGraph()
+    _file_finding(graph, target="https://x.example.com/a", vuln_class="xss")
+    _file_finding(graph, target="https://x.example.com/b", vuln_class="xss")
+    records = collect_findings(graph)
+    anchors = first_finding_id_by_vuln_class(records)
+    assert anchors["xss"] == records[0].finding_id

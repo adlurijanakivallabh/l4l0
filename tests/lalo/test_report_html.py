@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import replace
 
 from lalo.agent.tools import ToolRegistry
+from lalo.findings.review import ReviewVerdict
 from lalo.findings.tool import build_record_finding_tool
 from lalo.graph.model import ReachabilityGraph
 from lalo.report.collect import (
@@ -263,14 +264,25 @@ def test_render_report_html_shows_engagement_scope_and_model_in_the_executive_su
     assert "<pre>- example.com</pre>" in rendered
 
 
-def test_render_report_html_with_no_metadata_has_no_scope_or_model_lines() -> None:
+def test_render_report_html_with_no_metadata_has_no_executive_summary_scope_or_model_lines() -> (
+    None
+):
+    """The cover page (added later, unconditional) now always shows a
+    "Model / Provider" / "Target / Engagement Scope" line with a
+    "(not recorded)" fallback - see
+    test_render_report_html_cover_page_falls_back_when_engagement_metadata_is_absent.
+    This test's real intent survives as: the EXECUTIVE SUMMARY's own
+    metadata-gated line must not ALSO render without real metadata, i.e.
+    "Model / Provider" must appear exactly once (from the cover page),
+    never duplicated by the Executive Summary block."""
     coverage = CoverageSummary(assessed=[], not_assessed=[])
     summary = ExecutiveSummary(
         total_findings=0, by_severity={}, by_vuln_class={}, highest_severity=None
     )
     rendered = render_report_html([], coverage, summary=summary)
-    assert "Model / Provider" not in rendered
-    assert "Target / Scope" not in rendered
+    assert rendered.count("Model / Provider") == 1
+    assert rendered.count("Target / Scope") == 0
+    assert "Target / Engagement Scope" in rendered  # the cover page's own label
 
 
 def test_render_report_html_omits_stat_chips_when_no_findings() -> None:
@@ -292,3 +304,78 @@ def test_render_report_html_stat_chip_falls_back_for_an_unrecognized_severity() 
     )
     rendered = render_report_html([], coverage, summary=summary)
     assert '<li class="stat-chip sev-info"><span class="stat-count">1</span> WEIRD</li>' in rendered
+
+
+def test_render_finding_html_includes_the_owasp_line_when_mapped() -> None:
+    record = replace(_record(), vuln_class="idor")
+    rendered = render_finding_html(record)
+    assert "<dt>OWASP API Top 10</dt><dd>API1:2023" in rendered
+    assert "Broken Object Level Authorization" in rendered
+
+
+def test_render_finding_html_omits_the_owasp_line_when_unmapped() -> None:
+    assert "OWASP API Top 10" not in render_finding_html(_record())
+
+
+def test_render_finding_html_heading_carries_an_id_anchor() -> None:
+    record = _record()
+    assert f'<h2 id="{record.finding_id}">' in render_finding_html(record)
+
+
+def test_render_report_html_groups_findings_by_review_verdict() -> None:
+    confirmed = replace(_record(), review_verdict=ReviewVerdict.CONFIRMED.value)
+    coverage = CoverageSummary(assessed=["sql-injection"], not_assessed=[])
+    rendered = render_report_html([confirmed], coverage)
+    assert "<h3>Verdict: Confirmed (1)</h3>" in rendered
+    assert "<h3>Verdict: Ruled Out (0)</h3>" in rendered
+    assert "<p><em>None.</em></p>" in rendered
+
+
+def test_render_report_html_with_no_findings_has_no_verdict_sections() -> None:
+    coverage = CoverageSummary(assessed=[], not_assessed=[])
+    assert "Verdict:" not in render_report_html([], coverage)
+
+
+def test_render_report_html_quick_index_links_to_the_first_finding_of_each_category() -> None:
+    record = _record()
+    coverage = CoverageSummary(assessed=["sql-injection"], not_assessed=[])
+    summary = ExecutiveSummary(
+        total_findings=1,
+        by_severity={"high": 1},
+        by_vuln_class={"sql-injection": 1},
+        highest_severity="high",
+    )
+    rendered = render_report_html([record], coverage, summary=summary)
+    assert "<h2>Summary by Vulnerability Type</h2>" in rendered
+    assert f'<li><a href="#{record.finding_id}">sql-injection (1)</a></li>' in rendered
+
+
+def test_render_report_html_includes_a_cover_page_ahead_of_the_executive_summary() -> None:
+    coverage = CoverageSummary(assessed=[], not_assessed=[])
+    summary = ExecutiveSummary(
+        total_findings=0, by_severity={}, by_vuln_class={}, highest_severity=None
+    )
+    rendered = render_report_html([], coverage, generated_at="2026-09-08", summary=summary)
+    assert 'class="cover-page"' in rendered
+    assert "2026-09-08" in rendered
+    assert "Confidential" in rendered
+    assert rendered.index('class="cover-page"') < rendered.index("<h2>Executive Summary</h2>")
+
+
+def test_render_report_html_cover_page_falls_back_when_engagement_metadata_is_absent() -> None:
+    coverage = CoverageSummary(assessed=[], not_assessed=[])
+    assert "(not recorded)" in render_report_html([], coverage)
+
+
+def test_render_report_html_cover_page_surfaces_real_engagement_metadata() -> None:
+    """engagement_scope/model_provider come from the sibling report-metadata
+    task's ReportMetadata, threaded in via the `metadata` parameter that
+    task adds to render_report_html - a confirmed, real cross-task
+    interface, not a forward guess."""
+    metadata = ReportMetadata(
+        engagement_scope="https://x.example.com", model_provider="opencodex:gpt-5.6"
+    )
+    coverage = CoverageSummary(assessed=[], not_assessed=[])
+    rendered = render_report_html([], coverage, metadata=metadata)
+    assert "https://x.example.com" in rendered
+    assert "opencodex:gpt-5.6" in rendered

@@ -23,11 +23,18 @@ from typing import Any
 
 from ..findings.dedup import dedup_key
 from .collect import FindingRecord
-from .taxonomy import cwe_for
+from .taxonomy import OWASP_API_BY_VULN_CLASS, OWASP_API_TOP10_NAMES, cwe_for, owasp_api_for
 
 SARIF_SCHEMA = "https://json.schemastore.org/sarif-2.1.0.json"
 SARIF_VERSION = "2.1.0"
 TOOL_NAME = "L4L0"
+
+# The one taxonomy this project's own curated OWASP_API_BY_VULN_CLASS
+# mapping ever references - declared in SARIF's own run-level "taxonomies"
+# array (added by render_sarif, only when at least one rule actually uses
+# it) so every OWASP relationship a rule emits below resolves against
+# something real, mirroring the existing CWE relationship shape exactly.
+_OWASP_API_TAXONOMY_NAME = "OWASP-API-Security-Top-10-2023"
 
 _SEVERITY_TO_LEVEL: dict[str, str] = {
     "critical": "error",
@@ -70,13 +77,41 @@ def _build_rule(record: FindingRecord) -> dict[str, Any]:
     # Only added when a mapping actually exists - an unmapped vuln_class
     # must never render as a fabricated/empty relationship, per
     # lalo.report.taxonomy's own "degrades to no CWE line, never an error"
-    # contract.
+    # contract. Same contract now applies to the OWASP relationship below.
+    relationships: list[dict[str, Any]] = []
     cwe = cwe_for(record.vuln_class)
     if cwe:
-        rule["relationships"] = [
+        relationships.append(
             {"target": {"id": cwe, "toolComponent": {"name": "CWE"}}, "kinds": ["relevant"]}
-        ]
+        )
+    owasp = owasp_api_for(record.vuln_class)
+    if owasp:
+        relationships.append(
+            {
+                "target": {"id": owasp, "toolComponent": {"name": _OWASP_API_TAXONOMY_NAME}},
+                "kinds": ["relevant"],
+            }
+        )
+    if relationships:
+        rule["relationships"] = relationships
     return rule
+
+
+def _owasp_taxonomy_component() -> dict[str, Any]:
+    """The run-level ToolComponent every OWASP relationship above resolves
+    against - SARIF's own ``run.taxonomies`` array. Declares only the
+    category ids this project's curated OWASP_API_BY_VULN_CLASS mapping can
+    ever emit, not the full external OWASP list - an undeclared
+    relationship would be as misleading as a fabricated one, but so is
+    declaring ten taxa when this codebase's own mapping only ever points at
+    a handful of them."""
+    used_ids = sorted(set(OWASP_API_BY_VULN_CLASS.values()))
+    return {
+        "name": _OWASP_API_TAXONOMY_NAME,
+        "organization": "OWASP",
+        "informationUri": "https://owasp.org/API-Security/editions/2023/en/0x11-t10/",
+        "taxa": [{"id": cat_id, "name": OWASP_API_TOP10_NAMES[cat_id]} for cat_id in used_ids],
+    }
 
 
 def _result_markdown(record: FindingRecord) -> str:
@@ -155,11 +190,14 @@ def render_sarif(
     rule_index_by_id: dict[str, int] = {}
     rules: list[dict[str, Any]] = []
     results: list[dict[str, Any]] = []
+    owasp_taxonomy_used = False
     for record in records:
         rule_id = _rule_id(record)
         if rule_id not in rule_index_by_id:
             rule_index_by_id[rule_id] = len(rules)
             rules.append(_build_rule(record))
+            if owasp_api_for(record.vuln_class):
+                owasp_taxonomy_used = True
         results.append(_build_result(record, rule_index_by_id[rule_id]))
 
     run: dict[str, Any] = {
@@ -167,6 +205,8 @@ def render_sarif(
         "results": results,
         "invocations": [{"executionSuccessful": execution_successful}],
     }
+    if owasp_taxonomy_used:
+        run["taxonomies"] = [_owasp_taxonomy_component()]
     if automation_id:
         run["automationDetails"] = {"id": automation_id}
 
