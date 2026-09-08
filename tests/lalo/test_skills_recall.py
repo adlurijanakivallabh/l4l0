@@ -97,3 +97,9 @@ def test_recall_surfaces_the_cache_poisoning_playbook_for_a_relevant_query() -> 
     skills = load_skills()
     results = recall("unkeyed header X-Forwarded-Host cache poisoning", skills, top_k=3)
     assert any(r.skill.name == "cache-poisoning" for r in results)
+
+
+def test_recall_surfaces_the_source_aware_review_skill_for_a_relevant_query() -> None:
+    skills = load_skills()
+    results = recall("source code attack surface routes handlers dangerous sink", skills, top_k=3)
+    assert any(r.skill.name == "source-aware-review" for r in results)
