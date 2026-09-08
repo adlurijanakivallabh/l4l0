@@ -196,6 +196,7 @@ from ..orchestrator.budget import (
     BudgetBand,
     BudgetExceededError,
     SubagentReserveExceededError,
+    _highest_crossed,
 )
 from ..orchestrator.journal import DurableJournal
 from .tools import ToolRegistry, parse_tool_call, str_arg
@@ -243,6 +244,36 @@ _SUBAGENT_DIRECTIVES: dict[BudgetBand, str] = {
     "starting anything new; prepare to call finish.",
     BudgetBand.CRITICAL: "Budget critical: report your result right now and call "
     "finish — you may be cut off before your parent receives anything else.",
+}
+
+# A SEPARATE graduated signal from the shared-budget one above: Budget.band()
+# tracks a cross-agent pool (root + every spawned sibling combined against
+# ONE ceiling) - it has zero visibility into THIS agent's own max_steps, a
+# per-AgentLoop hard limit unrelated to how full the shared pool is. A live
+# multi-agent run showed exactly the gap this closes: three concurrent
+# children each shared a 300-step pool barely half spent while one of them
+# sailed right up to its OWN 40-step ceiling with no advance warning at
+# all, then didn't comply with the single abrupt _FINAL_TURN_DIRECTIVE
+# that's all today's design gives it. Same band fractions as _ROOT_BANDS
+# (orchestrator/budget.py) reused deliberately (a well-considered, already-
+# tuned schedule) but kept as this module's own constant, not imported: a
+# future change to the shared-budget policy's own thresholds should not
+# silently also retune this unrelated axis just because the numbers used
+# to match. Applied identically for root and every sub-agent - unlike the
+# shared budget's own earlier subagent pull-back (which exists to protect
+# the ROOT's OWN reserve, a cross-agent concern), max_steps is the SAME
+# value for every agent regardless of role, so there's no equivalent
+# reason to graduate root and sub-agents differently here.
+_STEP_BANDS: tuple[float, ...] = (0.70, 0.85, 0.95)
+_STEP_DIRECTIVES: dict[BudgetBand, str] = {
+    BudgetBand.NOTICE: "Step budget notice: you are approaching YOUR OWN step limit "
+    "for this agent (separate from the shared scan budget, if any) — begin steering "
+    "toward a conclusion so you have room to close out cleanly.",
+    BudgetBand.URGENT: "Step budget urgent: your own step limit is close. Stop opening "
+    "new lines of investigation and move toward calling finish.",
+    BudgetBand.CRITICAL: "Step budget critical: your own step limit is almost "
+    "exhausted. Secure your findings and call finish NOW — after this you get one "
+    "forced final turn that accepts nothing but a finish call.",
 }
 
 # How many of the most recent transcript entries always render verbatim in
@@ -586,7 +617,7 @@ class AgentLoop:
         self._summarized_through = hidden_boundary
 
     def _render_prompt(
-        self, mission: str, transcript: list[dict[str, object]], directive: str | None
+        self, mission: str, transcript: list[dict[str, object]], directives: list[str]
     ) -> str:
         self._maybe_compact_history(transcript)
         parts = [f"MISSION:\n{mission}"]
@@ -601,7 +632,7 @@ class AgentLoop:
             )
         parts.append(f"\nAVAILABLE TOOLS:\n{self.registry.describe()}")
         parts.append(f"\n{_PROTOCOL}")
-        if directive:
+        for directive in directives:
             parts.append(f"\n[{directive}]")
         if self._history_summary:
             parts.append(
@@ -623,6 +654,12 @@ class AgentLoop:
             return None
         table = _ROOT_DIRECTIVES if self.config.is_root else _SUBAGENT_DIRECTIVES
         return table[band]
+
+    def _step_directive(self, step: int) -> str | None:
+        band = _highest_crossed(step / self.config.max_steps, _STEP_BANDS)
+        if band in (BudgetBand.OK, BudgetBand.EXHAUSTED):
+            return None
+        return _STEP_DIRECTIVES[band]
 
     def _check_budget_ceiling(self) -> str | None:
         """Return a stop_reason if the hard ceiling was just reached, else None."""
@@ -680,8 +717,10 @@ class AgentLoop:
                 return AgentResult(stop_reason, step, transcript)
 
             with self.tracer.span("agent_step", step=step, agent_id=self.agent_id) as span:
-                directive = self._budget_directive()
-                prompt = self._render_prompt(mission, transcript, directive)
+                directives = [
+                    d for d in (self._budget_directive(), self._step_directive(step)) if d
+                ]
+                prompt = self._render_prompt(mission, transcript, directives)
                 step_key = f"{agent_key}:{step}"
                 with self.tracer.span("llm_completion", step=step, agent_id=self.agent_id):
                     response = self._complete(prompt, step_key=step_key)
@@ -813,7 +852,7 @@ class AgentLoop:
         model to transmit a summary — it may not call any other tool here. A
         non-compliant response (no tool call, or anything but finish) just
         falls back to the plain max_steps outcome rather than looping further."""
-        prompt = self._render_prompt(mission, transcript, _FINAL_TURN_DIRECTIVE)
+        prompt = self._render_prompt(mission, transcript, [_FINAL_TURN_DIRECTIVE])
         response = self._complete(prompt)
         if response is None:
             response = self._retry_through_provider_outage(prompt)

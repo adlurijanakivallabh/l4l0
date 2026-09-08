@@ -239,6 +239,62 @@ def test_budget_notice_band_injects_a_wrapup_directive_into_the_prompt() -> None
     assert any("Budget notice" in p for p in router.prompts)
 
 
+def test_step_notice_band_injects_a_step_directive_independent_of_shared_budget() -> None:
+    """The shared cross-agent Budget's own graduated bands (tested above)
+    have zero visibility into a single agent's own max_steps ceiling - a
+    real live run showed several spawned children sail right up to their
+    OWN step limit with no advance warning at all (the shared 300-step
+    pool still had plenty of room even as one child neared its own 40),
+    then fail to comply with the abrupt one-shot final-turn cutoff. This
+    directive is keyed on step/max_steps directly, independent of Budget
+    entirely (no budget= passed at all here) - it must fire regardless of
+    whether a shared budget exists or how full it is.
+    """
+    tool, _ = _counting_tool("noop")
+    registry = ToolRegistry([tool])
+    router = _FakeRouter(
+        lambda i, _p: (
+            '{"tool": "finish", "args": {"summary": "wrapped up in time"}}'
+            if i >= 7
+            else f'{{"tool": "noop", "args": {{"i": {i}}}}}'
+        )
+    )
+    loop = AgentLoop(
+        router,  # type: ignore[arg-type]
+        registry,
+        system_prompt="",
+        config=AgentConfig(max_steps=10),  # NOTICE at step 7 (0.70), no Budget at all
+    )
+    result = loop.run("mission")
+    assert any("Step budget notice" in p for p in router.prompts)
+    assert result.stop_reason == "finished"  # it had room to comply cleanly
+
+
+def test_step_and_shared_budget_directives_can_both_appear_in_the_same_prompt() -> None:
+    tool, _ = _counting_tool("noop")
+    registry = ToolRegistry([tool])
+    router = _FakeRouter(
+        lambda i, _p: (
+            '{"tool": "finish", "args": {"summary": "ok"}}'
+            if i >= 7
+            else f'{{"tool": "noop", "args": {{"i": {i}}}}}'
+        )
+    )
+    budget = Budget(ceiling=100, spent=75)  # already at root NOTICE band from turn 0
+    loop = AgentLoop(
+        router,  # type: ignore[arg-type]
+        registry,
+        system_prompt="",
+        config=AgentConfig(is_root=True, max_steps=10),  # step NOTICE starts at step 7 (0.70)
+        budget=budget,
+    )
+    loop.run("mission")
+    # The step-7 prompt (step/max_steps first crosses 0.70 there) carries BOTH.
+    step_seven_prompt = router.prompts[7]
+    assert "Budget notice" in step_seven_prompt
+    assert "Step budget notice" in step_seven_prompt
+
+
 def test_cooperative_cancellation_stops_before_calling_the_model() -> None:
     registry = ToolRegistry([])
     router = _scripted(['{"tool": "finish", "args": {}}'])
