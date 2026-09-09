@@ -206,6 +206,15 @@ def render_report_md(
         lines.append(f"**By category:** {category_line}")
         if summary.highest_severity:
             lines.append(f"**Highest severity:** {summary.highest_severity.upper()}")
+        if summary.by_confidence:
+            conf_line = ", ".join(
+                f"{band}: {count}" for band, count in summary.by_confidence.items() if count
+            )
+            if conf_line:
+                lines.append(f"**By confidence:** {conf_line}")
+        if summary.critical_findings:
+            lines.append("**Critical Findings:**")
+            lines.extend(f"- {title}" for title in summary.critical_findings)
         if metadata is not None:
             lines.append(f"**Model / Provider:** {metadata.model_provider}")
             lines.append("**Target / Scope:**")

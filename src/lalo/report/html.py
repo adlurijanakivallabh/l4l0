@@ -224,6 +224,17 @@ def render_report_html(
             parts.append(
                 f"<p><strong>Highest severity:</strong> {_e(summary.highest_severity.upper())}</p>"
             )
+        if summary.by_confidence:
+            conf_line = ", ".join(
+                f"{_e(band)}: {count}" for band, count in summary.by_confidence.items() if count
+            )
+            if conf_line:
+                parts.append(f"<p><strong>By confidence:</strong> {conf_line}</p>")
+        if summary.critical_findings:
+            parts.append("<p><strong>Critical Findings:</strong></p><ul>")
+            for title in summary.critical_findings:
+                parts.append(f"<li>{_e(title)}</li>")
+            parts.append("</ul>")
         if metadata is not None:
             parts.append(f"<p><strong>Model / Provider:</strong> {_e(metadata.model_provider)}</p>")
             parts.append("<p><strong>Target / Scope:</strong></p>")

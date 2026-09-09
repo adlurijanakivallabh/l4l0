@@ -143,6 +143,8 @@ class ExecutiveSummary:
     by_severity: dict[str, int]
     by_vuln_class: dict[str, int]
     highest_severity: str | None
+    by_confidence: dict[str, int] = field(default_factory=dict)
+    critical_findings: list[str] = field(default_factory=list)
 
 
 def build_executive_summary(records: list[FindingRecord]) -> ExecutiveSummary:
@@ -154,11 +156,21 @@ def build_executive_summary(records: list[FindingRecord]) -> ExecutiveSummary:
         )
     )
     by_vuln_class = dict(sorted(Counter(record.vuln_class for record in records).items()))
+    by_confidence: dict[str, int] = {}
+    for record in records:
+        score = record.confidence.score
+        band = "high" if score >= 80 else "medium" if score >= 50 else "low"
+        by_confidence[band] = by_confidence.get(band, 0) + 1
+    critical_findings = [
+        record.title for record in records if record.effective_severity == "critical"
+    ]
     return ExecutiveSummary(
         total_findings=len(records),
         by_severity=by_severity,
         by_vuln_class=by_vuln_class,
         highest_severity=next(iter(by_severity), None),
+        by_confidence=by_confidence,
+        critical_findings=critical_findings,
     )
 
 

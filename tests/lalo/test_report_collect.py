@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import replace
 
 from lalo.agent.tools import ToolRegistry
+from lalo.findings.confidence import ConfidenceScore
 from lalo.findings.dedup import dedup_key
 from lalo.findings.review import ReviewVerdict
 from lalo.findings.tool import build_record_finding_tool
@@ -190,6 +191,29 @@ def test_build_executive_summary_on_no_findings_is_all_empty() -> None:
     assert summary.by_severity == {}
     assert summary.by_vuln_class == {}
     assert summary.highest_severity is None
+    assert summary.by_confidence == {}
+    assert summary.critical_findings == []
+
+
+def test_build_executive_summary_buckets_by_confidence_band() -> None:
+    graph = ReachabilityGraph()
+    _file_finding(graph)
+    record = collect_findings(graph)[0]
+    high = replace(record, confidence=ConfidenceScore(score=90, breakdown={}))
+    medium = replace(record, confidence=ConfidenceScore(score=60, breakdown={}))
+    low = replace(record, confidence=ConfidenceScore(score=20, breakdown={}))
+    summary = build_executive_summary([high, medium, low])
+    assert summary.by_confidence == {"high": 1, "medium": 1, "low": 1}
+
+
+def test_build_executive_summary_lists_critical_finding_titles() -> None:
+    graph = ReachabilityGraph()
+    _file_finding(graph)
+    record = collect_findings(graph)[0]
+    critical = replace(record, title="Unauth RCE via SSTI", display_severity="critical")
+    medium = replace(record, title="Reflected XSS", display_severity="medium")
+    summary = build_executive_summary([critical, medium])
+    assert summary.critical_findings == ["Unauth RCE via SSTI"]
 
 
 # --- build_chain_records -------------------------------------------------
