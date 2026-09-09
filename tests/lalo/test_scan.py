@@ -139,6 +139,25 @@ def test_shell_chunk_coalescer_merges_many_small_chunks_into_far_fewer_emits() -
     assert 1 <= len(chunk_events) < 10
 
 
+def test_shell_chunk_coalescer_handles_a_single_first_chunk_already_at_threshold() -> None:
+    """Regression: the very first chunk for a (command_id, stream) key has no
+    buffer entry yet - a chunk that's already >= threshold on its own used to
+    do `del self._buffers[key]` on a key that was never inserted, raising
+    KeyError. A single >=750-char line (a feroxbuster/nmap line, a JSON body)
+    is routine for exactly the verbose tools this coalescer exists to tame."""
+    emitted: list[dict[str, object]] = []
+    coalesce = _ShellChunkCoalescer(emitted.append, threshold=10)
+
+    coalesce({"event": "start", "command_id": "c1", "command": "curl"})
+    coalesce({"event": "chunk", "command_id": "c1", "stream": "stdout", "text": "x" * 50})
+    coalesce({"event": "end", "command_id": "c1", "exit_code": 0})
+
+    chunk_events = [e for e in emitted if e["event"] == "chunk"]
+    assert chunk_events == [
+        {"event": "chunk", "command_id": "c1", "stream": "stdout", "text": "x" * 50}
+    ]
+
+
 def test_shell_chunk_coalescer_never_merges_stdout_and_stderr() -> None:
     emitted: list[dict[str, object]] = []
     coalesce = _ShellChunkCoalescer(emitted.append, threshold=1000)
@@ -1594,6 +1613,57 @@ def test_scan_runner_defaults_to_advisory_only_for_an_unreachable_target(
     assert any(e.payload.get("event") == "target_unreachable_preflight" for e in events)
 
 
+def test_scan_runner_closes_firer_and_browser_even_on_a_preflight_exception(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression: firer/browser used to be leaked (no close() reachable at
+    all) whenever an exception was raised anywhere between their
+    construction and container.start() actually succeeding - the
+    fail_on_unreachable_targets path below is exactly such a case."""
+    closed: list[str] = []
+
+    class _TrackedFirer:
+        def __init__(self, scope: object) -> None:
+            pass
+
+        def close(self) -> None:
+            closed.append("firer")
+
+    class _TrackedBrowser:
+        def __init__(self, scope: object) -> None:
+            pass
+
+        def close(self) -> None:
+            closed.append("browser")
+
+    monkeypatch.setattr(scan_module, "docker_available", lambda: True)
+    monkeypatch.setattr(scan_module, "RuntimeContainer", _FakeContainer)
+    monkeypatch.setattr(scan_module, "HttpFirer", _TrackedFirer)
+    monkeypatch.setattr(scan_module, "BrowserSession", _TrackedBrowser)
+    monkeypatch.setattr(
+        scan_module,
+        "probe_reachability",
+        lambda *_a, **_k: {"example.com": (False, "connection refused")},
+    )
+    router = ModelRouter(
+        providers={"fake": _ScriptedProvider(_respond)},
+        routes={"reasoning": ("fake",), "review": ("fake",)},
+        default_route=("fake",),
+    )
+    monkeypatch.setattr(scan_module, "build_router", lambda _settings: router)
+
+    config = ScanConfig(
+        mission="find a bug",
+        target_specs=["example.com"],
+        run_dir=tmp_path / "run",
+        fail_on_unreachable_targets=True,
+    )
+    with pytest.raises(TargetUnreachableError, match="example.com"):
+        ScanRunner(config, env={"ANTHROPIC_API_KEY": "sk-test"}).run()
+
+    assert set(closed) == {"firer", "browser"}
+
+
 def test_scan_runner_hard_stops_on_an_unreachable_target_when_opted_in(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1812,6 +1882,62 @@ def test_scan_runner_browser_login_preflight_fails_when_success_url_is_never_rea
     )
     with pytest.raises(LoginFailedError, match="alice/sso"):
         ScanRunner(config, env={"ANTHROPIC_API_KEY": "sk-test"}).run()
+
+
+def test_scan_runner_browser_login_preflight_stays_advisory_on_an_unexpected_exception(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression: _preflight_logins used to catch only LoginFailedError -
+    any OTHER exception type (a browser/selector bug, a Playwright hiccup)
+    would crash the whole scan instead of staying advisory like every other
+    login-preflight failure. A browser whose fill() raises something else
+    entirely must degrade to a recorded, non-fatal login_preflight_failed
+    event, exactly like a LoginFailedError would."""
+    monkeypatch.setattr(scan_module, "docker_available", lambda: True)
+    monkeypatch.setattr(scan_module, "RuntimeContainer", _FakeContainer)
+
+    class _FakeBrowserThatRaisesOnFill:
+        def __init__(self, scope: object = None) -> None:
+            pass
+
+        def navigate(self, url: str) -> BrowserActionResult:
+            return BrowserActionResult(ok=True, observation="")
+
+        def fill(self, selector: str, value: str) -> BrowserActionResult:
+            raise RuntimeError("simulated unexpected browser bug")
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(scan_module, "BrowserSession", _FakeBrowserThatRaisesOnFill)
+    router = ModelRouter(
+        providers={"fake": _ScriptedProvider(_respond)},
+        routes={"reasoning": ("fake",), "review": ("fake",)},
+        default_route=("fake",),
+    )
+    monkeypatch.setattr(scan_module, "build_router", lambda _settings: router)
+
+    event_log = EventLog()
+    config = ScanConfig(
+        mission="find a bug",
+        target_specs=["example.com"],
+        run_dir=tmp_path / "run",
+        identities={"alice": Identity("alice", "alice", Credential(CredentialKind.PASSWORD, "x"))},
+        login_schemes={
+            "sso": LoginScheme(
+                browser_url="https://example.com/login",
+                success_url_contains="/dashboard",
+            )
+        },
+        login_preflight_pairs=[("alice", "sso")],
+    )
+    outcome = ScanRunner(config, env={"ANTHROPIC_API_KEY": "sk-test"}, event_log=event_log).run()
+
+    assert outcome.status is RunStatus.COMPLETED  # never crashed the scan
+    _cursor, events = event_log.snapshot()
+    failed = [e for e in events if e.payload.get("event") == "login_preflight_failed"]
+    assert len(failed) == 1
+    assert "simulated unexpected browser bug" in str(failed[0].payload["reason"])
 
 
 def test_cancel_before_run_stops_on_the_first_step(
@@ -2496,6 +2622,46 @@ def test_resume_manifest_without_rules_of_engagement_still_resumes(tmp_path: Pat
 
     config = ScanConfig(mission="find a bug", target_specs=["example.com"], run_dir=run_dir)
     scan_module._load_or_write_manifest(config)  # noqa: SLF001 - must not raise
+
+
+def test_load_or_write_manifest_refuses_a_corrupt_manifest_not_a_typeerror(
+    tmp_path: Path,
+) -> None:
+    """Regression: _ResumeManifest(**json.loads(...)) used to raise a bare
+    TypeError on a manifest with the wrong shape (a list, an unexpected key)
+    instead of the intended ResumeConfigMismatchError every other config-
+    mismatch path already raises."""
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    scan_module._manifest_path(run_dir).write_text(  # noqa: SLF001
+        json.dumps({"mission": "x", "target_specs": ["y"], "egress_lock": False, "bogus": 1}),
+        encoding="utf-8",
+    )
+    config = ScanConfig(mission="find a bug", target_specs=["example.com"], run_dir=run_dir)
+    with pytest.raises(scan_module.ResumeConfigMismatchError):
+        scan_module._load_or_write_manifest(config)  # noqa: SLF001
+
+
+def test_load_or_write_manifest_refuses_a_manifest_that_is_not_a_json_object(
+    tmp_path: Path,
+) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    scan_module._manifest_path(run_dir).write_text(  # noqa: SLF001
+        json.dumps(["not", "an", "object"]), encoding="utf-8"
+    )
+    config = ScanConfig(mission="find a bug", target_specs=["example.com"], run_dir=run_dir)
+    with pytest.raises(scan_module.ResumeConfigMismatchError):
+        scan_module._load_or_write_manifest(config)  # noqa: SLF001
+
+
+def test_load_or_write_manifest_refuses_malformed_json(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    scan_module._manifest_path(run_dir).write_text("not json at all {{{", encoding="utf-8")  # noqa: SLF001
+    config = ScanConfig(mission="find a bug", target_specs=["example.com"], run_dir=run_dir)
+    with pytest.raises(scan_module.ResumeConfigMismatchError):
+        scan_module._load_or_write_manifest(config)  # noqa: SLF001
 
 
 def test_resume_refuses_a_different_mission_against_the_same_run_dir(

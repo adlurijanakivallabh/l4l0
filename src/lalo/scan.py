@@ -575,7 +575,25 @@ def _load_or_write_manifest(config: ScanConfig) -> None:
     current = _ResumeManifest.from_config(config)
     path = _manifest_path(config.run_dir)
     if path.exists():
-        persisted = _ResumeManifest(**json.loads(path.read_bytes()))
+        try:
+            raw = json.loads(path.read_bytes())
+            if not isinstance(raw, dict):
+                raise TypeError(f"expected a JSON object, got {type(raw).__name__}")
+            persisted = _ResumeManifest(**raw)
+        except (json.JSONDecodeError, TypeError, ValueError, OSError) as exc:
+            # A corrupt/foreign/hand-edited manifest is refused the same way
+            # a genuine config mismatch is - this file exists specifically to
+            # lock what's safe to resume, so "can't verify it" must never be
+            # treated as "safe to overwrite" or "safe to proceed" the way the
+            # narrative/events readers elsewhere degrade for a purely-cosmetic
+            # artifact. Sibling readers (read_resume_manifest, report/
+            # manifest.py) degrade gracefully because they're advisory; this
+            # one is the actual safety check, so it fails closed instead.
+            raise ResumeConfigMismatchError(
+                f"run_dir {config.run_dir} holds an unreadable/malformed resume "
+                f"manifest ({type(exc).__name__}: {exc}) -- refusing to resume "
+                "without being able to verify it matches what was originally authorized"
+            ) from exc
         if persisted != current:
             raise ResumeConfigMismatchError(
                 f"run_dir {config.run_dir} holds a scan started with different "
@@ -663,7 +681,7 @@ class _ShellChunkCoalescer:
             key = (command_id, str(payload.get("stream")))
             text = self._buffers.get(key, "") + str(payload.get("text", ""))
             if len(text) >= self._threshold:
-                del self._buffers[key]
+                self._buffers.pop(key, None)
                 self._emit_chunk(command_id, key[1], text)
             else:
                 self._buffers[key] = text
@@ -864,7 +882,14 @@ class ScanRunner:
                     self._browser_login(browser, identity, scheme, scheme.browser_url)
                 else:
                     login(firer, identity, scheme)
-            except LoginFailedError as exc:
+            except Exception as exc:  # noqa: BLE001 - an advisory preflight step must
+                # never crash the whole scan, regardless of which exception type a
+                # broken scheme/selector/browser hiccup happens to surface as -
+                # LoginFailedError is the expected shape, but this stays advisory
+                # (a failure recorded and reported, never fatal on its own) even
+                # for an unexpected one, matching this method's own documented
+                # "always advisory... the caller decides whether a failure is
+                # fatal" contract.
                 failures.append((identity_id, scheme_name, str(exc)))
                 self._emit(
                     "status",
@@ -896,8 +921,18 @@ class ScanRunner:
                 f"browser login for identity {identity.id} failed to load "
                 f"{browser_url}: {nav.observation}"
             )
-        browser.fill(f"#{scheme.username_field}", identity.username)
-        browser.fill(f"#{scheme.password_field}", identity.credential.value)
+        fill_username = browser.fill(f"#{scheme.username_field}", identity.username)
+        if not fill_username.ok:
+            raise LoginFailedError(
+                f"browser login for identity {identity.id} failed to fill the "
+                f"username field: {fill_username.observation}"
+            )
+        fill_password = browser.fill(f"#{scheme.password_field}", identity.credential.value)
+        if not fill_password.ok:
+            raise LoginFailedError(
+                f"browser login for identity {identity.id} failed to fill the "
+                f"password field: {fill_password.observation}"
+            )
         submit = browser.press(f"#{scheme.password_field}", "Enter")
         if not submit.ok:
             raise LoginFailedError(
@@ -1039,63 +1074,72 @@ class ScanRunner:
         # so every subsequent agent shares them for free, with no separate
         # export/import round-trip needed.
         browser = BrowserSession(scope)
-        preflight_firer = HttpFirer(scope)
+        # Constructed here too (not inside _run_inside, where it used to
+        # live) and closed in the same outer finally as browser below - an
+        # audit found the previous placement meant BOTH resources leaked
+        # (browser's Chromium subprocess, this HttpFirer's connection pool)
+        # on any exception raised between here and _run_inside actually
+        # starting, since neither had a close() reachable that early.
+        firer = HttpFirer(scope)
         try:
-            reachability = probe_reachability(engagement, preflight_firer)
-            login_failures = self._preflight_logins(preflight_firer, browser)
-        finally:
-            preflight_firer.close()
-        unreachable: list[tuple[str, str]] = []
-        for host, (reachable, reason) in reachability.items():
-            if not reachable:
-                self._emit(
-                    "status",
-                    {"event": "target_unreachable_preflight", "host": host, "reason": reason},
-                )
-                unreachable.append((host, reason))
-        if self.config.fail_on_unreachable_targets and unreachable:
-            detail = "; ".join(f"{host}: {reason}" for host, reason in unreachable)
-            raise TargetUnreachableError(
-                f"target reachability preflight failed ({detail}) and "
-                "fail_on_unreachable_targets is set"
-            )
-        if self.config.fail_on_broken_login and login_failures:
-            detail = "; ".join(
-                f"{identity_id}/{scheme_name}: {reason}"
-                for identity_id, scheme_name, reason in login_failures
-            )
-            raise LoginFailedError(
-                f"login preflight failed ({detail}) and fail_on_broken_login is set"
-            )
-
-        container = RuntimeContainer(self.config.container_config)
-        self._container = container
-        container.start()
-        try:
-            oast = OASTServer()
-            oast.start()
+            preflight_firer = HttpFirer(scope)
             try:
+                reachability = probe_reachability(engagement, preflight_firer)
+                login_failures = self._preflight_logins(preflight_firer, browser)
+            finally:
+                preflight_firer.close()
+            unreachable: list[tuple[str, str]] = []
+            for host, (reachable, reason) in reachability.items():
+                if not reachable:
+                    self._emit(
+                        "status",
+                        {"event": "target_unreachable_preflight", "host": host, "reason": reason},
+                    )
+                    unreachable.append((host, reason))
+            if self.config.fail_on_unreachable_targets and unreachable:
+                detail = "; ".join(f"{host}: {reason}" for host, reason in unreachable)
+                raise TargetUnreachableError(
+                    f"target reachability preflight failed ({detail}) and "
+                    "fail_on_unreachable_targets is set"
+                )
+            if self.config.fail_on_broken_login and login_failures:
+                detail = "; ".join(
+                    f"{identity_id}/{scheme_name}: {reason}"
+                    for identity_id, scheme_name, reason in login_failures
+                )
+                raise LoginFailedError(
+                    f"login preflight failed ({detail}) and fail_on_broken_login is set"
+                )
+
+            container = RuntimeContainer(self.config.container_config)
+            self._container = container
+            container.start()
+            try:
+                oast = OASTServer()
+                oast.start()
                 try:
                     return self._run_inside(
-                        router, settings, scope, engagement, container, oast, browser
+                        router, settings, scope, engagement, container, oast, browser, firer
                     )
                 finally:
-                    browser.close()
+                    oast.stop()
             finally:
-                oast.stop()
+                # sys.exc_info() is populated here whenever an exception is
+                # still propagating through this finally clause (a plain
+                # `return` from _run_inside() above clears it first) -- this
+                # is the only signal available at this point for "did the
+                # run actually fail" without restructuring the whole nested
+                # try/finally chain into try/except/else. A successful run
+                # always passes failed=False and is completely unaffected:
+                # container.stop() always removes then, exactly as before.
+                # keep_on_failure itself is an opt-in RuntimeConfig field
+                # the operator sets on container_config (off by default) --
+                # see RuntimeContainer.stop().
+                container.stop(failed=sys.exc_info()[0] is not None)
+                self._container = None
         finally:
-            # sys.exc_info() is populated here whenever an exception is still
-            # propagating through this finally clause (a plain `return` from
-            # _run_inside() above clears it first) -- this is the only signal
-            # available at this point for "did the run actually fail" without
-            # restructuring the whole nested try/finally chain into
-            # try/except/else. A successful run always passes failed=False
-            # and is completely unaffected: container.stop() always removes
-            # then, exactly as before. keep_on_failure itself is an opt-in
-            # RuntimeConfig field the operator sets on container_config (off
-            # by default) -- see RuntimeContainer.stop().
-            container.stop(failed=sys.exc_info()[0] is not None)
-            self._container = None
+            browser.close()
+            firer.close()
 
     def _run_inside(
         self,
@@ -1106,6 +1150,7 @@ class ScanRunner:
         container: RuntimeContainer,
         oast: OASTServer,
         browser: BrowserSession,
+        firer: HttpFirer,
     ) -> ScanOutcome:
         # ponytail: snapshot-then-diff against the lifetime usage ledger is
         # this-run's token count on a fresh start; a resumed run only counts
@@ -1124,8 +1169,11 @@ class ScanRunner:
         graph = ReachabilityGraph.load(graph_path) if graph_path.exists() else ReachabilityGraph()
         journal = DurableJournal(_journal_path(self.config.run_dir))
         skills = load_skills()
-        firer = HttpFirer(scope)
-        # Built once here (not inside _build_registry, which runs once per
+        # firer is constructed by (and closed by) the caller, run() - see its
+        # own comment for why: closing it here would be reachable only on
+        # the success path, not on an exception raised before this method
+        # ever returns, which is exactly what leaked its connection pool.
+        # Built once (not inside _build_registry, which runs once per
         # agent) so every agent in the hierarchy shares the same coverage
         # state, the same single-instance-per-scan pattern firer/scope use.
         access_control_matrix_tool = build_access_control_matrix_tool()
