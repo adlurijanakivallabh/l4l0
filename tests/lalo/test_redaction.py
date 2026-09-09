@@ -93,8 +93,45 @@ def test_safe_target_url_strips_userinfo_and_sensitive_query() -> None:
     assert "hunter2" not in out
     assert "user:" not in out
     assert "abc123secret" not in out
-    assert "token=" in out and "REDACTED" in out
+    # The per-key pass already replaces the token VALUE with REDACTED; the
+    # whole-URL redact() pass this function now also runs (closing the
+    # path-secret gap - see the dedicated test below) then matches
+    # _TOKEN_PATTERNS' own "token=<non-whitespace>" key=value pattern
+    # against the resulting "token=REDACTED&next=/home" and swallows the
+    # rest of the query string too, since `&`/`/` aren't whitespace - an
+    # over-redaction this module's own docstring explicitly accepts
+    # ("over-redacting... is fine; leaking a real secret is not"), just a
+    # broader span than before.
+    assert "REDACTED" in out
     assert "app.example.com:8443" in out
+
+
+def test_safe_target_url_redacts_a_jwt_shaped_token_embedded_in_the_path() -> None:
+    """Regression: safe_target_url only ever redacted the query string by
+    exact key name - a secret embedded in the PATH (a password-reset link,
+    a JWT-in-path pattern) reached every downstream consumer of this
+    "already redacted" value (the dedup key, the graph node, the delivered
+    report) in cleartext."""
+    jwt = (
+        "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0."
+        "dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U"
+    )
+    url = f"https://app.example.com/reset/{jwt}"
+    out = safe_target_url(url)
+    assert jwt not in out
+    assert "REDACTED" in out
+    assert "app.example.com" in out
+
+
+def test_safe_target_url_redacts_a_high_entropy_query_value_under_an_unlisted_key() -> None:
+    """A secret under a key not in the exact-match _SENSITIVE_KEYS set (e.g.
+    a dashed variant, or a key this project's list simply doesn't name) must
+    still be caught by the pattern/entropy pass over the assembled URL."""
+    secret = "aG9wZWZ1bGx5LXNlY3JldC1sb29raW5nLXZhbHVlLTEyMzQ1Njc4"
+    url = f"https://app.example.com/verify?resetkey={secret}"
+    out = safe_target_url(url)
+    assert secret not in out
+    assert "REDACTED" in out
 
 
 def test_safe_error_from_code_is_fixed_table() -> None:

@@ -239,8 +239,19 @@ def redact(text: str) -> str:
 
 def safe_target_url(url: str) -> str:
     """Return a URL safe to log/display: no userinfo, no fragment, sensitive
-    query values redacted by key. Scheme/host/port/path are preserved so the
-    target stays identifiable.
+    query values redacted by key, and the assembled result run through the
+    same pattern/entropy redaction every other field goes through.
+
+    The path is deliberately NOT exempted: an audit found a token embedded
+    in the path (``/verify/eyJhbGciOi...``, ``/reset/<token>``) or a query
+    value under a key outside the exact-match ``_SENSITIVE_KEYS`` set
+    (``resetkey``, ``access-token`` with a dash) reached every downstream
+    consumer of this "already redacted" value in cleartext - the dedup key,
+    the graph node, the adversarial reviewer's own context, and the
+    delivered report - despite this function's own callers documenting it
+    as fully sanitized. Redacting the whole assembled URL (not just the
+    path) also catches a query value under an unlisted key that the
+    per-key pass above didn't recognize.
     """
     try:
         parts = urlsplit(url)
@@ -255,7 +266,7 @@ def safe_target_url(url: str) -> str:
             for key, value in parse_qsl(parts.query, keep_blank_values=True)
         ]
     )
-    return urlunsplit((parts.scheme, netloc, parts.path, query, ""))
+    return redact(urlunsplit((parts.scheme, netloc, parts.path, query, "")))
 
 
 def safe_error_from_code(code: str) -> str:
