@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from lalo.agent.tools import ToolRegistry
 from lalo.core.redaction import shared_redactor
-from lalo.findings.tool import build_record_finding_tool
+from lalo.findings.tool import build_record_finding_tool, build_record_safe_tool
 from lalo.graph.model import EdgeKind, NodeKind, ReachabilityGraph
 
 _VALID_CVSS = {
@@ -331,3 +331,48 @@ def test_record_finding_drops_a_windows_drive_letter_source_location() -> None:
     )
     node = graph.node(graph.nodes_of_kind(NodeKind.FINDING)[0])
     assert node["source_location"] is None
+
+
+def test_record_safe_lands_a_verified_safe_node_never_a_finding() -> None:
+    graph = ReachabilityGraph()
+    tool = build_record_safe_tool(graph)
+    result = tool.run(
+        {
+            "vuln_class": "sql-injection",
+            "target": "https://x.example.com/search",
+            "param": "q",
+            "defense_mechanism": "parameterized query confirmed via source read at app/db.py:42",
+        }
+    )
+    assert result.ok is True
+    (node_id,) = graph.nodes_of_kind(NodeKind.VERIFIED_SAFE)
+    node = graph.node(node_id)
+    assert node["vuln_class"] == "sql-injection"
+    assert node["target"] == "https://x.example.com/search"
+    assert node["param"] == "q"
+    assert "parameterized query" in node["defense_mechanism"]
+    # Never lands as (or alongside) a FINDING - this is evidence of absence,
+    # not a vulnerability record, and must never be confused with one.
+    assert graph.nodes_of_kind(NodeKind.FINDING) == []
+
+
+def test_record_safe_requires_vuln_class_target_and_defense_mechanism() -> None:
+    graph = ReachabilityGraph()
+    tool = build_record_safe_tool(graph)
+    result = tool.run({"vuln_class": "sql-injection", "target": "https://x.example.com/"})
+    assert result.ok is False
+    assert "defense_mechanism" in result.observation
+
+
+def test_record_safe_target_is_redacted_the_same_way_record_finding_is() -> None:
+    graph = ReachabilityGraph()
+    tool = build_record_safe_tool(graph)
+    tool.run(
+        {
+            "vuln_class": "sql-injection",
+            "target": "https://x.example.com/reset?token=verysecrettoken1234567890",
+            "defense_mechanism": "parameterized",
+        }
+    )
+    (node_id,) = graph.nodes_of_kind(NodeKind.VERIFIED_SAFE)
+    assert "verysecrettoken1234567890" not in graph.node(node_id)["target"]

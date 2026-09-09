@@ -53,6 +53,12 @@ class NodeKind(StrEnum):
     EVIDENCE = "evidence"
     FINGERPRINT = "fingerprint"
     SERVICE = "service"
+    # Evidence of absence-of-vulnerability: an agent specifically tested this
+    # vuln_class/target/param and confirmed it's properly defended, with a
+    # stated reason. Never a FINDING - this closes the "tested and clean" vs
+    # "never looked" ambiguity CoverageSummary's own binary assessed/
+    # not_assessed split can't express (see build_coverage_summary).
+    VERIFIED_SAFE = "verified_safe"
     # A freeform scratch note an agent leaves for itself or another agent -
     # deliberately untyped/unstructured, unlike every other kind above.
     NOTE = "note"

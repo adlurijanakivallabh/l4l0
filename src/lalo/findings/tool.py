@@ -280,3 +280,49 @@ def build_record_finding_tool(graph: ReachabilityGraph) -> FunctionTool:
         ),
         func=_record_finding,
     )
+
+
+def build_record_safe_tool(graph: ReachabilityGraph) -> FunctionTool:
+    def _record_safe(args: dict[str, object]) -> ToolResult:
+        vuln_class = str(args.get("vuln_class", "")).strip()
+        target_raw = str(args.get("target", "")).strip()
+        defense_mechanism = str(args.get("defense_mechanism", "")).strip()
+        if not vuln_class or not target_raw or not defense_mechanism:
+            return ToolResult(
+                observation=(
+                    "error: 'vuln_class', 'target', and 'defense_mechanism' are all required"
+                ),
+                ok=False,
+            )
+        target = safe_target_url(target_raw)
+        param = redact(str(args["param"])) if args.get("param") else None
+        node_id = f"safe-{uuid.uuid4().hex[:12]}"
+        graph.add_node(
+            node_id,
+            NodeKind.VERIFIED_SAFE,
+            vuln_class=vuln_class,
+            target=target,
+            param=param,
+            defense_mechanism=redact(defense_mechanism),
+        )
+        return ToolResult(
+            observation=(
+                f"recorded {node_id}: {vuln_class} on {target} confirmed safe - {defense_mechanism}"
+            )
+        )
+
+    return FunctionTool(
+        name="record_safe",
+        description=(
+            "Record that you specifically tested a vulnerability class against a "
+            "target/param and confirmed it's properly defended - evidence of "
+            "absence, never a finding. Never required and never a gate on "
+            "anything else you do; use it whenever you've genuinely verified a "
+            "surface is clean, so the report can say so with a real reason "
+            'instead of staying silent. args: {"vuln_class": str, "target": str, '
+            '"param": str (optional), "defense_mechanism": str (required - why '
+            'you believe this is safe, e.g. "parameterized query confirmed via '
+            'source read at app/db.py:42")}'
+        ),
+        func=_record_safe,
+    )
