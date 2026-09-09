@@ -210,7 +210,6 @@ class RuntimeConfig:
     forward_etc_hosts: bool = True
     log_max_size: str = "10m"
     log_max_files: int = 3
-    extra_run_args: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         normalized = {_normalize_cap(cap) for cap in self.cap_add}
@@ -336,7 +335,6 @@ class RuntimeContainer:
         # Deliberately NO -v/--mount (no host filesystem) and NO docker socket —
         # never offered as a config option here, unlike every reference that
         # either lacks scope-egress hardening or ships host-socket delegation.
-        args += list(self.config.extra_run_args)
         args += [self.config.image, *_KEEPALIVE]
         return args
 
