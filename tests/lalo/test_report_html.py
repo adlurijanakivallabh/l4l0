@@ -126,6 +126,14 @@ def test_render_finding_html_shows_review_verdict_when_present() -> None:
     assert "L3" in rendered
 
 
+def test_render_finding_html_labels_exploitation_section_only_when_reproduced() -> None:
+    reproduced = render_finding_html(replace(_record(), reproduced=True))
+    not_reproduced = render_finding_html(replace(_record(), reproduced=False))
+    assert "Exploitation Steps" in reproduced
+    assert "Analysis" in not_reproduced
+    assert "Exploitation" not in not_reproduced
+
+
 def test_render_report_html_renders_an_attack_surface_section() -> None:
     coverage = CoverageSummary(assessed=[], not_assessed=[])
     surface = AttackSurfaceSummary(

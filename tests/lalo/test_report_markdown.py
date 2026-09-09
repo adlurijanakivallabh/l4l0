@@ -129,6 +129,14 @@ def test_render_report_md_includes_a_findings_overview_table() -> None:
     assert "sql-injection" in overview
 
 
+def test_render_finding_md_labels_exploitation_section_only_when_reproduced() -> None:
+    reproduced = render_finding_md(replace(_record(), reproduced=True))
+    not_reproduced = render_finding_md(replace(_record(), reproduced=False))
+    assert "### Exploitation Steps" in reproduced
+    assert "### Analysis" in not_reproduced
+    assert "### Exploitation" not in not_reproduced
+
+
 def test_render_report_md_renders_an_attack_surface_section() -> None:
     coverage = CoverageSummary(assessed=[], not_assessed=[])
     surface = AttackSurfaceSummary(
