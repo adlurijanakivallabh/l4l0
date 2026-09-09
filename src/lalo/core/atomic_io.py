@@ -43,18 +43,42 @@ path ends up ``0600`` too, with no separate chmod needed after the swap.
 from __future__ import annotations
 
 import os
+import time
 import uuid
+from collections.abc import Callable
 from pathlib import Path
 
 from .errors import LaloError
 
 _OWNER_ONLY = 0o600
+_IO_RETRY_ATTEMPTS = 3
+_IO_RETRY_DELAY_S = 0.1
 
 
 class AtomicWriteError(LaloError):
     """A write's byte-verify failed before the swap; the original file is untouched."""
 
     code = "atomic_write_error"
+
+
+def _retry_on_oserror(fn: Callable[[], None]) -> None:
+    """Deterministic, local I/O is cheap and safe to retry - a momentarily-
+    full disk or a brief filesystem hiccup shouldn't abort a whole scan on
+    the very next journal/report/graph write. Mirrors the deterministic-vs-
+    model retry-profile distinction a studied reference agent's own
+    durability layer draws (cheap IO gets more, cheaper retries than a
+    model call would)."""
+    last_exc: OSError | None = None
+    for attempt in range(_IO_RETRY_ATTEMPTS):
+        try:
+            fn()
+            return
+        except OSError as exc:
+            last_exc = exc
+            if attempt < _IO_RETRY_ATTEMPTS - 1:
+                time.sleep(_IO_RETRY_DELAY_S)
+    if last_exc is not None:
+        raise last_exc
 
 
 def append_owner_only_line(path: Path, line: str) -> None:
@@ -73,12 +97,16 @@ def append_owner_only_line(path: Path, line: str) -> None:
     exact same behavior.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, _OWNER_ONLY)
-    os.fchmod(fd, _OWNER_ONLY)  # tighten even if the file pre-existed looser
-    with os.fdopen(fd, "a", encoding="utf-8") as handle:
-        handle.write(line if line.endswith("\n") else line + "\n")
-        handle.flush()
-        os.fsync(handle.fileno())
+
+    def _write() -> None:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, _OWNER_ONLY)
+        os.fchmod(fd, _OWNER_ONLY)  # tighten even if the file pre-existed looser
+        with os.fdopen(fd, "a", encoding="utf-8") as handle:
+            handle.write(line if line.endswith("\n") else line + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+
+    _retry_on_oserror(_write)
 
 
 def atomic_write_verified(path: Path, data: bytes) -> None:
@@ -99,6 +127,6 @@ def atomic_write_verified(path: Path, data: bytes) -> None:
             os.fsync(fh.fileno())
         if tmp.read_bytes() != data:
             raise AtomicWriteError(f"byte-verify failed writing {path}; original left untouched")
-        os.replace(tmp, path)
+        _retry_on_oserror(lambda: os.replace(tmp, path))
     finally:
         tmp.unlink(missing_ok=True)
