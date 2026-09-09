@@ -201,6 +201,10 @@ class HttpFirer:
         request_headers.setdefault("Host", host_header)
 
         start = time.monotonic()
+        # Declared before the try so a mid-stream failure (caught below by
+        # the httpx.HTTPError branch) can still return whatever was already
+        # captured, rather than discarding it - see that branch's own comment.
+        chunks: list[bytes] = []
         try:
             request = self._client.build_request(
                 method, pinned_url, headers=request_headers, content=content
@@ -215,7 +219,6 @@ class HttpFirer:
             # the wire, not just discarded after the fact.
             resp = self._client.send(request, stream=True)
             try:
-                chunks: list[bytes] = []
                 received = 0
                 truncated = False
                 for chunk in resp.iter_bytes():
@@ -256,6 +259,14 @@ class HttpFirer:
                     _log.warning(
                         "circuit opened for host %s after %d failures", host, breaker.failures
                     )
+            # A response that streamed real bytes before the connection died
+            # mid-transfer (a target crash, a reset) - discarding what was
+            # already captured would silently lose exactly the evidence this
+            # firer exists to preserve (e.g. leaked buffer contents proving
+            # an RCE/crash), making a partial capture indistinguishable from
+            # a request that transferred nothing at all. `chunks` is empty
+            # when the failure happened before any bytes were ever read.
+            partial_body = b"".join(chunks)[: self._max_response_bytes]
             return FireResult(
                 method=method,
                 url=url,
@@ -263,6 +274,8 @@ class HttpFirer:
                 scope_reason=decision.reason,
                 error=type(exc).__name__,
                 elapsed_ms=(time.monotonic() - start) * 1000.0,
+                body=partial_body,
+                truncated=bool(partial_body),
             )
         else:
             with self._breaker_lock:

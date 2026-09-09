@@ -82,6 +82,37 @@ def test_transport_errors_trip_the_circuit_breaker() -> None:
     assert blocked.scope_reason == "circuit_open"
 
 
+class _PartialThenBrokenStream(httpx.SyncByteStream):
+    """Yields real bytes, then raises mid-stream - simulating a target that
+    crashes/resets the connection after sending a partial response (e.g. a
+    leaked buffer, or partial command output proving RCE)."""
+
+    def __iter__(self):
+        yield b"leaked-buffer-proof-of-rce-0123456789" * 60  # ~2.3KB of "real evidence"
+        raise httpx.RemoteProtocolError("connection reset mid-response")
+
+    def close(self) -> None:
+        return None
+
+
+def test_bytes_captured_before_a_mid_stream_failure_are_not_discarded() -> None:
+    """Regression: a target crash/reset mid-response used to discard every
+    byte already captured, returning an empty body indistinguishable from a
+    connection that transferred nothing at all - exactly the evidence-loss
+    scenario this firer's own truncated flag exists to prevent."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, stream=_PartialThenBrokenStream())
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    firer = HttpFirer(_scope(), client=client)
+    result = firer.fire("GET", "https://app.example.com/")
+    assert result.fired is True
+    assert result.error == "RemoteProtocolError"
+    assert b"leaked-buffer-proof-of-rce" in result.body
+    assert result.truncated is True
+
+
 def test_literal_ip_target_with_embedded_control_characters_does_not_crash() -> None:
     # httpx.InvalidURL is NOT a subclass of httpx.HTTPError, and the literal-IP
     # branch of the URL-pinning helper used to return the raw url string
