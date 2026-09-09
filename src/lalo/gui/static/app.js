@@ -325,6 +325,14 @@
       link.href = `/runs/${encodeURIComponent(run.run_id)}/report/${fmt}`;
       link.hidden = false;
     }
+    // Separate from the "best report" link above - not another format in
+    // that rotation, but a categorically different artifact (a plaintext,
+    // per-agent-attributed operational transcript, not a polished report).
+    const narrativeLink = item.querySelector(".run-narrative-link");
+    if ((run.report_formats || []).includes("narrative")) {
+      narrativeLink.href = `/runs/${encodeURIComponent(run.run_id)}/report/narrative`;
+      narrativeLink.hidden = false;
+    }
     if (!run.running) {
       const resumeBtn = item.querySelector(".run-resume-btn");
       resumeBtn.hidden = false;
@@ -700,6 +708,7 @@
     try {
       const maxSteps = document.getElementById("opt-max-steps").value;
       const budgetCeiling = document.getElementById("opt-budget-ceiling").value;
+      const costLimit = document.getElementById("opt-cost-limit").value;
       const egressLock = document.getElementById("opt-egress-lock").checked;
       const redactFindings = document.getElementById("opt-redact-findings").checked;
       const response = await fetch("/scan", {
@@ -709,6 +718,7 @@
           mission: text,
           ...(maxSteps ? { max_steps: Number(maxSteps) } : {}),
           ...(budgetCeiling ? { budget_ceiling: Number(budgetCeiling) } : {}),
+          ...(costLimit ? { cost_limit_usd: Number(costLimit) } : {}),
           egress_lock: egressLock,
           redact_findings: redactFindings,
         }),
@@ -892,6 +902,7 @@
     if (
       ev.target.closest(".run-resume-btn") ||
       ev.target.closest(".run-report-link") ||
+      ev.target.closest(".run-narrative-link") ||
       ev.target.closest(".run-duplicate-btn")
     ) {
       return;

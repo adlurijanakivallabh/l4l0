@@ -281,14 +281,16 @@ button, input, textarea {
   white-space: nowrap;
 }
 
-.run-report-link {
+.run-report-link,
+.run-narrative-link {
   flex: none;
   font-size: 0.68rem;
   font-weight: 600;
   color: var(--accent);
   text-decoration: none;
 }
-.run-report-link:hover { text-decoration: underline; }
+.run-report-link:hover,
+.run-narrative-link:hover { text-decoration: underline; }
 
 .run-resume-btn {
   flex: none;

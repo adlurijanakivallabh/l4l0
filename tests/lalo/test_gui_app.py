@@ -338,6 +338,31 @@ def test_list_runs_report_formats_includes_csv(tmp_path: Path) -> None:
     assert "csv" in runs[0]["report_formats"]
 
 
+def test_run_report_serves_the_narrative_log_with_the_right_media_type(tmp_path: Path) -> None:
+    run_dir = tmp_path / "abc123"
+    run_dir.mkdir()
+    (run_dir / "narrative.log").write_text("[agent-1] scan_started: targets=x\n", encoding="utf-8")
+    client, _ = _client(runs_dir=tmp_path)
+    response = client.get("/runs/abc123/report/narrative")
+    assert response.status_code == 200
+    assert response.content == b"[agent-1] scan_started: targets=x\n"
+    assert response.headers["content-type"].startswith("text/plain")
+
+
+def test_list_runs_report_formats_includes_narrative_but_never_gates_has_report(
+    tmp_path: Path,
+) -> None:
+    run_dir = tmp_path / "abc123"
+    run_dir.mkdir()
+    (run_dir / "narrative.log").write_text("[agent-1] scan_started: targets=x\n", encoding="utf-8")
+    client, _ = _client(runs_dir=tmp_path)
+    runs = client.get("/runs").json()["runs"]
+    assert "narrative" in runs[0]["report_formats"]
+    # A narrative log alone is not a finished report - has_report still keys
+    # only on report.json existing, unaffected by this addition.
+    assert runs[0]["has_report"] is False
+
+
 def test_run_events_on_an_unknown_run_id_is_404(tmp_path: Path) -> None:
     client, _ = _client(runs_dir=tmp_path)
     response = client.get("/runs/no-such-run/events")
@@ -969,6 +994,7 @@ def test_scan_request_advanced_options_pass_through_to_scan_config(
             "targets": ["example.com"],
             "max_steps": 10,
             "budget_ceiling": 50,
+            "cost_limit_usd": 5.5,
             "egress_lock": True,
             "redact_findings": True,
         },
@@ -976,6 +1002,7 @@ def test_scan_request_advanced_options_pass_through_to_scan_config(
     config = current_config()
     assert config.max_steps == 10
     assert config.budget_ceiling == 50
+    assert config.cost_limit_usd == 5.5
     assert config.redact_findings is True
     assert config.egress_lock is True
 
@@ -989,6 +1016,7 @@ def test_scan_request_advanced_options_default_to_scan_configs_own_defaults(
     config = current_config()
     assert config.max_steps == 40
     assert config.budget_ceiling == 300
+    assert config.cost_limit_usd is None
     assert config.egress_lock is False
     assert config.redact_findings is False
 

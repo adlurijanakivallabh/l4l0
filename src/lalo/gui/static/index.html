@@ -62,6 +62,7 @@
         <summary>Advanced options</summary>
         <label>Max steps <input id="opt-max-steps" type="number" min="1" placeholder="25" /></label>
         <label>Budget ceiling <input id="opt-budget-ceiling" type="number" min="1" placeholder="300" /></label>
+        <label>Cost limit (USD) <input id="opt-cost-limit" type="number" min="0" step="0.01" placeholder="no limit" /></label>
         <label><input id="opt-egress-lock" type="checkbox" /> Egress lock</label>
         <label><input id="opt-redact-findings" type="checkbox" /> Redact secrets in report/logs</label>
       </details>
@@ -135,6 +136,7 @@
       <span class="run-meta"></span>
     </div>
     <a class="run-report-link" target="_blank" rel="noopener" hidden>Report</a>
+    <a class="run-narrative-link" target="_blank" rel="noopener" hidden>Narrative</a>
     <button type="button" class="run-resume-btn" hidden>Resume</button>
     <button type="button" class="run-duplicate-btn" title="Start a new scan with this run's mission">Duplicate</button>
   </li>

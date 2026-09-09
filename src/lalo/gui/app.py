@@ -147,6 +147,13 @@ _REPORT_FORMATS: dict[str, tuple[str, str]] = {
         DOCX_FILENAME,
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     ),
+    # Not a "report" export like the six above (a polished, format-of-the-
+    # same-findings artifact) - the per-agent-attributed plaintext narrative
+    # (orchestrator/narrative.py). Reuses this same safe allowlist/endpoint
+    # rather than a second one; the frontend deliberately links to it
+    # separately from the one "best report" link (see app.js's own
+    # REPORT_LINK_PREFERENCE comment), not as another format in that rotation.
+    "narrative": ("narrative.log", "text/plain"),
 }
 
 _log = get_logger("lalo.gui")
@@ -180,6 +187,7 @@ class ScanRequest(BaseModel):
     resume_run_id: str | None = None
     max_steps: int | None = None
     budget_ceiling: int | None = None
+    cost_limit_usd: float | None = None
     egress_lock: bool = False
     redact_findings: bool = False
 
@@ -374,6 +382,10 @@ def build_app(event_log: EventLog, *, runs_dir: Path | None = None) -> FastAPI:
                     if request.budget_ceiling is not None
                     else ScanConfig.budget_ceiling
                 ),
+                # No fallback needed here unlike max_steps/budget_ceiling above:
+                # ScanConfig.cost_limit_usd's own default is already None (no
+                # ceiling), matching request.cost_limit_usd's own default.
+                cost_limit_usd=request.cost_limit_usd,
                 redact_findings=request.redact_findings,
                 egress_lock=request.egress_lock,
             )
