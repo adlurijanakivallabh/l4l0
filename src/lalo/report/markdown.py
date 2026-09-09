@@ -217,6 +217,10 @@ def render_report_md(
     lines.append("## Coverage\n")
     lines.append(f"**Assessed:** {', '.join(coverage.assessed) or '(none)'}")
     lines.append(f"**Not assessed:** {', '.join(coverage.not_assessed) or '(none)'}")
+    if coverage.verified_safe:
+        lines.append(f"**Assessed, confirmed clean:** {', '.join(coverage.verified_safe)}")
+        for cls in coverage.verified_safe:
+            lines.append(f"- *{cls}*: {coverage.safe_reasons[cls]}")
     lines.append(
         "\n_A class marked 'not assessed' means no finding was filed for it - this "
         "does not distinguish 'tested and found clean' from 'never examined'._"

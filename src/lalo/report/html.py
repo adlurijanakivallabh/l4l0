@@ -241,6 +241,15 @@ def render_report_html(
     parts.append(
         f"<p><strong>Not assessed:</strong> {_e(', '.join(coverage.not_assessed) or '(none)')}</p>"
     )
+    if coverage.verified_safe:
+        parts.append(
+            f"<p><strong>Assessed, confirmed clean:</strong> "
+            f"{_e(', '.join(coverage.verified_safe))}</p>"
+        )
+        parts.append("<ul>")
+        for cls in coverage.verified_safe:
+            parts.append(f"<li><em>{_e(cls)}</em>: {_e(coverage.safe_reasons[cls])}</li>")
+        parts.append("</ul>")
     parts.append(
         "<p><em>A class marked 'not assessed' means no finding was filed for it - this "
         "does not distinguish 'tested and found clean' from 'never examined'.</em></p>"

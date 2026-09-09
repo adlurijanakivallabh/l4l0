@@ -128,7 +128,7 @@ def write_report(
     # actually critical" correction would still be ordered under an
     # unrelated higher-severity finding in the delivered report.
     records = sort_findings(apply_overrides(collect_findings(graph), overrides or []))
-    coverage = build_coverage_summary(skills, records)
+    coverage = build_coverage_summary(skills, records, graph=graph)
     chains = build_chain_records(graph.all_enabling_chains(), records)
     summary = build_executive_summary(records)
     status_value = status.value if status is not None else None

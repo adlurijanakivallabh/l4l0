@@ -49,8 +49,9 @@ one-line prompt fix already closes.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
+from ..graph.model import NodeKind, ReachabilityGraph
 from ..skills.loader import Skill, SkillCategory
 from .collect import FindingRecord
 
@@ -59,18 +60,43 @@ from .collect import FindingRecord
 class CoverageSummary:
     assessed: list[str]
     not_assessed: list[str]
+    # Vuln classes with a record_safe assertion and no FINDING - "tested
+    # this, genuinely clean," distinct from "nobody ever looked" (the rest
+    # of not_assessed). A class with BOTH a finding and a safe assertion
+    # stays in `assessed`, never here - a real finding always wins.
+    verified_safe: list[str] = field(default_factory=list)
+    safe_reasons: dict[str, str] = field(default_factory=dict)
 
     @property
     def total_known_classes(self) -> int:
         return len(self.assessed) + len(self.not_assessed)
 
 
-def build_coverage_summary(skills: list[Skill], records: list[FindingRecord]) -> CoverageSummary:
-    """Compare the skill library's vulnerability classes against filed findings."""
+def build_coverage_summary(
+    skills: list[Skill],
+    records: list[FindingRecord],
+    *,
+    graph: ReachabilityGraph | None = None,
+) -> CoverageSummary:
+    """Compare the skill library's vulnerability classes against filed findings
+    (and, if `graph` is given, against record_safe assertions too)."""
     known = sorted(
         {skill.name.lower() for skill in skills if skill.category == SkillCategory.VULNERABILITY}
     )
     seen = {record.vuln_class.strip().lower() for record in records}
+    safe_classes: dict[str, str] = {}
+    if graph is not None:
+        for node_id in graph.nodes_of_kind(NodeKind.VERIFIED_SAFE):
+            node = graph.node(node_id)
+            vuln_class = str(node.get("vuln_class", "")).strip().lower()
+            if vuln_class and vuln_class not in safe_classes:
+                safe_classes[vuln_class] = str(node.get("defense_mechanism", ""))
     assessed = [name for name in known if name in seen]
-    not_assessed = [name for name in known if name not in seen]
-    return CoverageSummary(assessed=assessed, not_assessed=not_assessed)
+    verified_safe = [name for name in known if name not in seen and name in safe_classes]
+    not_assessed = [name for name in known if name not in seen and name not in safe_classes]
+    return CoverageSummary(
+        assessed=assessed,
+        not_assessed=not_assessed,
+        verified_safe=verified_safe,
+        safe_reasons={name: safe_classes[name] for name in verified_safe},
+    )
