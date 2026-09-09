@@ -117,6 +117,21 @@ def test_an_unparseable_response_degrades_to_open_proof_gap_not_a_crash() -> Non
     assert result.adjusted_score == confidence.score
 
 
+def test_a_non_dict_json_response_degrades_to_open_proof_gap_not_a_crash() -> None:
+    """extract_json_object already guarantees dict[str, object] | None (a
+    JSON array or a bare string that happens to parse is filtered to None
+    there, confirmed by reading core/json_response.py in full) - this is a
+    regression lock on that invariant, not a fix: _parse_review_response's
+    own `if parsed is None` check already keeps this from ever reaching a
+    .get() call on a non-dict."""
+    provider = _FakeProvider(text="[1, 2, 3]")
+    graph, finding_id = _graph_with_finding()
+    confidence = compute_confidence(graph, finding_id)
+    result = run_adversarial_review(graph, finding_id, confidence, _router(provider))
+    assert result.verdict is ReviewVerdict.OPEN_PROOF_GAP
+    assert result.adjusted_score == confidence.score
+
+
 def test_an_unrecognized_verdict_degrades_to_open_proof_gap_not_a_crash() -> None:
     provider = _FakeProvider(text='{"verdict": "definitely maybe", "proof_level": "L3"}')
     graph, finding_id = _graph_with_finding()
