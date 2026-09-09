@@ -312,6 +312,37 @@ def test_close_before_any_navigation_never_raises() -> None:
     session.close()  # must be a no-op, not an AttributeError on a None playwright
 
 
+def test_close_still_stops_playwright_when_browser_close_itself_raises() -> None:
+    """Regression: close() used to run browser.close() then
+    playwright.stop() as two unguarded statements - a crashed/killed
+    Chromium process raising out of the first one skipped the second
+    entirely (a leaked Playwright driver process) AND propagated out of
+    close() itself, replacing whatever real exception a caller's own
+    `finally: browser.close()` (scan.py's ScanRunner.run()) was
+    protecting."""
+
+    class _RaisingBrowser:
+        def close(self) -> None:
+            raise RuntimeError("simulated crashed Chromium process")
+
+    class _FakePlaywright:
+        def __init__(self) -> None:
+            self.stopped = False
+
+        def stop(self) -> None:
+            self.stopped = True
+
+    session = BrowserSession(_scope())
+    playwright = _FakePlaywright()
+    session._browser = _RaisingBrowser()
+    session._playwright = playwright
+    session.close()  # must not raise
+
+    assert playwright.stopped is True
+    assert session._browser is None
+    assert session._playwright is None
+
+
 @dataclass
 class _FakeContext:
     state: dict[str, object] = field(default_factory=dict)

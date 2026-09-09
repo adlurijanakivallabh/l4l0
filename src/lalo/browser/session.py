@@ -87,7 +87,10 @@ from typing import cast
 
 from playwright.sync_api import Playwright, Response, sync_playwright
 
+from ..core.logging import get_logger
 from ..execution.scope import ScopeGuard, _in_metadata_range
+
+_log = get_logger("lalo.browser")
 
 _DEFAULT_NAV_TIMEOUT_MS = 30_000
 _MAX_TEXT_CHARS = 8_000
@@ -335,11 +338,27 @@ class BrowserSession:
         return str(self._page.url)  # type: ignore[attr-defined]
 
     def close(self) -> None:
+        # Each step wrapped independently: an audit found a crashed/killed
+        # Chromium process raising out of browser.close() skipped
+        # playwright.stop() entirely (a leaked Playwright driver process)
+        # AND meant this call itself propagated that error, replacing
+        # whatever real exception a caller's own `finally: browser.close()`
+        # was protecting (scan.py's own ScanRunner.run() does exactly this) -
+        # the operator would see "browser close failed" instead of the
+        # actual scan failure that triggered teardown. Matches
+        # runtime/container.py's own established per-step
+        # try/except-and-log-not-raise cleanup pattern.
         if self._browser is not None:
-            self._browser.close()  # type: ignore[attr-defined]
+            try:
+                self._browser.close()  # type: ignore[attr-defined]
+            except Exception:  # noqa: BLE001 - cleanup must not mask the caller's own error
+                _log.warning("closing the browser process failed", exc_info=True)
             self._browser = None
         if self._playwright is not None:
-            self._playwright.stop()
+            try:
+                self._playwright.stop()
+            except Exception:  # noqa: BLE001 - cleanup must not mask the caller's own error
+                _log.warning("stopping the playwright driver failed", exc_info=True)
             self._playwright = None
         self._context = None
         self._page = None

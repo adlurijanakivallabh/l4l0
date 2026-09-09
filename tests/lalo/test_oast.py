@@ -54,6 +54,24 @@ def test_stop_before_start_does_not_deadlock() -> None:
     oast.stop()  # must return promptly, not hang
 
 
+def test_stop_still_closes_the_socket_and_dns_sock_when_shutdown_itself_raises() -> None:
+    """Regression: stop() used to run shutdown()/server_close()/dns_sock.close()
+    as unguarded sequential statements - shutdown() raising skipped BOTH
+    steps after it, silently leaking the listening HTTP socket and the
+    bound UDP DNS socket, with zero logging anywhere."""
+    oast = OASTServer()
+    oast.start()
+    real_dns_sock = oast._dns_sock  # noqa: SLF001 - closed() checked directly below
+
+    def _raising_shutdown() -> None:
+        raise RuntimeError("simulated shutdown failure")
+
+    oast._http.shutdown = _raising_shutdown  # type: ignore[method-assign]  # noqa: SLF001
+    oast.stop()  # must not raise
+
+    assert real_dns_sock.fileno() == -1  # closed, despite shutdown() having raised
+
+
 def test_dns_answers_use_advertise_host_not_the_wildcard_bind_address() -> None:
     # Binding to 0.0.0.0 is what makes the listener reachable from a real
     # scanned target, but answering DNS queries with 0.0.0.0 itself is not a

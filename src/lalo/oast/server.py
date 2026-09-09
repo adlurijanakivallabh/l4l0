@@ -183,15 +183,31 @@ class OASTServer:
                 pass
 
     def stop(self) -> None:
+        # Each step wrapped independently, matching runtime/container.py's
+        # own established per-step try/except-and-log-not-raise cleanup
+        # pattern: an audit found that if any one step here raised, every
+        # step after it was skipped - shutdown() failing left server_close()
+        # never called (the listening socket never released) and dns_sock
+        # never closed (a leaked bound UDP socket), both silently, since
+        # nothing here caught or logged anything.
         self._running = False
         if self._started:
-            # HTTPServer.shutdown() blocks on an internal Event that only gets
-            # set from inside serve_forever()'s own loop — calling it when
-            # that loop was never started (start() never called) deadlocks
-            # forever instead of returning.
-            self._http.shutdown()
-        self._http.server_close()
-        self._dns_sock.close()
+            try:
+                # HTTPServer.shutdown() blocks on an internal Event that only
+                # gets set from inside serve_forever()'s own loop — calling it
+                # when that loop was never started (start() never called)
+                # deadlocks forever instead of returning.
+                self._http.shutdown()
+            except Exception:  # noqa: BLE001 - cleanup must not skip the steps after it
+                _log.warning("shutting down the OAST HTTP server failed", exc_info=True)
+        try:
+            self._http.server_close()
+        except Exception:  # noqa: BLE001 - cleanup must not skip the steps after it
+            _log.warning("closing the OAST HTTP server socket failed", exc_info=True)
+        try:
+            self._dns_sock.close()
+        except Exception:  # noqa: BLE001 - last step, but stay consistent with the others
+            _log.warning("closing the OAST DNS socket failed", exc_info=True)
 
     # --- token / callback API ---------------------------------------------
     def issue_token(self, probe_ref: str | None = None) -> str:
