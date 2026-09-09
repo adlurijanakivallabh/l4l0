@@ -400,3 +400,29 @@ def test_record_finding_defaults_prerequisites_and_impact_to_empty_string() -> N
     node = graph.node(finding_id)
     assert node.get("prerequisites", "") == ""
     assert node.get("impact", "") == ""
+
+
+def test_record_finding_captures_ordered_exploitation_steps() -> None:
+    graph = ReachabilityGraph()
+    _registry(graph).dispatch(
+        "record_finding",
+        _args(
+            exploitation_steps=[
+                "Authenticate as a low-privilege user via POST /login",
+                "Request GET /api/admin/users/1 directly with the low-priv session token",
+            ]
+        ),
+    )
+    (finding_id,) = graph.nodes_of_kind(NodeKind.FINDING)
+    node = graph.node(finding_id)
+    assert node["exploitation_steps"] == [
+        "Authenticate as a low-privilege user via POST /login",
+        "Request GET /api/admin/users/1 directly with the low-priv session token",
+    ]
+
+
+def test_record_finding_defaults_exploitation_steps_to_empty_list() -> None:
+    graph = ReachabilityGraph()
+    _registry(graph).dispatch("record_finding", _args())
+    (finding_id,) = graph.nodes_of_kind(NodeKind.FINDING)
+    assert graph.node(finding_id).get("exploitation_steps", []) == []

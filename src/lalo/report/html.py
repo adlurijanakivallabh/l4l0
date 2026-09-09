@@ -130,6 +130,12 @@ def render_finding_html(record: FindingRecord) -> str:
 
     parts.append(f"<h3>Description</h3><p>{_e(record.description) or '(none provided)'}</p>")
 
+    if record.exploitation_steps:
+        parts.append("<h3>Exploitation Steps</h3><ol>")
+        for step in record.exploitation_steps:
+            parts.append(f"<li>{_e(step)}</li>")
+        parts.append("</ol>")
+
     parts.append("<h3>Evidence</h3>")
     if not record.evidence_grounded:
         parts.append(

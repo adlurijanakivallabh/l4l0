@@ -33,7 +33,7 @@ from __future__ import annotations
 
 from collections import Counter
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from ..findings.confidence import ConfidenceScore, compute_confidence
 from ..findings.dedup import dedup_key
@@ -74,6 +74,7 @@ class FindingRecord:
     source_location: str | list[dict[str, str]] | None = None
     prerequisites: str = ""
     impact: str = ""
+    exploitation_steps: list[str] = field(default_factory=list)
 
     @property
     def effective_severity(self) -> str:
@@ -115,6 +116,7 @@ def collect_findings(graph: ReachabilityGraph) -> list[FindingRecord]:
                 source_location=node.get("source_location"),
                 prerequisites=str(node.get("prerequisites", "")),
                 impact=str(node.get("impact", "")),
+                exploitation_steps=list(node.get("exploitation_steps", [])),
             )
         )
     return records

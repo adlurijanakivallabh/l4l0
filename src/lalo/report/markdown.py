@@ -120,6 +120,11 @@ def render_finding_md(record: FindingRecord) -> str:
     lines.append(record.description or "(none provided)")
     lines.append("")
 
+    if record.exploitation_steps:
+        lines.append("### Exploitation Steps\n")
+        lines.extend(f"{i}. {step}" for i, step in enumerate(record.exploitation_steps, start=1))
+        lines.append("")
+
     lines.append("### Evidence\n")
     if not record.evidence_grounded:
         lines.append(

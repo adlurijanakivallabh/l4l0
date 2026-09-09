@@ -139,6 +139,7 @@ def build_record_finding_tool(graph: ReachabilityGraph) -> FunctionTool:
 
         prerequisites = redact(str(args.get("prerequisites", "")))
         impact = redact(str(args.get("impact", "")))
+        exploitation_steps = [redact(s) for s in _as_evidence_list(args.get("exploitation_steps"))]
 
         key = dedup_key(vuln_class, target, param)
         existing_id = find_duplicate(graph, key)
@@ -205,6 +206,7 @@ def build_record_finding_tool(graph: ReachabilityGraph) -> FunctionTool:
             source_location=source_location,
             prerequisites=prerequisites,
             impact=impact,
+            exploitation_steps=exploitation_steps,
         )
         finding_id = f"finding-{uuid.uuid4().hex[:12]}"
         attrs: dict[str, Any] = {
@@ -229,6 +231,7 @@ def build_record_finding_tool(graph: ReachabilityGraph) -> FunctionTool:
             "source_location": finding.source_location,
             "prerequisites": finding.prerequisites,
             "impact": finding.impact,
+            "exploitation_steps": finding.exploitation_steps,
         }
         graph.add_node(finding_id, NodeKind.FINDING, **attrs)
         for i, blob in enumerate(evidence):
@@ -288,7 +291,12 @@ def build_record_finding_tool(graph: ReachabilityGraph) -> FunctionTool:
             'reachable, e.g. "none - publicly accessible" or "requires a valid '
             'low-privilege session"), "impact": str (optional - what an attacker can '
             "DO with this, business-consequence framed - kept distinct from "
-            '"description", which is what the bug IS)}'
+            '"description", which is what the bug IS), "exploitation_steps": '
+            "list[str] (optional - your reproduction path as an ordered list of "
+            'titled steps, e.g. ["Authenticate as a low-priv user via POST /login", '
+            '"Request GET /api/admin/users/1 directly with that session"] - '
+            "additive narration above the raw evidence list, never a replacement "
+            "for it)}"
         ),
         func=_record_finding,
     )

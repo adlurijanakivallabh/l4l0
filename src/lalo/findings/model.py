@@ -84,6 +84,7 @@ class Finding:
     # optional narrative field's own existing convention.
     prerequisites: str = ""
     impact: str = ""
+    exploitation_steps: list[str] = field(default_factory=list)
 
 
 def validate_finding_fields(fields: dict[str, object]) -> list[str]:
