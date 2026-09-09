@@ -165,7 +165,15 @@ def test_completed_step_count_sums_every_agent_key_namespace(tmp_path) -> None:
     """A resumed run must reconstruct its TRUE cumulative Budget.spent
     across root AND every spawned child, not just root's own replayed
     steps - completed_step_count() is the single source of truth for that
-    total, so it has to count real step entries in every namespace."""
+    total, so it has to count real step entries in every namespace.
+
+    agent-2:2 is a "finish" entry - agent/loop.py journals it under a
+    digit-suffixed step key (like any other step) but never calls
+    budget.spend() for it (finish returns immediately, before the
+    dispatch path's spend(1) call). So it must NOT be counted here either,
+    or a resumed Budget.spent would be inflated above what was ever truly
+    spent live - see test_completed_step_count_excludes_finish_entries.
+    """
     path = tmp_path / "j.jsonl"
     j = DurableJournal(path)
     j.record("root:0", {"tool": "recall", "args": {}, "observation": "x"})
@@ -178,7 +186,21 @@ def test_completed_step_count_sums_every_agent_key_namespace(tmp_path) -> None:
     j.record("agent-2:finished", {"stop_reason": "finished", "summary": "x"})
     j.record("review:finding-abc123", {"confidence_score": 80, "verdict": "confirmed"})
 
-    assert j.completed_step_count() == 5
+    assert j.completed_step_count() == 4
+
+
+def test_completed_step_count_excludes_finish_entries(tmp_path) -> None:
+    """agent/loop.py's finish handling (mid-loop and the reserved final
+    turn) journals under a normal digit-suffixed step key but never spends
+    budget for it - the only two live budget.spend(1) call sites are the
+    dispatch path and the no-tool-call nudge path. A journal holding only
+    a nudge followed by a finish must report 1 real spent step, not 2."""
+    path = tmp_path / "j.jsonl"
+    j = DurableJournal(path)
+    j.record("agent-3:0", {"tool": "_nudge", "args": {}, "observation": "x"})
+    j.record("agent-3:1", {"tool": "finish", "args": {"summary": "done"}, "observation": "done"})
+
+    assert j.completed_step_count() == 1
 
 
 def test_completed_step_count_on_a_fresh_journal_is_zero(tmp_path) -> None:

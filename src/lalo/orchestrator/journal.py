@@ -172,5 +172,17 @@ class DurableJournal:
         ``"{child_id}:finished"`` breadcrumbs and the ``"review:{finding_id}"``
         namespace (see scan.py's own per-finding review journaling) are
         excluded since neither ever calls ``Budget.spend()``.
+
+        A digit-suffixed "finish" entry (agent/loop.py's mid-loop and
+        reserved-final-turn finish handling both journal under a normal
+        step key) is excluded too, for the same reason: finish returns
+        immediately, before the dispatch path's own ``budget.spend(1)``
+        call, so counting it here would inflate the reconstructed spend
+        above what was ever truly spent live.
         """
-        return sum(1 for key in self._entries if key.rpartition(":")[2].isdigit())
+        return sum(
+            1
+            for key, result in self._entries.items()
+            if key.rpartition(":")[2].isdigit()
+            and not (isinstance(result, dict) and result.get("tool") == "finish")
+        )
