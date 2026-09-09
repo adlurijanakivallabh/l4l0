@@ -76,6 +76,53 @@ def test_http_tool_requires_url() -> None:
     assert result.ok is False
 
 
+def test_http_tool_rejects_a_curl_style_string_headers_arg_instead_of_dropping_it() -> None:
+    """A malformed (present-but-wrong-shape) headers arg must be reported as
+    an error, not silently coerced to "no headers at all" - the same
+    present-but-malformed-is-an-error contract _count_arg already applies to
+    'count'. Firing with an empty headers dict here would be a materially
+    different, silently-degraded request the agent has no way to detect.
+
+    Uses a call-tracking handler, not a raising one: ToolRegistry.dispatch
+    catches ANY exception and folds its message into the observation, so a
+    raising handler whose own message happens to contain "headers" would
+    make this test pass whether or not the real fix exists.
+    """
+    calls: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        return httpx.Response(200)
+
+    registry = _tool(httpx.MockTransport(handler))
+    result = registry.dispatch(
+        "http",
+        {
+            "url": "https://app.example.com/x",
+            "headers": "Authorization: Bearer eyJabc",
+        },
+    )
+    assert result.ok is False
+    assert "headers" in result.observation
+    assert calls == []
+
+
+def test_http_tool_rejects_a_non_string_body_arg_instead_of_dropping_it() -> None:
+    calls: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        return httpx.Response(200)
+
+    registry = _tool(httpx.MockTransport(handler))
+    result = registry.dispatch(
+        "http", {"url": "https://app.example.com/x", "body": {"not": "a string"}}
+    )
+    assert result.ok is False
+    assert "body" in result.observation
+    assert calls == []
+
+
 def test_http_tool_defaults_to_get_even_when_method_is_an_explicit_json_null() -> None:
     seen: dict[str, object] = {}
 
@@ -241,6 +288,44 @@ def test_fire_concurrent_requires_url() -> None:
     assert result.ok is False
 
 
+def test_fire_concurrent_rejects_a_malformed_headers_arg_instead_of_dropping_it() -> None:
+    """Call-tracking, not raising: fire_concurrent's own _fire_one already
+    catches any exception the firer raises and folds it into the
+    observation, so a raising fire_fn whose message happens to contain
+    "headers" would pass this test whether or not the real fix exists."""
+    calls: list[tuple[object, ...]] = []
+
+    def fire(method, url, *, headers=None, content=None):
+        calls.append((method, url, headers, content))
+        return _ok(method, url)
+
+    registry = ToolRegistry([build_fire_concurrent_tool(_fake_firer(fire))])
+    result = registry.dispatch(
+        "fire_concurrent",
+        {"url": "https://app.example.com/x", "headers": "Authorization: Bearer eyJabc"},
+    )
+    assert result.ok is False
+    assert "headers" in result.observation
+    assert calls == []
+
+
+def test_fire_concurrent_rejects_a_non_string_content_arg_instead_of_dropping_it() -> None:
+    calls: list[tuple[object, ...]] = []
+
+    def fire(method, url, *, headers=None, content=None):
+        calls.append((method, url, headers, content))
+        return _ok(method, url)
+
+    registry = ToolRegistry([build_fire_concurrent_tool(_fake_firer(fire))])
+    result = registry.dispatch(
+        "fire_concurrent",
+        {"url": "https://app.example.com/x", "content": {"not": "a string"}},
+    )
+    assert result.ok is False
+    assert "content" in result.observation
+    assert calls == []
+
+
 # --- diff_responses ------------------------------------------------------
 
 
@@ -259,6 +344,48 @@ def test_diff_responses_shows_lines_that_differ_between_the_two_bodies() -> None
     assert "new-value" in result.observation
     assert "a: status=200" in result.observation
     assert "b: status=200" in result.observation
+
+
+def test_diff_responses_rejects_a_malformed_headers_a_arg_instead_of_dropping_it() -> None:
+    calls: list[tuple[object, ...]] = []
+
+    def fire(method, url, *, headers=None, content=None):
+        calls.append((method, url, headers, content))
+        return _ok(method, url)
+
+    registry = ToolRegistry([build_diff_responses_tool(_fake_firer(fire))])
+    result = registry.dispatch(
+        "diff_responses",
+        {
+            "url_a": "https://app.example.com/a",
+            "url_b": "https://app.example.com/b",
+            "headers_a": "Authorization: Bearer eyJabc",
+        },
+    )
+    assert result.ok is False
+    assert "headers_a" in result.observation
+    assert calls == []
+
+
+def test_diff_responses_rejects_a_malformed_headers_b_arg_instead_of_dropping_it() -> None:
+    calls: list[tuple[object, ...]] = []
+
+    def fire(method, url, *, headers=None, content=None):
+        calls.append((method, url, headers, content))
+        return _ok(method, url)
+
+    registry = ToolRegistry([build_diff_responses_tool(_fake_firer(fire))])
+    result = registry.dispatch(
+        "diff_responses",
+        {
+            "url_a": "https://app.example.com/a",
+            "url_b": "https://app.example.com/b",
+            "headers_b": "Authorization: Bearer eyJabc",
+        },
+    )
+    assert result.ok is False
+    assert "headers_b" in result.observation
+    assert calls == []
 
 
 def test_diff_responses_identical_bodies_report_zero_changed_lines() -> None:

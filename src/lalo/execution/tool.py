@@ -31,9 +31,32 @@ from .scope import ScopeGuard
 _MAX_BODY_CHARS = 4000
 
 
-def _headers_arg(args: dict[str, object], key: str) -> dict[str, str] | None:
+def _headers_arg(args: dict[str, object], key: str) -> dict[str, str] | str | None:
+    """The optional ``key`` header-dict arg, or an error string if PRESENT
+    but not a JSON object - mirrors ``_count_arg``'s own present-but-
+    malformed-is-an-error contract (see its docstring). Silently coercing a
+    malformed value to "no headers at all" (the previous behavior) fires a
+    materially different request with no signal to the agent that its
+    headers were ever dropped.
+    """
     raw = args.get(key)
-    return {str(k): str(v) for k, v in raw.items()} if isinstance(raw, dict) else None
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        return f"'{key}' must be a JSON object"
+    return {str(k): str(v) for k, v in raw.items()}
+
+
+def _bytes_arg(args: dict[str, object], key: str) -> bytes | str | None:
+    """The optional ``key`` string-body arg, encoded to bytes, or an error
+    string if PRESENT but not a string - see ``_headers_arg`` for why
+    silently dropping a malformed value is the wrong default here."""
+    raw = args.get(key)
+    if raw is None:
+        return None
+    if not isinstance(raw, str):
+        return f"'{key}' must be a string"
+    return raw.encode("utf-8")
 
 
 def build_http_tool(firer: HttpFirer) -> FunctionTool:
@@ -43,8 +66,11 @@ def build_http_tool(firer: HttpFirer) -> FunctionTool:
             return ToolResult(observation="error: 'url' is required", ok=False)
         method = str_arg(args, "method", "GET").upper()
         headers = _headers_arg(args, "headers")
-        body = args.get("body")
-        content = body.encode("utf-8") if isinstance(body, str) else None
+        if isinstance(headers, str):
+            return ToolResult(observation=f"error: {headers}", ok=False)
+        content = _bytes_arg(args, "body")
+        if isinstance(content, str):
+            return ToolResult(observation=f"error: {content}", ok=False)
 
         result = firer.fire(method, url, headers=headers, content=content)
         if not result.fired:
@@ -118,8 +144,11 @@ def build_fire_concurrent_tool(firer: HttpFirer) -> FunctionTool:
         if isinstance(count, str):
             return ToolResult(observation=f"error: {count}", ok=False)
         headers = _headers_arg(args, "headers")
-        content_raw = args.get("content")
-        content = content_raw.encode("utf-8") if isinstance(content_raw, str) else None
+        if isinstance(headers, str):
+            return ToolResult(observation=f"error: {headers}", ok=False)
+        content = _bytes_arg(args, "content")
+        if isinstance(content, str):
+            return ToolResult(observation=f"error: {content}", ok=False)
 
         def _fire_one() -> FireResult | str:
             try:
@@ -174,7 +203,11 @@ def build_diff_responses_tool(firer: HttpFirer) -> FunctionTool:
         method_a = str_arg(args, "method_a", "GET").upper()
         method_b = str_arg(args, "method_b", method_a).upper()
         headers_a = _headers_arg(args, "headers_a")
+        if isinstance(headers_a, str):
+            return ToolResult(observation=f"error: {headers_a}", ok=False)
         headers_b = _headers_arg(args, "headers_b")
+        if isinstance(headers_b, str):
+            return ToolResult(observation=f"error: {headers_b}", ok=False)
 
         result_a = firer.fire(method_a, url_a, headers=headers_a)
         result_b = firer.fire(method_b, url_b, headers=headers_b)
