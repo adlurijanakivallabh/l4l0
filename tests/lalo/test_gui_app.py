@@ -363,6 +363,50 @@ def test_list_runs_report_formats_includes_narrative_but_never_gates_has_report(
     assert runs[0]["has_report"] is False
 
 
+def test_list_runs_narrative_agents_lists_every_per_agent_file(tmp_path: Path) -> None:
+    run_dir = tmp_path / "abc123"
+    run_dir.mkdir()
+    (run_dir / "narrative-agent-1.log").write_text("[agent-1] ...\n", encoding="utf-8")
+    (run_dir / "narrative-agent-2.log").write_text("[agent-2] ...\n", encoding="utf-8")
+    client, _ = _client(runs_dir=tmp_path)
+    runs = client.get("/runs").json()["runs"]
+    assert set(runs[0]["narrative_agents"]) == {"agent-1", "agent-2"}
+
+
+def test_list_runs_narrative_agents_is_empty_for_a_single_agent_run(tmp_path: Path) -> None:
+    run_dir = tmp_path / "abc123"
+    run_dir.mkdir()
+    (run_dir / "narrative.log").write_text("[root] ...\n", encoding="utf-8")
+    client, _ = _client(runs_dir=tmp_path)
+    runs = client.get("/runs").json()["runs"]
+    assert runs[0]["narrative_agents"] == []
+
+
+def test_run_narrative_for_agent_serves_the_real_file(tmp_path: Path) -> None:
+    run_dir = tmp_path / "abc123"
+    run_dir.mkdir()
+    (run_dir / "narrative-agent-2.log").write_text("[agent-2] tool_call: http GET https://y/\n")
+    client, _ = _client(runs_dir=tmp_path)
+    response = client.get("/runs/abc123/narrative/agent-2")
+    assert response.status_code == 200
+    assert response.content == b"[agent-2] tool_call: http GET https://y/\n"
+    assert response.headers["content-type"].startswith("text/plain")
+
+
+def test_run_narrative_for_agent_on_a_missing_file_is_404(tmp_path: Path) -> None:
+    run_dir = tmp_path / "abc123"
+    run_dir.mkdir()
+    client, _ = _client(runs_dir=tmp_path)
+    response = client.get("/runs/abc123/narrative/agent-9")
+    assert response.status_code == 404
+
+
+def test_run_narrative_for_agent_rejects_a_dot_dot_agent_id(tmp_path: Path) -> None:
+    client, _ = _client(runs_dir=tmp_path)
+    response = client.get("/runs/abc123/narrative/..%2F..%2Fetc")
+    assert response.status_code in (400, 404)
+
+
 def test_run_events_on_an_unknown_run_id_is_404(tmp_path: Path) -> None:
     client, _ = _client(runs_dir=tmp_path)
     response = client.get("/runs/no-such-run/events")

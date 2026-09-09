@@ -48,6 +48,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -148,18 +149,17 @@ def _narrative_path(run_dir: Path) -> Path:
     return run_dir / NARRATIVE_LOG_FILENAME
 
 
-def render_narrative(run_dir: Path) -> str:
-    """Replay ``run_dir``'s durable ``events.jsonl`` into a full plaintext
-    narrative — one attributed line per event, in original emission order.
-
-    A missing file or a torn final line from a crash mid-write are never
-    fatal, mirroring ``DurableJournal``/``load_run_events``'s own already-
-    established crash-tolerant reload behavior elsewhere in this codebase.
-    """
+def _iter_events(run_dir: Path) -> Iterator[tuple[str, dict[str, Any]]]:
+    """Yield every valid ``(category, payload)`` pair from ``run_dir``'s
+    durable ``events.jsonl``, in original emission order - a missing file or
+    a torn final line from a crash mid-write are never fatal, mirroring
+    ``DurableJournal``/``load_run_events``'s own already-established
+    crash-tolerant reload behavior elsewhere in this codebase. Factored out
+    of :func:`render_narrative` so :func:`write_per_agent_narrative_logs`
+    doesn't have to duplicate the same parse loop."""
     path = _events_path(run_dir)
     if not path.exists():
-        return ""
-    lines: list[str] = []
+        return
     for raw_line in path.read_text(encoding="utf-8").splitlines():
         raw_line = raw_line.strip()
         if not raw_line:
@@ -172,7 +172,16 @@ def render_narrative(run_dir: Path) -> str:
             continue
         category, payload = record.get("category"), record.get("payload")
         if isinstance(category, str) and isinstance(payload, dict):
-            lines.append(render_narrative_line(category, payload))
+            yield category, payload
+
+
+def render_narrative(run_dir: Path) -> str:
+    """Replay ``run_dir``'s durable ``events.jsonl`` into a full plaintext
+    narrative — one attributed line per event, in original emission order.
+    """
+    lines = [
+        render_narrative_line(category, payload) for category, payload in _iter_events(run_dir)
+    ]
     return "\n".join(lines) + ("\n" if lines else "")
 
 
@@ -191,3 +200,36 @@ def write_narrative_log(run_dir: Path) -> Path:
     path = _narrative_path(run_dir)
     atomic_write_verified(path, render_narrative(run_dir).encode("utf-8"))
     return path
+
+
+def _narrative_path_for_agent(run_dir: Path, agent_id: str) -> Path:
+    return run_dir / f"narrative-{agent_id}.log"
+
+
+def write_per_agent_narrative_logs(run_dir: Path) -> dict[str, Path]:
+    """Additive to :func:`write_narrative_log`'s combined file, never a
+    replacement: one ``narrative-<agent_id>.log`` per agent that actually
+    participated, filenamed only from the already-safe, system-generated
+    ``agent_id`` (never the agent-chosen name/task free text). System/
+    operator-scoped events (``finding``/``chain``/``steering`` - see this
+    module's own docstring) have no real per-agent author and are excluded
+    entirely, never spuriously creating a "system"/"operator" file. Skips
+    generating any file at all for a single-agent run - identical content
+    to the combined file, a pointless duplicate.
+    """
+    lines_by_agent: dict[str, list[str]] = {}
+    for category, payload in _iter_events(run_dir):
+        agent_id = payload.get("agent_id")
+        if not isinstance(agent_id, str):
+            continue  # system/operator-scoped events have no per-agent home
+        lines_by_agent.setdefault(agent_id, []).append(render_narrative_line(category, payload))
+
+    if len(lines_by_agent) < 2:
+        return {}
+
+    written: dict[str, Path] = {}
+    for agent_id, lines in lines_by_agent.items():
+        out_path = _narrative_path_for_agent(run_dir, agent_id)
+        atomic_write_verified(out_path, ("\n".join(lines) + "\n").encode("utf-8"))
+        written[agent_id] = out_path
+    return written

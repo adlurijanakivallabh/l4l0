@@ -255,6 +255,13 @@ def _list_runs(runs_dir: Path, *, running_run_ids: set[str] | None = None) -> li
         # lets it say so, purely for the operator's own expectations, while
         # the button itself stays exactly as clickable as before.
         report_valid = has_report and not verify_report_manifest(entry)
+        # Populated only for a multi-agent run - write_per_agent_narrative_logs
+        # itself skips generating these files at all for a single-agent run
+        # (identical content to the combined narrative.log), so an empty list
+        # here means "single agent," not "not yet rendered."
+        narrative_agents = sorted(
+            p.stem.removeprefix("narrative-") for p in entry.glob("narrative-*.log")
+        )
         summaries.append(
             {
                 "run_id": entry.name,
@@ -263,6 +270,7 @@ def _list_runs(runs_dir: Path, *, running_run_ids: set[str] | None = None) -> li
                 "has_report": has_report,
                 "report_valid": report_valid,
                 "report_formats": report_formats,
+                "narrative_agents": narrative_agents,
                 "modified_at": entry.stat().st_mtime,
                 "running": entry.name in (running_run_ids or set()),
             }
@@ -544,6 +552,20 @@ def build_app(event_log: EventLog, *, runs_dir: Path | None = None) -> FastAPI:
         if not path.is_file():
             return JSONResponse({"error": "report not found"}, status_code=404)
         return FileResponse(path, media_type=media_type, filename=filename)
+
+    @app.get("/runs/{run_id}/narrative/{agent_id}", response_model=None)
+    def run_narrative_for_agent(run_id: str, agent_id: str) -> FileResponse | JSONResponse:
+        # agent_id is always "root" or "agent-<n>" (agent/spawn.py's own
+        # system-generated shape, never agent-chosen free text) - the same
+        # safe character class _SAFE_RUN_ID already enforces for run_id
+        # covers it too, so this reuses it rather than a second regex.
+        if not (_SAFE_RUN_ID.match(run_id) and _SAFE_RUN_ID.match(agent_id)):
+            return JSONResponse({"error": "invalid run_id or agent_id"}, status_code=400)
+        filename = f"narrative-{agent_id}.log"
+        path = runs_dir / run_id / filename
+        if not path.is_file():
+            return JSONResponse({"error": "narrative log not found"}, status_code=404)
+        return FileResponse(path, media_type="text/plain", filename=filename)
 
     @app.get("/settings/providers")
     def list_provider_settings() -> JSONResponse:

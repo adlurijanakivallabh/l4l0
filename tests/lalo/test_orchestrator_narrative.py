@@ -4,7 +4,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from lalo.orchestrator.narrative import render_narrative, render_narrative_line, write_narrative_log
+from lalo.orchestrator.narrative import (
+    render_narrative,
+    render_narrative_line,
+    write_narrative_log,
+    write_per_agent_narrative_logs,
+)
 
 
 def test_tool_call_renders_as_agent_attributed_method_and_url() -> None:
@@ -104,3 +109,55 @@ def test_write_narrative_log_persists_owner_only_to_the_run_dir(tmp_path: Path) 
     assert path.exists()
     assert oct(path.stat().st_mode)[-3:] == "600"
     assert "scan_started" in path.read_text(encoding="utf-8")
+
+
+def test_write_per_agent_narrative_logs_splits_by_real_agent_id(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "events.jsonl").write_text(
+        '{"category": "log", "payload": {"agent_id": "agent-1", "event": "tool_call", '
+        '"tool": "http", "args": {"method": "GET", "url": "https://x/"}}}\n'
+        '{"category": "log", "payload": {"agent_id": "agent-2", "event": "tool_call", '
+        '"tool": "http", "args": {"method": "GET", "url": "https://y/"}}}\n',
+        encoding="utf-8",
+    )
+    paths = write_per_agent_narrative_logs(run_dir)
+    assert set(paths) == {"agent-1", "agent-2"}
+    assert "https://x/" in paths["agent-1"].read_text(encoding="utf-8")
+    assert "https://y/" not in paths["agent-1"].read_text(encoding="utf-8")
+    assert oct(paths["agent-1"].stat().st_mode)[-3:] == "600"
+
+
+def test_write_per_agent_narrative_logs_skips_a_single_agent_run(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "events.jsonl").write_text(
+        '{"category": "log", "payload": {"agent_id": "agent-1", "event": "tool_call", '
+        '"tool": "http", "args": {"method": "GET", "url": "https://x/"}}}\n',
+        encoding="utf-8",
+    )
+    assert write_per_agent_narrative_logs(run_dir) == {}
+
+
+def test_write_per_agent_narrative_logs_on_a_missing_events_file_is_empty(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    assert write_per_agent_narrative_logs(run_dir) == {}
+
+
+def test_write_per_agent_narrative_logs_excludes_system_scoped_events(tmp_path: Path) -> None:
+    """finding/chain events have no real per-agent author (see this module's
+    own docstring) - they must never spuriously create a third "system"
+    per-agent file alongside the two real agents' own."""
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "events.jsonl").write_text(
+        '{"category": "log", "payload": {"agent_id": "agent-1", "event": "tool_call", '
+        '"tool": "http", "args": {"method": "GET", "url": "https://x/"}}}\n'
+        '{"category": "log", "payload": {"agent_id": "agent-2", "event": "tool_call", '
+        '"tool": "http", "args": {"method": "GET", "url": "https://y/"}}}\n'
+        '{"category": "finding", "payload": {"finding_id": "f1", "title": "SQLi"}}\n',
+        encoding="utf-8",
+    )
+    paths = write_per_agent_narrative_logs(run_dir)
+    assert set(paths) == {"agent-1", "agent-2"}
