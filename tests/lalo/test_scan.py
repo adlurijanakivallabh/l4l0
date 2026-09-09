@@ -1158,8 +1158,54 @@ def test_a_source_reviewer_child_gets_a_confined_toolset(
     assert "run_command" in child_prompt
     assert "record_finding" in child_prompt
     assert "recall" in child_prompt
+    assert "query_graph" in child_prompt
+    assert "note" in child_prompt
     assert "http:" not in child_prompt  # the http tool's own name-colon form in the tool list
     assert "spawn_agent:" not in child_prompt
+
+
+def test_a_source_reviewer_registry_drift_is_caught_by_the_self_check(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Proves the self-check added at the child-dispatch call site actually
+    fires on a real wiring bug (a declared allowlist naming a tool that no
+    longer exists in the tool list), not just that it stays silent on
+    correct code - test_a_source_reviewer_child_gets_a_confined_toolset
+    above already covers the "never fires on correct code" half."""
+    monkeypatch.setattr(scan_module, "docker_available", lambda: True)
+    monkeypatch.setattr(scan_module, "RuntimeContainer", _FakeContainer)
+    monkeypatch.setattr(
+        scan_module,
+        "_ROLE_TOOL_NAMES",
+        {"full": None, "source_reviewer": frozenset({"run_command", "not-a-real-tool"})},
+    )
+    captured_root_prompts: list[str] = []
+
+    def _respond(call_index: int, prompt: str) -> str:
+        if "MISSION:" not in prompt:
+            return "ok"  # the preflight verify_router() health-check call
+        if "HISTORY (most recent last):" not in prompt:
+            return _spawn_source_reviewer_call()
+        captured_root_prompts.append(prompt)
+        return _finish_call()
+
+    router = ModelRouter(
+        providers={"fake": _ScriptedProvider(_respond)},
+        routes={"reasoning": ("fake",), "review": ("fake",)},
+        default_route=("fake",),
+    )
+    monkeypatch.setattr(scan_module, "build_router", lambda _settings: router)
+
+    config = ScanConfig(
+        mission="find a bug, spawning a source reviewer",
+        target_specs=["c.example.com"],
+        run_dir=tmp_path / "run",
+        usage_path=tmp_path / "usage.json",
+    )
+    ScanRunner(config, env={"ANTHROPIC_API_KEY": "sk-test"}).run()
+
+    assert captured_root_prompts, "root never got a turn after the spawn"
+    assert any("drifted from its declared allowlist" in p for p in captured_root_prompts)
 
 
 def _respond_with_a_sequentially_spawned_child_running_a_command(

@@ -1166,9 +1166,22 @@ class ScanRunner:
                     "agent",
                     {"agent_id": child_id, "name": node.name, "task": task, "status": "running"},
                 )
-                child_registry = _build_registry(
-                    child_graph, child_id, tool_names=_ROLE_TOOL_NAMES[role]
-                )
+                expected_tools = _ROLE_TOOL_NAMES[role]
+                child_registry = _build_registry(child_graph, child_id, tool_names=expected_tools)
+                if expected_tools is not None:
+                    # A correctness self-check on L4L0's own already-decided
+                    # confinement - can never fire against correct code, only
+                    # against a future wiring bug that accidentally adds/
+                    # removes a tool from a confined role's real tool list
+                    # without updating _ROLE_TOOL_NAMES to match, which
+                    # _filter_tools' own set-membership filter would
+                    # otherwise silently under-populate rather than raise on.
+                    actual_tools = set(child_registry.names())
+                    if actual_tools != set(expected_tools):
+                        raise AssertionError(
+                            f"role {role!r}'s registry drifted from its declared allowlist: "
+                            f"got {actual_tools}, expected {set(expected_tools)}"
+                        )
                 child_loop = AgentLoop(
                     router,
                     child_registry,
