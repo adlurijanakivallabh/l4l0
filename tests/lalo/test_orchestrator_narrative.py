@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import lalo.orchestrator.narrative as narrative_module
 from lalo.orchestrator.narrative import (
     render_narrative,
     render_narrative_line,
@@ -100,6 +101,61 @@ def test_render_narrative_replays_real_events_jsonl_in_order(tmp_path: Path) -> 
     assert len(lines) == 2
     assert lines[0].startswith("[system] scan_started:")
     assert lines[1] == "[root] tool_call: http GET https://x/"
+
+
+def test_a_malformed_middle_line_in_events_jsonl_logs_a_warning_not_a_silent_drop(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A non-final unparseable line is real corruption, not a crash artifact
+    (only the LAST line can ever be torn by a crash mid-write) - dropping it
+    silently would make the narrative log read as a complete record when a
+    tool_call/tool_result/finding line is actually missing, mirroring
+    DurableJournal._load's own already-established convention.
+
+    caplog doesn't work here: core/logging.py's get_logger() sets
+    propagate=False, which defeats caplog's default reliance on
+    propagation to a root-attached handler - monkeypatch the module's own
+    logger instead, same workaround already used for journal.py/usage.py.
+    """
+    warnings: list[str] = []
+    monkeypatch.setattr(
+        narrative_module._log, "warning", lambda msg, *args: warnings.append(msg % args)
+    )
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "events.jsonl").write_text(
+        '{"category": "log", "payload": {"agent_id": "agent-1", "event": "tool_call", '
+        '"tool": "http", "args": {"method": "GET", "url": "https://x/"}}}\n'
+        "not valid json at all\n"
+        '{"category": "log", "payload": {"agent_id": "agent-1", "event": "tool_call", '
+        '"tool": "http", "args": {"method": "GET", "url": "https://y/"}}}\n',
+        encoding="utf-8",
+    )
+    rendered = render_narrative(run_dir)
+    assert "https://x/" in rendered
+    assert "https://y/" in rendered
+    assert len(warnings) == 1
+    assert "line 1" in warnings[0]
+
+
+def test_a_torn_final_line_in_events_jsonl_logs_nothing(tmp_path: Path, monkeypatch) -> None:
+    """The LAST line is the one a crash mid-write can genuinely torn -
+    exactly the not-a-real-corruption case that must stay silent."""
+    warnings: list[str] = []
+    monkeypatch.setattr(
+        narrative_module._log, "warning", lambda msg, *args: warnings.append(msg % args)
+    )
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "events.jsonl").write_text(
+        '{"category": "log", "payload": {"agent_id": "agent-1", "event": "tool_call", '
+        '"tool": "http", "args": {"method": "GET", "url": "https://x/"}}}\n'
+        '{"category": "log", "payload": {"agent_id": "agent-1", "event": "tool_call"',
+        encoding="utf-8",
+    )
+    rendered = render_narrative(run_dir)
+    assert "https://x/" in rendered
+    assert warnings == []
 
 
 def test_write_narrative_log_persists_owner_only_to_the_run_dir(tmp_path: Path) -> None:

@@ -53,8 +53,11 @@ from pathlib import Path
 from typing import Any
 
 from ..core.atomic_io import atomic_write_verified
+from ..core.logging import get_logger
 from ..core.redaction import redact
 from ..paths import EVENTS_FILENAME, NARRATIVE_LOG_FILENAME
+
+_log = get_logger("lalo.narrative")
 
 _CONTROL_CHARS_RE = re.compile(r"[\x00-\x1f\x7f]")
 
@@ -160,19 +163,33 @@ def _iter_events(run_dir: Path) -> Iterator[tuple[str, dict[str, Any]]]:
     path = _events_path(run_dir)
     if not path.exists():
         return
-    for raw_line in path.read_text(encoding="utf-8").splitlines():
+    lines = path.read_text(encoding="utf-8").splitlines()
+    last_index = len(lines) - 1
+    for i, raw_line in enumerate(lines):
         raw_line = raw_line.strip()
         if not raw_line:
             continue
         try:
             record = json.loads(raw_line)
         except (json.JSONDecodeError, ValueError):
+            # A crash mid-write can only ever torn the LAST line - skip that
+            # one without comment (mirrors DurableJournal._load's identical
+            # reasoning). Any OTHER line failing to parse is real
+            # corruption, not a crash artifact, and dropping it silently
+            # would make this run's narrative log read as a complete record
+            # when a tool_call/tool_result/finding line is actually missing.
+            if i != last_index:
+                _log.warning("events.jsonl line %d unparseable, dropping: %s", i, path)
             continue
         if not isinstance(record, dict):
+            if i != last_index:
+                _log.warning("events.jsonl line %d not a JSON object, dropping: %s", i, path)
             continue
         category, payload = record.get("category"), record.get("payload")
         if isinstance(category, str) and isinstance(payload, dict):
             yield category, payload
+        elif i != last_index:
+            _log.warning("events.jsonl line %d has an unexpected shape, dropping: %s", i, path)
 
 
 def render_narrative(run_dir: Path) -> str:
