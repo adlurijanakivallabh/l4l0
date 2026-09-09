@@ -23,6 +23,7 @@ override" treatment of metadata specifically.
 from __future__ import annotations
 
 import ipaddress
+import threading
 from dataclasses import dataclass, field
 from enum import StrEnum
 from urllib.parse import urlsplit
@@ -103,15 +104,26 @@ class ScopeGuard:
     egress_lock: bool = False
     deny_metadata: bool = True
     resolver: Resolver = default_resolver
-    _resolved: dict[str, frozenset[str]] = field(default_factory=dict, repr=False)
+    _resolved: dict[str, frozenset[str]] = field(default_factory=dict, repr=False, compare=False)
+    # Guards the check-then-set below - one ScopeGuard instance is shared for
+    # the whole scan, and fire_concurrent/spawn_agents can have several
+    # threads resolving the SAME host at once. An audit found this
+    # unsynchronized: two concurrent misses for one host each call
+    # self.resolver(host) and the LAST writer wins, so a rebinding DNS
+    # answer could let one thread's check() validate a benign IP while a
+    # racing thread's resolution (now the cached value) is what
+    # pin_for_connect() actually dials - reopening exactly the TOCTOU this
+    # cache exists to close.
+    _lock: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)
 
     def resolve_and_pin(self, host: str) -> frozenset[str]:
         """Resolve ``host`` once and cache; reused for both the check and the
         actual connection (see :meth:`pin_for_connect`) — this identity is what
         defeats DNS rebinding, not the resolution itself."""
-        if host not in self._resolved:
-            self._resolved[host] = self.resolver(host)
-        return self._resolved[host]
+        with self._lock:
+            if host not in self._resolved:
+                self._resolved[host] = self.resolver(host)
+            return self._resolved[host]
 
     def pin_for_connect(self, host: str) -> str | None:
         """Return the literal IP the firer must dial for ``host``.

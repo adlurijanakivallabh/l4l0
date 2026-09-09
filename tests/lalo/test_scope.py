@@ -89,6 +89,44 @@ def test_resolve_and_pin_caches() -> None:
     assert calls["n"] == 1
 
 
+def test_resolve_and_pin_is_thread_safe_under_concurrent_first_resolution() -> None:
+    """Regression: an unsynchronized check-then-set let two threads missing
+    the cache for the SAME host at once each call the resolver, with the
+    last writer winning - one ScopeGuard is shared for the whole scan, and
+    fire_concurrent/spawn_agents can genuinely race a first resolution this
+    way. That breaks the check==dial identity the DNS-rebinding defense
+    depends on: check() could validate one thread's resolved IP while
+    pin_for_connect() (reading the now-overwritten cache) actually dials a
+    DIFFERENT one a racing thread resolved. Every concurrent caller must
+    see exactly one real resolution and the identical resulting value."""
+    import threading
+
+    call_count = {"n": 0}
+    count_lock = threading.Lock()
+
+    def resolver(host: str) -> frozenset[str]:
+        with count_lock:
+            call_count["n"] += 1
+            n = call_count["n"]
+        return frozenset({f"10.0.0.{n}"})
+
+    eng = Engagement.from_specs(["example.com"])
+    guard = ScopeGuard(engagement=eng, resolver=resolver)
+    results: list[frozenset[str] | None] = [None] * 16
+
+    def _resolve(i: int) -> None:
+        results[i] = guard.resolve_and_pin("example.com")
+
+    threads = [threading.Thread(target=_resolve, args=(i,)) for i in range(16)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert call_count["n"] == 1  # exactly one real resolution, despite 16 racing callers
+    assert len({r for r in results if r is not None}) == 1  # every caller saw the same value
+
+
 def test_pin_for_connect_uses_the_same_cached_resolution_as_the_scope_check() -> None:
     # The load-bearing DNS-rebinding defense: the scope check and the actual
     # dial must agree on the SAME resolved IP, from one cached resolution.
