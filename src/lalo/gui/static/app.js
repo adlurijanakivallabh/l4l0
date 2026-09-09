@@ -707,20 +707,28 @@
     composerInput.disabled = true;
     try {
       const maxSteps = document.getElementById("opt-max-steps").value;
+      const spawnMaxDepth = document.getElementById("opt-spawn-max-depth").value;
       const budgetCeiling = document.getElementById("opt-budget-ceiling").value;
       const costLimit = document.getElementById("opt-cost-limit").value;
+      const maxDuration = document.getElementById("opt-max-duration").value;
       const egressLock = document.getElementById("opt-egress-lock").checked;
       const redactFindings = document.getElementById("opt-redact-findings").checked;
+      const failOnUnreachable = document.getElementById("opt-fail-on-unreachable").checked;
+      const secondOpinion = document.getElementById("opt-second-opinion").checked;
       const response = await fetch("/scan", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           mission: text,
           ...(maxSteps ? { max_steps: Number(maxSteps) } : {}),
+          ...(spawnMaxDepth ? { spawn_max_depth: Number(spawnMaxDepth) } : {}),
           ...(budgetCeiling ? { budget_ceiling: Number(budgetCeiling) } : {}),
           ...(costLimit ? { cost_limit_usd: Number(costLimit) } : {}),
+          ...(maxDuration ? { max_duration_s: Number(maxDuration) } : {}),
           egress_lock: egressLock,
           redact_findings: redactFindings,
+          fail_on_unreachable_targets: failOnUnreachable,
+          enable_second_opinion_review: secondOpinion,
         }),
       });
       const body = await response.json().catch(() => ({}));

@@ -993,18 +993,26 @@ def test_scan_request_advanced_options_pass_through_to_scan_config(
             "mission": "find a bug",
             "targets": ["example.com"],
             "max_steps": 10,
+            "spawn_max_depth": 2,
             "budget_ceiling": 50,
             "cost_limit_usd": 5.5,
+            "max_duration_s": 120.0,
             "egress_lock": True,
             "redact_findings": True,
+            "fail_on_unreachable_targets": True,
+            "enable_second_opinion_review": True,
         },
     )
     config = current_config()
     assert config.max_steps == 10
+    assert config.spawn_max_depth == 2
     assert config.budget_ceiling == 50
     assert config.cost_limit_usd == 5.5
+    assert config.max_duration_s == 120.0
     assert config.redact_findings is True
     assert config.egress_lock is True
+    assert config.fail_on_unreachable_targets is True
+    assert config.enable_second_opinion_review is True
 
 
 def test_scan_request_advanced_options_default_to_scan_configs_own_defaults(
@@ -1015,10 +1023,14 @@ def test_scan_request_advanced_options_default_to_scan_configs_own_defaults(
     client.post("/scan", json={"mission": "find a bug", "targets": ["example.com"]})
     config = current_config()
     assert config.max_steps == 40
+    assert config.spawn_max_depth == 3
     assert config.budget_ceiling == 300
     assert config.cost_limit_usd is None
+    assert config.max_duration_s is None
     assert config.egress_lock is False
     assert config.redact_findings is False
+    assert config.fail_on_unreachable_targets is False
+    assert config.enable_second_opinion_review is False
 
 
 def test_scan_derives_targets_from_mission_when_none_are_given(

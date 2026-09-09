@@ -186,10 +186,14 @@ class ScanRequest(BaseModel):
     rules_of_engagement: str = ""
     resume_run_id: str | None = None
     max_steps: int | None = None
+    spawn_max_depth: int | None = None
     budget_ceiling: int | None = None
     cost_limit_usd: float | None = None
+    max_duration_s: float | None = None
     egress_lock: bool = False
     redact_findings: bool = False
+    fail_on_unreachable_targets: bool = False
+    enable_second_opinion_review: bool = False
 
 
 class ProviderSettingsRequest(BaseModel):
@@ -377,17 +381,27 @@ def build_app(event_log: EventLog, *, runs_dir: Path | None = None) -> FastAPI:
                 max_steps=(
                     request.max_steps if request.max_steps is not None else ScanConfig.max_steps
                 ),
+                spawn_max_depth=(
+                    request.spawn_max_depth
+                    if request.spawn_max_depth is not None
+                    else ScanConfig.spawn_max_depth
+                ),
                 budget_ceiling=(
                     request.budget_ceiling
                     if request.budget_ceiling is not None
                     else ScanConfig.budget_ceiling
                 ),
-                # No fallback needed here unlike max_steps/budget_ceiling above:
-                # ScanConfig.cost_limit_usd's own default is already None (no
-                # ceiling), matching request.cost_limit_usd's own default.
+                # No fallback needed for these two, unlike max_steps/
+                # spawn_max_depth/budget_ceiling above: ScanConfig's own
+                # defaults for cost_limit_usd/max_duration_s are already
+                # None (no ceiling), matching the request fields' own
+                # defaults.
                 cost_limit_usd=request.cost_limit_usd,
+                max_duration_s=request.max_duration_s,
                 redact_findings=request.redact_findings,
                 egress_lock=request.egress_lock,
+                fail_on_unreachable_targets=request.fail_on_unreachable_targets,
+                enable_second_opinion_review=request.enable_second_opinion_review,
             )
 
         if primary_run_id[0] is None:
