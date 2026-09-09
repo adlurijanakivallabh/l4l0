@@ -81,3 +81,21 @@ def test_lalo_model_ignored_if_provider_not_configured() -> None:
 def test_every_curated_provider_has_a_non_empty_hint() -> None:
     for spec in CURATED_PROVIDERS:
         assert spec.credential_hint
+
+
+def test_xai_provider_resolves_openai_compatible_with_curated_defaults() -> None:
+    settings = load_settings({"XAI_API_KEY": "xai-test-key"})
+    xai = settings.get("xai")
+    assert xai is not None
+    assert xai.kind == "openai_compatible"
+    assert xai.model == "grok-4.6"
+    assert xai.base_url == "https://api.x.ai"  # adapter appends /v1/chat/completions itself
+    assert xai.auth_header == "Authorization"
+    assert xai.auth_prefix == "Bearer "
+
+    overridden = load_settings({"XAI_API_KEY": "xai-test-key", "XAI_MODEL": "grok-4-fast"})
+    assert overridden.get("xai").model == "grok-4-fast"  # type: ignore[union-attr]
+
+    unconfigured = load_settings({})
+    assert unconfigured.get("xai") is None
+    assert unconfigured.missing_credential_hints()["xai"] == "XAI_API_KEY"

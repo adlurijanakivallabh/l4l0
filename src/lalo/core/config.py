@@ -108,6 +108,15 @@ CURATED_PROVIDERS: tuple[ProviderSpec, ...] = (
         default_base_url="https://generativelanguage.googleapis.com/v1beta/openai",
         model_env="GEMINI_MODEL",
     ),
+    ProviderSpec(
+        id="xai",
+        kind="openai_compatible",
+        candidate_key_envs=("XAI_API_KEY",),
+        credential_hint="XAI_API_KEY",
+        default_model="grok-4.6",
+        default_base_url="https://api.x.ai",
+        model_env="XAI_MODEL",
+    ),
     # Generic slot for anything not curated above (mirrors a "bring your own
     # provider" generic-credential path) — any OpenAI-compatible endpoint.
     # LALO_CUSTOM_MODEL is required, not just an optional override: a reference
