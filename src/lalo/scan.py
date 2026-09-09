@@ -807,7 +807,9 @@ class ScanRunner:
             if e.category == "steering" and "text" in e.payload
         ]
 
-    def _preflight_logins(self, firer: HttpFirer) -> list[tuple[str, str, str]]:
+    def _preflight_logins(
+        self, firer: HttpFirer, browser: BrowserSession
+    ) -> list[tuple[str, str, str]]:
         """Authenticate every configured ``(identity_id, scheme_name)`` pair
         once, before the main agent loop starts, catching a broken login
         immediately rather than only whenever the agent itself gets around
@@ -817,11 +819,16 @@ class ScanRunner:
         Returns ``(identity_id, scheme_name, reason)`` for every pair that
         failed; always advisory (logged via a status event) regardless of
         ``fail_on_broken_login`` - the caller decides whether a failure is
-        fatal. A resulting session is discarded, not registered: this is a
-        credential-shape check, not a substitute for the agent's own
-        `login_as` call, which is what actually registers a usable session
-        on the graph (see identity/login.py's own SessionRegistry
-        docstring for why that invariant matters).
+        fatal. A resulting HTTP-scheme session is discarded, not registered:
+        this is a credential-shape check, not a substitute for the agent's
+        own `login_as` call, which is what actually registers a usable
+        session on the graph (see identity/login.py's own SessionRegistry
+        docstring for why that invariant matters). A browser-driven scheme
+        (``scheme.browser_url`` set) is different: its authenticated cookies
+        already live in ``browser``'s own shared context the moment login
+        succeeds, so every subsequent agent using that same BrowserSession
+        is authenticated for free - there is no equivalent discard step to
+        mirror for it.
         """
         failures: list[tuple[str, str, str]] = []
         for identity_id, scheme_name in self.config.login_preflight_pairs:
@@ -845,7 +852,10 @@ class ScanRunner:
                 )
                 continue
             try:
-                login(firer, identity, scheme)
+                if scheme.browser_url is not None:
+                    self._browser_login(browser, identity, scheme, scheme.browser_url)
+                else:
+                    login(firer, identity, scheme)
             except LoginFailedError as exc:
                 failures.append((identity_id, scheme_name, str(exc)))
                 self._emit(
@@ -858,6 +868,39 @@ class ScanRunner:
                     },
                 )
         return failures
+
+    def _browser_login(
+        self, browser: BrowserSession, identity: Identity, scheme: LoginScheme, browser_url: str
+    ) -> None:
+        """Drive a browser-based SSO/SPA login, for flows the mechanical
+        HTTP form/JSON model in identity/login.py's own ``login()`` can't
+        express. ``success_url_contains`` is the only trust boundary: this
+        never infers success from response text or an agent's own claim,
+        only a real post-login URL substring check, matching the module's
+        own "never gate on the finder's own prose" principle applied here to
+        login verification instead of a finding. ``browser_url`` is passed
+        explicitly (rather than read back off ``scheme.browser_url`` here)
+        since the caller has already narrowed it to non-``None``.
+        """
+        nav = browser.navigate(browser_url)
+        if not nav.ok:
+            raise LoginFailedError(
+                f"browser login for identity {identity.id} failed to load "
+                f"{browser_url}: {nav.observation}"
+            )
+        browser.fill(f"#{scheme.username_field}", identity.username)
+        browser.fill(f"#{scheme.password_field}", identity.credential.value)
+        submit = browser.press(f"#{scheme.password_field}", "Enter")
+        if not submit.ok:
+            raise LoginFailedError(
+                f"browser login for identity {identity.id} failed to submit: {submit.observation}"
+            )
+        current_url = browser.current_url()
+        if scheme.success_url_contains is None or scheme.success_url_contains not in current_url:
+            raise LoginFailedError(
+                f"browser login for identity {identity.id} did not reach a success URL "
+                f"(expected {scheme.success_url_contains!r} in {current_url!r})"
+            )
 
     def _emit(self, category: EventCategory, payload: dict[str, object]) -> None:
         # Durably persisted regardless of whether a live EventLog is attached
@@ -978,10 +1021,20 @@ class ScanRunner:
             self.config.target_specs, exclude_specs=self.config.exclude_target_specs
         )
         scope = ScopeGuard(engagement, egress_lock=self.config.egress_lock)
+        # Constructed here rather than just before container/OAST startup
+        # (as it used to be) so a browser-driven login scheme can run during
+        # preflight - BrowserSession is lazily-started (construction itself
+        # never launches Chromium, see its own docstring), so moving this up
+        # costs nothing when no scheme uses browser_url. The SAME instance
+        # flows through to _run_inside below: a browser-driven login's
+        # authenticated cookies already live in this session's own context,
+        # so every subsequent agent shares them for free, with no separate
+        # export/import round-trip needed.
+        browser = BrowserSession(scope)
         preflight_firer = HttpFirer(scope)
         try:
             reachability = probe_reachability(engagement, preflight_firer)
-            login_failures = self._preflight_logins(preflight_firer)
+            login_failures = self._preflight_logins(preflight_firer, browser)
         finally:
             preflight_firer.close()
         unreachable: list[tuple[str, str]] = []
@@ -1014,14 +1067,6 @@ class ScanRunner:
             oast = OASTServer()
             oast.start()
             try:
-                # Lazily-started (BrowserSession never actually launches
-                # Chromium until a mission calls "browser" for the first
-                # time) - created eagerly here anyway so its cleanup lives
-                # alongside the container/OAST server's, in the same
-                # try/finally shape, rather than needing a third nesting
-                # level inside _run_inside for a resource _run_inside itself
-                # doesn't otherwise need to know how to tear down.
-                browser = BrowserSession(scope)
                 try:
                     return self._run_inside(
                         router, settings, scope, engagement, container, oast, browser

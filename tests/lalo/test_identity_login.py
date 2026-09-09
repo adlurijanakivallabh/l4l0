@@ -221,3 +221,9 @@ def test_session_registry_get_unknown_session_raises_not_mirrored() -> None:
     registry = SessionRegistry(ReachabilityGraph())
     with pytest.raises(SessionNotMirroredError):
         registry.get("never-existed")
+
+
+def test_login_scheme_with_no_browser_url_is_unaffected() -> None:
+    scheme = LoginScheme(login_url="https://x.example.com/login")
+    assert scheme.browser_url is None
+    assert scheme.success_url_contains is None

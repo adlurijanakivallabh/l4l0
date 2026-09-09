@@ -58,6 +58,14 @@ class LoginScheme:
     # agent supplies or guesses at per call.
     totp_secret: str | None = None  # noqa: S105 - a field name, not a literal secret
     totp_field: str = "otp"
+    # Opt-in browser-driven login, for SSO/SPA flows the mechanical
+    # form/JSON model above can't express. A scheme with browser_url set is
+    # driven through BrowserSession instead of a direct HTTP POST;
+    # success_url_contains is a REAL, checkable condition (never "the agent
+    # said so") - the preflight step refuses to trust a browser-driven
+    # login without one.
+    browser_url: str | None = None
+    success_url_contains: str | None = None
 
 
 @dataclass(frozen=True)

@@ -31,6 +31,7 @@ import pytest
 import lalo.scan as scan_module
 from lalo.agent.spawn import merge_finding_nodes
 from lalo.agent.tools import FunctionTool, ToolResult
+from lalo.browser.session import BrowserActionResult
 from lalo.core.errors import ConfigError, ContainerError, LoginFailedError, TargetUnreachableError
 from lalo.core.model_router import CompletionResponse, ModelRouter
 from lalo.core.usage import load_usage
@@ -301,6 +302,38 @@ class _FakeContainer:
     ) -> SimpleNamespace:
         on_chunk("stdout", "")
         return SimpleNamespace(exit_code=0, stdout="", stderr="", ok=True, timed_out=False)
+
+
+def _fake_browser_login_session_factory(final_url_after_submit: str) -> type:
+    """Builds a fake BrowserSession class bound to a given post-login URL -
+    a factory rather than a fixed class since scan.py constructs
+    ``BrowserSession(scope)`` itself (no way to inject the fake instance
+    directly), so the desired outcome has to travel through the class
+    monkeypatched in for ``scan_module.BrowserSession``."""
+
+    class _FakeBrowserLoginSession:
+        def __init__(self, scope: object = None) -> None:
+            self._final_url = "https://example.com/login"
+            self.filled: list[tuple[str, str]] = []
+
+        def navigate(self, url: str) -> BrowserActionResult:
+            return BrowserActionResult(ok=True, observation="")
+
+        def fill(self, selector: str, value: str) -> BrowserActionResult:
+            self.filled.append((selector, value))
+            return BrowserActionResult(ok=True, observation="")
+
+        def press(self, selector: str, key: str) -> BrowserActionResult:
+            self._final_url = final_url_after_submit
+            return BrowserActionResult(ok=True, observation="")
+
+        def current_url(self) -> str:
+            return self._final_url
+
+        def close(self) -> None:
+            pass
+
+    return _FakeBrowserLoginSession
 
 
 def _record_finding_call() -> str:
@@ -1600,6 +1633,79 @@ def test_scan_runner_login_preflight_reports_an_unknown_identity_or_scheme(
     failed = [e for e in events if e.payload.get("event") == "login_preflight_failed"]
     assert len(failed) == 1
     assert "unknown identity" in str(failed[0].payload["reason"])
+
+
+def test_scan_runner_browser_login_preflight_succeeds_when_success_url_is_reached(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(scan_module, "docker_available", lambda: True)
+    monkeypatch.setattr(scan_module, "RuntimeContainer", _FakeContainer)
+    monkeypatch.setattr(
+        scan_module,
+        "BrowserSession",
+        _fake_browser_login_session_factory("https://example.com/dashboard"),
+    )
+    router = ModelRouter(
+        providers={"fake": _ScriptedProvider(_respond)},
+        routes={"reasoning": ("fake",), "review": ("fake",)},
+        default_route=("fake",),
+    )
+    monkeypatch.setattr(scan_module, "build_router", lambda _settings: router)
+
+    event_log = EventLog()
+    config = ScanConfig(
+        mission="find a bug",
+        target_specs=["example.com"],
+        run_dir=tmp_path / "run",
+        identities={"alice": Identity("alice", "alice", Credential(CredentialKind.PASSWORD, "x"))},
+        login_schemes={
+            "sso": LoginScheme(
+                browser_url="https://example.com/login",
+                success_url_contains="/dashboard",
+            )
+        },
+        login_preflight_pairs=[("alice", "sso")],
+    )
+    outcome = ScanRunner(config, env={"ANTHROPIC_API_KEY": "sk-test"}, event_log=event_log).run()
+
+    assert outcome.status is RunStatus.COMPLETED
+    _cursor, events = event_log.snapshot()
+    assert not any(e.payload.get("event") == "login_preflight_failed" for e in events)
+
+
+def test_scan_runner_browser_login_preflight_fails_when_success_url_is_never_reached(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(scan_module, "docker_available", lambda: True)
+    monkeypatch.setattr(scan_module, "RuntimeContainer", _FakeContainer)
+    monkeypatch.setattr(
+        scan_module,
+        "BrowserSession",
+        _fake_browser_login_session_factory("https://example.com/login?error=1"),
+    )
+    router = ModelRouter(
+        providers={"fake": _ScriptedProvider(_respond)},
+        routes={"reasoning": ("fake",), "review": ("fake",)},
+        default_route=("fake",),
+    )
+    monkeypatch.setattr(scan_module, "build_router", lambda _settings: router)
+
+    config = ScanConfig(
+        mission="find a bug",
+        target_specs=["example.com"],
+        run_dir=tmp_path / "run",
+        identities={"alice": Identity("alice", "alice", Credential(CredentialKind.PASSWORD, "x"))},
+        login_schemes={
+            "sso": LoginScheme(
+                browser_url="https://example.com/login",
+                success_url_contains="/dashboard",
+            )
+        },
+        login_preflight_pairs=[("alice", "sso")],
+        fail_on_broken_login=True,
+    )
+    with pytest.raises(LoginFailedError, match="alice/sso"):
+        ScanRunner(config, env={"ANTHROPIC_API_KEY": "sk-test"}).run()
 
 
 def test_cancel_before_run_stops_on_the_first_step(
