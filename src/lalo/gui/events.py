@@ -26,6 +26,7 @@ already fully solved elsewhere.
 from __future__ import annotations
 
 import itertools
+import threading
 import time
 from collections import deque
 from dataclasses import dataclass, field
@@ -46,7 +47,22 @@ class Event:
 
 
 class EventLog:
-    """Append/update categorized events; serve a snapshot or a since-cursor delta."""
+    """Append/update categorized events; serve a snapshot or a since-cursor delta.
+
+    Thread-safe: writers (``ScanRunner._emit`` — the scan's own background
+    thread, and every concurrently-running ``spawn_agents`` child thread)
+    and readers (the GUI's ``/status``/``/ws`` handlers, on a different
+    thread entirely) touch this same instance concurrently during any live
+    scan. An audit found this class had no internal locking at all - a
+    reader's ``changes_since`` iterating ``self._change_cursor.items()`` or
+    ``snapshot``'s ``list(self._events)`` could race a writer's
+    ``append``/``update`` mutating the same dict/deque mid-iteration,
+    raising ``RuntimeError: dictionary changed size during iteration`` (or
+    the deque equivalent) and killing the live event stream mid-scan.
+    ``ScanRunner._emit_lock`` does not help here - it lives in a different
+    module and only ever serializes writer-vs-writer, never writer-vs-
+    reader, so the correct owner of this invariant is this class itself.
+    """
 
     def __init__(self, *, max_events: int = MAX_EVENTS) -> None:
         self._max_events = max_events
@@ -59,17 +75,19 @@ class EventLog:
         self._change_cursor: dict[str, int] = {}
         self._cursor = 0
         self._ids = itertools.count(1)
+        self._lock = threading.Lock()
 
     def append(self, category: EventCategory, payload: dict[str, Any]) -> Event:
-        event = Event(id=f"evt-{next(self._ids)}", category=category, payload=payload)
-        self._events.append(event)
-        self._by_id[event.id] = event
-        self._mark_changed(event)
-        if len(self._events) > self._max_events:
-            evicted = self._events.popleft()
-            self._by_id.pop(evicted.id, None)
-            self._change_cursor.pop(evicted.id, None)
-        return event
+        with self._lock:
+            event = Event(id=f"evt-{next(self._ids)}", category=category, payload=payload)
+            self._events.append(event)
+            self._by_id[event.id] = event
+            self._mark_changed(event)
+            if len(self._events) > self._max_events:
+                evicted = self._events.popleft()
+                self._by_id.pop(evicted.id, None)
+                self._change_cursor.pop(evicted.id, None)
+            return event
 
     def update(self, event_id: str, payload: dict[str, Any]) -> Event | None:
         """Merge ``payload`` into an existing event and bump its change-cursor.
@@ -79,21 +97,25 @@ class EventLog:
         window. Never raises: a caller updating a since-evicted event is a
         normal race in a long-running scan, not an error.
         """
-        event = self._by_id.get(event_id)
-        if event is None:
-            return None
-        event.payload = {**event.payload, **payload}
-        event.version += 1
-        self._mark_changed(event)
-        return event
+        with self._lock:
+            event = self._by_id.get(event_id)
+            if event is None:
+                return None
+            event.payload = {**event.payload, **payload}
+            event.version += 1
+            self._mark_changed(event)
+            return event
 
     def _mark_changed(self, event: Event) -> None:
+        # Caller-locked: both call sites (append, update) already hold
+        # self._lock, so this never needs its own.
         self._cursor += 1
         self._change_cursor[event.id] = self._cursor
 
     def snapshot(self) -> tuple[int, list[Event]]:
         """The current cursor plus every live event — for a fresh connection."""
-        return self._cursor, list(self._events)
+        with self._lock:
+            return self._cursor, list(self._events)
 
     def changes_since(self, cursor: int) -> tuple[int, list[Event]]:
         """The current cursor plus every event changed after ``cursor`` — for a reconnect.
@@ -104,12 +126,13 @@ class EventLog:
         different log entirely, and silently returning nothing would hide
         that rather than surface it.
         """
-        if cursor < 0 or cursor > self._cursor:
-            raise ValueError(f"cursor {cursor} is outside the available history")
-        changed_ids = sorted(
-            (change_cursor, event_id)
-            for event_id, change_cursor in self._change_cursor.items()
-            if change_cursor > cursor
-        )
-        changed = [self._by_id[event_id] for _change_cursor, event_id in changed_ids]
-        return self._cursor, changed
+        with self._lock:
+            if cursor < 0 or cursor > self._cursor:
+                raise ValueError(f"cursor {cursor} is outside the available history")
+            changed_ids = sorted(
+                (change_cursor, event_id)
+                for event_id, change_cursor in self._change_cursor.items()
+                if change_cursor > cursor
+            )
+            changed = [self._by_id[event_id] for _change_cursor, event_id in changed_ids]
+            return self._cursor, changed

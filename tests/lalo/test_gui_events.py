@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 import time
 
 import pytest
@@ -140,3 +141,47 @@ def test_event_carries_a_wall_clock_timestamp() -> None:
     event = log.append("status", {"event": "x"})
     after = time.time()
     assert before <= event.ts <= after
+
+
+def test_concurrent_readers_and_writers_never_raise() -> None:
+    """Regression: EventLog had no internal locking at all - a live scan's
+    writer threads (ScanRunner._emit, and every spawn_agents child) and the
+    GUI's own reader handlers (/status, /ws) touch the same instance
+    concurrently. snapshot()'s list(self._events) or changes_since()'s
+    self._change_cursor.items() racing an append()/update() mid-mutation
+    used to raise RuntimeError (dict/deque changed size during iteration),
+    killing the live event stream mid-scan. This hammers both sides at
+    once from several threads and asserts nothing ever raises."""
+    log = EventLog(max_events=50)
+    errors: list[BaseException] = []
+    stop = threading.Event()
+
+    def _writer() -> None:
+        try:
+            while not stop.is_set():
+                event = log.append("log", {"text": "x"})
+                log.update(event.id, {"text": "y"})
+        except BaseException as exc:  # noqa: BLE001 - captured for the assertion below
+            errors.append(exc)
+
+    def _reader() -> None:
+        try:
+            while not stop.is_set():
+                cursor, _events = log.snapshot()
+                # cursor only ever increases, so a value read a moment ago is
+                # always still <= the log's current cursor by the time this
+                # call happens - never trips changes_since's own range check.
+                log.changes_since(cursor)
+        except BaseException as exc:  # noqa: BLE001 - captured for the assertion below
+            errors.append(exc)
+
+    threads = [threading.Thread(target=_writer) for _ in range(4)]
+    threads += [threading.Thread(target=_reader) for _ in range(4)]
+    for t in threads:
+        t.start()
+    time.sleep(0.5)
+    stop.set()
+    for t in threads:
+        t.join()
+
+    assert errors == []
