@@ -133,24 +133,68 @@ def _result_markdown(record: FindingRecord) -> str:
     return "\n\n".join(parts)
 
 
+def _physical_location(location: str) -> dict[str, Any] | None:
+    """Parse a "path:line" string into a SARIF physicalLocation, or None if
+    it doesn't parse - the same graceful-degrade the single-string case has
+    always had, now shared by every hop in a multi-hop list too."""
+    if ":" not in location:
+        return None
+    path, _, line_str = location.rpartition(":")
+    if not line_str.isdigit():
+        return None
+    return {"artifactLocation": {"uri": path}, "region": {"startLine": int(line_str)}}
+
+
+def _code_flow(hops: list[dict[str, str]]) -> dict[str, Any] | None:
+    """One SARIF codeFlow with a single threadFlow carrying every hop in
+    order, source to sink - each hop's role becomes its threadFlowLocation's
+    message so a viewer can label the step. A hop whose location doesn't
+    parse is dropped (the same degrade-gracefully rule as everywhere else in
+    this module); if fewer than two hops survive that there is no flow worth
+    showing, so this returns None rather than emit a single-location "flow"."""
+    thread_locations: list[dict[str, Any]] = []
+    for hop in hops:
+        physical = _physical_location(str(hop.get("location", "")))
+        if physical is None:
+            continue
+        thread_locations.append(
+            {
+                "location": {
+                    "physicalLocation": physical,
+                    "message": {"text": str(hop.get("role", ""))},
+                }
+            }
+        )
+    if len(thread_locations) < 2:
+        return None
+    return {"threadFlows": [{"locations": thread_locations}]}
+
+
 def _build_result(record: FindingRecord, rule_index: int) -> dict[str, Any]:
     logical_name = record.target + (f"#{record.param}" if record.param else "")
     message = f"{record.title}\n\n{record.description}" if record.description else record.title
     locations: list[dict[str, Any]] = [
         {"logicalLocations": [{"fullyQualifiedName": logical_name, "kind": "target"}]}
     ]
-    if record.source_location and ":" in record.source_location:
-        path, _, line_str = record.source_location.rpartition(":")
-        if line_str.isdigit():
-            locations.append(
-                {
-                    "physicalLocation": {
-                        "artifactLocation": {"uri": path},
-                        "region": {"startLine": int(line_str)},
-                    }
-                }
-            )
-    return {
+    code_flows: list[dict[str, Any]] = []
+    source_location = record.source_location
+    if isinstance(source_location, list):
+        # Multi-hop: the primary result location is still the last hop (by
+        # convention the sink - the same point a single "path:line" string
+        # has always pointed at), plus the full source-to-sink path as a
+        # codeFlow for viewers that render one.
+        flow = _code_flow(source_location)
+        if flow is not None:
+            code_flows.append(flow)
+        if source_location:
+            physical = _physical_location(str(source_location[-1].get("location", "")))
+            if physical is not None:
+                locations.append({"physicalLocation": physical})
+    elif source_location:
+        physical = _physical_location(source_location)
+        if physical is not None:
+            locations.append({"physicalLocation": physical})
+    result: dict[str, Any] = {
         "ruleId": _rule_id(record),
         "ruleIndex": rule_index,
         "level": _sarif_level(record),
@@ -169,6 +213,9 @@ def _build_result(record: FindingRecord, rule_index: int) -> dict[str, Any]:
             },
         },
     }
+    if code_flows:
+        result["codeFlows"] = code_flows
+    return result
 
 
 def render_sarif(

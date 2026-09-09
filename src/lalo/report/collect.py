@@ -71,7 +71,7 @@ class FindingRecord:
     review_proof_level: str | None = None
     dedup_key: str = ""
     status: str = "open"
-    source_location: str | None = None
+    source_location: str | list[dict[str, str]] | None = None
 
     @property
     def effective_severity(self) -> str:

@@ -69,7 +69,13 @@ class Finding:
     param: str | None = None
     reproduced: bool = False
     identities_confirmed: list[str] = field(default_factory=list)
-    source_location: str | None = None
+    # Either a single "path:line" string (unchanged since introduction), or,
+    # for a traced multi-hop path, an ordered list of hops from source to
+    # sink: [{"role": "source", "location": "app/routes.py:10"}, ...]. See
+    # report/sarif.py, which renders a single string as one physicalLocation
+    # (today's behavior, unchanged) and a multi-hop list as an additional
+    # SARIF codeFlows/threadFlows block.
+    source_location: str | list[dict[str, str]] | None = None
 
 
 def validate_finding_fields(fields: dict[str, object]) -> list[str]:

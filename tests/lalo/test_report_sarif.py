@@ -279,3 +279,57 @@ def test_render_sarif_declares_the_owasp_taxonomy_component_when_a_rule_uses_it(
     assert len(taxonomies) == 1
     assert taxonomies[0]["name"] == _OWASP_API_TAXONOMY_NAME
     assert {"id": "API1:2023", "name": "Broken Object Level Authorization"} in taxonomies[0]["taxa"]
+
+
+def test_render_sarif_result_has_no_code_flows_key_for_a_single_string_source_location() -> None:
+    """Zero behavior change for the existing, common case."""
+    graph = ReachabilityGraph()
+    _file(graph, source_location="app/routes.py:42")
+    doc = render_sarif(_records(graph))
+    assert "codeFlows" not in doc["runs"][0]["results"][0]
+
+
+def test_render_sarif_result_emits_a_code_flow_for_a_multi_hop_source_location() -> None:
+    graph = ReachabilityGraph()
+    _file(graph)
+    hops = [
+        {"role": "source", "location": "app/routes.py:10"},
+        {"role": "guard", "location": "app/auth.py:55"},
+        {"role": "sink", "location": "app/db.py:88"},
+    ]
+    record = replace(_records(graph)[0], source_location=hops)
+    doc = render_sarif([record])
+    result = doc["runs"][0]["results"][0]
+
+    thread_locations = result["codeFlows"][0]["threadFlows"][0]["locations"]
+    assert [loc["location"]["message"]["text"] for loc in thread_locations] == [
+        "source",
+        "guard",
+        "sink",
+    ]
+    first_physical = thread_locations[0]["location"]["physicalLocation"]
+    assert first_physical["artifactLocation"]["uri"] == "app/routes.py"
+    last_physical = thread_locations[-1]["location"]["physicalLocation"]
+    assert last_physical["region"]["startLine"] == 88
+
+    # the primary result location still gets a physicalLocation, pointing at
+    # the last hop (the sink) - the same convention the single-string case
+    # has always used for "the one point of interest"
+    physical = next(
+        loc["physicalLocation"] for loc in result["locations"] if "physicalLocation" in loc
+    )
+    assert physical["artifactLocation"]["uri"] == "app/db.py"
+
+
+def test_render_sarif_result_drops_an_unparseable_hop_from_the_code_flow() -> None:
+    graph = ReachabilityGraph()
+    _file(graph)
+    hops = [
+        {"role": "source", "location": "app/routes.py:10"},
+        {"role": "sink", "location": "app/db.py:not-a-line-number"},
+    ]
+    record = replace(_records(graph)[0], source_location=hops)
+    doc = render_sarif([record])
+    result = doc["runs"][0]["results"][0]
+    # only one hop survived parsing - no flow worth showing
+    assert "codeFlows" not in result
