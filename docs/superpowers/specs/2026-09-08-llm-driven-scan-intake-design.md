@@ -33,7 +33,7 @@ prompt, JSON-only reply, 2-attempt retry, graceful non-crashing fallback),
 and make the GUI's `/scan` launch always route through it rather than a
 client-side regex gate.
 
-**Explicitly out of scope for this pass** (three related shannon-comparison
+**Explicitly out of scope for this pass** (three related reference-comparison
 items the operator wants next, each queued as its own future brainstorm →
 spec → plan cycle, not folded into this one): a real confined source-review
 agent role, per-child mid-flight journaling for crash resume, and
@@ -236,7 +236,7 @@ object, never crash the pipeline on a bad answer" call.
 
 ## Related work (not in this spec)
 
-Three more items from the shannon comparison are queued next, each getting
+Three more items from the reference comparison are queued next, each getting
 its own brainstorm → spec → plan cycle after this one ships: a real
 confined source-review agent role, per-child mid-flight journaling for
 crash resume, and recompute-from-attempts usage accounting under replay.

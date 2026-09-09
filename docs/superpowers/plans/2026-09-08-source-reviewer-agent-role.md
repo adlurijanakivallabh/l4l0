@@ -4,7 +4,7 @@
 
 **Goal:** Let an agent opt into spawning a genuinely confined child for pure
 source-code review — a real `_filter_tools`-backed toolset restriction,
-wired up for the first time since Task 7 of the shannon-gap-closure plan
+wired up for the first time since Task 7 of an earlier gap-closure round
 built the mechanism.
 
 **Architecture:** `role` is stored on the spawn tree itself (`AgentNode`),
@@ -15,7 +15,7 @@ looks the role up from the coordinator and maps it to a tool-name preset.
 
 **Tech Stack:** Python 3.13, the existing `AgentCoordinator`/spawn-tool
 machinery (`agent/spawn.py`), `_build_registry`'s existing `tool_names`
-parameter (`scan.py`, from Task 7 of the shannon-gap-closure plan).
+parameter (`scan.py`, from Task 7 of an earlier gap-closure round).
 
 **Spec:** `docs/superpowers/specs/2026-09-08-source-reviewer-agent-role-design.md`
 
@@ -492,7 +492,7 @@ git commit -m "feat(L4L0): spawn_agent/spawn_agents accept and validate an opt-i
   `build_spawn_tools(..., valid_roles=...)`/
   `build_parallel_spawn_tool(..., valid_roles=...)` (Task 2),
   `_build_registry(..., tool_names=...)` (existing, Task 7 of the
-  shannon-gap-closure plan).
+  an earlier gap-closure round).
 - Produces: `_ROLE_TOOL_NAMES: dict[str, frozenset[str] | None]` (module
   level in `scan.py`) — the single source of truth mapping a role name to
   its tool-name preset.
@@ -586,7 +586,7 @@ this missing wiring, not a typo in the test itself, before moving on.
 - [ ] **Step 3: Add the role→tool-names mapping and wire it into `_run_child`**
 
 In `src/lalo/scan.py`, near `_filter_tools` (added in the
-shannon-gap-closure plan's Task 7), add:
+an earlier gap-closure round's Task 7), add:
 
 ```python
 _SOURCE_REVIEWER_TOOL_NAMES = frozenset(
@@ -684,7 +684,7 @@ git commit -m "feat(L4L0): wire the source_reviewer role to a real confined tool
 - [ ] **Step 1: Add one paragraph**
 
 Read the current file in full first (it was written in the
-shannon-gap-closure plan's Task 6 this same session — confirm its exact
+an earlier gap-closure round's Task 6 this same session — confirm its exact
 current section headings before picking an insertion point rather than
 guessing). Add a short paragraph near the end of its "Step Three: File It
 the Same Way Everything Else Gets Filed" section (or wherever the file's
@@ -707,7 +707,7 @@ valid when the task doesn't warrant spawning a dedicated child at all.
 - [ ] **Step 2: Verify the skill still loads and validates**
 
 Run: `uv run pytest tests/lalo/test_skills_recall.py -k source_aware -v`
-Expected: PASS (the existing retrievability test from the shannon-gap-closure
+Expected: PASS (the existing retrievability test from an earlier gap-closure
 plan's Task 6 — this new paragraph doesn't change the file's frontmatter,
 so no other test is affected).
 

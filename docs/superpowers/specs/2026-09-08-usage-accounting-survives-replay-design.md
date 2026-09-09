@@ -5,7 +5,7 @@ applies — design decisions below are mine, made and recorded).
 
 ## Why
 
-The last item from the user's selected shannon-comparison list (after
+The last item from the user's selected reference-comparison list (after
 [[lalo-llm-driven-intake]]'s sub-projects 1-3: LLM-driven intake, the
 confined source-reviewer role, and per-child mid-flight resume, all done).
 `docs/OPERATING.md` and `src/lalo/core/usage.py`'s own module docstring

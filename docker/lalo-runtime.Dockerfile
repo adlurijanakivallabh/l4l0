@@ -14,20 +14,22 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PATH="/usr/local/bin:/root/.cargo/bin:${PATH}"
 
 # --- OS + language toolchains + apt-available security tools ---
-# metasploit-framework: Phase 1, cai pass — cai integrates Metasploit directly
-# (a `pymetasploit3` RPC-client dependency in its own host-side devcontainer
-# requirements.txt). That RPC-client shape is the wrong fit here: it would mean
-# L4L0's own host process holding a network client into an exploitation
-# framework, when the whole point of this project's containment model is that
-# risky work happens *inside* the disposable container via the free shell, not
-# from a host-side client library. The transferable idea is narrower and
-# simpler: the arsenal was missing the single most standard exploitation
-# framework for network-service RCE proof/chaining, so the agent can just
-# `msfconsole -q -x '...'` like any other installed tool — no RPC daemon, no
-# host reach, no hardcoded credentials (cai's own devcontainer ships an
-# msfrpcd listener with a hardcoded password on container start; not adopted).
+# metasploit-framework: Phase 1, a studied reference agent's own pass — that
+# agent integrates Metasploit directly (a `pymetasploit3` RPC-client dependency
+# in its own host-side devcontainer requirements.txt). That RPC-client shape is
+# the wrong fit here: it would mean L4L0's own host process holding a network
+# client into an exploitation framework, when the whole point of this project's
+# containment model is that risky work happens *inside* the disposable
+# container via the free shell, not from a host-side client library. The
+# transferable idea is narrower and simpler: the arsenal was missing the single
+# most standard exploitation framework for network-service RCE proof/chaining,
+# so the agent can just `msfconsole -q -x '...'` like any other installed tool
+# — no RPC daemon, no host reach, no hardcoded credentials (that reference
+# agent's own devcontainer ships an msfrpcd listener with a hardcoded password
+# on container start; not adopted).
 #
-# openvpn/wireguard-tools: Phase 1, PentestGPT pass — its own docker-compose.yml
+# openvpn/wireguard-tools: Phase 1, another studied reference agent's own pass
+# — its own docker-compose.yml
 # grants NET_ADMIN + a mounted /dev/net/tun specifically "for OpenVPN
 # (HackTheBox/TryHackMe connectivity)". Many real engagements are only
 # reachable via a client-provided VPN config; the arsenal had no VPN client at

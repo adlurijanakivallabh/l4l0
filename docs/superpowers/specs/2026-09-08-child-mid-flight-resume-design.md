@@ -5,10 +5,10 @@ applies — design decisions below are mine, made and recorded).
 
 ## Why
 
-The shannon comparison's real, still-open finding: "a spawned child that's
+A studied reference agent's own comparison's real, still-open finding: "a spawned child that's
 still mid-execution when the process crashes restarts from scratch,
 re-spending on any child that was running at crash time." Task 1 of the
-shannon-gap-closure plan added per-child journaling (a completed child's own
+an earlier gap-closure round added per-child journaling (a completed child's own
 steps land durably, under its own `agent_key`) but — as documented in this
 project's own memory and in `docs/OPERATING.md` — that only helps a child
 that had *already fully finished* before a later, unrelated crash. A child
@@ -75,7 +75,7 @@ center exactly, and needing zero changes to `AgentLoop.run()`'s core loop.
    from the persisted record, never from the new request). `run_child`
    then constructs `AgentLoop(..., agent_key=child_id)` exactly as for any
    other child, and `AgentLoop.run()`'s *already-existing, already-tested*
-   per-agent-key replay loop (Task 1 of the shannon-gap-closure plan)
+   per-agent-key replay loop (Task 1 of an earlier gap-closure round)
    naturally resumes from that child's own last completed step — no new
    replay mechanism needed there at all.
 4. `view_agent_graph`'s existing generic `render_tree` (`[{node.status.value}]`)

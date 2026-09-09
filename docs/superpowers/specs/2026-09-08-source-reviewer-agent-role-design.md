@@ -7,7 +7,7 @@ plans, you only execute, you only review till everything is done properly"
 
 ## Why
 
-The shannon-gap-closure plan's Task 7 built the *infrastructure* for
+An earlier gap-closure round's Task 7 built the *infrastructure* for
 tool-name confinement (`_filter_tools()` in `scan.py`) but wired it to
 nothing — every agent, root and every spawned child, still gets the
 identical full toolset. The original design plan's gap #10 named the

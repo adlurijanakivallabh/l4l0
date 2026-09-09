@@ -1,14 +1,14 @@
-# Shannon Gap Closure — L4L0 Superset Implementation Plan
+# Gap Closure — L4L0 Superset Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Close every real capability gap between L4L0 and the "shannon" reference project identified in `/home/kali/Downloads/references/shannon/SHANNON_VS_L4L0_COMPARISON.md`, and add genuinely new tool/skill capability beyond it — all in the L4L0-native way (agent freedom + skill-library methodology, never a fixed detector pipeline), so L4L0 becomes a strict superset.
+**Goal:** Close every real capability gap between L4L0 and a studied reference agent identified in that reference's own comparison document, and add genuinely new tool/skill capability beyond it — all in the L4L0-native way (agent freedom + skill-library methodology, never a fixed detector pipeline), so L4L0 becomes a strict superset.
 
 **Architecture:** Fourteen independently-shippable tasks. Most are small, additive changes to existing modules (new optional dataclass fields, new pure utility functions, new agent tools mirroring an existing tool's exact pattern). Two tasks (per-child journaling, multi-scan support) touch `scan.py`'s central orchestration and must be sequenced relative to each other; everything else is file-disjoint and safe to parallelize.
 
 **Tech Stack:** Python 3.13, FastAPI, pytest — matches the existing L4L0 codebase exactly, no new dependencies.
 
-**Spec:** `/home/kali/.claude/plans/glowing-bubbling-parasol.md` (the approved design plan — read it for the "why" behind each task; this plan is its "how"). Ground truth for shannon's own architecture: `/home/kali/Downloads/references/shannon/SHANNON_VS_L4L0_COMPARISON.md`.
+**Spec:** `/home/kali/.claude/plans/glowing-bubbling-parasol.md` (the approved design plan — read it for the "why" behind each task; this plan is its "how"). Ground truth for the reference agent's own architecture: that reference's own comparison document.
 
 ## Global Constraints
 
@@ -18,7 +18,7 @@
 - New dataclass fields are always additive with defaults — no existing construction call site may break.
 - `ruff check`, `ruff format`, `mypy` (strict), and the relevant pytest file(s) must pass before every commit; run the full non-integration/non-live suite (`uv run pytest -q -m "not integration and not live"`) before each task's final commit.
 - New skill playbooks match the exact existing structure in `src/lalo/skills/content/vulnerabilities/race-conditions.md` (frontmatter + Attack Surface/Recon/Techniques/Proof Ladder/Validation/Impact/Summary, `[[wiki-link]]` cross-refs) — read it before writing a new one.
-- Three capability-gap items require no code, only documentation, because direct source reading during planning showed they are already closed or much narrower than first assumed: **finding reconciliation across producers** (L4L0's single-producer, record-time `dedup_key` model never creates the two-producer attribution problem shannon's separate pentest+SAST pipelines have to solve), **GUI auth hardening** (the token was already built once and explicitly removed by this same operator's own prior request; the server is loopback-only regardless — left as-is per the operator's explicit confirmation this session), and **usage accounting under replay** (the resume-replay loop never re-enters the step loop for an already-journaled step at all, so the real double-count window is a single narrow crash-timing edge case, not the broad "any resumed step" problem — verify this against the live code before writing the note, don't just restate the claim). Task 11 below writes all three notes into one place; no other task should re-litigate any of them.
+- Three capability-gap items require no code, only documentation, because direct source reading during planning showed they are already closed or much narrower than first assumed: **finding reconciliation across producers** (L4L0's single-producer, record-time `dedup_key` model never creates the two-producer attribution problem a reference agent's separate pentest+SAST pipelines have to solve), **GUI auth hardening** (the token was already built once and explicitly removed by this same operator's own prior request; the server is loopback-only regardless — left as-is per the operator's explicit confirmation this session), and **usage accounting under replay** (the resume-replay loop never re-enters the step loop for an already-journaled step at all, so the real double-count window is a single narrow crash-timing edge case, not the broad "any resumed step" problem — verify this against the live code before writing the note, don't just restate the claim). Task 11 below writes all three notes into one place; no other task should re-litigate any of them.
 
 ---
 
@@ -93,7 +93,7 @@ class DurableJournal:
         # that succeeds — see the existing docstring reasoning above this
         # method for why. Locked because spawn_agents' concurrent children
         # now all journal through this same instance (Task 1 of the
-        # shannon-gap-closure plan) — matches this project's existing
+        # an earlier gap-closure round) — matches this project's existing
         # Budget/Tracer/ScanRunner._graph_lock/HttpFirer._breaker_lock pattern.
         ts = time.time()
         line = json.dumps({"key": key, "result": result, "ts": ts}, sort_keys=True)

@@ -754,7 +754,7 @@ git commit -m "feat(L4L0): reconstruct orphaned children on resume from journal 
 - [ ] **Step 1: Correct the existing "child restarts from scratch" note**
 
 `docs/OPERATING.md`'s "Resuming a crashed or stopped scan" section
-currently states (added by the shannon-gap-closure plan's Task 11, after
+currently states (added by an earlier gap-closure round's Task 11, after
 that same plan's Task 1 was found to overclaim granular child resume):
 
 ```
