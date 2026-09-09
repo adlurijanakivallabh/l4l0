@@ -178,6 +178,7 @@ from .oast.tool import build_oast_tools
 from .observability.tracing import Tracer, wall_clock_union
 from .orchestrator.budget import Budget, RunStatus
 from .orchestrator.journal import DurableJournal
+from .orchestrator.narrative import write_narrative_log
 from .prompts import render_prompt
 from .recon.tool import build_recon_tool
 from .report.collect import ReportMetadata, ReportUsage
@@ -1400,6 +1401,7 @@ class ScanRunner:
             write_report_manifest(self.config.run_dir, report_paths)
         graph.save(self.config.run_dir / "graph.json")
         _write_trace_file(self.config.run_dir, tracer)
+        write_narrative_log(self.config.run_dir)
         completed_payload: dict[str, object] = {
             "event": "scan_completed",
             "status": status.value,

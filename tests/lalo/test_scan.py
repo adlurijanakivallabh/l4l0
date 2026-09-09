@@ -1325,6 +1325,37 @@ def test_scan_runner_durably_persists_events_even_with_no_live_event_log(
     assert any(e.category == "finding" for e in events)
 
 
+def test_scan_runner_writes_a_per_agent_attributed_narrative_log(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A real scan's own tool_call/tool_result narration must land as a
+    readable, agent-attributed plaintext file in the run directory - the
+    only durable record of a run before this was raw events.jsonl."""
+    monkeypatch.setattr(scan_module, "docker_available", lambda: True)
+    monkeypatch.setattr(scan_module, "RuntimeContainer", _FakeContainer)
+    router = ModelRouter(
+        providers={"fake": _ScriptedProvider(_respond)},
+        routes={"reasoning": ("fake",), "review": ("fake",)},
+        default_route=("fake",),
+    )
+    monkeypatch.setattr(scan_module, "build_router", lambda _settings: router)
+
+    run_dir = tmp_path / "run"
+    config = ScanConfig(mission="find a bug", target_specs=["example.com"], run_dir=run_dir)
+    ScanRunner(config, env={"ANTHROPIC_API_KEY": "sk-test"}).run()
+
+    narrative_path = run_dir / "narrative.log"
+    assert narrative_path.exists()
+    assert oct(narrative_path.stat().st_mode)[-3:] == "600"
+    narrative = narrative_path.read_text(encoding="utf-8")
+    # The root agent's real agent_id is "agent-1" (AgentCoordinator.register_root
+    # mints a numbered "agent-N" id for every node, root included - "root" is
+    # only ever a display name, never an id) - asserting the real id, not the
+    # display name, is the whole point of this feature.
+    assert "[agent-1]" in narrative
+    assert "scan_started" in narrative
+
+
 def test_load_run_events_on_a_missing_file_is_an_empty_log(tmp_path: Path) -> None:
     replay = load_run_events(tmp_path / "no-such-run")
     cursor, events = replay.snapshot()

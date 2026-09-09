@@ -10,6 +10,7 @@ documented cost-governance design that this module deliberately avoids.
 
 from .budget import Budget, BudgetBand, RunStatus
 from .journal import Checkpoint, DurableJournal
+from .narrative import render_narrative, render_narrative_line, write_narrative_log
 from .scheduler import ScanSchedule, due_schedules
 
 __all__ = [
@@ -20,4 +21,7 @@ __all__ = [
     "RunStatus",
     "ScanSchedule",
     "due_schedules",
+    "render_narrative",
+    "render_narrative_line",
+    "write_narrative_log",
 ]
