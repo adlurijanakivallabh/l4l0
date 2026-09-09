@@ -356,6 +356,19 @@ def test_record_safe_lands_a_verified_safe_node_never_a_finding() -> None:
     assert graph.nodes_of_kind(NodeKind.FINDING) == []
 
 
+def test_record_safe_description_documents_the_hyphenated_slug_convention() -> None:
+    """A real live-agent eval run found the agent using a free-text
+    vuln_class ("broken-authentication") with record_safe that matched no
+    skill name, silently vanishing from coverage output entirely - the
+    exact bug record_finding's own description was already fixed for in an
+    earlier round (see report/coverage.py's own module docstring). This
+    locks in that record_safe's description carries the identical fix."""
+    graph = ReachabilityGraph()
+    tool = build_record_safe_tool(graph)
+    assert "hyphenated slug" in tool.description
+    assert "sql-injection" in tool.description
+
+
 def test_record_safe_requires_vuln_class_target_and_defense_mechanism() -> None:
     graph = ReachabilityGraph()
     tool = build_record_safe_tool(graph)

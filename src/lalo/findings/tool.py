@@ -339,7 +339,12 @@ def build_record_safe_tool(graph: ReachabilityGraph) -> FunctionTool:
             "absence, never a finding. Never required and never a gate on "
             "anything else you do; use it whenever you've genuinely verified a "
             "surface is clean, so the report can say so with a real reason "
-            'instead of staying silent. args: {"vuln_class": str, "target": str, '
+            'instead of staying silent. args: {"vuln_class": str (a short, '
+            "hyphenated slug matching the recalled skill's own name - e.g. "
+            '"sql-injection", "access-control", "jwt", "xss", "ssrf" - never a '
+            "full sentence, a CWE id, or an OWASP category name; coverage "
+            "reporting matches this field by exact name, the same as "
+            'record_finding\'s own vuln_class), "target": str, '
             '"param": str (optional), "defense_mechanism": str (required - why '
             'you believe this is safe, e.g. "parameterized query confirmed via '
             'source read at app/db.py:42")}'
