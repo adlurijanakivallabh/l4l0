@@ -303,7 +303,17 @@ class OpenAIResponsesProvider(_OpenAIStyleProvider):
 
 def _build_adapter(resolved: ResolvedProvider) -> Provider:
     if resolved.kind == "anthropic":
-        return AnthropicProvider(resolved.api_key, model=resolved.model)
+        # A curated "anthropic"-kind entry may point somewhere other than
+        # api.anthropic.com while speaking the identical wire shape -- e.g.
+        # Bedrock's bearer-token Anthropic-compatible route (see config.py's
+        # "bedrock_anthropic" entry). Only fall back to the real default when
+        # no curated base_url was set, so the native Anthropic entry (which
+        # never sets one) keeps hitting api.anthropic.com exactly as before.
+        return AnthropicProvider(
+            resolved.api_key,
+            model=resolved.model,
+            base_url=resolved.base_url or "https://api.anthropic.com",
+        )
     if not resolved.base_url:
         raise ValueError(f"provider {resolved.id!r} is missing a base_url")
     if resolved.kind == "openai_responses":

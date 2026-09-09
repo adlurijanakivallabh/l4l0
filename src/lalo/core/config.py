@@ -44,7 +44,7 @@ class ProviderSpec:
     credential_hint: str
     default_model: str
     extra_required_envs: tuple[str, ...] = ()
-    default_base_url: str | None = None  # openai_compatible only
+    default_base_url: str | None = None  # openai_compatible + Bedrock-style anthropic routes
     base_url_env: str | None = None  # optional override env for the base URL
     auth_header: str = "Authorization"
     auth_prefix: str = "Bearer "
@@ -89,6 +89,32 @@ CURATED_PROVIDERS: tuple[ProviderSpec, ...] = (
         credential_hint="ANTHROPIC_API_KEY",
         default_model="claude-sonnet-5",
         model_env="ANTHROPIC_MODEL",
+    ),
+    ProviderSpec(
+        id="bedrock_anthropic",
+        # Anthropic's Messages API wire shape, reachable via Bedrock's
+        # `/anthropic/v1/messages` compatibility route using a plain bearer
+        # token (AWS_BEARER_TOKEN_BEDROCK) -- no AWS SigV4 request signing
+        # needed, so the existing AnthropicProvider adapter (already
+        # `x-api-key` + `anthropic-version` + a configurable base_url) works
+        # against it completely unmodified. Deliberately scoped to Anthropic
+        # models only: Bedrock's other model families (Titan, Llama, Mistral,
+        # ...) expose ONLY the SigV4-signed InvokeModel/Converse API, which
+        # needs a real request-signing implementation (canonical request +
+        # credential scope + HMAC-SHA256 derived-key chain) that neither
+        # stdlib nor any dependency already in this project provides --
+        # deferred, not guessed at. A real follow-up would add `botocore`
+        # (or a hand-rolled SigV4 signer) as its own separate adapter kind.
+        kind="anthropic",
+        candidate_key_envs=("AWS_BEARER_TOKEN_BEDROCK",),
+        credential_hint=(
+            "AWS_BEARER_TOKEN_BEDROCK (an Amazon Bedrock API key / bearer "
+            "token from the Bedrock console -- not an IAM secret key)"
+        ),
+        default_model="us.anthropic.claude-sonnet-5",
+        default_base_url="https://bedrock-runtime.us-east-1.amazonaws.com/anthropic",
+        base_url_env="LALO_BEDROCK_BASE_URL",
+        model_env="LALO_BEDROCK_MODEL",
     ),
     ProviderSpec(
         id="openai",

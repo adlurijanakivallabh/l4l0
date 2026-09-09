@@ -5,6 +5,7 @@ from __future__ import annotations
 import httpx
 import pytest
 
+from lalo.core import providers as providers_module
 from lalo.core.config import load_settings
 from lalo.core.errors import ProviderRefusalError, ProviderUnavailableError
 from lalo.core.model_router import CompletionRequest, ModelRouter
@@ -417,3 +418,30 @@ def test_verify_router_checks_every_configured_provider_independently() -> None:
     results = verify_router(router)
     assert results["gw-a"] == (True, "ok")
     assert results["gw-b"][0] is False
+
+
+def test_build_adapter_forwards_a_curated_base_url_for_the_anthropic_kind(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression test for the bug this task fixes: _build_adapter used to
+    hardcode AnthropicProvider(api_key, model=model) for every "anthropic"-kind
+    provider, silently discarding any curated base_url -- which would have sent
+    every Bedrock-routed request to api.anthropic.com instead, with no error."""
+    seen_urls: list[str] = []
+
+    def fake_post_with_retry(client, url, *, json, headers, sleep=None):
+        seen_urls.append(url)
+        return httpx.Response(
+            200, json={"stop_reason": "end_turn", "content": [{"type": "text", "text": "hi"}]}
+        )
+
+    monkeypatch.setattr(providers_module, "_post_with_retry", fake_post_with_retry)
+
+    settings = load_settings({"AWS_BEARER_TOKEN_BEDROCK": "tok"})
+    resolved = settings.get("bedrock_anthropic")
+    assert resolved is not None
+    adapter = providers_module._build_adapter(resolved)
+    assert isinstance(adapter, AnthropicProvider)
+
+    adapter.complete(CompletionRequest(prompt="x"))
+    assert seen_urls == ["https://bedrock-runtime.us-east-1.amazonaws.com/anthropic/v1/messages"]

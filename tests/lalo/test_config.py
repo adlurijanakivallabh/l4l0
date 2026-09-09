@@ -99,3 +99,26 @@ def test_xai_provider_resolves_openai_compatible_with_curated_defaults() -> None
     unconfigured = load_settings({})
     assert unconfigured.get("xai") is None
     assert unconfigured.missing_credential_hints()["xai"] == "XAI_API_KEY"
+
+
+def test_bedrock_anthropic_curated_entry_resolves_via_the_aws_bearer_token_env() -> None:
+    settings = load_settings({"AWS_BEARER_TOKEN_BEDROCK": "abc123"})
+    resolved = settings.get("bedrock_anthropic")
+    assert resolved is not None
+    assert resolved.kind == "anthropic"
+    assert resolved.model == "us.anthropic.claude-sonnet-5"
+    assert resolved.base_url == "https://bedrock-runtime.us-east-1.amazonaws.com/anthropic"
+
+
+def test_bedrock_anthropic_base_url_and_model_are_operator_overridable() -> None:
+    settings = load_settings(
+        {
+            "AWS_BEARER_TOKEN_BEDROCK": "abc123",
+            "LALO_BEDROCK_BASE_URL": "https://bedrock-runtime.eu-west-1.amazonaws.com/anthropic",
+            "LALO_BEDROCK_MODEL": "eu.anthropic.claude-opus-5",
+        }
+    )
+    resolved = settings.get("bedrock_anthropic")
+    assert resolved is not None
+    assert resolved.base_url == "https://bedrock-runtime.eu-west-1.amazonaws.com/anthropic"
+    assert resolved.model == "eu.anthropic.claude-opus-5"
