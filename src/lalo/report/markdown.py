@@ -38,6 +38,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 from .collect import (
+    AttackSurfaceSummary,
     ChainRecord,
     ExecutiveSummary,
     FindingRecord,
@@ -172,6 +173,7 @@ def render_report_md(
     summary: ExecutiveSummary | None = None,
     usage: ReportUsage | None = None,
     metadata: ReportMetadata | None = None,
+    attack_surface: AttackSurfaceSummary | None = None,
 ) -> str:
     lines = ["# L4L0 Security Assessment Report", ""]
     if generated_at:
@@ -244,6 +246,25 @@ def render_report_md(
         "does not distinguish 'tested and found clean' from 'never examined'._"
     )
     lines.append("")
+
+    if attack_surface is not None and (
+        attack_surface.endpoints or attack_surface.services or attack_surface.fingerprints
+    ):
+        lines.append("## Attack Surface\n")
+        lines.append(
+            "_Recon facts captured during the run, independent of whether they "
+            "produced a finding._\n"
+        )
+        if attack_surface.endpoints:
+            lines.append("**Endpoints:**")
+            lines.extend(f"- {e}" for e in attack_surface.endpoints)
+        if attack_surface.services:
+            lines.append("**Services:**")
+            lines.extend(f"- {s}" for s in attack_surface.services)
+        if attack_surface.fingerprints:
+            lines.append("**Fingerprints:**")
+            lines.extend(f"- {f}" for f in attack_surface.fingerprints)
+        lines.append("")
 
     if chains:
         lines.append("## Attack Chains\n")

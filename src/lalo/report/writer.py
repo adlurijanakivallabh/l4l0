@@ -64,6 +64,7 @@ from ..skills.loader import Skill
 from .collect import (
     ReportMetadata,
     ReportUsage,
+    build_attack_surface_summary,
     build_chain_records,
     build_executive_summary,
     collect_findings,
@@ -131,6 +132,7 @@ def write_report(
     coverage = build_coverage_summary(skills, records, graph=graph)
     chains = build_chain_records(graph.all_enabling_chains(), records)
     summary = build_executive_summary(records)
+    attack_surface = build_attack_surface_summary(graph)
     status_value = status.value if status is not None else None
 
     markdown = render_report_md(
@@ -142,6 +144,7 @@ def write_report(
         summary=summary,
         usage=usage,
         metadata=metadata,
+        attack_surface=attack_surface,
     )
     json_document = {
         "generated_at": generated_at,
@@ -150,6 +153,7 @@ def write_report(
         "findings": [asdict(record) for record in records],
         "coverage": asdict(coverage),
         "chains": [asdict(chain) for chain in chains],
+        "attack_surface": asdict(attack_surface),
         "usage": asdict(usage) if usage is not None else None,
         "engagement": asdict(metadata) if metadata is not None else None,
     }
@@ -185,6 +189,7 @@ def write_report(
         summary=summary,
         usage=usage,
         metadata=metadata,
+        attack_surface=attack_surface,
     )
     csv_document = build_csv(records)
 

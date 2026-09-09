@@ -9,6 +9,7 @@ from lalo.findings.review import ReviewVerdict
 from lalo.findings.tool import build_record_finding_tool
 from lalo.graph.model import ReachabilityGraph
 from lalo.report.collect import (
+    AttackSurfaceSummary,
     ChainRecord,
     ExecutiveSummary,
     FindingRecord,
@@ -126,6 +127,27 @@ def test_render_report_md_includes_a_findings_overview_table() -> None:
     assert "finding-1" in overview
     assert "SQLi" in overview
     assert "sql-injection" in overview
+
+
+def test_render_report_md_renders_an_attack_surface_section() -> None:
+    coverage = CoverageSummary(assessed=[], not_assessed=[])
+    surface = AttackSurfaceSummary(
+        endpoints=["https://x.example.com/api/users"],
+        services=["nginx:443"],
+        fingerprints=["Express 4.18"],
+    )
+    rendered = render_report_md([], coverage, attack_surface=surface)
+    assert "## Attack Surface" in rendered
+    assert "https://x.example.com/api/users" in rendered
+    assert "nginx:443" in rendered
+    assert "Express 4.18" in rendered
+
+
+def test_render_report_md_omits_attack_surface_section_when_empty() -> None:
+    coverage = CoverageSummary(assessed=[], not_assessed=[])
+    surface = AttackSurfaceSummary(endpoints=[], services=[], fingerprints=[])
+    rendered = render_report_md([], coverage, attack_surface=surface)
+    assert "## Attack Surface" not in rendered
 
 
 def test_render_report_md_states_findings_count_and_coverage() -> None:

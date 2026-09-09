@@ -11,6 +11,7 @@ from lalo.findings.review import ReviewVerdict
 from lalo.findings.tool import build_record_finding_tool
 from lalo.graph.model import Chain, EdgeKind, NodeKind, ReachabilityGraph
 from lalo.report.collect import (
+    build_attack_surface_summary,
     build_chain_records,
     build_executive_summary,
     collect_findings,
@@ -214,6 +215,41 @@ def test_build_executive_summary_lists_critical_finding_titles() -> None:
     medium = replace(record, title="Reflected XSS", display_severity="medium")
     summary = build_executive_summary([critical, medium])
     assert summary.critical_findings == ["Unauth RCE via SSTI"]
+
+
+# --- build_attack_surface_summary -----------------------------------------
+
+
+def test_build_attack_surface_summary_reads_endpoints_services_fingerprints() -> None:
+    graph = ReachabilityGraph()
+    graph.add_node(
+        "https://x.example.com/api/users", NodeKind.ENDPOINT, source="js-mining", extra={}
+    )
+    graph.add_node(
+        "tcp://x.example.com:443",
+        NodeKind.SERVICE,
+        source="nmap",
+        extra={"name": "nginx", "version": "1.18"},
+    )
+    graph.add_node(
+        "https://x.example.com/app.js",
+        NodeKind.FINGERPRINT,
+        source="fingerprint",
+        extra={"technology": "Express", "version": "4.18"},
+    )
+
+    summary = build_attack_surface_summary(graph)
+    assert any("api/users" in e for e in summary.endpoints)
+    assert any("nginx" in s for s in summary.services)
+    assert any("Express" in f for f in summary.fingerprints)
+
+
+def test_build_attack_surface_summary_on_an_empty_graph_is_all_empty() -> None:
+    summary = build_attack_surface_summary(ReachabilityGraph())
+    assert summary == build_attack_surface_summary(ReachabilityGraph())
+    assert summary.endpoints == []
+    assert summary.services == []
+    assert summary.fingerprints == []
 
 
 # --- build_chain_records -------------------------------------------------

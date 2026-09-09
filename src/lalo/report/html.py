@@ -31,6 +31,7 @@ from collections.abc import Sequence
 from html import escape
 
 from .collect import (
+    AttackSurfaceSummary,
     ChainRecord,
     ExecutiveSummary,
     FindingRecord,
@@ -179,6 +180,7 @@ def render_report_html(
     summary: ExecutiveSummary | None = None,
     usage: ReportUsage | None = None,
     metadata: ReportMetadata | None = None,
+    attack_surface: AttackSurfaceSummary | None = None,
 ) -> str:
     parts = [
         "<!doctype html>",
@@ -279,6 +281,24 @@ def render_report_html(
         "<p><em>A class marked 'not assessed' means no finding was filed for it - this "
         "does not distinguish 'tested and found clean' from 'never examined'.</em></p>"
     )
+
+    if attack_surface is not None and (
+        attack_surface.endpoints or attack_surface.services or attack_surface.fingerprints
+    ):
+        parts.append("<h2>Attack Surface</h2>")
+        parts.append(
+            "<p><em>Recon facts captured during the run, independent of whether "
+            "they produced a finding.</em></p>"
+        )
+        for label, items in (
+            ("Endpoints", attack_surface.endpoints),
+            ("Services", attack_surface.services),
+            ("Fingerprints", attack_surface.fingerprints),
+        ):
+            if items:
+                parts.append(f"<p><strong>{label}:</strong></p><ul>")
+                parts += [f"<li>{_e(item)}</li>" for item in items]
+                parts.append("</ul>")
 
     if chains:
         parts.append("<h2>Attack Chains</h2>")

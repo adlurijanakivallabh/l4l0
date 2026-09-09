@@ -253,12 +253,13 @@ def test_write_report_includes_an_executive_summary_in_every_format(tmp_path: Pa
     paths = write_report(tmp_path, graph, _SKILLS)
 
     doc = json.loads(paths["json"].read_text(encoding="utf-8"))
-    assert doc["executive_summary"] == {
-        "total_findings": 1,
-        "by_severity": {"high": 1},
-        "by_vuln_class": {"sql-injection": 1},
-        "highest_severity": "high",
-    }
+    summary = doc["executive_summary"]
+    assert summary["total_findings"] == 1
+    assert summary["by_severity"] == {"high": 1}
+    assert summary["by_vuln_class"] == {"sql-injection": 1}
+    assert summary["highest_severity"] == "high"
+    assert sum(summary["by_confidence"].values()) == 1
+    assert summary["critical_findings"] == []
     assert "## Executive Summary" in paths["markdown"].read_text(encoding="utf-8")
 
 

@@ -269,6 +269,49 @@ def group_by_verdict(
     ]
 
 
+@dataclass(frozen=True)
+class AttackSurfaceSummary:
+    """Recon-level facts, independent of any specific finding - what was
+    actually probed, so a tested-but-clean surface is visible in the
+    delivered report rather than only ever showing up if it produced a
+    finding."""
+
+    endpoints: list[str]
+    services: list[str]
+    fingerprints: list[str]
+
+
+def _describe_recon_node(graph: ReachabilityGraph, node_id: str) -> str:
+    """``recon/facts.py``'s ``merge_facts`` stores every fact's own
+    per-source metadata under an open ``extra`` bag with no fixed schema
+    (any runner can put any key in it - confirmed by reading that module in
+    full) - so this reads whatever keys are actually present rather than
+    guessing a fixed set like ``name``/``port``/``technology``/``version``
+    that would silently produce an empty description the moment a runner
+    used different keys."""
+    extra = graph.node(node_id).get("extra") or {}
+    if not isinstance(extra, dict) or not extra:
+        return node_id
+    detail = ", ".join(f"{key}={value}" for key, value in extra.items())
+    return f"{node_id} ({detail})"
+
+
+def build_attack_surface_summary(graph: ReachabilityGraph) -> AttackSurfaceSummary:
+    """Every ``ENDPOINT``/``SERVICE``/``FINGERPRINT`` node
+    ``recon.facts.merge_facts`` has already scope-checked onto the graph -
+    surfaced as its own report section, independent of whether it also
+    happened to produce a finding."""
+    endpoints = sorted(graph.nodes_of_kind(NodeKind.ENDPOINT))
+    services = sorted(
+        _describe_recon_node(graph, node_id) for node_id in graph.nodes_of_kind(NodeKind.SERVICE)
+    )
+    fingerprints = sorted(
+        _describe_recon_node(graph, node_id)
+        for node_id in graph.nodes_of_kind(NodeKind.FINGERPRINT)
+    )
+    return AttackSurfaceSummary(endpoints=endpoints, services=services, fingerprints=fingerprints)
+
+
 def first_finding_id_by_vuln_class(records: list[FindingRecord]) -> dict[str, str]:
     """The id of the first (in ``records`` order) finding for each
     ``vuln_class`` - the anchor target a "Summary by Vulnerability Type"
