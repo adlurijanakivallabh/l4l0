@@ -123,6 +123,52 @@ def test_safe_target_url_redacts_a_jwt_shaped_token_embedded_in_the_path() -> No
     assert "app.example.com" in out
 
 
+def test_two_different_jwts_in_the_same_path_shape_stay_distinguishable_after_redaction() -> None:
+    """Regression: safe_target_url ran the whole URL through redact(), which
+    replaced every secret-shaped match with the SAME fixed literal - two
+    exploitation proofs against otherwise-identical URLs that differ only in
+    an embedded token (e.g. an IDOR proven against two different victims'
+    password-reset links) collapsed to the identical dedup_key, silently
+    merging what should be two separately-reported findings."""
+    jwt1 = (
+        "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0."
+        "dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U"
+    )
+    jwt2 = (
+        "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiI5ODc2NTQzMjEwIn0."
+        "aB1cD2eF3gH4iJ5kL6mN7oP8qR9sT0uV1wX2yZ3aB4c"
+    )
+    out1 = safe_target_url(f"https://app.example.com/reset/{jwt1}")
+    out2 = safe_target_url(f"https://app.example.com/reset/{jwt2}")
+    assert jwt1 not in out1
+    assert jwt2 not in out2
+    assert out1 != out2
+
+
+def test_redact_gives_the_same_secret_the_same_fingerprint_every_time() -> None:
+    """A single secret observed twice (e.g. reused across two requests) must
+    still dedupe correctly - only a DIFFERENT secret should produce a
+    different placeholder."""
+    jwt = (
+        "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0."
+        "dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U"
+    )
+    assert redact(f"a: {jwt}") == redact(f"b: {jwt}").replace("b:", "a:")
+
+
+def test_a_registered_low_entropy_secret_is_never_fingerprinted() -> None:
+    """An operator's own exact-match secret (e.g. a short login password)
+    could plausibly be dictionary-guessable - fingerprinting it would let an
+    attacker holding the delivered report brute-force a small candidate
+    space and confirm a guess against the digest. Only structured/high-
+    entropy token shapes get fingerprinted; exact-match secrets keep the
+    plain, non-fingerprinted placeholder."""
+    r = SecretRedactor()
+    r.register_secret("hunter2horse")
+    out = r.redact("login failed for password hunter2horse")
+    assert out == f"login failed for password {REDACTION_PLACEHOLDER}"
+
+
 def test_safe_target_url_redacts_a_high_entropy_query_value_under_an_unlisted_key() -> None:
     """A secret under a key not in the exact-match _SENSITIVE_KEYS set (e.g.
     a dashed variant, or a key this project's list simply doesn't name) must

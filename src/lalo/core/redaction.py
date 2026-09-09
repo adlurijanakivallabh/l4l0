@@ -21,14 +21,46 @@ token is fine; leaking a real secret is not.
 
 from __future__ import annotations
 
+import hashlib
 import math
 import re
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 REDACTION_PLACEHOLDER = "«REDACTED»"
 
-# Known secret-shaped token patterns (checked first, before the entropy heuristic).
-_TOKEN_PATTERNS: tuple[re.Pattern[str], ...] = (
+
+def _fingerprinted_placeholder(secret: str) -> str:
+    """A redaction placeholder that hides ``secret``'s content but stays
+    distinguishable from a DIFFERENT secret's own placeholder.
+
+    A single fixed literal for every redacted value (the plain
+    ``REDACTION_PLACEHOLDER``) collapses two materially different findings
+    whose target URLs differ only in an embedded secret/token (e.g. an
+    IDOR proven against two different victims' password-reset links) into
+    one dedup identity, silently merging what should be two separately-
+    reported findings. The digest is a one-way fingerprint (sha256,
+    truncated) - it reveals nothing recoverable about the original value
+    beyond confirming a candidate an attacker already holds, exactly like
+    the plain placeholder already would for any dedup-identity scheme.
+
+    ONLY call this on a value already known to be high-entropy by
+    construction (a structured token shape, or the entropy heuristic) -
+    never on a value that could plausibly be short and dictionary-
+    guessable (an operator's own login password, a generic key=value
+    match of unknown entropy): fingerprinting one of those would let an
+    attacker holding the delivered report brute-force a small candidate
+    space and confirm a guess against the digest, which the plain,
+    non-fingerprinted placeholder never allows.
+    """
+    digest = hashlib.sha256(secret.encode("utf-8", "surrogateescape")).hexdigest()[:8]
+    return f"«REDACTED:{digest}»"
+
+
+# Structured, algorithmically-generated token shapes: cryptographically
+# high-entropy by construction, so fingerprinting them (see
+# `_fingerprinted_placeholder`) creates no realistic dictionary/brute-force
+# exposure.
+_STRUCTURED_TOKEN_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{4,}\b"),  # JWT
     re.compile(r"\bAKIA[0-9A-Z]{16}\b"),  # AWS access key id
     re.compile(r"\bASIA[0-9A-Z]{16}\b"),  # AWS temp access key id
@@ -41,6 +73,15 @@ _TOKEN_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"\bAIza[0-9A-Za-z_-]{35}\b"),  # Google API key
     re.compile(r"\bya29\.[0-9A-Za-z_-]{20,}\b"),  # Google OAuth access token
     re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{10,}\b"),  # Slack token
+)
+
+# Never fingerprinted, see `_fingerprinted_placeholder`: the PEM header
+# matches only the constant header LINE, never the actual key material (no
+# entropy to distinguish - every RSA key shares the identical header text),
+# and the generic key=value/JSON forms below have a VALUE that could be
+# anything, including a short, dictionary-guessable secret (a weak login
+# password under password=...).
+_UNFINGERPRINTED_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH |DSA |PGP )?PRIVATE KEY-----"),  # PEM private key
     # key=value / key: value forms for obviously sensitive keys
     re.compile(
@@ -52,6 +93,12 @@ _TOKEN_PATTERNS: tuple[re.Pattern[str], ...] = (
         r'(?i)"(?:password|passwd|pwd|secret|token|access_token|refresh_token'
         r'|api[_-]?key|client_secret|authorization)"\s*:\s*"[^"]+"'
     ),
+)
+
+# The full set, for looks_secret_shaped's "does this look like any kind of
+# secret" check - fingerprinting policy only matters at substitution time.
+_TOKEN_PATTERNS: tuple[re.Pattern[str], ...] = (
+    _STRUCTURED_TOKEN_PATTERNS + _UNFINGERPRINTED_PATTERNS
 )
 
 # Query/param/form keys whose *values* are redacted by name.
@@ -189,13 +236,21 @@ class SecretRedactor:
         # hash seeds).
         for secret in sorted(self._exact_secrets, key=len, reverse=True):
             if secret in out:
+                # Not fingerprinted: an operator-registered secret (e.g. a
+                # login password) could plausibly be short/dictionary-
+                # guessable - see _fingerprinted_placeholder's own warning.
                 out = out.replace(secret, REDACTION_PLACEHOLDER)
-        for pattern in _TOKEN_PATTERNS:
+        for pattern in _STRUCTURED_TOKEN_PATTERNS:
+            out = pattern.sub(lambda m: _fingerprinted_placeholder(m.group(0)), out)
+        for pattern in _UNFINGERPRINTED_PATTERNS:
             out = pattern.sub(REDACTION_PLACEHOLDER, out)
 
         def _maybe_redact(match: re.Match[str]) -> str:
             token = match.group(0)
-            return REDACTION_PLACEHOLDER if looks_secret_shaped(token) else token
+            # The entropy heuristic itself already requires >=20 chars from
+            # a base64/hex-ish charset at shannon_entropy>=3.5 - by
+            # construction not dictionary-guessable, safe to fingerprint.
+            return _fingerprinted_placeholder(token) if looks_secret_shaped(token) else token
 
         return _HIGH_ENTROPY_TOKEN.sub(_maybe_redact, out)
 

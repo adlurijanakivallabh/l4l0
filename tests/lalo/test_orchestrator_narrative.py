@@ -58,7 +58,12 @@ def test_a_secret_shaped_observation_is_redacted() -> None:
         },
     )
     assert jwt not in line
-    assert "«REDACTED»" in line
+    # JWTs are a structured, high-entropy token shape, so redaction.py
+    # fingerprints them (a distinguishable, still-non-reversible
+    # "«REDACTED:<digest>»" rather than the bare literal) so two different
+    # tokens don't collapse to the same redacted text - see
+    # core/redaction.py's _fingerprinted_placeholder.
+    assert "«REDACTED:" in line
 
 
 def test_a_finding_event_has_no_fabricated_agent_id() -> None:

@@ -156,6 +156,34 @@ def test_record_finding_does_not_merge_a_different_target() -> None:
     assert len(graph.nodes_of_kind(NodeKind.FINDING)) == 2
 
 
+def test_record_finding_does_not_merge_two_proofs_that_differ_only_by_an_embedded_secret() -> None:
+    """Regression: safe_target_url redacted every secret-shaped match to the
+    SAME fixed placeholder, so two exploitation proofs against otherwise-
+    identical URLs that differ only in an embedded token (e.g. an IDOR
+    proven against two different victims' password-reset links) computed
+    the identical dedup_key and silently merged into one finding node."""
+    jwt1 = (
+        "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0."
+        "dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U"
+    )
+    jwt2 = (
+        "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiI5ODc2NTQzMjEwIn0."
+        "aB1cD2eF3gH4iJ5kL6mN7oP8qR9sT0uV1wX2yZ3aB4c"
+    )
+    graph = ReachabilityGraph()
+    registry = _registry(graph)
+    registry.dispatch(
+        "record_finding",
+        _args(target=f"https://x.example.com/reset/{jwt1}", vuln_class="access-control"),
+    )
+    second = registry.dispatch(
+        "record_finding",
+        _args(target=f"https://x.example.com/reset/{jwt2}", vuln_class="access-control"),
+    )
+    assert "merged into existing finding" not in second.observation
+    assert len(graph.nodes_of_kind(NodeKind.FINDING)) == 2
+
+
 def test_record_finding_redacts_a_registered_secret_before_it_reaches_the_graph() -> None:
     shared_redactor().register_secret("unique-marker-finding-test-4f2a1")
     graph = ReachabilityGraph()
