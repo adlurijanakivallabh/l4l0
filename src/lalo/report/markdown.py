@@ -101,12 +101,22 @@ def render_finding_md(record: FindingRecord) -> str:
     if owasp:
         owasp_name = owasp_api_name_for(record.vuln_class)
         lines.append(f"**OWASP API Top 10:** {owasp}" + (f" — {owasp_name}" if owasp_name else ""))
+    confidence_line = f"**Confidence:** {record.confidence.score}/100"
+    if (
+        record.review_adjusted_score is not None
+        and record.review_adjusted_score != record.confidence.score
+    ):
+        # The adversarial review's own adjustment, distinct from the raw
+        # score above - never overwrites it, since "what did we compute
+        # before review" and "what did review conclude" are both real,
+        # separately meaningful numbers.
+        confidence_line += f" → {record.review_adjusted_score}/100 after review"
     lines += [
         f"**Target:** {record.target}" + (f" (param: `{record.param}`)" if record.param else ""),
         f"**Severity:** {record.effective_severity.upper()}"
         + (f" — _overridden: {record.override_reason}_" if record.override_reason else ""),
         f"**CVSS:** {record.cvss_score:.1f} ({record.cvss_severity}) — `{record.cvss_vector}`",
-        f"**Confidence:** {record.confidence.score}/100",
+        confidence_line,
     ]
     if record.review_verdict:
         proof = f" ({record.review_proof_level})" if record.review_proof_level else ""
@@ -293,10 +303,16 @@ def render_report_md(
         lines.append("|---|---|---|---|---|")
         for record in records:
             try:
+                confidence_cell = str(record.confidence.score)
+                if (
+                    record.review_adjusted_score is not None
+                    and record.review_adjusted_score != record.confidence.score
+                ):
+                    confidence_cell = f"{record.confidence.score} → {record.review_adjusted_score}"
                 lines.append(
                     f"| [{record.finding_id}](#{record.finding_id}) | {record.title} | "
                     f"{record.vuln_class} | {record.effective_severity.upper()} | "
-                    f"{record.confidence.score} |"
+                    f"{confidence_cell} |"
                 )
             except Exception:  # noqa: BLE001 - a malformed finding must not blank the table
                 lines.append(f"| {record.finding_id} | (failed to render) | | | |")

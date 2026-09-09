@@ -238,6 +238,24 @@ def test_the_verdict_is_persisted_onto_the_findings_own_graph_node() -> None:
     assert node["review_reasoning"] == result.reasoning == "grounded"
 
 
+def test_the_adjusted_score_is_also_persisted_onto_the_findings_own_graph_node() -> None:
+    """Regression: run_adversarial_review computes a carefully clamped
+    adjusted_score (the whole point of CLAUDE.md's "review adjusts the
+    confidence score" design) but never persisted it - report/collect.py
+    recomputes RAW confidence from scratch and the graph node never had
+    the adjustment, so every delivered report showed the pre-review number
+    regardless of verdict."""
+    provider = _FakeProvider(
+        text='{"verdict": "ruled_out", "proof_level": "L1", "reasoning": "contradicted"}'
+    )
+    graph, finding_id = _graph_with_finding()
+    confidence = compute_confidence(graph, finding_id)
+    result = run_adversarial_review(graph, finding_id, confidence, _router(provider))
+    node = graph.node(finding_id)
+    assert node["review_adjusted_score"] == result.adjusted_score
+    assert result.adjusted_score < confidence.score  # ruled_out genuinely lowers it
+
+
 def test_persisting_the_verdict_never_clobbers_the_findings_other_attributes() -> None:
     graph, finding_id = _graph_with_finding()
     confidence = compute_confidence(graph, finding_id)
@@ -293,6 +311,10 @@ def test_second_opinion_agreement_adds_a_bonus() -> None:
     )
     primary_only = min(100, confidence.score + 10)
     assert result.adjusted_score == min(100, primary_only + 5)
+    # Regression: the graph node's own review_adjusted_score must reflect
+    # the FINAL (post-second-opinion-boost) value, not whatever was set
+    # before the boost was applied.
+    assert graph.node(finding_id)["review_adjusted_score"] == result.adjusted_score
 
 
 def test_second_opinion_disagreement_never_lowers_the_score() -> None:

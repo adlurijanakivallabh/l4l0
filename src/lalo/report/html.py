@@ -123,7 +123,17 @@ def render_finding_html(record: FindingRecord) -> str:
         f"<dt>CVSS</dt><dd>{record.cvss_score:.1f} ({_e(record.cvss_severity)}) "
         f"— <code>{_e(record.cvss_vector)}</code></dd>"
     )
-    parts.append(f"<dt>Confidence</dt><dd>{record.confidence.score}/100</dd>")
+    confidence_dd = f"{record.confidence.score}/100"
+    if (
+        record.review_adjusted_score is not None
+        and record.review_adjusted_score != record.confidence.score
+    ):
+        # The adversarial review's own adjustment, distinct from the raw
+        # score above - never overwrites it, since "what did we compute
+        # before review" and "what did review conclude" are both real,
+        # separately meaningful numbers.
+        confidence_dd += f" → {record.review_adjusted_score}/100 after review"
+    parts.append(f"<dt>Confidence</dt><dd>{confidence_dd}</dd>")
     if record.review_verdict:
         proof = f" ({_e(record.review_proof_level)})" if record.review_proof_level else ""
         parts.append(f"<dt>Adversarial Review</dt><dd>{_e(record.review_verdict)}{proof}</dd>")
@@ -335,11 +345,17 @@ def render_report_html(
         )
         for record in records:
             try:
+                confidence_cell = str(record.confidence.score)
+                if (
+                    record.review_adjusted_score is not None
+                    and record.review_adjusted_score != record.confidence.score
+                ):
+                    confidence_cell = f"{record.confidence.score} → {record.review_adjusted_score}"
                 parts.append(
                     f'<tr><td><a href="#{_e(record.finding_id)}">{_e(record.finding_id)}</a></td>'
                     f"<td>{_e(record.title)}</td><td>{_e(record.vuln_class)}</td>"
                     f"<td>{_e(record.effective_severity.upper())}</td>"
-                    f"<td>{record.confidence.score}</td></tr>"
+                    f"<td>{_e(confidence_cell)}</td></tr>"
                 )
             except Exception:  # noqa: BLE001 - a malformed finding must not blank the table
                 parts.append(

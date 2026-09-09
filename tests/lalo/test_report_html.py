@@ -126,6 +126,13 @@ def test_render_finding_html_shows_review_verdict_when_present() -> None:
     assert "L3" in rendered
 
 
+def test_render_finding_html_shows_the_adjusted_score_after_review() -> None:
+    record = replace(_record(), review_verdict="ruled_out", review_adjusted_score=5)
+    rendered = render_finding_html(record)
+    assert f"{record.confidence.score}/100" in rendered
+    assert "5/100 after review" in rendered
+
+
 def test_render_finding_html_labels_exploitation_section_only_when_reproduced() -> None:
     reproduced = render_finding_html(replace(_record(), reproduced=True))
     not_reproduced = render_finding_html(replace(_record(), reproduced=False))
@@ -161,6 +168,15 @@ def test_render_report_html_includes_a_findings_overview_table() -> None:
     rendered = render_report_html([record], coverage)
     assert "Findings Overview" in rendered
     assert '<a href="#finding-1">finding-1</a>' in rendered
+
+
+def test_render_report_html_overview_table_shows_the_adjusted_score() -> None:
+    record = replace(
+        _record(), finding_id="finding-1", review_verdict="ruled_out", review_adjusted_score=5
+    )
+    coverage = CoverageSummary(assessed=[], not_assessed=[])
+    rendered = render_report_html([record], coverage)
+    assert f"{record.confidence.score} → 5" in rendered
 
 
 def test_render_report_html_is_well_formed_and_states_findings_count() -> None:

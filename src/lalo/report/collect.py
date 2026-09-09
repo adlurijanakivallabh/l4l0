@@ -69,6 +69,15 @@ class FindingRecord:
     override_reason: str | None = None
     review_verdict: str | None = None
     review_proof_level: str | None = None
+    # None when never reviewed, same fallback shape as review_verdict/
+    # review_proof_level above - an audit found run_adversarial_review
+    # computed this (the whole point of CLAUDE.md's "review adjusts the
+    # confidence score" design) but never persisted it anywhere, so every
+    # report showed the raw, pre-review `confidence.score` regardless of
+    # verdict. Deliberately a SEPARATE field from `confidence` (the raw
+    # score), never overwriting it - a renderer decides how to present
+    # both, not this module.
+    review_adjusted_score: int | None = None
     dedup_key: str = ""
     status: str = "open"
     source_location: str | list[dict[str, str]] | None = None
@@ -112,6 +121,7 @@ def collect_findings(graph: ReachabilityGraph) -> list[FindingRecord]:
                 identities_confirmed=list(node.get("identities_confirmed", [])),
                 review_verdict=node.get("review_verdict"),
                 review_proof_level=node.get("review_proof_level"),
+                review_adjusted_score=node.get("review_adjusted_score"),
                 dedup_key=dedup_key(vuln_class, target, param),
                 source_location=node.get("source_location"),
                 prerequisites=str(node.get("prerequisites", "")),

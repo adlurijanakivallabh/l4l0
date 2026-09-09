@@ -1513,6 +1513,12 @@ class ScanRunner:
                             review_verdict=ReviewVerdict.OPEN_PROOF_GAP.value,
                             review_proof_level="L1",
                             review_reasoning=reasoning,
+                            # No real adjustment happened (the review itself
+                            # crashed) - mirrors run_adversarial_review's own
+                            # now-fixed persistence of this field exactly,
+                            # so a report never shows a stale/missing
+                            # adjusted score for a degraded review either.
+                            review_adjusted_score=confidence.score,
                         )
                         review = ReviewResult(
                             verdict=ReviewVerdict.OPEN_PROOF_GAP,

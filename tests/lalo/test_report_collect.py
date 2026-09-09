@@ -126,6 +126,7 @@ def test_a_never_reviewed_finding_has_no_review_verdict() -> None:
     record = collect_findings(graph)[0]
     assert record.review_verdict is None
     assert record.review_proof_level is None
+    assert record.review_adjusted_score is None
 
 
 def test_collect_findings_populates_dedup_key_from_vuln_class_target_and_param() -> None:
@@ -159,6 +160,24 @@ def test_a_persisted_review_verdict_is_read_back_onto_the_record() -> None:
     record = collect_findings(graph)[0]
     assert record.review_verdict == "confirmed"
     assert record.review_proof_level == "L3"
+
+
+def test_a_persisted_adjusted_score_is_read_back_onto_the_record() -> None:
+    """Regression: run_adversarial_review computed a clamped adjusted_score
+    but never persisted it anywhere - this confirms collect_findings reads
+    it back once the graph node actually carries it."""
+    graph = ReachabilityGraph()
+    _file_finding(graph)
+    finding_id = collect_findings(graph)[0].finding_id
+    graph.add_node(
+        finding_id,
+        NodeKind.FINDING,
+        review_verdict="ruled_out",
+        review_proof_level="L1",
+        review_adjusted_score=12,
+    )
+    record = collect_findings(graph)[0]
+    assert record.review_adjusted_score == 12
 
 
 # --- build_executive_summary ----------------------------------------------

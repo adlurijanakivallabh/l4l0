@@ -118,6 +118,25 @@ def test_render_finding_md_shows_review_verdict_when_present() -> None:
     assert "L3" in rendered
 
 
+def test_render_finding_md_shows_the_adjusted_score_after_review() -> None:
+    """Regression: a review that genuinely changed the confidence score
+    used to render invisibly - the finding always showed only its raw,
+    pre-review confidence.score, regardless of a ruled_out/confirmed
+    verdict having moved it."""
+    record = replace(_record(), review_verdict="ruled_out", review_adjusted_score=5)
+    rendered = render_finding_md(record)
+    assert f"{record.confidence.score}/100" in rendered
+    assert "5/100 after review" in rendered
+
+
+def test_render_finding_md_omits_the_arrow_when_the_adjustment_is_a_no_op() -> None:
+    record = replace(
+        _record(), review_verdict="confirmed", review_adjusted_score=_record().confidence.score
+    )
+    rendered = render_finding_md(record)
+    assert "after review" not in rendered
+
+
 def test_render_report_md_includes_a_findings_overview_table() -> None:
     record = replace(_record(), finding_id="finding-1", title="SQLi", vuln_class="sql-injection")
     coverage = CoverageSummary(assessed=[], not_assessed=[])
@@ -127,6 +146,16 @@ def test_render_report_md_includes_a_findings_overview_table() -> None:
     assert "finding-1" in overview
     assert "SQLi" in overview
     assert "sql-injection" in overview
+
+
+def test_render_report_md_overview_table_shows_the_adjusted_score() -> None:
+    record = replace(
+        _record(), finding_id="finding-1", review_verdict="ruled_out", review_adjusted_score=5
+    )
+    coverage = CoverageSummary(assessed=[], not_assessed=[])
+    rendered = render_report_md([record], coverage)
+    overview, _, _rest = rendered.partition("## Findings\n")
+    assert f"{record.confidence.score} → 5" in overview
 
 
 def test_render_finding_md_labels_exploitation_section_only_when_reproduced() -> None:

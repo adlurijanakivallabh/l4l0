@@ -194,6 +194,14 @@ def run_adversarial_review(
         if second.verdict == result.verdict:
             boosted = min(100, result.adjusted_score + _SECOND_OPINION_AGREEMENT_BONUS)
             result = replace(result, adjusted_score=boosted)
+    # Set from the FINAL `result` (after any second-opinion boost above),
+    # not the initial attrs dict built before it - an audit found this
+    # field was entirely missing before: run_adversarial_review computed a
+    # carefully clamped adjusted_score (the whole point of CLAUDE.md's
+    # "review adjusts the confidence score" design) but never persisted it
+    # anywhere, so report/collect.py could only ever show the raw,
+    # pre-review confidence regardless of verdict.
+    attrs["review_adjusted_score"] = result.adjusted_score
     graph.add_node(finding_id, NodeKind.FINDING, **attrs)
     return result
 
