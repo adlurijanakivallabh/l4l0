@@ -16,10 +16,18 @@ succeeds, per completion call:
 
 1. **`opencodex`** — `OPENCODEX_API_KEY` (a local gateway, `http://localhost:10100`
    by default; override with `OPENCODEX_BASE_URL`/`OPENCODEX_MODEL`)
-2. **`anthropic`** — `ANTHROPIC_API_KEY` (override the model with `ANTHROPIC_MODEL`)
-3. **`openai`** — `OPENAI_API_KEY` (override with `OPENAI_MODEL`)
-4. **`gemini`** — `GEMINI_API_KEY` (override with `GEMINI_MODEL`)
-5. **`custom`** — any other OpenAI-compatible endpoint: `LALO_CUSTOM_API_KEY` +
+2. **`musespark`** — `MUSE_SPARK_API_KEY` (a hosted gateway speaking the OpenAI
+   Responses API, not Chat Completions — override with
+   `MUSE_SPARK_BASE_URL`/`MUSE_SPARK_MODEL`)
+3. **`anthropic`** — `ANTHROPIC_API_KEY` (override the model with `ANTHROPIC_MODEL`)
+4. **`bedrock_anthropic`** — `AWS_BEARER_TOKEN_BEDROCK` (an Amazon Bedrock API
+   key/bearer token from the Bedrock console, not an IAM secret key — reaches
+   Claude via Bedrock's `/anthropic/v1/messages` route, no AWS SigV4 signing
+   needed; override with `LALO_BEDROCK_BASE_URL`/`LALO_BEDROCK_MODEL`)
+5. **`openai`** — `OPENAI_API_KEY` (override with `OPENAI_MODEL`)
+6. **`gemini`** — `GEMINI_API_KEY` (override with `GEMINI_MODEL`)
+7. **`xai`** — `XAI_API_KEY` (Grok, override with `XAI_MODEL`)
+8. **`custom`** — any other OpenAI-compatible endpoint: `LALO_CUSTOM_API_KEY` +
    `LALO_CUSTOM_BASE_URL` + `LALO_CUSTOM_MODEL` (all three required)
 
 You don't need to pick one — set as many as you have, and L4L0 fails over
@@ -82,6 +90,79 @@ totals from the current set of per-step attempts — a step's second
 attempt subtracts its own prior contribution back out before adding the
 new one, so only the latest attempt at any given step is ever reflected
 in the ledger, however many times a crash forces it to redo.
+
+**Resuming a run that already finished cleanly is a pure no-op**, not a
+wasted re-run: if the run directory already holds a report whose own
+manifest (`report_manifest.json`, a per-format SHA-256 digest) still
+verifies against the files on disk, the resumed run adopts that report
+directly — no fresh mission turn, no re-running confidence/adversarial
+review for every already-reviewed finding, no report rewrite. The GUI's
+Resume button says "Resume (already finished)" for exactly this case, so
+it's clear in advance that clicking it won't redo any real work.
+
+**Every operational tuning knob is adjustable on resume, not just on a
+fresh launch** — `max_steps`/`spawn_max_depth`/`budget_ceiling`/
+`cost_limit_usd`/`max_duration_s`/`redact_findings`/
+`fail_on_unreachable_targets`/`enable_second_opinion_review` all read from
+whatever you set in the advanced-options panel (or the request body) at
+resume time, not from the original run. This is the whole point of
+`cost_limit_usd`/`max_duration_s` being resumable at all: a scan that hit
+a $5 cost ceiling can be resumed with a raised (or removed) one instead of
+being permanently stuck. Only the engagement's own locked fields —
+mission, targets, exclusions, rules of engagement, egress-lock — stay
+pinned to the original run and can't be changed on resume.
+
+## Cost and wall-clock ceilings
+
+Two opt-in ceilings exist alongside the older `max_steps`/`budget_ceiling`
+(turn-count) knobs, both off (unbounded) by default:
+
+- **Cost limit (USD)** (`cost_limit_usd`) — a hard-dollar ceiling compared
+  against the SAME lifetime usage ledger real completions already record
+  to. Meaningless unless usage recording is active, which the GUI's own
+  scan-launch path already opts into automatically.
+- **Max duration (seconds)** (`max_duration_s`) — a wall-clock ceiling,
+  checked the same cooperative way a manual stop is, independent of how
+  many steps a scan has actually used (a mission spending most of its
+  steps on slow network waits can otherwise run a long time while
+  technically still "within budget").
+
+Both are set from the GUI's Advanced Options panel (or the `/scan`
+request body directly) and are visible there on every launch, including a
+resume — see above.
+
+## The narrative log
+
+Every run's raw event stream (`events.jsonl`) is also rendered once, at
+scan completion, into a plaintext `narrative.log` — one line per event,
+prefixed with the real agent that did it (`[agent-3] tool_call: http GET
+https://...`), not just the display name `"root"`. It's meant to actually
+be read top to bottom, unlike the raw JSON stream. Find it as a separate
+"Narrative" link next to each run's "Report" link in the GUI's Past Runs
+panel, or fetch it directly at `/runs/{run_id}/report/narrative`.
+
+## Debugging a failed run's container
+
+By default the disposable per-scan container is removed the moment a scan
+stops, success or failure alike. Set `keep_on_failure=True` on
+`RuntimeConfig` (a Python-API-only knob today, not GUI-exposed) to skip
+that removal specifically when the run being torn down actually raised —
+a successful run is always removed exactly as before regardless of this
+flag. When it fires, the log names the real container so you can inspect
+it (`docker logs <name>`) and remove it yourself (`docker rm -f <name>`)
+when you're done.
+
+## Login flows that email a code instead of returning one
+
+A target whose second factor (or only login mechanism) is an emailed
+one-time code or magic link — rather than something returned directly in
+the HTTP response — has its own tool: `fetch_email_code` connects to a
+pre-configured IMAP mailbox (`EmailAccount`: address/password/imap_host,
+Python-API-only today, not GUI-exposed), reads the most recent message
+matching an optional subject/sender filter, and extracts a code or URL via
+your own regex. Configure it the same way `identities`/`login_schemes`
+already are — as a `ScanConfig.email_accounts` entry — and the agent can
+call it directly whenever a login flow needs it.
 
 ## Gaps this project intentionally does not close
 
