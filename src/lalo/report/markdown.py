@@ -259,6 +259,21 @@ def render_report_md(
             lines.append(mermaid)
             lines.append("")
 
+    if records:
+        lines.append("## Findings Overview\n")
+        lines.append("| ID | Title | Class | Severity | Confidence |")
+        lines.append("|---|---|---|---|---|")
+        for record in records:
+            try:
+                lines.append(
+                    f"| [{record.finding_id}](#{record.finding_id}) | {record.title} | "
+                    f"{record.vuln_class} | {record.effective_severity.upper()} | "
+                    f"{record.confidence.score} |"
+                )
+            except Exception:  # noqa: BLE001 - a malformed finding must not blank the table
+                lines.append(f"| {record.finding_id} | (failed to render) | | | |")
+        lines.append("")
+
     lines.append("## Findings\n")
     if not records:
         lines.append("No findings recorded.")

@@ -66,6 +66,10 @@ pre { background: #f4f4f4; padding: 8px; white-space: pre-wrap; word-break: brea
   margin: 12px 0 24px; background: #fafafa; }
 .cover-page p { margin: 4px 0; }
 .confidentiality { color: #a33; font-weight: bold; font-style: italic; }
+.overview-table { border-collapse: collapse; width: 100%; margin: 8px 0 20px; }
+.overview-table th, .overview-table td { border: 1px solid #ddd; padding: 6px 10px;
+  text-align: left; font-size: 10pt; }
+.overview-table th { background: #f4f4f4; }
 """
 
 _KNOWN_SEVERITIES = frozenset({"critical", "high", "medium", "low", "info"})
@@ -294,6 +298,26 @@ def render_report_html(
         parts.append("<ul>")
         parts += [f"<li>{' → '.join(_e(title) for title in chain.titles)}</li>" for chain in chains]
         parts.append("</ul>")
+
+    if records:
+        parts.append("<h2>Findings Overview</h2>")
+        parts.append(
+            '<table class="overview-table"><tr><th>ID</th><th>Title</th><th>Class</th>'
+            "<th>Severity</th><th>Confidence</th></tr>"
+        )
+        for record in records:
+            try:
+                parts.append(
+                    f'<tr><td><a href="#{_e(record.finding_id)}">{_e(record.finding_id)}</a></td>'
+                    f"<td>{_e(record.title)}</td><td>{_e(record.vuln_class)}</td>"
+                    f"<td>{_e(record.effective_severity.upper())}</td>"
+                    f"<td>{record.confidence.score}</td></tr>"
+                )
+            except Exception:  # noqa: BLE001 - a malformed finding must not blank the table
+                parts.append(
+                    f"<tr><td>{_e(record.finding_id)}</td><td>(failed to render)</td></tr>"
+                )
+        parts.append("</table>")
 
     parts.append("<h2>Findings</h2>")
     if not records:

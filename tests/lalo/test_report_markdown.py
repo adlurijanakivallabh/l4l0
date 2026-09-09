@@ -117,6 +117,17 @@ def test_render_finding_md_shows_review_verdict_when_present() -> None:
     assert "L3" in rendered
 
 
+def test_render_report_md_includes_a_findings_overview_table() -> None:
+    record = replace(_record(), finding_id="finding-1", title="SQLi", vuln_class="sql-injection")
+    coverage = CoverageSummary(assessed=[], not_assessed=[])
+    rendered = render_report_md([record], coverage)
+    assert "## Findings Overview" in rendered
+    overview, _, _rest = rendered.partition("## Findings\n")
+    assert "finding-1" in overview
+    assert "SQLi" in overview
+    assert "sql-injection" in overview
+
+
 def test_render_report_md_states_findings_count_and_coverage() -> None:
     record = _record()
     coverage = CoverageSummary(assessed=["sql-injection"], not_assessed=["xss"])
