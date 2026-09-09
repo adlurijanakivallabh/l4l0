@@ -1884,6 +1884,108 @@ def test_scan_runner_browser_login_preflight_fails_when_success_url_is_never_rea
         ScanRunner(config, env={"ANTHROPIC_API_KEY": "sk-test"}).run()
 
 
+def _fake_browser_that_fails_to_fill(*, fail_field: str) -> type:
+    """A fake BrowserSession whose fill() reports ok=False for exactly one
+    selector - LoginScheme's default username_field/password_field are the
+    plain names "username"/"password", matched against the `#{field}`
+    selector _browser_login builds."""
+
+    class _FakeBrowser:
+        def __init__(self, scope: object = None) -> None:
+            pass
+
+        def navigate(self, url: str) -> BrowserActionResult:
+            return BrowserActionResult(ok=True, observation="")
+
+        def fill(self, selector: str, value: str) -> BrowserActionResult:
+            if selector == f"#{fail_field}":
+                return BrowserActionResult(ok=False, observation="element not found")
+            return BrowserActionResult(ok=True, observation="")
+
+        def press(self, selector: str, key: str) -> BrowserActionResult:
+            return BrowserActionResult(ok=True, observation="")
+
+        def current_url(self) -> str:
+            return "https://example.com/dashboard"
+
+        def close(self) -> None:
+            pass
+
+    return _FakeBrowser
+
+
+def test_scan_runner_browser_login_preflight_fails_when_the_username_field_fails_to_fill(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression: _browser_login's `if not fill_username.ok: raise ...`
+    check had zero test coverage - every existing fake fill() unconditionally
+    returned ok=True, so reverting that check to a plain, unchecked
+    browser.fill(...) call would pass the whole suite undetected, letting a
+    stale username selector silently proceed straight to submitting the
+    password field alone."""
+    monkeypatch.setattr(scan_module, "docker_available", lambda: True)
+    monkeypatch.setattr(scan_module, "RuntimeContainer", _FakeContainer)
+    monkeypatch.setattr(
+        scan_module, "BrowserSession", _fake_browser_that_fails_to_fill(fail_field="username")
+    )
+    router = ModelRouter(
+        providers={"fake": _ScriptedProvider(_respond)},
+        routes={"reasoning": ("fake",), "review": ("fake",)},
+        default_route=("fake",),
+    )
+    monkeypatch.setattr(scan_module, "build_router", lambda _settings: router)
+
+    config = ScanConfig(
+        mission="find a bug",
+        target_specs=["example.com"],
+        run_dir=tmp_path / "run",
+        identities={"alice": Identity("alice", "alice", Credential(CredentialKind.PASSWORD, "x"))},
+        login_schemes={
+            "sso": LoginScheme(
+                browser_url="https://example.com/login",
+                success_url_contains="/dashboard",
+            )
+        },
+        login_preflight_pairs=[("alice", "sso")],
+        fail_on_broken_login=True,
+    )
+    with pytest.raises(LoginFailedError, match="username field"):
+        ScanRunner(config, env={"ANTHROPIC_API_KEY": "sk-test"}).run()
+
+
+def test_scan_runner_browser_login_preflight_fails_when_the_password_field_fails_to_fill(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(scan_module, "docker_available", lambda: True)
+    monkeypatch.setattr(scan_module, "RuntimeContainer", _FakeContainer)
+    monkeypatch.setattr(
+        scan_module, "BrowserSession", _fake_browser_that_fails_to_fill(fail_field="password")
+    )
+    router = ModelRouter(
+        providers={"fake": _ScriptedProvider(_respond)},
+        routes={"reasoning": ("fake",), "review": ("fake",)},
+        default_route=("fake",),
+    )
+    monkeypatch.setattr(scan_module, "build_router", lambda _settings: router)
+
+    config = ScanConfig(
+        mission="find a bug",
+        target_specs=["example.com"],
+        run_dir=tmp_path / "run",
+        identities={"alice": Identity("alice", "alice", Credential(CredentialKind.PASSWORD, "x"))},
+        login_schemes={
+            "sso": LoginScheme(
+                browser_url="https://example.com/login",
+                success_url_contains="/dashboard",
+            )
+        },
+        login_preflight_pairs=[("alice", "sso")],
+        fail_on_broken_login=True,
+    )
+    with pytest.raises(LoginFailedError, match="password field"):
+        ScanRunner(config, env={"ANTHROPIC_API_KEY": "sk-test"}).run()
+
+
 def test_scan_runner_browser_login_preflight_stays_advisory_on_an_unexpected_exception(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
