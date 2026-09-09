@@ -130,7 +130,11 @@ class AnthropicProvider:
             raise ProviderUnavailableError(type(exc).__name__, provider=self.name) from exc
 
         if resp.status_code in _RETRYABLE_STATUS or resp.status_code >= 400:
-            raise ProviderUnavailableError(f"http {resp.status_code}", provider=self.name)
+            raise ProviderUnavailableError(
+                f"http {resp.status_code}",
+                provider=self.name,
+                retryable=resp.status_code not in (401, 403),
+            )
 
         data = resp.json()
         if data.get("stop_reason") == "refusal":
@@ -204,7 +208,11 @@ class _OpenAIStyleProvider:
         except httpx.HTTPError as exc:
             raise ProviderUnavailableError(type(exc).__name__, provider=self.name) from exc
         if resp.status_code in _RETRYABLE_STATUS or resp.status_code >= 400:
-            raise ProviderUnavailableError(f"http {resp.status_code}", provider=self.name)
+            raise ProviderUnavailableError(
+                f"http {resp.status_code}",
+                provider=self.name,
+                retryable=resp.status_code not in (401, 403),
+            )
         result: dict[str, Any] = resp.json()
         return result
 

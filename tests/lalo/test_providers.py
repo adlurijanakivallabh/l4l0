@@ -146,6 +146,45 @@ def test_a_definitive_4xx_is_never_retried() -> None:
     assert len(calls) == 1
 
 
+def test_a_401_response_raises_a_non_retryable_provider_unavailable_error() -> None:
+    def unauthorized(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, json={})
+
+    provider = AnthropicProvider(
+        "k", model="m", client=httpx.Client(transport=httpx.MockTransport(unauthorized))
+    )
+    with pytest.raises(ProviderUnavailableError) as exc_info:
+        provider.complete(CompletionRequest(prompt="x"))
+    assert exc_info.value.retryable is False
+
+
+def test_a_403_response_raises_a_non_retryable_provider_unavailable_error() -> None:
+    def forbidden(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(403, json={})
+
+    provider = AnthropicProvider(
+        "k", model="m", client=httpx.Client(transport=httpx.MockTransport(forbidden))
+    )
+    with pytest.raises(ProviderUnavailableError) as exc_info:
+        provider.complete(CompletionRequest(prompt="x"))
+    assert exc_info.value.retryable is False
+
+
+def test_a_503_response_still_raises_a_retryable_provider_unavailable_error() -> None:
+    def bad(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(503, json={})
+
+    provider = AnthropicProvider(
+        "k",
+        model="m",
+        client=httpx.Client(transport=httpx.MockTransport(bad)),
+        sleep=lambda _: None,
+    )
+    with pytest.raises(ProviderUnavailableError) as exc_info:
+        provider.complete(CompletionRequest(prompt="x"))
+    assert exc_info.value.retryable is True
+
+
 def test_openai_compatible_retries_a_retryable_status_before_failing_over() -> None:
     calls = []
 

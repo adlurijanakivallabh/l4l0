@@ -492,6 +492,14 @@ class AgentLoop:
         # can't make the batch-to-summarize grow without bound forever).
         self._history_summary = ""
         self._summarized_through = 0
+        # Set by _complete() right before it returns None on a total
+        # provider-chain failure, read by _retry_through_provider_outage()
+        # to skip its entire wait-and-retry schedule when every provider in
+        # the chain failed non-retryably (a 401/403 - see
+        # ProviderUnavailableError.retryable) - no amount of waiting fixes a
+        # revoked credential. False by default so a loop that never hits
+        # _complete's failure branch behaves exactly as before this feature.
+        self._last_failure_non_retryable = False
 
     def _emit(self, event: str, payload: dict[str, object]) -> None:
         if self.on_event is not None:
@@ -550,7 +558,8 @@ class AgentLoop:
             response = self.router.complete(
                 self.config.role, CompletionRequest(prompt=prompt, system=effective_system)
             )
-        except AllProvidersFailedError:
+        except AllProvidersFailedError as exc:
+            self._last_failure_non_retryable = exc.all_non_retryable
             return None
         if self.usage_path is not None:
             try:
@@ -601,8 +610,15 @@ class AgentLoop:
         of looking hung. Returns ``None`` (never raises) if every retry in
         the schedule also failed, or if cancelled partway through - either
         way ``run()``'s own caller treats that identically to the original,
-        unretried failure.
+        unretried failure. Also returns ``None`` immediately, skipping the
+        entire wait-and-retry schedule, when the failure that triggered this
+        call was non-retryable (every provider in the chain failed with a
+        401/403 - see ``_last_failure_non_retryable``): no amount of waiting
+        fixes a revoked credential, so burning the full backoff schedule on
+        it would only delay surfacing the real failure.
         """
+        if self._last_failure_non_retryable:
+            return None
         for attempt in range(self.config.provider_outage_max_retries):
             delay = self.config.provider_outage_base_delay_s * (2**attempt)
             self._emit("provider_outage_retry", {"attempt": attempt + 1, "delay_s": delay})
@@ -612,6 +628,8 @@ class AgentLoop:
             if response is not None:
                 self._emit("provider_outage_recovered", {"attempt": attempt + 1})
                 return response
+            if self._last_failure_non_retryable:
+                return None
         return None
 
     def _compact_history(self, entries: list[dict[str, object]]) -> str:

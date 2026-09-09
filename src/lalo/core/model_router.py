@@ -119,7 +119,8 @@ class ModelRouter:
             try:
                 response = provider.complete(request)
             except (ProviderRefusalError, ProviderUnavailableError) as exc:
-                failures.append((name, exc.code))
+                retryable = getattr(exc, "retryable", True)
+                failures.append((name, exc.code if retryable else f"{exc.code}_non_retryable"))
                 _log.warning(
                     "provider %s failed (%s) for role %s; failing over", name, exc.code, role
                 )

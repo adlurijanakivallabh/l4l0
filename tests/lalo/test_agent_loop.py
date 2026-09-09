@@ -1099,6 +1099,35 @@ def test_provider_outage_retry_exhausts_every_attempt_before_giving_up() -> None
     assert router.calls == 4
 
 
+def test_retry_through_provider_outage_skips_the_wait_when_every_failure_is_non_retryable() -> None:
+    """A 401/403-shaped failure (see ProviderUnavailableError.retryable)
+    stays invalid no matter how long the outage-retry backoff waits -
+    _retry_through_provider_outage must return None immediately, with zero
+    sleeps and zero further _complete calls, rather than burning the full
+    schedule on a failure no amount of retrying can fix."""
+    registry = ToolRegistry([])
+    router = _scripted(
+        [
+            AllProvidersFailedError(
+                "unauthorized",
+                role="reasoning",
+                failures=[("fake", "provider_unavailable_non_retryable")],
+            )
+        ]
+    )
+    sleeps: list[float] = []
+    loop = AgentLoop(
+        router,  # type: ignore[arg-type]
+        registry,
+        system_prompt="",
+        sleep=sleeps.append,
+    )
+    result = loop.run("mission")
+    assert result.stop_reason == "provider_failed"
+    assert router.calls == 1  # the initial attempt only - no retry calls at all
+    assert sleeps == []
+
+
 def test_provider_outage_retry_count_is_configurable() -> None:
     """AgentConfig.provider_outage_max_retries raises (or lowers) the
     default ~3.5-minute horizon for a scan whose own wall-clock budget can

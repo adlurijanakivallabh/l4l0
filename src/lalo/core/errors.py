@@ -48,10 +48,18 @@ class ProviderRefusalError(ProviderError):
 class ProviderUnavailableError(ProviderError):
     """The provider is unreachable / transiently failing (transport, 5xx, rate limit).
 
-    Failover-eligible, like :class:`ProviderRefusalError`.
+    Failover-eligible, like :class:`ProviderRefusalError`. ``retryable``
+    (default True) is False for a failure no amount of waiting can fix -
+    currently just an authentication/authorization failure (401/403): a
+    revoked or invalid credential stays invalid no matter how long
+    :meth:`~lalo.agent.loop.AgentLoop._retry_through_provider_outage` waits.
     """
 
     code = "provider_unavailable"
+
+    def __init__(self, message: str = "", *, provider: str = "", retryable: bool = True) -> None:
+        super().__init__(message, provider=provider)
+        self.retryable = retryable
 
 
 class AllProvidersFailedError(ProviderError):
@@ -82,6 +90,20 @@ class AllProvidersFailedError(ProviderError):
             detail = "; ".join(f"{name}: {reason}" for name, reason in self.failures)
             message = f"{message} ({detail})" if message else detail
         super().__init__(message, code=self.code)
+
+    @property
+    def all_non_retryable(self) -> bool:
+        """True only if every single failure this run collected was
+        non-retryable (see :class:`ProviderUnavailableError`'s own
+        ``retryable`` flag) - used to skip the outer outage-retry wait
+        entirely when nothing about it could possibly succeed, never to
+        suppress or hide any failure detail. ``failures``' own ``code``
+        element (see :meth:`~lalo.core.model_router.ModelRouter.complete`)
+        carries this as a ``"_non_retryable"`` suffix rather than widening
+        the tuple shape every existing consumer already destructures."""
+        return bool(self.failures) and all(
+            code.endswith("_non_retryable") for _name, code in self.failures
+        )
 
 
 class ScopeError(LaloError):
