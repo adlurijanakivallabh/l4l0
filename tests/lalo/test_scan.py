@@ -2511,3 +2511,50 @@ def test_scan_runner_dispatches_a_configured_mcp_connection(
     transcript = outcome.result.transcript
     mcp_call = next(entry for entry in transcript if entry["tool"] == "mcp_burp")
     assert mcp_call["observation"] == "mcp connection reachable"
+
+
+def test_a_deterministically_failing_review_does_not_crash_loop_a_resume(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Real gap this closes: a finding whose review call always raises used to
+    crash the whole run every single time - including on every subsequent
+    resume, since the review loop was never journaled. This proves both
+    halves of the fix: the run reaches a real terminal status instead of
+    crashing, and a second resume does not re-spend an LLM call reviewing
+    the same finding twice."""
+    monkeypatch.setattr(scan_module, "docker_available", lambda: True)
+    monkeypatch.setattr(scan_module, "RuntimeContainer", _FakeContainer)
+
+    review_call_count = 0
+
+    def _respond(_call_index: int, prompt: str) -> str:
+        nonlocal review_call_count
+        if "FINDING TO REVIEW" in prompt:
+            review_call_count += 1
+            return "CRASH"
+        return _record_finding_call() if "HISTORY" not in prompt else _finish_call()
+
+    router = ModelRouter(
+        providers={"fake": _CrashingProvider(_respond)},
+        routes={"reasoning": ("fake",), "review": ("fake",)},
+        default_route=("fake",),
+    )
+    monkeypatch.setattr(scan_module, "build_router", lambda _settings: router)
+
+    run_dir = tmp_path / "run"
+    config = ScanConfig(mission="find a bug", target_specs=["example.com"], run_dir=run_dir)
+    outcome = ScanRunner(config, env={"ANTHROPIC_API_KEY": "sk-test"}).run()
+
+    # The run reaches a real terminal outcome - it does NOT propagate the
+    # review crash as an unhandled exception out of run().
+    assert outcome.status is RunStatus.COMPLETED
+    graph = ReachabilityGraph.load(run_dir / "graph.json")
+    (finding_id,) = graph.nodes_of_kind(NodeKind.FINDING)
+    assert graph.node(finding_id)["review_verdict"] == "open_proof_gap"
+    first_run_review_calls = review_call_count
+
+    # Resuming must not re-spend a review call for the same, already-
+    # (degraded-)reviewed finding.
+    outcome2 = ScanRunner(config, env={"ANTHROPIC_API_KEY": "sk-test"}).run()
+    assert outcome2.status is RunStatus.COMPLETED
+    assert review_call_count == first_run_review_calls

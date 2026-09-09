@@ -147,6 +147,7 @@ from .core.errors import (
     ResumeConfigMismatchError,
     TargetUnreachableError,
 )
+from .core.logging import get_logger
 from .core.model_router import ModelRouter
 from .core.pricing import PricingTable
 from .core.providers import build_router, verify_router
@@ -165,7 +166,7 @@ from .execution.tool import (
     build_ws_fire_tool,
 )
 from .findings.confidence import compute_confidence
-from .findings.review import run_adversarial_review
+from .findings.review import ReviewResult, ReviewVerdict, run_adversarial_review
 from .findings.tool import build_record_finding_tool
 from .graph.model import NodeKind, ReachabilityGraph
 from .graph.tool import build_note_tool, build_query_graph_tool
@@ -199,6 +200,8 @@ if TYPE_CHECKING:
 
 _TERMINAL_SUCCESS = frozenset({"finished", "max_steps_reserved_turn"})
 _TERMINAL_BUDGET = frozenset({"budget_exhausted", "subagent_reserve_exhausted"})
+
+_log = get_logger("lalo.scan")
 
 
 @dataclass
@@ -1330,14 +1333,58 @@ class ScanRunner:
             )
         else:
             for finding_id in graph.nodes_of_kind(NodeKind.FINDING):
-                confidence = compute_confidence(graph, finding_id)
-                review = run_adversarial_review(
-                    graph,
-                    finding_id,
-                    confidence,
-                    router,
-                    second_opinion=self.config.enable_second_opinion_review,
-                )
+
+                def _review_once(_finding_id: str = finding_id) -> dict[str, object]:
+                    confidence = compute_confidence(graph, _finding_id)
+                    try:
+                        review = run_adversarial_review(
+                            graph,
+                            _finding_id,
+                            confidence,
+                            router,
+                            second_opinion=self.config.enable_second_opinion_review,
+                        )
+                    except Exception as exc:  # noqa: BLE001 - one finding's review
+                        # must never crash the whole run, on a fresh run or any
+                        # future resume: run_adversarial_review already degrades a
+                        # total provider failure or an unparseable response to
+                        # open_proof_gap internally (and durably writes that verdict
+                        # onto the graph node itself before returning) - this widens
+                        # the exact same degrade-don't-crash contract to cover the
+                        # one path run_adversarial_review's own internals don't
+                        # already catch: itself raising, violating its own stated
+                        # "never raises" contract. Mirrors review.py's own private
+                        # _fallback() shape exactly (proof_level="L1", same
+                        # no-real-proof sentinel), since nothing here has a real
+                        # proof level or adjusted score to report either.
+                        _log.warning(
+                            "review crashed for finding %s (%s: %s) - degrading to open_proof_gap",
+                            _finding_id,
+                            type(exc).__name__,
+                            exc,
+                        )
+                        reasoning = f"review crashed: {type(exc).__name__}: {exc}"
+                        graph.add_node(
+                            _finding_id,
+                            NodeKind.FINDING,
+                            review_verdict=ReviewVerdict.OPEN_PROOF_GAP.value,
+                            review_proof_level="L1",
+                            review_reasoning=reasoning,
+                        )
+                        review = ReviewResult(
+                            verdict=ReviewVerdict.OPEN_PROOF_GAP,
+                            proof_level="L1",
+                            reasoning=reasoning,
+                            adjusted_score=confidence.score,
+                        )
+                    return {"confidence_score": confidence.score, "verdict": review.verdict.value}
+
+                # Journaled per finding, not per agent step - a finding's
+                # review is a fact about that finding, independent of which
+                # agent/step recorded it, so it gets its own namespace rather
+                # than reusing the f"{agent_key}:{step}" convention every
+                # OTHER journal.run_once call in this codebase uses.
+                review_result = journal.run_once(f"review:{finding_id}", _review_once)
                 node = graph.node(finding_id)
                 self._emit(
                     "finding",
@@ -1345,8 +1392,8 @@ class ScanRunner:
                         "finding_id": finding_id,
                         "title": node.get("title", finding_id),
                         "severity": node.get("cvss_severity", "info"),
-                        "confidence": confidence.score,
-                        "verdict": review.verdict.value,
+                        "confidence": review_result["confidence_score"],
+                        "verdict": review_result["verdict"],
                     },
                 )
 
