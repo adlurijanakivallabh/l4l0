@@ -1520,6 +1520,26 @@ class ScanRunner:
                             reasoning=reasoning,
                             adjusted_score=confidence.score,
                         )
+                    # Saved here, not only via the final graph.save() at the
+                    # end of this method - run_adversarial_review's own
+                    # graph.add_node() call (review_verdict/proof_level/
+                    # reasoning) only ever mutates the in-memory graph. An
+                    # audit found a crash anywhere in the finalization
+                    # window between here and that final save silently lost
+                    # every review already computed: on resume, journal.
+                    # run_once's own cache hit skips re-calling this closure
+                    # entirely (correctly, to avoid re-paying for the same
+                    # LLM call), but the freshly-reloaded graph.json never
+                    # had the mutation persisted, so it's gone from the
+                    # final report with no trace. Saved BEFORE this closure
+                    # returns (so journal.record() for this key, which
+                    # run_once calls right after fn() returns, only ever
+                    # follows a save that already landed) - the same
+                    # "durably write first" ordering DurableJournal.record()
+                    # itself already uses, so the only possible failure mode
+                    # on a crash between this save and the journal write is a
+                    # harmless re-review, never a silently lost one.
+                    graph.save(graph_path)
                     return {"confidence_score": confidence.score, "verdict": review.verdict.value}
 
                 # Journaled per finding, not per agent step - a finding's

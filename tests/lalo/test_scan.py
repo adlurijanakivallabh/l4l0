@@ -2936,3 +2936,52 @@ def test_a_deterministically_failing_review_does_not_crash_loop_a_resume(
     outcome2 = ScanRunner(config, env={"ANTHROPIC_API_KEY": "sk-test"}).run()
     assert outcome2.status is RunStatus.COMPLETED
     assert review_call_count == first_run_review_calls
+
+
+def test_a_crash_between_the_review_loop_and_the_final_graph_save_does_not_lose_the_review(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression: run_adversarial_review's own graph.add_node() call
+    (review_verdict/proof_level/reasoning) only ever mutated the in-memory
+    graph - the ONLY graph.save() call after the review loop used to be the
+    one at the very end of _run_inside, after write_report(). A crash
+    anywhere in that window (report generation, report manifest writing)
+    silently lost every review already computed: on resume, journal.
+    run_once's own cache hit correctly skips re-calling the review (no
+    wasted LLM spend), but the freshly-reloaded graph.json never had the
+    mutation, so it vanished from the final report with no trace. Proven
+    here by crashing write_report itself and reading graph.json directly
+    off disk afterward - bypassing the run entirely, so this can only pass
+    if the review loop's OWN save (not the final one, which never runs)
+    persisted it."""
+    monkeypatch.setattr(scan_module, "docker_available", lambda: True)
+    monkeypatch.setattr(scan_module, "RuntimeContainer", _FakeContainer)
+
+    def _respond(_call_index: int, prompt: str) -> str:
+        if "FINDING TO REVIEW" in prompt:
+            return '{"verdict": "confirmed", "proof_level": "L3", "reasoning": "grounded"}'
+        return _record_finding_call() if "HISTORY" not in prompt else _finish_call()
+
+    router = ModelRouter(
+        providers={"fake": _ScriptedProvider(_respond)},
+        routes={"reasoning": ("fake",), "review": ("fake",)},
+        default_route=("fake",),
+    )
+    monkeypatch.setattr(scan_module, "build_router", lambda _settings: router)
+
+    def _crash_in_write_report(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("simulated crash during report finalization")
+
+    monkeypatch.setattr(scan_module, "write_report", _crash_in_write_report)
+
+    run_dir = tmp_path / "run"
+    config = ScanConfig(mission="find a bug", target_specs=["example.com"], run_dir=run_dir)
+    with pytest.raises(RuntimeError, match="simulated crash during report finalization"):
+        ScanRunner(config, env={"ANTHROPIC_API_KEY": "sk-test"}).run()
+
+    # Read graph.json directly off disk - the crashed run's own final
+    # graph.save() (after write_report) never ran, so this can only show
+    # the review verdict if the review loop's own incremental save did.
+    graph = ReachabilityGraph.load(run_dir / "graph.json")
+    (finding_id,) = graph.nodes_of_kind(NodeKind.FINDING)
+    assert graph.node(finding_id)["review_verdict"] == "confirmed"
