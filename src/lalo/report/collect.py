@@ -190,6 +190,11 @@ class ReportUsage:
     total_input_tokens: int
     total_output_tokens: int
     total_cost_usd: float | None
+    # False when core/usage.py's own usage_accounting_status() reported a
+    # record_usage() write failure during this run - the totals above may
+    # be an undercount from that point on. True (the default) preserves
+    # every existing ReportUsage(...) construction's exact prior behavior.
+    accounting_complete: bool = True
 
 
 @dataclass(frozen=True)

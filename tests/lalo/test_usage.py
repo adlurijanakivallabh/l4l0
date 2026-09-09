@@ -6,9 +6,10 @@ from pathlib import Path
 
 import pytest
 
+import lalo.core.usage as usage_module
 from lalo.core.errors import CostLimitExceededError
 from lalo.core.model_router import CompletionResponse
-from lalo.core.usage import load_usage, record_usage
+from lalo.core.usage import load_usage, record_usage, usage_accounting_status
 
 _PRICING = {"claude-sonnet-5": (3.0, 15.0)}  # $3/1M input, $15/1M output
 
@@ -200,3 +201,25 @@ def test_record_usage_survives_concurrent_calls_with_no_lost_update(tmp_path: Pa
     assert stats.total_requests == 4 * call_count
     assert stats.total_input_tokens == 4 * call_count
     assert stats.total_output_tokens == 4 * call_count
+
+
+def test_usage_accounting_status_defaults_to_true() -> None:
+    assert usage_accounting_status() is True
+
+
+def test_a_failed_record_usage_call_flips_accounting_status_false(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "usage.json"
+    record_usage(_response(), path=path)  # first call succeeds, establishes the file
+
+    def _always_fails(*_args: object, **_kwargs: object) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(usage_module, "atomic_write_verified", _always_fails)
+    try:
+        with pytest.raises(OSError, match="disk full"):
+            record_usage(_response(), path=path)
+        assert usage_accounting_status() is False
+    finally:
+        usage_module._accounting_complete = True  # don't leak into other tests

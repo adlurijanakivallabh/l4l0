@@ -31,6 +31,14 @@ construction that doesn't pass its own ``usage_path`` still defaults to the
 single shared ``DEFAULT_USAGE_PATH``, so two such processes run concurrently
 by an operator (never by the GUI itself) could still race on it — worth
 naming here rather than silently assumed away.
+
+``usage_accounting_status()`` is a process-level flag, not a JSON field on
+:class:`UsageStats` — a design change from the original spec framing,
+documented here rather than silently diverged from: a completely failed
+:func:`~lalo.core.atomic_io.atomic_write_verified` call (even after its
+own bounded retries) cannot record that failure inside the very file it
+just failed to write, so there is no honest way to make this a persisted
+field the way every other stat here is.
 """
 
 from __future__ import annotations
@@ -52,6 +60,26 @@ DEFAULT_USAGE_PATH = Path.home() / ".lalo" / "usage.json"
 # threading.Lock, not the inter-process fcntl locking this module already
 # decided against.
 _lock = threading.Lock()
+
+# Process-level, not a JSON field on UsageStats itself: a record_usage()
+# call that fails even after atomic_write_verified's own bounded retries
+# (see core/atomic_io.py) are exhausted cannot record that failure in the
+# very file it failed to write - a narrower, more honest scope than trying
+# to persist this as a field the write itself might never land. Flips
+# False the first time that happens and stays False for the rest of the
+# process, since a lifetime ledger that has ever silently lost an update is
+# never trustworthy again, not just for the run in progress.
+_accounting_complete = True
+
+
+def usage_accounting_status() -> bool:
+    """True if every ``record_usage`` call this process has made has
+    persisted successfully - False once one has failed even after its own
+    bounded I/O retries were exhausted, meaning totals from that point on
+    may be an undercount. Surfaced in the delivered report's usage summary
+    as a warning rather than silently presenting a possibly-partial cost
+    total as final."""
+    return _accounting_complete
 
 
 @dataclass
@@ -238,9 +266,14 @@ def record_usage(
                 "cost_usd": cost,
             }
 
-        atomic_write_verified(
-            path, json.dumps(stats.to_dict(), indent=2, sort_keys=True).encode("utf-8")
-        )
+        try:
+            atomic_write_verified(
+                path, json.dumps(stats.to_dict(), indent=2, sort_keys=True).encode("utf-8")
+            )
+        except OSError:
+            global _accounting_complete
+            _accounting_complete = False
+            raise
 
     if cost_limit_usd is not None and stats.total_cost_usd > cost_limit_usd:
         raise CostLimitExceededError(

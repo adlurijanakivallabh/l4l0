@@ -233,6 +233,19 @@ def test_render_report_html_shows_usage_with_a_known_cost() -> None:
     assert "3 requests, 1,000 input / 200 output tokens, est. cost $0.0123" in rendered
 
 
+def test_render_report_html_warns_when_usage_accounting_is_incomplete() -> None:
+    coverage = CoverageSummary(assessed=[], not_assessed=[])
+    usage = ReportUsage(
+        total_requests=3,
+        total_input_tokens=1000,
+        total_output_tokens=200,
+        total_cost_usd=0.0123,
+        accounting_complete=False,
+    )
+    rendered = render_report_html([], coverage, usage=usage)
+    assert "may be an undercount" in rendered
+
+
 def test_render_report_html_shows_usage_without_a_configured_pricing_table() -> None:
     coverage = CoverageSummary(assessed=[], not_assessed=[])
     usage = ReportUsage(

@@ -261,6 +261,19 @@ def test_render_report_md_shows_usage_with_a_known_cost() -> None:
     )
 
 
+def test_render_report_md_warns_when_usage_accounting_is_incomplete() -> None:
+    coverage = CoverageSummary(assessed=[], not_assessed=[])
+    usage = ReportUsage(
+        total_requests=3,
+        total_input_tokens=1000,
+        total_output_tokens=200,
+        total_cost_usd=0.0123,
+        accounting_complete=False,
+    )
+    rendered = render_report_md([], coverage, usage=usage)
+    assert "may be an undercount" in rendered
+
+
 def test_render_report_md_shows_usage_without_a_configured_pricing_table() -> None:
     """total_cost_usd=None must never render as a fabricated $0.00 - cost is
     unknown, not zero, when no pricing table was configured for the run."""

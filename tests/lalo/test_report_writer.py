@@ -278,6 +278,7 @@ def test_write_report_threads_usage_into_json_and_markdown(tmp_path: Path) -> No
         "total_input_tokens": 500,
         "total_output_tokens": 150,
         "total_cost_usd": 0.005,
+        "accounting_complete": True,
     }
     assert "**LLM Usage:**" in paths["markdown"].read_text(encoding="utf-8")
 

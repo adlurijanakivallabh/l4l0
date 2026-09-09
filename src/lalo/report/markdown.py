@@ -196,6 +196,11 @@ def render_report_md(
             f"{usage.total_input_tokens:,} input / {usage.total_output_tokens:,} output "
             f"tokens{cost_note}"
         )
+        if not usage.accounting_complete:
+            lines.append(
+                "**Warning:** a usage-accounting write failed during this run - "
+                "the totals above may be an undercount."
+            )
         lines.append("")
 
     if summary is not None:

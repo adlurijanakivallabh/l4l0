@@ -219,6 +219,11 @@ def render_report_html(
             f"{usage.total_input_tokens:,} input / {usage.total_output_tokens:,} output "
             f"tokens{cost_note}</p>"
         )
+        if not usage.accounting_complete:
+            parts.append(
+                '<p class="warning">Warning: a usage-accounting write failed during '
+                "this run - the totals above may be an undercount.</p>"
+            )
 
     if summary is not None:
         parts.append("<h2>Executive Summary</h2>")

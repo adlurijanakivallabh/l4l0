@@ -152,7 +152,7 @@ from .core.model_router import ModelRouter
 from .core.pricing import PricingTable
 from .core.providers import build_router, verify_router
 from .core.redaction import set_redaction_enabled
-from .core.usage import load_usage
+from .core.usage import load_usage, usage_accounting_status
 from .execution.firer import HttpFirer, probe_reachability
 from .execution.scope import ScopeGuard
 from .execution.target import Engagement
@@ -1510,6 +1510,7 @@ class ScanRunner:
                     if self.config.pricing_table is not None
                     else None
                 ),
+                accounting_complete=usage_accounting_status(),
             )
         if report_paths is None:
             # Always built (unlike report_usage above, gated on the operator
