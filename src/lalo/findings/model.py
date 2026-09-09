@@ -76,6 +76,14 @@ class Finding:
     # (today's behavior, unchanged) and a multi-hop list as an additional
     # SARIF codeFlows/threadFlows block.
     source_location: str | list[dict[str, str]] | None = None
+    # Both optional (default ""), agent-authored at record_finding time -
+    # what access/credentials an attacker needs before this is reachable,
+    # and what an attacker can DO with it (business-consequence framed,
+    # distinct from `description`'s "what the bug is"). Neither is required
+    # - an empty string renders as "(none stated)", matching every other
+    # optional narrative field's own existing convention.
+    prerequisites: str = ""
+    impact: str = ""
 
 
 def validate_finding_fields(fields: dict[str, object]) -> list[str]:

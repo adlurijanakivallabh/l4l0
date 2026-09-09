@@ -110,6 +110,10 @@ def render_finding_md(record: FindingRecord) -> str:
     if record.review_verdict:
         proof = f" ({record.review_proof_level})" if record.review_proof_level else ""
         lines.append(f"**Adversarial Review:** {record.review_verdict}{proof}")
+    if record.prerequisites:
+        lines.append(f"**Prerequisites:** {record.prerequisites}")
+    if record.impact:
+        lines.append(f"**Impact:** {record.impact}")
     lines.append("")
 
     lines.append("### Description\n")

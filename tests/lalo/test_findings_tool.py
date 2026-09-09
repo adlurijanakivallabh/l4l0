@@ -376,3 +376,27 @@ def test_record_safe_target_is_redacted_the_same_way_record_finding_is() -> None
     )
     (node_id,) = graph.nodes_of_kind(NodeKind.VERIFIED_SAFE)
     assert "verysecrettoken1234567890" not in graph.node(node_id)["target"]
+
+
+def test_record_finding_captures_prerequisites_and_impact() -> None:
+    graph = ReachabilityGraph()
+    _registry(graph).dispatch(
+        "record_finding",
+        _args(
+            prerequisites="none - publicly accessible endpoint",
+            impact="full account takeover for any user whose email is known",
+        ),
+    )
+    (finding_id,) = graph.nodes_of_kind(NodeKind.FINDING)
+    node = graph.node(finding_id)
+    assert node["prerequisites"] == "none - publicly accessible endpoint"
+    assert node["impact"] == "full account takeover for any user whose email is known"
+
+
+def test_record_finding_defaults_prerequisites_and_impact_to_empty_string() -> None:
+    graph = ReachabilityGraph()
+    _registry(graph).dispatch("record_finding", _args())
+    (finding_id,) = graph.nodes_of_kind(NodeKind.FINDING)
+    node = graph.node(finding_id)
+    assert node.get("prerequisites", "") == ""
+    assert node.get("impact", "") == ""

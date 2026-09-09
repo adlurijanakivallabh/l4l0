@@ -122,6 +122,10 @@ def render_finding_html(record: FindingRecord) -> str:
     if record.review_verdict:
         proof = f" ({_e(record.review_proof_level)})" if record.review_proof_level else ""
         parts.append(f"<dt>Adversarial Review</dt><dd>{_e(record.review_verdict)}{proof}</dd>")
+    if record.prerequisites:
+        parts.append(f"<dt>Prerequisites</dt><dd>{_e(record.prerequisites)}</dd>")
+    if record.impact:
+        parts.append(f"<dt>Impact</dt><dd>{_e(record.impact)}</dd>")
     parts.append("</dl>")
 
     parts.append(f"<h3>Description</h3><p>{_e(record.description) or '(none provided)'}</p>")

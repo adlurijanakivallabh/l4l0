@@ -137,6 +137,9 @@ def build_record_finding_tool(graph: ReachabilityGraph) -> FunctionTool:
                     "attempt - dropped, finding recorded without it)"
                 )
 
+        prerequisites = redact(str(args.get("prerequisites", "")))
+        impact = redact(str(args.get("impact", "")))
+
         key = dedup_key(vuln_class, target, param)
         existing_id = find_duplicate(graph, key)
         if existing_id is not None:
@@ -200,6 +203,8 @@ def build_record_finding_tool(graph: ReachabilityGraph) -> FunctionTool:
             reproduced=reproduced,
             identities_confirmed=identities,
             source_location=source_location,
+            prerequisites=prerequisites,
+            impact=impact,
         )
         finding_id = f"finding-{uuid.uuid4().hex[:12]}"
         attrs: dict[str, Any] = {
@@ -222,6 +227,8 @@ def build_record_finding_tool(graph: ReachabilityGraph) -> FunctionTool:
             "reproduced": finding.reproduced,
             "identities_confirmed": finding.identities_confirmed,
             "source_location": finding.source_location,
+            "prerequisites": finding.prerequisites,
+            "impact": finding.impact,
         }
         graph.add_node(finding_id, NodeKind.FINDING, **attrs)
         for i, blob in enumerate(evidence):
@@ -276,7 +283,12 @@ def build_record_finding_tool(graph: ReachabilityGraph) -> FunctionTool:
             '"enabled_by_finding_id": str (optional - the id of an already-recorded '
             "finding whose exploitation is what let you reach THIS one, e.g. an IDOR "
             "that exposed the credentials used here. Only declare a real attack-chain "
-            "step you actually traced, never a guess.)}"
+            'step you actually traced, never a guess.), "prerequisites": str '
+            "(optional - what access/credentials an attacker needs before this is "
+            'reachable, e.g. "none - publicly accessible" or "requires a valid '
+            'low-privilege session"), "impact": str (optional - what an attacker can '
+            "DO with this, business-consequence framed - kept distinct from "
+            '"description", which is what the bug IS)}'
         ),
         func=_record_finding,
     )

@@ -72,6 +72,8 @@ class FindingRecord:
     dedup_key: str = ""
     status: str = "open"
     source_location: str | list[dict[str, str]] | None = None
+    prerequisites: str = ""
+    impact: str = ""
 
     @property
     def effective_severity(self) -> str:
@@ -111,6 +113,8 @@ def collect_findings(graph: ReachabilityGraph) -> list[FindingRecord]:
                 review_proof_level=node.get("review_proof_level"),
                 dedup_key=dedup_key(vuln_class, target, param),
                 source_location=node.get("source_location"),
+                prerequisites=str(node.get("prerequisites", "")),
+                impact=str(node.get("impact", "")),
             )
         )
     return records
