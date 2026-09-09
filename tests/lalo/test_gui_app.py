@@ -485,6 +485,75 @@ def test_scan_resume_run_id_reads_the_locked_fields_from_the_manifest_not_the_re
     assert config.run_dir == run_dir
 
 
+def test_scan_resume_reads_operational_tuning_knobs_from_the_request_not_the_manifest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Closes a real gap: scan.py's own design comments explicitly frame
+    max_steps/budget_ceiling/cost_limit_usd/max_duration_s as "resume-
+    adjustable operational knobs, not locked scope/safety fields" (e.g. an
+    operator raising cost_limit_usd to resume a scan that just hit it) -
+    but the resume code path never actually read any of them from the
+    request, silently resetting every one to ScanConfig's hardcoded
+    defaults on every resume with no way to change them."""
+    monkeypatch.setattr(app_module, "ScanRunner", _FakeScanRunner)
+    run_dir = tmp_path / "abc123"
+    run_dir.mkdir()
+    (run_dir / "resume_manifest.json").write_text(
+        '{"mission": "the ORIGINAL authorized mission", '
+        '"target_specs": ["original.example.com"], "egress_lock": false}',
+        encoding="utf-8",
+    )
+    client, _ = _client(runs_dir=tmp_path)
+    response = client.post(
+        "/scan",
+        json={
+            "resume_run_id": "abc123",
+            "max_steps": 99,
+            "spawn_max_depth": 5,
+            "budget_ceiling": 500,
+            "cost_limit_usd": 10.0,
+            "max_duration_s": 3600.0,
+            "redact_findings": True,
+            "fail_on_unreachable_targets": True,
+            "enable_second_opinion_review": True,
+        },
+    )
+    assert response.status_code == 200
+    config = current_config()
+    assert config.max_steps == 99
+    assert config.spawn_max_depth == 5
+    assert config.budget_ceiling == 500
+    assert config.cost_limit_usd == 10.0
+    assert config.max_duration_s == 3600.0
+    assert config.redact_findings is True
+    assert config.fail_on_unreachable_targets is True
+    assert config.enable_second_opinion_review is True
+
+
+def test_scan_resume_operational_tuning_knobs_default_to_scan_configs_own_defaults(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(app_module, "ScanRunner", _FakeScanRunner)
+    run_dir = tmp_path / "abc123"
+    run_dir.mkdir()
+    (run_dir / "resume_manifest.json").write_text(
+        '{"mission": "m", "target_specs": ["x.example.com"], "egress_lock": false}',
+        encoding="utf-8",
+    )
+    client, _ = _client(runs_dir=tmp_path)
+    response = client.post("/scan", json={"resume_run_id": "abc123"})
+    assert response.status_code == 200
+    config = current_config()
+    assert config.max_steps == ScanConfig.max_steps
+    assert config.spawn_max_depth == ScanConfig.spawn_max_depth
+    assert config.budget_ceiling == ScanConfig.budget_ceiling
+    assert config.cost_limit_usd is None
+    assert config.max_duration_s is None
+    assert config.redact_findings is False
+    assert config.fail_on_unreachable_targets is False
+    assert config.enable_second_opinion_review is False
+
+
 def test_scan_request_passes_exclude_targets_through_to_scan_config(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

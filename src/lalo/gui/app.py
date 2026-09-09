@@ -330,6 +330,34 @@ def build_app(event_log: EventLog, *, runs_dir: Path | None = None) -> FastAPI:
                 egress_lock=bool(manifest["egress_lock"]),
                 run_dir=run_dir,
                 usage_path=run_dir / "usage.json",
+                # Every field below is an operational tuning knob, never a
+                # locked scope/safety field (see each one's own doc comment
+                # on ScanConfig) - scan.py's own design explicitly frames
+                # these as "resume-adjustable," e.g. an operator raising
+                # cost_limit_usd to resume a scan that just hit it. Reading
+                # them from THIS request (not the manifest, which never
+                # persists them) is what actually makes that possible - a
+                # resume previously silently reset every one of these back
+                # to ScanConfig's hardcoded defaults, with no way to change
+                # them, contradicting that design intent.
+                max_steps=(
+                    request.max_steps if request.max_steps is not None else ScanConfig.max_steps
+                ),
+                spawn_max_depth=(
+                    request.spawn_max_depth
+                    if request.spawn_max_depth is not None
+                    else ScanConfig.spawn_max_depth
+                ),
+                budget_ceiling=(
+                    request.budget_ceiling
+                    if request.budget_ceiling is not None
+                    else ScanConfig.budget_ceiling
+                ),
+                cost_limit_usd=request.cost_limit_usd,
+                max_duration_s=request.max_duration_s,
+                redact_findings=request.redact_findings,
+                fail_on_unreachable_targets=request.fail_on_unreachable_targets,
+                enable_second_opinion_review=request.enable_second_opinion_review,
             )
         else:
             mission = request.mission.strip()
