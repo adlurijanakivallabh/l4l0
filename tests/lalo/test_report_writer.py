@@ -460,3 +460,50 @@ def test_write_report_with_no_metadata_omits_it_from_json(tmp_path: Path) -> Non
     paths = write_report(tmp_path, graph, _SKILLS)
     doc = json.loads(paths["json"].read_text(encoding="utf-8"))
     assert doc["engagement"] is None
+
+
+def test_sarif_automation_id_is_stable_across_two_different_run_dirs_same_target(
+    tmp_path: Path,
+) -> None:
+    """Real gap this closes: automation_id used to be run_dir.name, so every
+    scan of the SAME target got a different id, breaking a CI consumer's
+    ability to correlate alerts across re-scans. Two scans of the same
+    target (different run directories, exactly as two real re-scans would
+    be) must now produce the SAME automation_id."""
+    graph, _ = _graph_with_finding()
+    metadata = ReportMetadata(
+        engagement_scope="- example.com (any port, any scheme)",
+        model_provider="anthropic:claude-sonnet-5",
+    )
+    run_dir_1 = tmp_path / "run-abc123"
+    run_dir_2 = tmp_path / "run-def456"
+
+    paths_1 = write_report(run_dir_1, graph, _SKILLS, metadata=metadata)
+    paths_2 = write_report(run_dir_2, graph, _SKILLS, metadata=metadata)
+
+    sarif_1 = json.loads(paths_1["sarif"].read_text(encoding="utf-8"))
+    sarif_2 = json.loads(paths_2["sarif"].read_text(encoding="utf-8"))
+    id_1 = sarif_1["runs"][0]["automationDetails"]["id"]
+    id_2 = sarif_2["runs"][0]["automationDetails"]["id"]
+    assert id_1 == id_2
+
+    # And it must NOT just be a constant - still derived from the real
+    # engagement, so two DIFFERENT targets get different ids.
+    other_metadata = ReportMetadata(
+        engagement_scope="- other.example.com (any port, any scheme)",
+        model_provider="anthropic:claude-sonnet-5",
+    )
+    run_dir_3 = tmp_path / "run-ghi789"
+    paths_3 = write_report(run_dir_3, graph, _SKILLS, metadata=other_metadata)
+    sarif_3 = json.loads(paths_3["sarif"].read_text(encoding="utf-8"))
+    assert sarif_3["runs"][0]["automationDetails"]["id"] != id_1
+
+
+def test_sarif_automation_id_falls_back_to_run_dir_name_with_no_metadata(
+    tmp_path: Path,
+) -> None:
+    graph, _ = _graph_with_finding()
+    run_dir = tmp_path / "run-xyz"
+    paths = write_report(run_dir, graph, _SKILLS)
+    sarif_doc = json.loads(paths["sarif"].read_text(encoding="utf-8"))
+    assert sarif_doc["runs"][0]["automationDetails"]["id"] == "run-xyz"

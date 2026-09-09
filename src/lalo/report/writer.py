@@ -51,6 +51,7 @@ that reference's own canonical-vs-secondary distinction.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import asdict
 from pathlib import Path
@@ -164,7 +165,16 @@ def write_report(
     sarif_document = render_sarif(
         records,
         execution_successful=status is None or status == RunStatus.COMPLETED,
-        automation_id=run_dir.name,
+        # A stable identifier for the ENGAGEMENT (target/scope), not the
+        # ephemeral run directory - every fresh scan of the same target gets
+        # a new run_dir, so keying off that broke cross-run SARIF alert
+        # correlation in any CI consumer that relies on automationDetails.id
+        # to track which alerts persisted vs. got fixed across re-scans.
+        automation_id=(
+            hashlib.sha256(metadata.engagement_scope.encode("utf-8")).hexdigest()[:16]
+            if metadata is not None
+            else run_dir.name
+        ),
     )
     html = render_report_html(
         records,
