@@ -10,7 +10,7 @@ import pytest
 import lalo.setup as lalo_setup
 from lalo.core.config import CURATED_PROVIDERS
 from lalo.core.env_file import merge_env_file
-from lalo.setup import _collect_env, _prompt_provider, main
+from lalo.setup import _collect_env, _prompt_provider, _warn_if_permissive, main
 
 
 def test_prompt_provider_accepts_a_valid_choice(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -147,3 +147,52 @@ def test_main_exits_cleanly_on_an_invalid_choice(
         main()
 
     assert not env_path.exists()
+
+
+def test_warn_if_permissive_prints_a_warning_for_a_group_readable_env_file(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    path = tmp_path / ".env"
+    path.write_text("ANTHROPIC_API_KEY=sk-ant-existing\n", encoding="utf-8")
+    path.chmod(0o644)
+
+    _warn_if_permissive(path)
+
+    captured = capsys.readouterr()
+    assert "chmod 600" in captured.out
+    assert str(path) in captured.out
+
+
+def test_warn_if_permissive_is_silent_for_an_owner_only_env_file(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    path = tmp_path / ".env"
+    path.write_text("ANTHROPIC_API_KEY=sk-ant-existing\n", encoding="utf-8")
+    path.chmod(0o600)
+
+    _warn_if_permissive(path)
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+
+
+def test_main_warns_but_still_merges_into_a_loosely_permissioned_existing_env_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    env_path = tmp_path / ".env"
+    env_path.write_text("OTHER=kept\n", encoding="utf-8")
+    env_path.chmod(0o646)
+    monkeypatch.setattr(lalo_setup, "_ENV_PATH", env_path)
+    monkeypatch.setattr("builtins.input", lambda _prompt="": _menu_index_of("anthropic"))
+    monkeypatch.setattr(lalo_setup.getpass, "getpass", lambda _prompt="": "sk-ant-real-key")
+    monkeypatch.setattr(lalo_setup, "build_router", lambda _settings: object())
+    monkeypatch.setattr(lalo_setup, "verify_router", lambda _router: {"anthropic": (True, "ok")})
+
+    main()
+
+    captured = capsys.readouterr()
+    assert "chmod 600" in captured.out
+    content = env_path.read_text(encoding="utf-8")
+    assert "OTHER=kept" in content
+    assert "ANTHROPIC_API_KEY=sk-ant-real-key" in content
+    assert stat.S_IMODE(env_path.stat().st_mode) == 0o600

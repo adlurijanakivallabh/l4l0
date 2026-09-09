@@ -24,6 +24,7 @@ verification logic of its own - the same real, cheap completion call
 from __future__ import annotations
 
 import getpass
+import os
 from pathlib import Path
 
 from .core.config import CURATED_PROVIDERS, ProviderSpec, load_settings
@@ -58,6 +59,24 @@ def _collect_env(spec: ProviderSpec) -> dict[str, str]:
     return env
 
 
+def _warn_if_permissive(path: Path) -> None:
+    """Informational only - never blocks or delays the merge that follows.
+
+    A pre-existing ``.env`` that is group/other-readable may already have
+    exposed whatever credentials it held before this run. The merge itself
+    always ends up owner-only (0600) regardless, via
+    ``atomic_write_verified``'s own os.replace semantics - but that doesn't
+    undo any exposure that already happened, so we tell the operator and
+    keep going exactly as before.
+    """
+    mode = os.stat(path).st_mode
+    if mode & 0o077:
+        print(
+            f"! {path} is readable by group/other (mode {oct(mode & 0o777)}) - "
+            f"run `chmod 600 {path}` to keep credentials private (continuing anyway)"
+        )
+
+
 def main() -> None:
     try:
         spec = _prompt_provider()
@@ -78,6 +97,8 @@ def main() -> None:
         print(f"✗ {spec.id} failed verification: {reason} - nothing written")
         raise SystemExit(1)
 
+    if _ENV_PATH.exists():
+        _warn_if_permissive(_ENV_PATH)
     merge_env_file(_ENV_PATH, env)
     print(f"✓ {spec.id} verified working. Wrote {_ENV_PATH.resolve()}")
     print(f"Run the GUI with:  uv run --env-file {_ENV_PATH} lalo-gui")
