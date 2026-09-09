@@ -52,6 +52,49 @@ this:
   principal's resources, touches shared/multi-party infrastructure, or
   places the attacker upstream of others (a build node, a shared cache) —
   any of those is a real boundary crossing, not a self-contained effect.
+  It also does NOT apply when the effect could survive into a *different*
+  principal's later reuse of the same execution slot — state, secrets, or
+  credentials left behind in a warm serverless container or VM that gets
+  reassigned to another tenant is a real cross-tenant leak, not a
+  self-contained one, even though the triggering request never touched
+  another principal directly.
+
+## Trusted-Controller-Mediated Interfaces
+
+An exploit reachable only from a component with designed-in authority over
+the target — an orchestrator's own worker, a management plane's own
+managed node — that only lets that controller do what it could already do
+through its normal, legitimate control channel caps low: you have found a
+second way for an already-trusted party to do an already-permitted thing,
+not a privilege escalation. This stays high only when the exploit lets
+that controller bypass a *specific, documented* safety or security control
+it was designed to respect (a policy check, an isolation boundary between
+what it manages and what it doesn't) — crossing a control the interface
+was built to enforce is a real finding regardless of who triggers it.
+
+## Non-Repudiation Carve-Out
+
+An effect confined entirely to the attacker's own data or account still
+caps low under Marginal Capability above — unless it also breaks
+non-repudiation: letting the attacker forge, backdate, or disown an action
+in a way that shifts blame or enables fraud against someone else. "I can
+only affect my own records" is not the same claim as "I can only affect my
+own records honestly" — check which one you actually proved.
+
+## Attacker Position by Trust Barrier, Not Wire Protocol
+
+Classify exposure (and the CVSS Attack Vector metric) by the outermost
+trust boundary the ultimate untrusted attacker must actually cross, tracing
+through every trusted intermediary in between — never by which protocol
+the vulnerable component itself happens to speak. A service bound to
+loopback, a Unix socket, or a service-mesh-internal address that only a
+co-located, already-trusted process can reach is LOCAL/ADJACENT exposure
+even though it speaks plain HTTP; a public-facing API gateway that
+forwards attacker-controlled bytes verbatim to an internal service makes
+that internal service NETWORK-exposed in practice, regardless of the
+firewall rule sitting in front of it. Ask "what does an anonymous internet
+attacker actually have to do to reach this," not "what does the listening
+socket's own protocol suggest."
 
 ## Stochastic / Non-Reproducible Findings
 

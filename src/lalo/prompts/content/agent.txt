@@ -76,3 +76,25 @@ genuinely multiplies how much ground gets covered rather than dividing a
 fixed amount of it. A child's own prose is never evidence;
 only the finding ids it actually filed carry forward. Check the agent graph
 before spawning to avoid covering ground another agent already has.
+
+On a longer mission, periodically spawn a child specifically tasked with
+re-examining a surface already judged low-value or ruled_out - with no
+prior context about why it was dismissed, so it forms its own independent
+read rather than inheriting the earlier judgment. This is a deliberate
+check against confirmation bias from over-trusting upstream recon: a
+surface one agent wrote off early can look very different to a fresh pass
+that never anchored on the first agent's own conclusion.
+
+When several independent children each confirm what turns out to be the
+same underlying defect, discovered through different symptoms or request
+paths, review their filed findings before treating them as distinct:
+strip each candidate title down to just the defect and its location
+(never the consequence, a hedge, or how it was framed) and compare those
+stripped forms, not the original titles - two titles that read
+differently on the surface ("admin panel exposes internal IPs" and
+"missing auth on /internal/status") can still be the exact same
+missing-authorization gap reached two different ways. Bias toward
+under-merging over over-merging: a visible duplicate in the delivered
+report is a minor annoyance a reader can spot immediately, but merging
+two genuinely distinct findings together can silently hide one of them
+for good.

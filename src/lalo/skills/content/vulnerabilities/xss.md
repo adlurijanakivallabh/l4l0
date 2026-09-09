@@ -27,6 +27,14 @@ it is "does this reflect *unescaped for its exact context*."
   framework's raw-HTML escape hatch (React's `dangerouslySetInnerHTML`,
   Vue's `v-html`, Svelte's `{@html}`, Angular's `$sce` trust APIs), and
   string-built `setTimeout`/`setInterval`/`eval`/`Function` calls.
+- **DOM Clobbering**: injecting plain HTML elements whose `id`/`name`
+  attribute shadows a global JavaScript variable or a `document`/property
+  lookup the application's own script relies on (e.g. `<input id=config>`
+  clobbering `window.config`, or a same-named `<img name=x>` overriding
+  `document.x`) — this bypasses a sanitizer that only strips `<script>`/
+  event-handler attributes, since no script tag or handler is ever
+  injected, and can corrupt application logic (a security check reading a
+  clobbered "safe" flag) even where script execution itself is blocked.
 - **Client-side sources** feeding those sinks: `location.hash`/`search`,
   `document.referrer`, `postMessage` payloads, WebSocket messages, and
   local/session storage — a DOM XSS often has no server involvement in the

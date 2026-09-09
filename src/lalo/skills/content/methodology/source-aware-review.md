@@ -94,6 +94,25 @@ what category of sink it is:
   finding it only proves you have local filesystem access to a clone, not
   that the deployed target embeds it.
 
+**Sweep every call site of a shared helper, not just the one you first
+noticed.** When a hit traces back to a shared function or helper that
+carries an implicit safety contract — a buffer-size assumption a caller
+must uphold, a sanitization precondition a caller must satisfy before
+calling it — grep every call site of that helper across the whole repo
+and check each one individually before concluding anything about the
+pattern as a whole. This is the offensive complement to
+`closure-discipline`'s own "safe sibling" trap: there, one correctly-
+guarded call site says nothing about whether another is also guarded;
+here, one call site that happens to satisfy the helper's precondition
+says nothing about whether a sibling caller also does. A helper used
+safely nine times and unsafely on the tenth is a real, exploitable gap
+that stopping after the first (safe-looking) call site would miss
+entirely — and the reverse is just as important: one unsafe-looking call
+site does not mean every other caller of the same helper is equally
+exposed, so verify each on its own evidence rather than either
+generalizing a clean bill of health or a confirmed bug across the whole
+set.
+
 Starting patterns, by category (adapt exact syntax to the actual language/
 framework — these are shapes, not literal strings to `grep -F`):
 
