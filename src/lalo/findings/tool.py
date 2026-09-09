@@ -145,14 +145,27 @@ def build_record_finding_tool(graph: ReachabilityGraph) -> FunctionTool:
             merged_identities = sorted(
                 set(existing.get("identities_confirmed", [])) | set(identities)
             )
-            graph.add_node(
-                existing_id,
-                NodeKind.FINDING,
-                evidence=merged_evidence,
-                identities_confirmed=merged_identities,
-                reproduced=existing.get("reproduced", False) or reproduced,
-                evidence_grounded=existing.get("evidence_grounded", False) or grounded,
-            )
+            # Strongest-signal-wins, not first-writer-wins: a later filing of
+            # the SAME dedup_key can be materially more (or less) severe than
+            # the first one L4L0 happened to see - keeping whichever score is
+            # higher means a weaker duplicate never waters down an already-
+            # established stronger signal, and a stronger duplicate correctly
+            # upgrades an initially-underestimated one, mirroring the
+            # strongest-signal-across-merged-observations principle a studied
+            # reference agent's own reconciliation logic applies for the
+            # analogous cross-producer case.
+            existing_score = float(existing.get("cvss_score", 0.0))
+            merge_fields: dict[str, object] = {
+                "evidence": merged_evidence,
+                "identities_confirmed": merged_identities,
+                "reproduced": existing.get("reproduced", False) or reproduced,
+                "evidence_grounded": existing.get("evidence_grounded", False) or grounded,
+            }
+            if cvss.score > existing_score:
+                merge_fields["cvss_score"] = cvss.score
+                merge_fields["cvss_severity"] = cvss.severity
+                merge_fields["cvss_vector"] = cvss.vector
+            graph.add_node(existing_id, NodeKind.FINDING, **merge_fields)
             chain_note = _link_enabling_finding(graph, existing_id, args)
             return ToolResult(
                 observation=(

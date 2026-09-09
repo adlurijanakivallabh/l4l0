@@ -99,6 +99,55 @@ def test_record_finding_merges_a_repeat_into_the_same_class_target_param() -> No
     assert len(node["evidence"]) == 2
 
 
+def test_dedup_merge_keeps_the_stronger_cvss_assessment_not_the_first_one() -> None:
+    """Real bug this closes: the merge branch used to update only evidence/
+    identities/reproduced/evidence_grounded, silently discarding the newly
+    computed cvss_score/severity/vector on every duplicate filing after the
+    first - the graph kept whichever assessment happened to arrive first,
+    forever, even when a later filing is materially more (or less) severe."""
+    graph = ReachabilityGraph()
+    registry = _registry(graph)
+    weak_cvss = {**_VALID_CVSS, "confidentiality": "N", "integrity": "N", "availability": "N"}
+    strong_cvss = {**_VALID_CVSS, "confidentiality": "H", "integrity": "H", "availability": "H"}
+
+    registry.dispatch("record_finding", _args(cvss_breakdown=weak_cvss))
+    registry.dispatch(
+        "record_finding",
+        _args(
+            evidence=["a second, independent capture confirming full impact"],
+            cvss_breakdown=strong_cvss,
+        ),
+    )
+
+    (finding_id,) = graph.nodes_of_kind(NodeKind.FINDING)
+    node = graph.node(finding_id)
+    # the STRONGER of the two computed scores must win, not the first-filed one
+    assert node["cvss_severity"] in ("high", "critical")
+    assert node["cvss_score"] > 0.0
+
+
+def test_dedup_merge_keeps_the_first_cvss_assessment_when_it_is_already_stronger() -> None:
+    """The inverse case: a later, WEAKER duplicate filing must never water
+    down an already-established stronger assessment."""
+    graph = ReachabilityGraph()
+    registry = _registry(graph)
+    strong_cvss = {**_VALID_CVSS, "confidentiality": "H", "integrity": "H", "availability": "H"}
+    weak_cvss = {**_VALID_CVSS, "confidentiality": "N", "integrity": "N", "availability": "N"}
+
+    registry.dispatch("record_finding", _args(cvss_breakdown=strong_cvss))
+    registry.dispatch(
+        "record_finding",
+        _args(
+            evidence=["a second, independent capture with weaker impact"],
+            cvss_breakdown=weak_cvss,
+        ),
+    )
+
+    (finding_id,) = graph.nodes_of_kind(NodeKind.FINDING)
+    node = graph.node(finding_id)
+    assert node["cvss_severity"] in ("high", "critical")
+
+
 def test_record_finding_does_not_merge_a_different_target() -> None:
     graph = ReachabilityGraph()
     registry = _registry(graph)
