@@ -494,6 +494,44 @@ def test_access_control_matrix_mark_tested_removes_the_cell_from_query_untested(
     assert "admin x /a" not in result.observation
 
 
+def test_access_control_matrix_rebuild_preserves_already_tested_cells() -> None:
+    """Regression: `build` unconditionally called state.clear() before
+    repopulating, silently wiping every cell another agent already marked
+    tested. The state dict is shared across every agent in the scan
+    hierarchy (see build_access_control_matrix_tool's own docstring) - a
+    later build (extending the identity/endpoint list after discovering a
+    new endpoint) must never discard a sibling's already-gathered coverage."""
+    registry = ToolRegistry([build_access_control_matrix_tool()])
+    registry.dispatch(
+        "access_control_matrix",
+        {"action": "build", "identity_ids": ["admin", "user"], "endpoint_ids": ["/a", "/b"]},
+    )
+    registry.dispatch(
+        "access_control_matrix",
+        {
+            "action": "mark_tested",
+            "identity_id": "admin",
+            "endpoint_id": "/a",
+            "observed_status": "200",
+        },
+    )
+    # A sibling agent discovers a new endpoint and rebuilds to add it.
+    result = registry.dispatch(
+        "access_control_matrix",
+        {
+            "action": "build",
+            "identity_ids": ["admin", "user"],
+            "endpoint_ids": ["/a", "/b", "/c"],
+        },
+    )
+    assert result.ok is True
+    assert "built 6 cells" in result.observation
+
+    untested = registry.dispatch("access_control_matrix", {"action": "query_untested"})
+    assert "admin x /a" not in untested.observation
+    assert len(untested.observation.splitlines()) == 5
+
+
 def test_access_control_matrix_mark_tested_without_build_errors_without_raising() -> None:
     registry = ToolRegistry([build_access_control_matrix_tool()])
     result = registry.dispatch(

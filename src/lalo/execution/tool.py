@@ -285,12 +285,21 @@ def build_access_control_matrix_tool() -> FunctionTool:
                         observation="error: 'identity_ids' and 'endpoint_ids' must be lists",
                         ok=False,
                     )
-                state.clear()
+                # Merged, never cleared: `state` is shared across every agent
+                # in the whole scan hierarchy (see this tool's own docstring)
+                # - an unconditional clear+repopulate here used to silently
+                # discard every cell a sibling agent already marked tested
+                # whenever anyone called `build` again (e.g. to extend the
+                # identity/endpoint list after discovering a new endpoint).
+                added = 0
                 for entry in build_role_matrix(
                     [str(i) for i in identity_ids], [str(e) for e in endpoint_ids]
                 ):
-                    state[(entry.identity_id, entry.endpoint_id)] = _MatrixCell(entry=entry)
-                return ToolResult(observation=f"built {len(state)} cells", ok=True)
+                    key = (entry.identity_id, entry.endpoint_id)
+                    if key not in state:
+                        state[key] = _MatrixCell(entry=entry)
+                        added += 1
+                return ToolResult(observation=f"built {len(state)} cells ({added} new)", ok=True)
             if action == "mark_tested":
                 key = (str_arg(args, "identity_id", ""), str_arg(args, "endpoint_id", ""))
                 cell = state.get(key)
