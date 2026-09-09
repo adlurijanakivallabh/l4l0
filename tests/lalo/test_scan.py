@@ -336,6 +336,22 @@ def _fake_browser_login_session_factory(final_url_after_submit: str) -> type:
     return _FakeBrowserLoginSession
 
 
+def _mission_text(prompt: str) -> str:
+    """The prompt's own MISSION field only - loop.py's _render_prompt
+    (``parts = [f"MISSION:\\n{mission}"]``) always puts "AVAILABLE TOOLS:"
+    immediately after it, so restricting the search to this slice is what
+    lets a scripted provider anchor on a child's own task marker without
+    misfiring on the root's own later-turn HISTORY recap, which echoes the
+    same child task text verbatim (Task 13's scratch-directory hint is
+    prepended to a spawned child's task text, so a plain
+    ``prompt.startswith("MISSION:\\n<task marker>")`` check no longer
+    holds - the marker is still in the mission field, just no longer at
+    its very start)."""
+    if not prompt.startswith("MISSION:\n"):
+        return ""
+    return prompt[len("MISSION:\n") :].split("\nAVAILABLE TOOLS:", 1)[0]
+
+
 def _record_finding_call() -> str:
     return json.dumps(
         {
@@ -981,6 +997,49 @@ def test_scan_runner_emits_usage_delta_by_agent_for_a_sequentially_spawned_child
     assert by_agent["agent-2"]["requests"] >= 1
 
 
+def test_a_spawned_childs_task_names_its_own_scratch_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The scratch-dir hint reaches the child's own mission text (so its
+    run_command calls naturally scope scratch files under it) but is never
+    added to the operator/agent-authored task text the GUI displays or the
+    journal records - test_scan_runner_emits_agent_events_for_a_spawned_
+    childs_lifecycle right below already locks that half in via its own
+    exact-match "task" assertion."""
+    monkeypatch.setattr(scan_module, "docker_available", lambda: True)
+    monkeypatch.setattr(scan_module, "RuntimeContainer", _FakeContainer)
+    captured_child_prompts: list[str] = []
+
+    def _respond(call_index: int, prompt: str) -> str:
+        if "MISSION:" not in prompt:
+            return "ok"
+        if "CHILD-C-TASK" in _mission_text(prompt):
+            captured_child_prompts.append(prompt)
+            return _finish_call()
+        if "HISTORY (most recent last):" not in prompt:
+            return _spawn_agent_call()
+        return _finish_call()
+
+    router = ModelRouter(
+        providers={"fake": _ScriptedProvider(_respond)},
+        routes={"reasoning": ("fake",), "review": ("fake",)},
+        default_route=("fake",),
+    )
+    monkeypatch.setattr(scan_module, "build_router", lambda _settings: router)
+
+    config = ScanConfig(
+        mission="find a bug, spawning one child for a focused subtask",
+        target_specs=["c.example.com"],
+        run_dir=tmp_path / "run",
+        usage_path=tmp_path / "usage.json",
+    )
+    ScanRunner(config, env={"ANTHROPIC_API_KEY": "sk-test"}).run()
+
+    assert len(captured_child_prompts) == 1
+    assert "/work/scratch/agent-2/" in _mission_text(captured_child_prompts[0])
+    assert "CHILD-C-TASK: test host c.example.com" in _mission_text(captured_child_prompts[0])
+
+
 def test_scan_runner_emits_agent_events_for_a_spawned_childs_lifecycle(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1035,7 +1094,7 @@ def test_scan_runner_still_emits_a_failed_agent_event_when_a_child_raises(
     def _respond_with_a_crashing_child(call_index: int, prompt: str) -> str:
         if "MISSION:" not in prompt:
             return "ok"
-        if prompt.startswith("MISSION:\nCHILD-C-TASK"):
+        if "CHILD-C-TASK" in _mission_text(prompt):
             raise RuntimeError("simulated child crash")
         if "HISTORY (most recent last):" not in prompt:
             return _spawn_agent_call()
@@ -1115,11 +1174,12 @@ def _respond_with_a_source_reviewer_spawn(
     def _respond(call_index: int, prompt: str) -> str:
         if "MISSION:" not in prompt:
             return "ok"  # the preflight verify_router() health-check call
-        # Anchored on the MISSION line itself (not a bare substring check):
-        # the root's OWN history recap of its spawn_agent call echoes the
-        # child's task text verbatim, so a bare "SOURCE-REVIEW-TASK in
-        # prompt" check would misfire on the root's own later turn too.
-        if prompt.startswith("MISSION:\nSOURCE-REVIEW-TASK"):
+        # Anchored on the MISSION field itself via _mission_text() (not a
+        # bare substring check): the root's OWN history recap of its
+        # spawn_agent call echoes the child's task text verbatim, so a bare
+        # "SOURCE-REVIEW-TASK in prompt" check would misfire on the root's
+        # own later turn too.
+        if "SOURCE-REVIEW-TASK" in _mission_text(prompt):
             captured_child_prompts.append(prompt)
             return _finish_call()
         # the root's own turns
@@ -2229,7 +2289,7 @@ def test_resume_reseeds_the_spawn_counter_so_a_second_child_gets_a_fresh_agent_i
             return '{"verdict": "confirmed", "proof_level": "L3", "reasoning": "grounded"}'
         if "MISSION:" not in prompt:
             return "ok"  # the preflight verify_router() health-check call
-        if prompt.startswith("MISSION:\nCHILD-C-TASK"):
+        if "CHILD-C-TASK" in _mission_text(prompt):
             # Child C runs to completion -- both of its own steps land in the
             # journal under "agent-2" before the crash below. Anchored on the
             # MISSION line itself (not a bare substring check) -- the root's
@@ -2272,7 +2332,7 @@ def test_resume_reseeds_the_spawn_counter_so_a_second_child_gets_a_fresh_agent_i
     def _respond_after_resume(_call_index: int, prompt: str) -> str:
         if "FINDING TO REVIEW" in prompt:
             return '{"verdict": "confirmed", "proof_level": "L3", "reasoning": "grounded"}'
-        if prompt.startswith("MISSION:\nCHILD-D-TASK"):
+        if "CHILD-D-TASK" in _mission_text(prompt):
             if "HISTORY (most recent last):" not in prompt:
                 return _record_finding_call_for("https://d.example.com/search")
             return _finish_call()
@@ -2338,7 +2398,7 @@ def test_a_crashed_mid_child_scan_can_be_resumed_under_the_same_agent_id(
     def _crash_mid_child(call_index: int, prompt: str) -> str:
         if "MISSION:" not in prompt:
             return "ok"  # the preflight verify_router() health-check call
-        if prompt.startswith("MISSION:\nCHILD-C-TASK"):
+        if "CHILD-C-TASK" in _mission_text(prompt):
             # The child's very first turn - simulate an unrecoverable process
             # kill while child_loop.run() is still in progress. Deliberately
             # a BaseException, NOT a plain Exception: agent/spawn.py's own
@@ -2375,7 +2435,7 @@ def test_a_crashed_mid_child_scan_can_be_resumed_under_the_same_agent_id(
     def _respond_after_resume(call_index: int, prompt: str) -> str:
         if "FINDING TO REVIEW" in prompt:
             return '{"verdict": "confirmed", "proof_level": "L3", "reasoning": "grounded"}'
-        if prompt.startswith("MISSION:\nCHILD-C-TASK"):
+        if "CHILD-C-TASK" in _mission_text(prompt):
             if "HISTORY (most recent last):" not in prompt:
                 return _record_finding_call_for("https://c.example.com/search")
             return _finish_call()

@@ -1215,8 +1215,27 @@ class ScanRunner:
                         "role": role,
                     },
                 )
+                # A prompt-text convention, not an enforced filesystem jail
+                # (matching CLAUDE.md's no-restrictions posture exactly - a
+                # child remains free to write anywhere in the container
+                # regardless): naming a scratch directory keyed on the
+                # already-unique, system-generated child_id gives concurrent
+                # spawn_agents siblings sharing one container filesystem a
+                # natural, collision-free default without restricting where
+                # any agent may actually write. Only the child's own mission
+                # text gets this prepended - the "agent"/journal "task"
+                # fields above stay the operator/agent-authored task exactly
+                # as recorded, so the GUI and resume breadcrumbs never show
+                # this boilerplate.
+                mission_task = (
+                    f"(Your own scratch working directory inside the container is "
+                    f"/work/scratch/{child_id}/ - use it for any scratch files, cloned "
+                    f"repos, or staged payloads so concurrent sibling agents never "
+                    f"collide on filenames. Create it yourself with mkdir -p if you "
+                    f"need it; nothing pre-creates it for you.)\n\n"
+                ) + task
                 try:
-                    result = child_loop.run(task, journal=journal, agent_key=child_id)
+                    result = child_loop.run(mission_task, journal=journal, agent_key=child_id)
                 except Exception:
                     # child_loop.run() can genuinely raise (agent/spawn.py's
                     # own _spawn/_run_one wrap this exact call in their own
