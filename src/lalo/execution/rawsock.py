@@ -58,12 +58,15 @@ def tcp_send_recv(
         )
 
     start = time.monotonic()
+    # Declared before the try so a non-timeout OSError (caught below) can
+    # still return whatever was already received, rather than discarding it
+    # - see that branch's own comment.
+    chunks: list[bytes] = []
     try:
         with socket.create_connection((pinned_ip, port), timeout=timeout) as sock:
             sock.settimeout(timeout)
             if payload:
                 sock.sendall(payload)
-            chunks: list[bytes] = []
             received = 0
             while received < recv_bytes:
                 try:
@@ -75,11 +78,19 @@ def tcp_send_recv(
                 chunks.append(chunk)
                 received += len(chunk)
     except OSError as exc:
+        # A service that accepted the connection and streamed a partial
+        # banner/response before resetting (ConnectionResetError et al. are
+        # OSError subclasses, not caught by the TimeoutError handling above)
+        # - discarding what was already received would silently lose real
+        # partial evidence (proving the crash/reset was reachable and what
+        # the service returned first). `chunks` is empty when the failure
+        # happened before any bytes were ever read.
         return RawResult(
             host=host,
             port=port,
             fired=True,
             scope_reason=decision.reason,
+            data=b"".join(chunks),
             error=type(exc).__name__,
             elapsed_ms=(time.monotonic() - start) * 1000.0,
         )
