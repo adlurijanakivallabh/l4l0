@@ -55,6 +55,39 @@ class Identity:
     credential: Credential
 
 
+@dataclass(frozen=True)
+class EmailAccount:
+    """An IMAP mailbox an agent can read to complete a target's magic-link/OTP
+    login flow.
+
+    Deliberately NOT a `Credential`/`CredentialKind` pairing threaded through
+    `Identity`: nothing here authenticates to the engagement target itself
+    (it authenticates to a mailbox), so folding it into the target-login
+    credential model would blur two genuinely different secrets under one
+    shape. Kept on its own map (`ScanConfig.email_accounts`, the same
+    independent-map convention `identities`/`login_schemes` already use) and
+    consumed only by :func:`~lalo.identity.email_tool.build_email_fetch_tool`.
+
+    Only `password` is registered with the shared redactor -- matching
+    `Identity`/`Credential`'s own precedent of registering the secret value
+    but never the identifying label next to it (`identity.username` is never
+    registered either). `address` is this account's username-equivalent and
+    `imap_host`/`imap_port` are connection parameters, not secrets.
+    """
+
+    address: str
+    password: str  # noqa: S105 - a dataclass field name, not a literal secret
+    imap_host: str
+    imap_port: int = 993
+
+    def __post_init__(self) -> None:
+        # Registered at construction -- the same guarantee IdentityStore.add()
+        # gives Credential.value, applied here since this shape has no
+        # equivalent "add to a store" call of its own to hang the
+        # registration off of.
+        shared_redactor().register_secret(self.password)
+
+
 class IdentityStore:
     """Holds each identity independently — no global "current user" state."""
 

@@ -169,7 +169,8 @@ from .findings.review import run_adversarial_review
 from .findings.tool import build_record_finding_tool
 from .graph.model import NodeKind, ReachabilityGraph
 from .graph.tool import build_note_tool, build_query_graph_tool
-from .identity.credentials import Identity, IdentityStore
+from .identity.credentials import EmailAccount, Identity, IdentityStore
+from .identity.email_tool import build_email_fetch_tool
 from .identity.login import LoginScheme, SessionRegistry, login
 from .identity.tool import build_jwt_tool, build_login_tool, build_session_check_tool
 from .integrations.mcp_client import MCPServerConfig, build_mcp_tool
@@ -227,6 +228,10 @@ class ScanConfig:
     budget_ceiling: int = 300
     identities: dict[str, Identity] = field(default_factory=dict)
     login_schemes: dict[str, LoginScheme] = field(default_factory=dict)
+    # Keyed by account name, the same independent-map convention as
+    # identities/login_schemes -- an IMAP mailbox isn't a target-login
+    # identity, so it gets its own map rather than overloading either.
+    email_accounts: dict[str, EmailAccount] = field(default_factory=dict)
     # (identity_id, scheme_name) pairs to authenticate once during preflight,
     # before the main agent loop starts, rather than only ever discovering a
     # broken login whenever the agent itself gets around to calling
@@ -1224,6 +1229,8 @@ class ScanRunner:
                     build_login_tool(firer, identities, sessions, self.config.login_schemes)
                 )
                 tools.append(build_session_check_tool(firer, sessions))
+            if self.config.email_accounts:
+                tools.append(build_email_fetch_tool(self.config.email_accounts))
             tools += [build_mcp_tool(conn) for conn in self.config.mcp_connections.values()]
             spawn_tool, view_graph_tool = build_spawn_tools(
                 coordinator, _run_child, self_id=self_id, valid_roles=frozenset(_ROLE_TOOL_NAMES)

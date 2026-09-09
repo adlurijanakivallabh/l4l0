@@ -5,7 +5,14 @@ from __future__ import annotations
 import pytest
 
 from lalo.core.redaction import REDACTION_PLACEHOLDER, redact
-from lalo.identity import Credential, CredentialKind, Identity, IdentityStore, build_role_matrix
+from lalo.identity import (
+    Credential,
+    CredentialKind,
+    EmailAccount,
+    Identity,
+    IdentityStore,
+    build_role_matrix,
+)
 
 
 def _identity(id_: str, password: str) -> Identity:
@@ -34,6 +41,17 @@ def test_adding_an_identity_registers_its_credential_for_universal_redaction() -
     leaked_line = "login attempt used password=SuperSecretPass123456"
     assert REDACTION_PLACEHOLDER in redact(leaked_line)
     assert "SuperSecretPass123456" not in redact(leaked_line)
+
+
+def test_constructing_an_email_account_registers_its_password_for_universal_redaction() -> None:
+    EmailAccount(
+        address="victim@example.com",
+        password="MailboxSecretPass123456",
+        imap_host="imap.example.com",
+    )
+    leaked_line = "imap login used password=MailboxSecretPass123456"
+    assert REDACTION_PLACEHOLDER in redact(leaked_line)
+    assert "MailboxSecretPass123456" not in redact(leaked_line)
 
 
 def test_build_role_matrix_is_the_identity_major_cartesian_product() -> None:
