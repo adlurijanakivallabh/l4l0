@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+import pytest
+
 from lalo.browser.session import BrowserSession
 from lalo.execution.scope import ScopeGuard
 from lalo.execution.target import Engagement
@@ -308,3 +310,33 @@ def test_current_url_reflects_the_page() -> None:
 def test_close_before_any_navigation_never_raises() -> None:
     session = BrowserSession(_scope())
     session.close()  # must be a no-op, not an AttributeError on a None playwright
+
+
+@dataclass
+class _FakeContext:
+    state: dict[str, object] = field(default_factory=dict)
+
+    def storage_state(self) -> dict[str, object]:
+        return self.state
+
+
+def test_export_storage_state_reads_from_the_context() -> None:
+    page = _FakePage(url="https://app.example.com/")
+    session = _session_with_fake_page(page)
+    session._context = _FakeContext(state={"cookies": [{"name": "session", "value": "abc"}]})
+    state = session.export_storage_state()
+    assert state == {"cookies": [{"name": "session", "value": "abc"}]}
+
+
+def test_import_storage_state_before_the_session_starts_is_accepted() -> None:
+    session = BrowserSession(_scope())
+    session.import_storage_state({"cookies": []})
+    assert session._pending_storage_state == {"cookies": []}
+
+
+def test_import_storage_state_after_the_session_started_raises() -> None:
+    page = _FakePage(url="https://app.example.com/")
+    session = _session_with_fake_page(page)
+    session._context = _FakeContext()
+    with pytest.raises(RuntimeError, match="before the session starts"):
+        session.import_storage_state({"cookies": []})

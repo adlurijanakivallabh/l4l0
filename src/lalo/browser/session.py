@@ -83,6 +83,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import cast
 
 from playwright.sync_api import Playwright, Response, sync_playwright
 
@@ -93,12 +94,27 @@ _MAX_TEXT_CHARS = 8_000
 
 # Trims the most common headless-automation tells a basic bot-detection
 # check looks at before doing anything more sophisticated: the WebDriver
-# flag, an empty plugins list, and a missing `chrome.runtime`.
+# flag, a fake-looking plugins list (real Chrome plugin objects, not bare
+# numbers), and a missing `chrome.runtime`.
 _STEALTH_INIT_SCRIPT = """
 Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+Object.defineProperty(navigator, 'plugins', {
+  get: () => [
+    { name: 'PDF Viewer', filename: 'internal-pdf-viewer',
+      description: 'Portable Document Format' },
+    { name: 'Chrome PDF Viewer', filename: 'internal-pdf-viewer',
+      description: 'Portable Document Format' },
+    { name: 'Chromium PDF Viewer', filename: 'internal-pdf-viewer',
+      description: 'Portable Document Format' },
+  ],
+});
 window.chrome = window.chrome || { runtime: {} };
 """
+
+_DESKTOP_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
+)
 
 
 @dataclass
@@ -114,18 +130,59 @@ class BrowserSession:
         self._scope = scope
         self._playwright: Playwright | None = None
         self._browser: object | None = None
+        self._context: object | None = None
         self._page: object | None = None
+        self._pending_storage_state: dict[str, object] | None = None
+
+    def import_storage_state(self, state: dict[str, object]) -> None:
+        """Reuse a previously-exported authenticated session (cookies +
+        localStorage) - must be called BEFORE the first navigate()/
+        _ensure_started(), since Playwright only accepts storage_state at
+        context-creation time. Lets one browser-driven login be captured
+        once (a preflight step, or a prior BrowserSession) and reused
+        across every agent that needs the same authenticated session,
+        mirroring SessionRegistry's existing reuse-across-agents shape for
+        HTTP/JSON logins."""
+        if self._context is not None:
+            raise RuntimeError("import_storage_state() must be called before the session starts")
+        self._pending_storage_state = state
+
+    def export_storage_state(self) -> dict[str, object]:
+        self._ensure_started()
+        context: object = self._context
+        return cast("dict[str, object]", context.storage_state())  # type: ignore[attr-defined]
 
     def _ensure_started(self) -> object:
         if self._page is None:
             self._playwright = sync_playwright().start()
-            self._browser = self._playwright.chromium.launch(
+            # Every hop below is re-bound to a plain `object` local before its
+            # next call - the real Playwright stubs (unlike this module's own
+            # `object | None` attribute declarations) type each of these
+            # precisely, and mypy narrows an attribute to that real type
+            # immediately after assignment within the same function; without
+            # the re-binding, spreading `context_kwargs` into `new_context`'s
+            # strictly-typed keyword parameters fails strict mypy the same
+            # way every other Playwright call in this module already avoids
+            # by going through the `object`-typed `_ensure_started` boundary.
+            browser: object = self._playwright.chromium.launch(
                 headless=True,
                 args=["--disable-blink-features=AutomationControlled"],
                 ignore_default_args=["--enable-automation"],
             )
-            self._page = self._browser.new_page()
-            self._page.add_init_script(_STEALTH_INIT_SCRIPT)
+            self._browser = browser
+            context_kwargs: dict[str, object] = {
+                "viewport": {"width": 1920, "height": 1080},
+                "locale": "en-US",
+                "user_agent": _DESKTOP_USER_AGENT,
+                "extra_http_headers": {"Accept-Language": "en-US,en;q=0.9"},
+            }
+            if self._pending_storage_state is not None:
+                context_kwargs["storage_state"] = self._pending_storage_state
+            context: object = browser.new_context(**context_kwargs)  # type: ignore[attr-defined]
+            self._context = context
+            page: object = context.new_page()  # type: ignore[attr-defined]
+            self._page = page
+            page.add_init_script(_STEALTH_INIT_SCRIPT)  # type: ignore[attr-defined]
         return self._page
 
     def _check(self, url: str) -> str | None:
@@ -284,4 +341,5 @@ class BrowserSession:
         if self._playwright is not None:
             self._playwright.stop()
             self._playwright = None
+        self._context = None
         self._page = None
