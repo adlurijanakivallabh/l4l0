@@ -63,9 +63,12 @@ from dataclasses import dataclass
 
 from defusedxml import ElementTree
 
+from ..core.logging import get_logger
 from ..execution.scope import ScopeGuard
 from ..runtime.tool import CommandExecutor
 from .facts import FactKind, ReconFact
+
+_log = get_logger("lalo.recon.scan")
 
 _DEFAULT_PORT_RANGE = "1-1000"
 _SCAN_TIMEOUT_S = 180.0
@@ -80,6 +83,25 @@ _SAFE_PORTS = re.compile(r"^[0-9]+(?:[,-][0-9]+)*$")
 
 class UnsafeNmapArgumentError(ValueError):
     """``host`` or ``ports`` doesn't match the safe positional-argument allowlist."""
+
+
+class NmapExecutionError(RuntimeError):
+    """The nmap command itself failed, or its XML output didn't parse.
+
+    Raised rather than degrading to an empty fact list: an audit found
+    :meth:`NmapServiceScanRunner.run` returning ``[]`` on either failure
+    made a truncated/killed scan (a container OOM-kill mid-scan, a timeout
+    producing partial XML, the binary going missing after
+    :meth:`NmapServiceScanRunner.is_available`'s own TOCTOU) read exactly
+    like a genuine "scanned, zero open ports" result to both the agent and
+    the operator - directly contradicting CLAUDE.md's own "honest coverage:
+    a surface that wasn't tested reads 'not assessed,' never 'clean'"
+    principle. Raising lets :func:`~lalo.recon.runner.run_recon_chain`'s
+    own existing per-runner failure isolation record this distinctly (in
+    ``ChainReport.failed``), the same way any other runner's crash already
+    is - never sinking the rest of the chain, but never silently
+    indistinguishable from a clean scan either.
+    """
 
 
 def _parse_nmap_xml(xml_text: str, host: str) -> list[ReconFact]:
@@ -98,8 +120,15 @@ def _parse_nmap_xml(xml_text: str, host: str) -> list[ReconFact]:
     facts: list[ReconFact] = []
     try:
         root = ElementTree.fromstring(xml_text)
-    except ElementTree.ParseError:
-        return facts
+    except ElementTree.ParseError as exc:
+        _log.warning(
+            "nmap XML for host %s did not parse (%s); treating as a failed scan, not a "
+            "clean one - first 200 chars of output: %r",
+            host,
+            exc,
+            xml_text[:200],
+        )
+        raise NmapExecutionError(f"nmap XML output for {host!r} did not parse: {exc}") from exc
     for host_el in root.findall(".//host"):
         address_el = host_el.find("address")
         resolved_host = address_el.get("addr") if address_el is not None else None
@@ -166,6 +195,17 @@ class NmapServiceScanRunner:
         command = f"nmap -sV -T4 -p {shlex.quote(self.ports)} -oX - {shlex.quote(self.host)}"
         result = self.container.exec(command, timeout=_SCAN_TIMEOUT_S)
         if not getattr(result, "ok", False):
-            return []
+            exit_code = getattr(result, "exit_code", None)
+            stderr = getattr(result, "stderr", "")
+            _log.warning(
+                "nmap scan of %s failed (exit_code=%s); treating as a failed scan, not a "
+                "clean one - stderr: %r",
+                self.host,
+                exit_code,
+                stderr[:500],
+            )
+            raise NmapExecutionError(
+                f"nmap scan of {self.host!r} failed: exit_code={exit_code} stderr={stderr[:500]!r}"
+            )
         stdout = getattr(result, "stdout", "")
         return _parse_nmap_xml(stdout, self.host)

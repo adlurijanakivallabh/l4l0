@@ -9,7 +9,12 @@ import pytest
 from lalo.execution.scope import ScopeGuard
 from lalo.execution.target import Engagement
 from lalo.recon.facts import FactKind
-from lalo.recon.scan import NmapServiceScanRunner, UnsafeNmapArgumentError, _parse_nmap_xml
+from lalo.recon.scan import (
+    NmapExecutionError,
+    NmapServiceScanRunner,
+    UnsafeNmapArgumentError,
+    _parse_nmap_xml,
+)
 
 _NMAP_XML = """<?xml version="1.0"?>
 <nmaprun>
@@ -98,16 +103,23 @@ def test_run_captures_service_product_version_in_extra() -> None:
     assert http_fact.extra == {"name": "http", "product": "nginx", "version": "1.18.0"}
 
 
-def test_run_returns_empty_when_the_container_exec_fails() -> None:
+def test_run_raises_when_the_container_exec_fails_never_returns_empty() -> None:
+    """Regression: a failed nmap command used to return [] - indistinguishable
+    from a genuine "scanned, zero open ports" result to both the agent and
+    the operator, violating CLAUDE.md's own "honest coverage" principle.
+    Raising lets run_recon_chain's own per-runner failure isolation record
+    this distinctly in ChainReport.failed instead."""
     container = _FakeContainer(exec_ok=False)
     runner = NmapServiceScanRunner(container, _scope(), host="127.0.0.1")
-    assert runner.run() == []
+    with pytest.raises(NmapExecutionError, match="127.0.0.1"):
+        runner.run()
 
 
-def test_run_returns_empty_on_malformed_xml_never_crashes() -> None:
+def test_run_raises_on_malformed_xml_never_returns_empty() -> None:
     container = _FakeContainer(stdout="not xml at all <<<")
     runner = NmapServiceScanRunner(container, _scope(), host="127.0.0.1")
-    assert runner.run() == []
+    with pytest.raises(NmapExecutionError, match="did not parse"):
+        runner.run()
 
 
 def test_parse_nmap_xml_labels_each_host_with_its_own_resolved_address() -> None:

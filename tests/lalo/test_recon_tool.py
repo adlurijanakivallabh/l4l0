@@ -218,6 +218,30 @@ def test_scan_ports_refuses_a_flag_shaped_host() -> None:
     assert "UnsafeNmapArgumentError" in result.observation
 
 
+class _FailingNmapContainer:
+    """nmap binary present, but the actual scan command fails - regression
+    coverage for NmapServiceScanRunner no longer swallowing this into an
+    empty (indistinguishable-from-clean) fact list."""
+
+    def exec(self, command: str, *, timeout: float = 120.0) -> _FakeExecResult:
+        if command.startswith("command -v"):
+            return _FakeExecResult(ok=True)
+        return _FakeExecResult(ok=False, stdout="")
+
+
+def test_scan_ports_reports_a_real_nmap_failure_honestly_not_as_zero_open_ports() -> None:
+    tool = build_recon_tool(
+        _firer(lambda r: httpx.Response(200)),
+        ReachabilityGraph(),
+        _scope(),
+        container=_FailingNmapContainer(),
+    )
+    result = tool.run({"action": "scan_ports", "host": "app.example.com"})
+    assert result.ok is False
+    assert "failed" in result.observation
+    assert "NmapExecutionError" in result.observation
+
+
 def test_scan_ports_merges_open_ports_into_the_graph() -> None:
     graph = ReachabilityGraph()
     tool = build_recon_tool(
