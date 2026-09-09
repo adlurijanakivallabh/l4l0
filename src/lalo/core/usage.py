@@ -16,8 +16,14 @@ race here needs two callers touching the same usage file at once, and this
 project's own established convention (this file's persistence pattern
 mirrors :func:`~lalo.eval.scoring.append_composite_history`'s already-
 accepted decision) is that this is a real but low-probability edge case,
-not worth the complexity of process-level file locking for. Every scan the
-GUI launches (:mod:`lalo.gui.app`) passes its own ``run_dir / "usage.json"``
+not worth the complexity of process-level file locking for. A DIFFERENT,
+genuinely common race is guarded separately below with a plain
+``threading.Lock`` -- multiple threads in the SAME process (a
+``spawn_agents`` fan-out's concurrently-running children) sharing one
+``ScanConfig.usage_path`` is the normal case for any scan that spawns more
+than one child, not an edge case, and needs no cross-process coordination
+to fix. Every scan the GUI launches (:mod:`lalo.gui.app`) passes its own
+``run_dir / "usage.json"``
 rather than this module's shared ``DEFAULT_USAGE_PATH``, so two GUI-launched
 scans — even genuinely concurrent ones — never share a file. The race is
 narrower than "any two scans," not eliminated: a direct/CLI ``ScanConfig``
@@ -30,6 +36,7 @@ naming here rather than silently assumed away.
 from __future__ import annotations
 
 import json
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -39,6 +46,12 @@ from .model_router import CompletionResponse
 from .pricing import PricingTable, estimate_cost_usd
 
 DEFAULT_USAGE_PATH = Path.home() / ".lalo" / "usage.json"
+
+# Guards record_usage()'s own load-mutate-write sequence below - see the
+# module docstring's own note on why this is a plain in-process
+# threading.Lock, not the inter-process fcntl locking this module already
+# decided against.
+_lock = threading.Lock()
 
 
 @dataclass
@@ -188,45 +201,46 @@ def record_usage(
     reflected in the totals. ``None`` (the default) preserves the exact
     plain-accumulate behavior every existing caller already relies on.
     """
-    stats = load_usage(path)
-    input_tokens = response.input_tokens or 0
-    output_tokens = response.output_tokens or 0
-    cost = estimate_cost_usd(response, pricing_table) if pricing_table else None
+    with _lock:
+        stats = load_usage(path)
+        input_tokens = response.input_tokens or 0
+        output_tokens = response.output_tokens or 0
+        cost = estimate_cost_usd(response, pricing_table) if pricing_table else None
 
-    if step_key is not None and step_key in stats.by_step:
-        prior = stats.by_step[step_key]
+        if step_key is not None and step_key in stats.by_step:
+            prior = stats.by_step[step_key]
+            _apply_delta(
+                stats,
+                provider=str(prior["provider"]),
+                agent_id=prior["agent_id"],  # type: ignore[arg-type]
+                input_tokens=int(prior["input_tokens"]),  # type: ignore[call-overload]
+                output_tokens=int(prior["output_tokens"]),  # type: ignore[call-overload]
+                cost=prior["cost_usd"],  # type: ignore[arg-type]
+                sign=-1,
+            )
+
         _apply_delta(
             stats,
-            provider=str(prior["provider"]),
-            agent_id=prior["agent_id"],  # type: ignore[arg-type]
-            input_tokens=int(prior["input_tokens"]),  # type: ignore[call-overload]
-            output_tokens=int(prior["output_tokens"]),  # type: ignore[call-overload]
-            cost=prior["cost_usd"],  # type: ignore[arg-type]
-            sign=-1,
+            provider=response.provider,
+            agent_id=agent_id,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cost=cost,
+            sign=1,
         )
 
-    _apply_delta(
-        stats,
-        provider=response.provider,
-        agent_id=agent_id,
-        input_tokens=input_tokens,
-        output_tokens=output_tokens,
-        cost=cost,
-        sign=1,
-    )
+        if step_key is not None:
+            stats.by_step[step_key] = {
+                "provider": response.provider,
+                "agent_id": agent_id,
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "cost_usd": cost,
+            }
 
-    if step_key is not None:
-        stats.by_step[step_key] = {
-            "provider": response.provider,
-            "agent_id": agent_id,
-            "input_tokens": input_tokens,
-            "output_tokens": output_tokens,
-            "cost_usd": cost,
-        }
-
-    atomic_write_verified(
-        path, json.dumps(stats.to_dict(), indent=2, sort_keys=True).encode("utf-8")
-    )
+        atomic_write_verified(
+            path, json.dumps(stats.to_dict(), indent=2, sort_keys=True).encode("utf-8")
+        )
 
     if cost_limit_usd is not None and stats.total_cost_usd > cost_limit_usd:
         raise CostLimitExceededError(

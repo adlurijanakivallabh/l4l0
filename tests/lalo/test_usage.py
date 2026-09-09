@@ -175,3 +175,28 @@ def test_record_usage_under_the_limit_never_raises(tmp_path: Path) -> None:
         _response(input_tokens=10, output_tokens=10), path=path, cost_limit_usd=100.0
     )
     assert stats.total_requests == 1
+
+
+def test_record_usage_survives_concurrent_calls_with_no_lost_update(tmp_path: Path) -> None:
+    """Two threads calling record_usage() with the same path must never lose an
+    update to a race - the real hazard this closes: spawn_agents runs several
+    children as real OS threads, all sharing ScanConfig.usage_path."""
+    import threading
+
+    path = tmp_path / "usage.json"
+    call_count = 50
+
+    def _hit() -> None:
+        for _ in range(call_count):
+            record_usage(_response(input_tokens=1, output_tokens=1), path=path)
+
+    threads = [threading.Thread(target=_hit) for _ in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    stats = load_usage(path)
+    assert stats.total_requests == 4 * call_count
+    assert stats.total_input_tokens == 4 * call_count
+    assert stats.total_output_tokens == 4 * call_count
