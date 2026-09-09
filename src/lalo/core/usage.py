@@ -49,10 +49,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from ..paths import USAGE_FILENAME
-from .atomic_io import atomic_write_verified
+from .atomic_io import AtomicWriteError, atomic_write_verified
 from .errors import CostLimitExceededError
+from .logging import get_logger
 from .model_router import CompletionResponse
 from .pricing import PricingTable, estimate_cost_usd
+
+_log = get_logger("lalo.usage")
 
 DEFAULT_USAGE_PATH = Path.home() / ".lalo" / USAGE_FILENAME
 
@@ -153,9 +156,11 @@ def load_usage(path: Path = DEFAULT_USAGE_PATH) -> UsageStats:
         return UsageStats()
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        _log.warning("usage file %s unreadable/corrupt, resetting to zero: %s", path, exc)
         return UsageStats()
     if not isinstance(data, dict):
+        _log.warning("usage file %s did not contain a JSON object, resetting to zero", path)
         return UsageStats()
     return UsageStats.from_dict(data)
 
@@ -271,7 +276,13 @@ def record_usage(
             atomic_write_verified(
                 path, json.dumps(stats.to_dict(), indent=2, sort_keys=True).encode("utf-8")
             )
-        except OSError:
+        except (OSError, AtomicWriteError):
+            # AtomicWriteError (a byte-verify mismatch, raised BEFORE the
+            # swap - see atomic_io.py) is not an OSError, so a bare `except
+            # OSError` here missed exactly the failure mode this flag exists
+            # to catch: the write is genuinely lost (the original file is
+            # left untouched, the new data never lands) yet the flag would
+            # have stayed True, silently lying about accounting completeness.
             global _accounting_complete
             _accounting_complete = False
             raise

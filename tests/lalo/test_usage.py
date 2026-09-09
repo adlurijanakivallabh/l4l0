@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 import lalo.core.usage as usage_module
+from lalo.core.atomic_io import AtomicWriteError
 from lalo.core.errors import CostLimitExceededError
 from lalo.core.model_router import CompletionResponse
 from lalo.core.usage import load_usage, record_usage, usage_accounting_status
@@ -223,3 +224,45 @@ def test_a_failed_record_usage_call_flips_accounting_status_false(
         assert usage_accounting_status() is False
     finally:
         usage_module._accounting_complete = True  # don't leak into other tests
+
+
+def test_a_byte_verify_failure_also_flips_accounting_status_false(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression: AtomicWriteError (a byte-verify mismatch, raised BEFORE
+    the swap - see core/atomic_io.py) is not an OSError, so record_usage's
+    old `except OSError` missed exactly this failure mode - the write is
+    genuinely lost, yet the honesty flag stayed True."""
+    path = tmp_path / "usage.json"
+    record_usage(_response(), path=path)
+
+    def _always_fails_verify(*_args: object, **_kwargs: object) -> None:
+        raise AtomicWriteError("simulated byte-verify mismatch")
+
+    monkeypatch.setattr(usage_module, "atomic_write_verified", _always_fails_verify)
+    try:
+        with pytest.raises(AtomicWriteError, match="simulated byte-verify mismatch"):
+            record_usage(_response(), path=path)
+        assert usage_accounting_status() is False
+    finally:
+        usage_module._accounting_complete = True  # don't leak into other tests
+
+
+def test_load_usage_on_a_corrupt_file_logs_a_warning(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression: a corrupt/unreadable usage file silently reset the
+    running total to zero with no log call at all - the operator's real
+    cost-ceiling enforcement (record_usage's cost_limit_usd check reads
+    this same total) could silently restart from zero with zero signal.
+    core/logging.py's own get_logger() sets propagate=False, which defeats
+    pytest's caplog (it relies on propagation to the root logger's
+    handler), so this asserts on the call directly instead."""
+    warnings: list[str] = []
+    monkeypatch.setattr(
+        usage_module._log, "warning", lambda msg, *args, **kwargs: warnings.append(msg % args)
+    )
+    path = tmp_path / "usage.json"
+    path.write_text("not json at all {{{", encoding="utf-8")
+    load_usage(path)
+    assert any("unreadable/corrupt" in w for w in warnings)
