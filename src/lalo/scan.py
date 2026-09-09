@@ -1182,7 +1182,14 @@ class ScanRunner:
             identities.add(identity)
         sessions = SessionRegistry(graph)
         coordinator = AgentCoordinator(max_depth=self.config.spawn_max_depth)
-        budget = Budget(ceiling=self.config.budget_ceiling)
+        # spent= reconstructs the TRUE cumulative spend across every agent -
+        # root and every spawned child - not just root's own replayed steps.
+        # AgentLoop.run()'s own replay loop deliberately does NOT spend per
+        # replayed step (see its own comment): a completed child is adopted
+        # from a cached journal entry on the root's side, never re-run, so
+        # only this journal-wide count (every agent_key namespace at once)
+        # can see what a completed child itself actually spent.
+        budget = Budget(ceiling=self.config.budget_ceiling, spent=journal.completed_step_count())
         tracer = Tracer()
         system_prompt = render_prompt(
             "agent",

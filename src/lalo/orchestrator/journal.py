@@ -47,6 +47,9 @@ from pathlib import Path
 from typing import Any
 
 from ..core.atomic_io import append_owner_only_line
+from ..core.logging import get_logger
+
+_log = get_logger("lalo.journal")
 
 
 @dataclass(frozen=True)
@@ -71,14 +74,26 @@ class DurableJournal:
     def _load(self) -> None:
         if not self.path.exists():
             return
-        for line in self.path.read_text(encoding="utf-8").splitlines():
+        lines = self.path.read_text(encoding="utf-8").splitlines()
+        last_index = len(lines) - 1
+        for i, line in enumerate(lines):
             line = line.strip()
             if not line:
                 continue
             try:
                 record = json.loads(line)
             except (json.JSONDecodeError, ValueError):
-                continue  # torn final line from a crash mid-write -> skip, not fatal
+                # A crash mid-write can only ever torn the LAST line - skip
+                # that one without comment. Any OTHER line failing to parse
+                # is real corruption, not a crash artifact, and dropping it
+                # silently would hide exactly the "resume state silently
+                # corrupted after a crash" scenario this journal exists to
+                # prevent - a dropped checkpoint here means a resumed step
+                # whose journal record didn't survive gets silently
+                # re-executed (re-firing a request, re-spawning a child).
+                if i != last_index:
+                    _log.warning("journal line %d unparseable, dropping: %s", i, self.path)
+                continue
             if isinstance(record, dict) and "key" in record:
                 key = str(record["key"])
                 self._entries[key] = record.get("result")
@@ -139,3 +154,23 @@ class DurableJournal:
 
     def completed_keys(self) -> list[str]:
         return list(self._entries)
+
+    def completed_step_count(self) -> int:
+        """Total real agent-step entries across EVERY agent_key namespace
+        (root and every spawned child), not just root's own.
+
+        An audit found a resumed run's Budget.spent was reconstructed only
+        from AgentLoop.run()'s own replay loop, which re-spends 1 unit per
+        REPLAYED step for whichever single agent_key is calling it - correct
+        for root's own steps, but a completed child is never re-run on
+        resume (its own already-journaled spawn_agent step on the ROOT is
+        adopted from cache, not re-dispatched), so every step that child
+        itself spent was silently lost from the shared ceiling after a
+        crash/resume. This is the single source of truth instead: every
+        step key is shaped ``"{agent_key}:{step}"`` with an integer step
+        suffix (``root:0``, ``agent-2:1``, ...) - the ``"{child_id}:spawned"``/
+        ``"{child_id}:finished"`` breadcrumbs and the ``"review:{finding_id}"``
+        namespace (see scan.py's own per-finding review journaling) are
+        excluded since neither ever calls ``Budget.spend()``.
+        """
+        return sum(1 for key in self._entries if key.rpartition(":")[2].isdigit())

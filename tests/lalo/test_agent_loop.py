@@ -1255,10 +1255,16 @@ def test_resume_replays_completed_steps_without_redispatching_or_recalling_the_m
     assert budget1.spent == 2
 
     # "Resume": a brand-new AgentLoop/router/budget, same journal + agent_key.
+    # budget2 starts at spent=2 (not 0) - the caller (ScanRunner._run_inside,
+    # in the real system) reconstructs true cumulative spend up front via
+    # journal.completed_step_count() BEFORE constructing Budget, since
+    # AgentLoop.run()'s own replay loop deliberately does not spend per
+    # replayed step (see its own comment: only that mechanism sees every
+    # agent_key namespace in the journal, not just this one loop's own).
     router2 = _scripted(
         ['{"tool": "probe", "args": {"x": 3}}', '{"tool": "finish", "args": {"summary": "done"}}']
     )
-    budget2 = Budget(ceiling=100)
+    budget2 = Budget(ceiling=100, spent=journal.completed_step_count())
     events: list[str] = []
     loop2 = AgentLoop(
         router2,  # type: ignore[arg-type]
@@ -1272,7 +1278,7 @@ def test_resume_replays_completed_steps_without_redispatching_or_recalling_the_m
     assert result2.stop_reason == "finished"
     assert calls["n"] == 3  # only the ONE genuinely-new step actually dispatched
     assert router2.calls == 2  # the model was never re-asked about replayed steps
-    assert budget2.spent == 3  # 2 replayed + 1 new -- resume does not zero the spend
+    assert budget2.spent == 3  # 2 pre-populated + 1 new -- resume does not zero the spend
     assert len(result2.transcript) == 3  # 2 replayed probe entries + 1 new one
     assert events[0] == "resumed"
 

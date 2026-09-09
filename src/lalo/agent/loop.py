@@ -750,6 +750,19 @@ class AgentLoop:
         if journal is not None:
             # Replay already-completed steps for this key with no model call
             # and no re-dispatch -- this is the actual resume, not just a log.
+            #
+            # Deliberately does NOT call self.budget.spend() for a replayed
+            # step: only THIS agent_key's own steps are ever replayed here
+            # (a completed child is adopted from its own cached journal
+            # entry on the ROOT's side, never re-run), so spending per
+            # replayed step here would only ever reconstruct root's own
+            # contribution to a SHARED, cross-agent Budget - silently
+            # losing every step a completed child itself spent. The
+            # caller (ScanRunner._run_inside) is the one place that can see
+            # every agent_key namespace in the journal at once, so it
+            # constructs Budget(..., spent=journal.completed_step_count())
+            # up front instead - this loop only needs to rebuild `transcript`
+            # and `start_step`, not spend.
             while journal.has(f"{agent_key}:{start_step}"):
                 entry = journal.get(f"{agent_key}:{start_step}")
                 if entry["tool"] == "finish":
@@ -770,8 +783,6 @@ class AgentLoop:
                         "observation": entry["observation"],
                     }
                 )
-                if self.budget is not None:
-                    self.budget.spend(1)
                 start_step += 1
             if start_step:
                 self._emit("resumed", {"replayed_steps": start_step})

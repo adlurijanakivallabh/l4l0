@@ -112,6 +112,79 @@ def test_torn_last_line_is_ignored(tmp_path) -> None:
     assert not reloaded.has("b")
 
 
+def test_torn_last_line_logs_nothing(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A torn final line is an expected, routine crash artifact - it must
+    stay silent, matching the existing test_torn_last_line_is_ignored
+    behavior exactly."""
+    import lalo.orchestrator.journal as journal_module
+
+    warnings: list[str] = []
+    monkeypatch.setattr(
+        journal_module._log, "warning", lambda msg, *args, **kwargs: warnings.append(msg % args)
+    )
+    path = tmp_path / "j.jsonl"
+    j = DurableJournal(path)
+    j.run_once("a", lambda: 1)
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write('{"key": "b", "resu')  # torn write from a crash
+    DurableJournal(path)
+    assert warnings == []
+
+
+def test_a_malformed_middle_line_logs_a_warning_not_a_silent_drop(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression: _load() used to `continue` on ANY unparseable line, not
+    just the final one - a corrupted MIDDLE record (not a crash-mid-write
+    artifact) was dropped with zero trace anywhere. A dropped checkpoint
+    here means a resumed step whose journal record didn't survive gets
+    silently re-executed (re-firing a request, re-spawning a child)."""
+    import lalo.orchestrator.journal as journal_module
+
+    warnings: list[str] = []
+    monkeypatch.setattr(
+        journal_module._log, "warning", lambda msg, *args, **kwargs: warnings.append(msg % args)
+    )
+    path = tmp_path / "j.jsonl"
+    j = DurableJournal(path)
+    j.run_once("a", lambda: 1)
+    j.run_once("c", lambda: 3)
+    # Corrupt the FIRST line in place (not the last) - a real middle-record
+    # corruption, not a crash-mid-write torn tail.
+    lines = path.read_text(encoding="utf-8").splitlines()
+    lines[0] = "not valid json at all {{{"
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    reloaded = DurableJournal(path)
+    assert not reloaded.has("a")  # the corrupted record really is gone
+    assert reloaded.has("c")  # the rest of the file still loads
+    assert any("unparseable" in w for w in warnings)
+
+
+def test_completed_step_count_sums_every_agent_key_namespace(tmp_path) -> None:
+    """A resumed run must reconstruct its TRUE cumulative Budget.spent
+    across root AND every spawned child, not just root's own replayed
+    steps - completed_step_count() is the single source of truth for that
+    total, so it has to count real step entries in every namespace."""
+    path = tmp_path / "j.jsonl"
+    j = DurableJournal(path)
+    j.record("root:0", {"tool": "recall", "args": {}, "observation": "x"})
+    j.record("root:1", {"tool": "spawn_agent", "args": {}, "observation": "x"})
+    j.record("agent-2:0", {"tool": "http", "args": {}, "observation": "x"})
+    j.record("agent-2:1", {"tool": "record_finding", "args": {}, "observation": "x"})
+    j.record("agent-2:2", {"tool": "finish", "args": {}, "observation": "x"})
+    # Non-step breadcrumb/namespace keys must NOT be counted as steps.
+    j.record("agent-2:spawned", {"name": "Child", "task": "x", "parent_id": "root", "depth": 1})
+    j.record("agent-2:finished", {"stop_reason": "finished", "summary": "x"})
+    j.record("review:finding-abc123", {"confidence_score": 80, "verdict": "confirmed"})
+
+    assert j.completed_step_count() == 5
+
+
+def test_completed_step_count_on_a_fresh_journal_is_zero(tmp_path) -> None:
+    assert DurableJournal(tmp_path / "j.jsonl").completed_step_count() == 0
+
+
 def test_checkpoint_carries_a_wall_clock_timestamp() -> None:
     # Checkpoint is a standalone dataclass -- DurableJournal itself stores raw
     # (key -> result) pairs internally and never constructs one (confirmed:
