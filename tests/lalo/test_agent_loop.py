@@ -48,9 +48,11 @@ class _FakeRouter:
         self._respond = respond
         self.calls = 0
         self.prompts: list[str] = []
+        self.requests: list[CompletionRequest] = []
 
     def complete(self, role: str, request: CompletionRequest) -> CompletionResponse:
         self.prompts.append(request.prompt)
+        self.requests.append(request)
         text = self._respond(self.calls, request.prompt)
         self.calls += 1
         if isinstance(text, BaseException):
@@ -1135,6 +1137,27 @@ def test_retry_through_provider_outage_skips_the_wait_when_every_failure_is_non_
     assert result.stop_reason == "provider_failed"
     assert router.calls == 1  # the initial attempt only - no retry calls at all
     assert sleeps == []
+
+
+def test_agent_loop_threads_its_own_cancel_event_into_every_completion_request() -> None:
+    """None (the default, every existing caller) preserves exactly today's
+    behavior - a caller that opts in gets the SAME Event instance on every
+    CompletionRequest this loop builds, so a single ScanRunner.cancel().set()
+    reaches every step's completion, not just the first."""
+    import threading
+
+    registry = ToolRegistry([])
+    router = _scripted(['{"tool": "finish", "args": {"summary": "done"}}'])
+    cancel_event = threading.Event()
+    loop = AgentLoop(
+        router,  # type: ignore[arg-type]
+        registry,
+        system_prompt="",
+        cancel_event=cancel_event,
+    )
+    loop.run("mission")
+    assert len(router.requests) >= 1
+    assert all(r.cancel_event is cancel_event for r in router.requests)
 
 
 def test_provider_outage_retry_count_is_configurable() -> None:

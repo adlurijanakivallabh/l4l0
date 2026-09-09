@@ -747,9 +747,16 @@ class ScanRunner:
         # event through the same on_event pipeline every agent already
         # uses.
         self._cost_limit_exceeded = False
+        # Shared by every AgentLoop (root and every spawned child) this run
+        # constructs - a single cancel() call reaches every in-flight/about-
+        # to-retry completion, not just the one _should_stop() next polls
+        # between steps. See CompletionRequest.cancel_event's own docstring
+        # for the honest between-retries-only scope.
+        self._cancel_event = threading.Event()
 
     def cancel(self) -> None:
         self._cancelled = True
+        self._cancel_event.set()
         container = self._container
         if container is not None:
             container.stop()
@@ -1197,6 +1204,7 @@ class ScanRunner:
                     get_steering=self._pending_steering,
                     pricing_table=self.config.pricing_table,
                     cost_limit_usd=self.config.cost_limit_usd,
+                    cancel_event=self._cancel_event,
                 )
                 # Durable breadcrumbs for orphan detection on a future resume
                 # (see _find_orphaned_children) - a crash between these two
@@ -1354,6 +1362,7 @@ class ScanRunner:
             get_steering=self._pending_steering,
             pricing_table=self.config.pricing_table,
             cost_limit_usd=self.config.cost_limit_usd,
+            cancel_event=self._cancel_event,
         )
         # Every spawned child also journals its own steps now (agent_key=
         # child_id, wired in _run_child above), sharing this same journal

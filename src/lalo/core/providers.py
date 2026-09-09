@@ -36,6 +36,7 @@ exhausted its own chances — not on the first transient hiccup.
 
 from __future__ import annotations
 
+import threading
 import time
 from collections.abc import Callable
 from typing import Any
@@ -52,6 +53,13 @@ _MAX_ATTEMPTS = 3
 _BASE_DELAY_S = 0.5
 
 
+class _Cancelled(Exception):
+    """Raised internally by :func:`_post_with_retry` when its caller's
+    ``cancel_event`` was set - never escapes this module; every ``complete``
+    implementation catches it alongside ``httpx.HTTPError`` and re-raises as
+    a non-retryable :class:`ProviderUnavailableError`."""
+
+
 def _post_with_retry(
     client: httpx.Client,
     url: str,
@@ -59,6 +67,7 @@ def _post_with_retry(
     json: dict[str, object],
     headers: dict[str, str],
     sleep: Callable[[float], None] = time.sleep,
+    cancel_event: threading.Event | None = None,
 ) -> httpx.Response:
     """POST with bounded retry-with-backoff, but ONLY for transient failures.
 
@@ -69,8 +78,16 @@ def _post_with_retry(
     attempt's exception/response is what the caller sees either way, so
     existing raise-on-failure logic in each adapter's ``complete`` needs no
     change beyond calling this instead of ``client.post`` directly.
+
+    ``cancel_event``, if given and set, raises :class:`_Cancelled` BEFORE
+    the next attempt starts - checked once per loop iteration (before the
+    first attempt too), never mid-single-in-flight-socket-read, which httpx
+    has no clean cross-thread abort primitive for. See
+    ``CompletionRequest.cancel_event``'s own docstring for the full scope.
     """
     for attempt in range(_MAX_ATTEMPTS):
+        if cancel_event is not None and cancel_event.is_set():
+            raise _Cancelled("cancelled before/between retry attempts")
         last_attempt = attempt == _MAX_ATTEMPTS - 1
         try:
             resp = client.post(url, json=json, headers=headers)
@@ -125,7 +142,10 @@ class AnthropicProvider:
                     "content-type": "application/json",
                 },
                 sleep=self._sleep,
+                cancel_event=request.cancel_event,
             )
+        except _Cancelled as exc:
+            raise ProviderUnavailableError(str(exc), provider=self.name, retryable=False) from exc
         except httpx.HTTPError as exc:
             raise ProviderUnavailableError(type(exc).__name__, provider=self.name) from exc
 
@@ -186,7 +206,13 @@ class _OpenAIStyleProvider:
         self._client = client or httpx.Client(timeout=120.0)
         self._sleep = sleep
 
-    def _post(self, path: str, payload: dict[str, object]) -> dict[str, Any]:
+    def _post(
+        self,
+        path: str,
+        payload: dict[str, object],
+        *,
+        cancel_event: threading.Event | None = None,
+    ) -> dict[str, Any]:
         """POST ``payload`` to ``{base_url}{path}`` with this provider's own
         auth header, retrying transient failures. Raises
         :class:`ProviderUnavailableError` for a transport error or a
@@ -204,7 +230,10 @@ class _OpenAIStyleProvider:
                     "content-type": "application/json",
                 },
                 sleep=self._sleep,
+                cancel_event=cancel_event,
             )
+        except _Cancelled as exc:
+            raise ProviderUnavailableError(str(exc), provider=self.name, retryable=False) from exc
         except httpx.HTTPError as exc:
             raise ProviderUnavailableError(type(exc).__name__, provider=self.name) from exc
         if resp.status_code in _RETRYABLE_STATUS or resp.status_code >= 400:
@@ -236,7 +265,7 @@ class OpenAICompatibleProvider(_OpenAIStyleProvider):
             "max_tokens": request.max_tokens,
             "temperature": request.temperature,
         }
-        data = self._post("/v1/chat/completions", payload)
+        data = self._post("/v1/chat/completions", payload, cancel_event=request.cancel_event)
         choices = data.get("choices", [])
         finish = choices[0].get("finish_reason") if choices else None
         if finish == "content_filter":
@@ -284,7 +313,7 @@ class OpenAIResponsesProvider(_OpenAIStyleProvider):
             "max_output_tokens": request.max_tokens,
             "temperature": request.temperature,
         }
-        data = self._post("/v1/responses", payload)
+        data = self._post("/v1/responses", payload, cancel_event=request.cancel_event)
         # Output is a list of typed items (a "reasoning" item may precede the
         # "message" item for a reasoning model) - only "message" items carry
         # the actual reply text, as one or more content blocks.

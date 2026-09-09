@@ -180,6 +180,7 @@ comply with it anyway.
 from __future__ import annotations
 
 import json
+import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -430,6 +431,7 @@ class AgentLoop:
         get_steering: Callable[[], list[str]] | None = None,
         pricing_table: PricingTable | None = None,
         cost_limit_usd: float | None = None,
+        cancel_event: threading.Event | None = None,
     ) -> None:
         self.router = router
         self.registry = registry
@@ -474,6 +476,12 @@ class AgentLoop:
         # ScanRunner is the one real caller that threads a live value
         # through, from ScanConfig.cost_limit_usd.
         self.cost_limit_usd = cost_limit_usd
+        # None (the default) means every CompletionRequest this loop builds
+        # carries no cancel_event, exactly as before this feature -
+        # ScanRunner is the one real caller that passes its own shared
+        # Event, set by cancel() alongside the existing self._cancelled
+        # flag should_stop() already reads.
+        self._cancel_event = cancel_event
         # This loop's own identity (the root agent, or a spawned child) for
         # UsageStats.by_agent - None is a legitimate value here too, meaning
         # "record lifetime/by_provider totals but attribute nothing to a
@@ -556,7 +564,10 @@ class AgentLoop:
         effective_system = system if system is not None else self.system_prompt
         try:
             response = self.router.complete(
-                self.config.role, CompletionRequest(prompt=prompt, system=effective_system)
+                self.config.role,
+                CompletionRequest(
+                    prompt=prompt, system=effective_system, cancel_event=self._cancel_event
+                ),
             )
         except AllProvidersFailedError as exc:
             self._last_failure_non_retryable = exc.all_non_retryable

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import threading
+
 import httpx
 import pytest
 
@@ -183,6 +185,67 @@ def test_a_503_response_still_raises_a_retryable_provider_unavailable_error() ->
     with pytest.raises(ProviderUnavailableError) as exc_info:
         provider.complete(CompletionRequest(prompt="x"))
     assert exc_info.value.retryable is True
+
+
+def test_anthropic_complete_aborts_promptly_when_cancel_event_is_already_set() -> None:
+    calls = []
+
+    def always_retryable(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        return httpx.Response(503, json={})
+
+    cancel_event = threading.Event()
+    cancel_event.set()
+    provider = AnthropicProvider(
+        "k",
+        model="m",
+        client=httpx.Client(transport=httpx.MockTransport(always_retryable)),
+        sleep=lambda _: None,
+    )
+    with pytest.raises(ProviderUnavailableError) as exc_info:
+        provider.complete(CompletionRequest(prompt="x", cancel_event=cancel_event))
+    assert exc_info.value.retryable is False
+    assert calls == []  # never even attempted the first real POST
+
+
+def test_openai_compatible_complete_aborts_promptly_when_cancel_event_is_already_set() -> None:
+    calls = []
+
+    def always_retryable(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        return httpx.Response(503, json={})
+
+    cancel_event = threading.Event()
+    cancel_event.set()
+    provider = OpenAICompatibleProvider(
+        "gw",
+        "k",
+        model="m",
+        base_url="http://x",
+        client=httpx.Client(transport=httpx.MockTransport(always_retryable)),
+        sleep=lambda _: None,
+    )
+    with pytest.raises(ProviderUnavailableError) as exc_info:
+        provider.complete(CompletionRequest(prompt="x", cancel_event=cancel_event))
+    assert exc_info.value.retryable is False
+    assert calls == []
+
+
+def test_provider_complete_still_succeeds_when_cancel_event_is_not_set() -> None:
+    """A cancel_event that exists but was never set must not change behavior
+    at all - the same completion succeeds exactly as if none were passed."""
+
+    def ok(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, json={"stop_reason": "end_turn", "content": [{"type": "text", "text": "hi"}]}
+        )
+
+    cancel_event = threading.Event()
+    provider = AnthropicProvider(
+        "k", model="m", client=httpx.Client(transport=httpx.MockTransport(ok))
+    )
+    response = provider.complete(CompletionRequest(prompt="x", cancel_event=cancel_event))
+    assert response.text == "hi"
 
 
 def test_openai_compatible_retries_a_retryable_status_before_failing_over() -> None:
@@ -468,7 +531,7 @@ def test_build_adapter_forwards_a_curated_base_url_for_the_anthropic_kind(
     every Bedrock-routed request to api.anthropic.com instead, with no error."""
     seen_urls: list[str] = []
 
-    def fake_post_with_retry(client, url, *, json, headers, sleep=None):
+    def fake_post_with_retry(client, url, *, json, headers, sleep=None, cancel_event=None):
         seen_urls.append(url)
         return httpx.Response(
             200, json={"stop_reason": "end_turn", "content": [{"type": "text", "text": "hi"}]}

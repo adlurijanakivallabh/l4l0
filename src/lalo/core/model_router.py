@@ -32,6 +32,7 @@ fact this project would otherwise be asserting on the operator's behalf).
 
 from __future__ import annotations
 
+import threading
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Protocol, runtime_checkable
@@ -44,12 +45,24 @@ _log = get_logger("lalo.router")
 
 @dataclass(frozen=True)
 class CompletionRequest:
-    """A provider-agnostic completion request."""
+    """A provider-agnostic completion request.
+
+    ``cancel_event``, if given, is checked BETWEEN retry attempts inside
+    each provider's own bounded retry loop (``core/providers.py``'s
+    ``_post_with_retry``) - never a true abort of an already-in-flight
+    socket read, which httpx has no clean cross-thread primitive for
+    without a disproportionate transport-level change. This closes the
+    common case honestly: a request that has already failed once and is
+    about to retry (or hasn't started at all yet) stops within about one
+    retry interval of an operator stop / wall-clock / cost-ceiling kill,
+    instead of running out its full attempt schedule regardless.
+    """
 
     prompt: str
     system: str | None = None
     max_tokens: int = 1024
     temperature: float = 0.0
+    cancel_event: threading.Event | None = None
 
 
 @dataclass(frozen=True)
