@@ -15,6 +15,7 @@ from collections.abc import Callable
 import httpx
 import pytest
 
+import lalo.core.usage as usage_module
 from lalo.agent.loop import AgentConfig, AgentLoop, _truncate_observation
 from lalo.agent.tools import FunctionTool, ToolRegistry, ToolResult
 from lalo.core.errors import AllProvidersFailedError
@@ -997,8 +998,16 @@ def test_a_usage_recording_failure_never_crashes_the_agent_loop(tmp_path) -> Non
     registry = ToolRegistry([])
     router = _scripted(['{"tool": "finish", "args": {"summary": "done"}}'])
     loop = AgentLoop(router, registry, system_prompt="", usage_path=usage_path)  # type: ignore[arg-type]
-    result = loop.run("mission")
-    assert result.stop_reason == "finished"
+    try:
+        result = loop.run("mission")
+        assert result.stop_reason == "finished"
+    finally:
+        # This deliberately-forced failure genuinely flips core/usage.py's
+        # own process-level usage_accounting_status() flag (correctly - a
+        # real record_usage() call really did fail here) - reset it so this
+        # test's forced failure doesn't leak into any other test's process-
+        # wide view of that flag.
+        usage_module._accounting_complete = True
 
 
 def test_provider_failure_returns_a_typed_stop_reason_not_a_crash() -> None:

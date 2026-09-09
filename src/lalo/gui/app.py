@@ -122,6 +122,7 @@ from ..core.logging import get_logger
 from ..core.providers import build_router, verify_router
 from ..core.redaction import safe_error_from_code
 from ..intake import parse_scan_intent
+from ..paths import NARRATIVE_LOG_FILENAME, RESUME_MANIFEST_FILENAME, USAGE_FILENAME
 from ..report.manifest import verify_report_manifest
 from ..report.writer import (
     CSV_FILENAME,
@@ -153,7 +154,7 @@ _REPORT_FORMATS: dict[str, tuple[str, str]] = {
     # rather than a second one; the frontend deliberately links to it
     # separately from the one "best report" link (see app.js's own
     # REPORT_LINK_PREFERENCE comment), not as another format in that rotation.
-    "narrative": ("narrative.log", "text/plain"),
+    "narrative": (NARRATIVE_LOG_FILENAME, "text/plain"),
 }
 
 _log = get_logger("lalo.gui")
@@ -228,7 +229,7 @@ def _list_runs(runs_dir: Path, *, running_run_ids: set[str] | None = None) -> li
         mission: str | None = None
         target_specs: list[str] = []
         try:
-            manifest = json.loads((entry / "resume_manifest.json").read_text(encoding="utf-8"))
+            manifest = json.loads((entry / RESUME_MANIFEST_FILENAME).read_text(encoding="utf-8"))
         except (OSError, ValueError):
             manifest = {}
         if isinstance(manifest, dict):
@@ -329,7 +330,7 @@ def build_app(event_log: EventLog, *, runs_dir: Path | None = None) -> FastAPI:
                 rules_of_engagement=str(manifest.get("rules_of_engagement", "")),
                 egress_lock=bool(manifest["egress_lock"]),
                 run_dir=run_dir,
-                usage_path=run_dir / "usage.json",
+                usage_path=run_dir / USAGE_FILENAME,
                 # Every field below is an operational tuning knob, never a
                 # locked scope/safety field (see each one's own doc comment
                 # on ScanConfig) - scan.py's own design explicitly frames
@@ -405,7 +406,7 @@ def build_app(event_log: EventLog, *, runs_dir: Path | None = None) -> FastAPI:
                 exclude_target_specs=exclude_targets,
                 rules_of_engagement=rules_of_engagement,
                 run_dir=run_dir,
-                usage_path=run_dir / "usage.json",
+                usage_path=run_dir / USAGE_FILENAME,
                 max_steps=(
                     request.max_steps if request.max_steps is not None else ScanConfig.max_steps
                 ),

@@ -181,6 +181,7 @@ from .observability.tracing import Tracer, wall_clock_union
 from .orchestrator.budget import Budget, RunStatus
 from .orchestrator.journal import DurableJournal
 from .orchestrator.narrative import write_narrative_log
+from .paths import EVENTS_FILENAME, RESUME_MANIFEST_FILENAME
 from .prompts import render_prompt
 from .recon.tool import build_recon_tool
 from .report.collect import ReportMetadata, ReportUsage
@@ -387,7 +388,7 @@ class _ResumeManifest:
 
 
 def _manifest_path(run_dir: Path) -> Path:
-    return run_dir / "resume_manifest.json"
+    return run_dir / RESUME_MANIFEST_FILENAME
 
 
 def read_resume_manifest(run_dir: Path) -> dict[str, object] | None:
@@ -469,7 +470,7 @@ _ROLE_TOOL_NAMES: dict[str, frozenset[str] | None] = {
 
 
 def _events_path(run_dir: Path) -> Path:
-    return run_dir / "events.jsonl"
+    return run_dir / EVENTS_FILENAME
 
 
 def _trace_path(run_dir: Path) -> Path:

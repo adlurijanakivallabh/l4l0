@@ -48,12 +48,13 @@ import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from ..paths import USAGE_FILENAME
 from .atomic_io import atomic_write_verified
 from .errors import CostLimitExceededError
 from .model_router import CompletionResponse
 from .pricing import PricingTable, estimate_cost_usd
 
-DEFAULT_USAGE_PATH = Path.home() / ".lalo" / "usage.json"
+DEFAULT_USAGE_PATH = Path.home() / ".lalo" / USAGE_FILENAME
 
 # Guards record_usage()'s own load-mutate-write sequence below - see the
 # module docstring's own note on why this is a plain in-process

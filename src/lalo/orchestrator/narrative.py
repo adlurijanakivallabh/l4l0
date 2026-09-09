@@ -53,6 +53,7 @@ from typing import Any
 
 from ..core.atomic_io import atomic_write_verified
 from ..core.redaction import redact
+from ..paths import EVENTS_FILENAME, NARRATIVE_LOG_FILENAME
 
 _CONTROL_CHARS_RE = re.compile(r"[\x00-\x1f\x7f]")
 
@@ -140,11 +141,11 @@ def render_narrative_line(category: str, payload: dict[str, Any]) -> str:
 
 
 def _events_path(run_dir: Path) -> Path:
-    return run_dir / "events.jsonl"
+    return run_dir / EVENTS_FILENAME
 
 
 def _narrative_path(run_dir: Path) -> Path:
-    return run_dir / "narrative.log"
+    return run_dir / NARRATIVE_LOG_FILENAME
 
 
 def render_narrative(run_dir: Path) -> str:
