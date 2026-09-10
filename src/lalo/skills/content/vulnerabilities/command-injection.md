@@ -141,4 +141,4 @@ system later executes or loads from.
 Command injection is a property of how a process is launched, not of any
 one payload. Confirm quietly (timing or out-of-band) before anything
 louder, distinguish shell injection from argument injection, and prove the
-primitive with the smallest command that demonstrates it.
+primitive with the smallest command that demonstrates it. A target that avoids a shell entirely is not automatically safe from this family — see [[argument-injection]] for the sibling technique that works purely through argv-level flag injection, no shell metacharacter required.
