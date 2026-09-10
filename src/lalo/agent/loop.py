@@ -398,6 +398,22 @@ def _call_signature(name: str, args: dict[str, object]) -> str:
     return name + "|" + json.dumps(args, sort_keys=True, default=str)
 
 
+# A genuine context-overflow rejection, not a rate-limit/throttle one -
+# checked in that order deliberately: a rate-limit message can legitimately
+# contain the word "limit" or "exceeded" too, and must never be
+# misclassified as an overflow (which would force a pointless compaction
+# pass instead of the correct outage-retry wait).
+_OVERFLOW_MARKERS = ("context length", "context_length", "maximum context", "too many tokens")
+_RATE_LIMIT_MARKERS = ("rate limit", "rate_limit", "too many requests", "429")
+
+
+def _looks_like_context_overflow(message: str) -> bool:
+    lowered = message.lower()
+    if any(marker in lowered for marker in _RATE_LIMIT_MARKERS):
+        return False
+    return any(marker in lowered for marker in _OVERFLOW_MARKERS)
+
+
 def _truncate_observation(text: str, max_chars: int) -> str:
     """Cap ``text`` at ``max_chars``, keeping head AND tail with a clear marker.
 
@@ -528,6 +544,12 @@ class AgentLoop:
         # revoked credential. False by default so a loop that never hits
         # _complete's failure branch behaves exactly as before this feature.
         self._last_failure_non_retryable = False
+        # Set alongside _last_failure_non_retryable on every _complete()
+        # failure - read once, immediately after, by run()'s own overflow
+        # check; stale values from an earlier step are never read since
+        # run() only ever checks this right after a fresh _complete() call
+        # that itself just returned None.
+        self._last_failure_message = ""
 
     def _emit(self, event: str, payload: dict[str, object]) -> None:
         if self.on_event is not None:
@@ -591,6 +613,7 @@ class AgentLoop:
             )
         except AllProvidersFailedError as exc:
             self._last_failure_non_retryable = exc.all_non_retryable
+            self._last_failure_message = str(exc)
             return None
         if self.usage_path is not None:
             try:
@@ -714,6 +737,28 @@ class AgentLoop:
         # the same batch forever on a persistently failing role is worse
         # than dropping one batch's gist.
         self._summarized_through = hidden_boundary
+
+    def _recompact_and_retry(
+        self, mission: str, transcript: list[dict[str, object]], *, step_key: str | None = None
+    ) -> CompletionResponse | None:
+        """A genuine context-overflow rejection means the JUST-SENT prompt was
+        too large - retrying it unchanged (the outage-retry path's own
+        behavior) would fail identically forever. Force one compaction pass
+        regardless of the normal trigger, then rebuild and resend the prompt
+        exactly once. Never retries a second time here - if the freshly
+        recompacted prompt still overflows, that's a genuinely different,
+        worse problem (a single transcript item too large on its own) this
+        one-shot recovery isn't meant to solve; the caller's own
+        _retry_through_provider_outage remains the fallback either way.
+        """
+        hidden_boundary = max(0, len(transcript) - _VISIBLE_HISTORY_WINDOW)
+        newly_hidden = transcript[self._summarized_through : hidden_boundary]
+        if newly_hidden:
+            self._history_summary = self._compact_history(newly_hidden)
+            self._summarized_through = hidden_boundary
+        directives = [d for d in (self._budget_directive(),) if d]
+        prompt = self._render_prompt(mission, transcript, directives)
+        return self._complete(prompt, step_key=step_key)
 
     def _render_prompt(
         self, mission: str, transcript: list[dict[str, object]], directives: list[str]
@@ -845,6 +890,8 @@ class AgentLoop:
                 step_key = f"{agent_key}:{step}"
                 with self.tracer.span("llm_completion", step=step, agent_id=self.agent_id):
                     response = self._complete(prompt, step_key=step_key)
+                if response is None and _looks_like_context_overflow(self._last_failure_message):
+                    response = self._recompact_and_retry(mission, transcript, step_key=step_key)
                 if response is None:
                     response = self._retry_through_provider_outage(prompt, step_key=step_key)
                 if response is None:

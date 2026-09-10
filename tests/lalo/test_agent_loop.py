@@ -1544,3 +1544,47 @@ def test_a_step_redone_after_a_crash_before_its_journal_write_is_not_double_bill
     stats = load_usage(usage_path)
     assert stats.total_requests == 2
     assert set(stats.by_step) == {"root:0", "root:1"}
+
+
+# --- reactive context-overflow recompaction ---------------------------------
+
+
+def test_a_context_overflow_error_forces_compaction_and_retries_once() -> None:
+    """A provider rejection whose message looks like a genuine context-
+    overflow (not a rate limit) should force one compaction pass and retry
+    with the smaller prompt - not the identical-prompt outage-retry loop,
+    which would fail identically forever on a too-large prompt."""
+    attempts = {"n": 0}
+
+    class _OverflowThenOkRouter:
+        def complete(self, role: str, request: object) -> CompletionResponse:
+            attempts["n"] += 1
+            if attempts["n"] == 1:
+                raise AllProvidersFailedError(
+                    role="reasoning",
+                    failures=[("fake", "400: maximum context length exceeded")],
+                )
+            return CompletionResponse(
+                text='{"tool": "finish", "args": {"summary": "ok"}}',
+                provider="fake",
+                model="fake",
+                input_tokens=1,
+                output_tokens=1,
+            )
+
+    loop = AgentLoop(
+        _OverflowThenOkRouter(),  # type: ignore[arg-type]
+        ToolRegistry([]),
+        system_prompt="sys",
+        config=AgentConfig(max_steps=3),
+    )
+    # Proves the fix takes the NEW recompaction path rather than merely
+    # eventually succeeding via the existing 30s-scaled outage-retry wait
+    # (which would also reach attempts["n"] == 2 and stop_reason ==
+    # "finished" - the same assertions below - for the wrong reason).
+    sleeps: list[float] = []
+    loop._sleep = sleeps.append  # type: ignore[assignment]  # noqa: SLF001
+    result = loop.run("mission")
+    assert result.stop_reason == "finished"
+    assert attempts["n"] == 2
+    assert sleeps == []  # must never enter the 30s-scaled outage-retry wait
