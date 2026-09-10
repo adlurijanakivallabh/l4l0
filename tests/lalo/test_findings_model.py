@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from lalo.findings.model import Finding, validate_finding_fields
+from lalo.findings.model import Finding, validate_dependency_fields, validate_finding_fields
 
 _VALID_CVSS = {
     "attack_vector": "N",
@@ -72,3 +72,28 @@ def test_finding_accepts_an_optional_source_location() -> None:
 def test_finding_source_location_defaults_to_none() -> None:
     f = Finding(**_full_fields())  # type: ignore[arg-type]
     assert f.source_location is None
+
+
+def test_validate_dependency_fields_passes_when_reachability_absent() -> None:
+    assert validate_dependency_fields({}) == []
+
+
+def test_validate_dependency_fields_passes_for_unknown_reachability() -> None:
+    assert validate_dependency_fields({"reachability": "unknown"}) == []
+
+
+def test_validate_dependency_fields_rejects_invalid_reachability_value() -> None:
+    errors = validate_dependency_fields({"reachability": "definitely"})
+    assert any("reachability must be one of" in e for e in errors)
+
+
+def test_validate_dependency_fields_requires_evidence_for_non_unknown_reachability() -> None:
+    errors = validate_dependency_fields({"reachability": "confirmed"})
+    assert any("reachability_evidence cannot be empty" in e for e in errors)
+
+
+def test_validate_dependency_fields_passes_confirmed_with_evidence() -> None:
+    errors = validate_dependency_fields(
+        {"reachability": "confirmed", "reachability_evidence": "traced call path in app.py:42"}
+    )
+    assert errors == []

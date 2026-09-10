@@ -467,3 +467,54 @@ def test_record_finding_defaults_exploitation_steps_to_empty_list() -> None:
     _registry(graph).dispatch("record_finding", _args())
     (finding_id,) = graph.nodes_of_kind(NodeKind.FINDING)
     assert graph.node(finding_id).get("exploitation_steps", []) == []
+
+
+# --- dependency/SCA fields + fix-verification code_locations --------------
+
+
+def test_record_finding_accepts_dependency_fields() -> None:
+    graph = ReachabilityGraph()
+    tool = build_record_finding_tool(graph)
+    args = _args(
+        package_name="lodash",
+        installed_version="4.17.15",
+        ecosystem="npm",
+        manifest_path="package-lock.json",
+        reachability="confirmed",
+        reachability_evidence="traced import in src/utils.js:3, called at src/index.js:88",
+        contextual_cvss=6.5,
+    )
+    result = tool.run(args)
+    assert result.ok
+    finding_id = result.observation.split()[1].rstrip(":")
+    node = graph.node(finding_id)
+    assert node["package_name"] == "lodash"
+    assert node["reachability"] == "confirmed"
+    assert node["contextual_cvss"] == 6.5
+
+
+def test_record_finding_rejects_reachability_claim_with_no_evidence() -> None:
+    graph = ReachabilityGraph()
+    tool = build_record_finding_tool(graph)
+    args = _args(reachability="likely")
+    result = tool.run(args)
+    assert not result.ok
+    assert "reachability_evidence" in result.observation
+
+
+def test_record_finding_accepts_code_locations() -> None:
+    graph = ReachabilityGraph()
+    tool = build_record_finding_tool(graph)
+    args = _args(
+        code_locations=[
+            {
+                "location": "app.py:42",
+                "fix_before": "eval(user_input)",
+                "fix_after": "ast.literal_eval(user_input)",
+            }
+        ]
+    )
+    result = tool.run(args)
+    assert result.ok
+    finding_id = result.observation.split()[1].rstrip(":")
+    assert graph.node(finding_id)["code_locations"] == args["code_locations"]

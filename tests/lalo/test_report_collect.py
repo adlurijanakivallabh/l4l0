@@ -351,3 +351,40 @@ def test_first_finding_id_by_vuln_class_keeps_the_first_occurrence() -> None:
     records = collect_findings(graph)
     anchors = first_finding_id_by_vuln_class(records)
     assert anchors["xss"] == records[0].finding_id
+
+
+def test_collect_findings_surfaces_dependency_and_fix_verification_fields() -> None:
+    graph = ReachabilityGraph()
+    graph.add_node(
+        "finding-1",
+        NodeKind.FINDING,
+        title="t",
+        description="d",
+        vuln_class="dependency-vulnerability",
+        target="pkg",
+        evidence=["e"],
+        evidence_excerpt="e",
+        evidence_grounded=True,
+        counterevidence="c",
+        severity_change_conditions="s",
+        remediation="r",
+        cvss_score=6.5,
+        cvss_severity="medium",
+        cvss_vector="v",
+        reproduced=False,
+        identities_confirmed=[],
+        dedup_key="k",
+        package_name="lodash",
+        ecosystem="npm",
+        reachability="confirmed",
+        contextual_cvss=6.5,
+        code_locations=[{"location": "a.py:1", "fix_before": "x", "fix_after": "y"}],
+        fix_verified=True,
+    )
+    records = collect_findings(graph)
+    assert records[0].package_name == "lodash"
+    assert records[0].reachability == "confirmed"
+    assert records[0].fix_verified is True
+    assert records[0].code_locations == [
+        {"location": "a.py:1", "fix_before": "x", "fix_after": "y"}
+    ]

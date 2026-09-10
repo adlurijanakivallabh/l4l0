@@ -31,7 +31,7 @@ from ..graph.model import EdgeKind, NodeKind, ReachabilityGraph
 from .cvss import compute_cvss
 from .dedup import dedup_key, find_duplicate
 from .grounding import is_grounded
-from .model import Finding, validate_finding_fields
+from .model import Finding, validate_dependency_fields, validate_finding_fields
 
 
 def _as_evidence_list(raw: object) -> list[str]:
@@ -44,6 +44,12 @@ def _as_str_dict(raw: object) -> dict[str, str]:
     if not isinstance(raw, dict):
         return {}
     return {str(k): str(v) for k, v in raw.items()}
+
+
+def _as_dict_list(raw: object) -> list[dict[str, str]]:
+    if not isinstance(raw, list):
+        return []
+    return [{str(k): str(v) for k, v in item.items()} for item in raw if isinstance(item, dict)]
 
 
 def _sanitize_source_location(value: str) -> str | None:
@@ -104,7 +110,7 @@ def build_record_finding_tool(graph: ReachabilityGraph) -> FunctionTool:
     def _record_finding(args: dict[str, object]) -> ToolResult:
         evidence = _as_evidence_list(args.get("evidence"))
         fields = {**args, "evidence": evidence}
-        errors = validate_finding_fields(fields)
+        errors = validate_finding_fields(fields) + validate_dependency_fields(fields)
         if errors:
             return ToolResult(observation="error: " + "; ".join(errors), ok=False)
 
@@ -140,6 +146,20 @@ def build_record_finding_tool(graph: ReachabilityGraph) -> FunctionTool:
         prerequisites = redact(str(args.get("prerequisites", "")))
         impact = redact(str(args.get("impact", "")))
         exploitation_steps = [redact(s) for s in _as_evidence_list(args.get("exploitation_steps"))]
+
+        code_locations = _as_dict_list(args.get("code_locations"))
+        fix_verified = bool(args.get("fix_verified", False))
+        fix_verification_notes = redact(str(args.get("fix_verification_notes", "")))
+        package_name = str(args.get("package_name", "")).strip()
+        installed_version = str(args.get("installed_version", "")).strip()
+        ecosystem = str(args.get("ecosystem", "")).strip()
+        manifest_path = redact(str(args.get("manifest_path", "")))
+        reachability = str(args.get("reachability") or "unknown").strip().lower()
+        reachability_evidence = redact(str(args.get("reachability_evidence", "")))
+        contextual_cvss_raw = args.get("contextual_cvss")
+        contextual_cvss = (
+            float(contextual_cvss_raw) if isinstance(contextual_cvss_raw, int | float) else None
+        )
 
         key = dedup_key(vuln_class, target, param)
         existing_id = find_duplicate(graph, key)
@@ -207,6 +227,16 @@ def build_record_finding_tool(graph: ReachabilityGraph) -> FunctionTool:
             prerequisites=prerequisites,
             impact=impact,
             exploitation_steps=exploitation_steps,
+            code_locations=code_locations,
+            fix_verified=fix_verified,
+            fix_verification_notes=fix_verification_notes,
+            package_name=package_name,
+            installed_version=installed_version,
+            ecosystem=ecosystem,
+            manifest_path=manifest_path,
+            reachability=reachability,
+            reachability_evidence=reachability_evidence,
+            contextual_cvss=contextual_cvss,
         )
         finding_id = f"finding-{uuid.uuid4().hex[:12]}"
         attrs: dict[str, Any] = {
@@ -232,6 +262,16 @@ def build_record_finding_tool(graph: ReachabilityGraph) -> FunctionTool:
             "prerequisites": finding.prerequisites,
             "impact": finding.impact,
             "exploitation_steps": finding.exploitation_steps,
+            "code_locations": finding.code_locations,
+            "fix_verified": finding.fix_verified,
+            "fix_verification_notes": finding.fix_verification_notes,
+            "package_name": finding.package_name,
+            "installed_version": finding.installed_version,
+            "ecosystem": finding.ecosystem,
+            "manifest_path": finding.manifest_path,
+            "reachability": finding.reachability,
+            "reachability_evidence": finding.reachability_evidence,
+            "contextual_cvss": finding.contextual_cvss,
         }
         graph.add_node(finding_id, NodeKind.FINDING, **attrs)
         for i, blob in enumerate(evidence):
@@ -296,7 +336,19 @@ def build_record_finding_tool(graph: ReachabilityGraph) -> FunctionTool:
             'titled steps, e.g. ["Authenticate as a low-priv user via POST /login", '
             '"Request GET /api/admin/users/1 directly with that session"] - '
             "additive narration above the raw evidence list, never a replacement "
-            "for it)}"
+            'for it), "code_locations": list[{"location": str, "fix_before": str, "fix_after": '
+            "str}] (optional - use when re-testing a PREVIOUSLY reported finding against "
+            'a claimed fix), "fix_verified": bool (optional, default false - set true '
+            'only once you\'ve actually confirmed the fix holds), "fix_verification_notes": '
+            'str (optional), "package_name": str, "installed_version": str, "ecosystem": '
+            'str (e.g. "npm", "pypi", "cargo"), "manifest_path": str (optional - all four '
+            'for a dependency/SCA finding), "reachability": '
+            '"confirmed"|"likely"|"unlikely"|"unknown" (optional, default "unknown" - '
+            "whether the vulnerable code path in this specific dependency is actually "
+            'reachable from the target, not just present), "reachability_evidence": str '
+            '(required if reachability is not "unknown" - what you traced to reach that '
+            'verdict), "contextual_cvss": number (optional - this deployment\'s actual '
+            "score, distinct from the advisory's own base cvss_breakdown above)}"
         ),
         func=_record_finding,
     )

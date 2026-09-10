@@ -53,6 +53,34 @@ REQUIRED_TEXT_FIELDS = {
     ),
 }
 
+_VALID_REACHABILITY = frozenset({"confirmed", "likely", "unlikely", "unknown"})
+
+
+def validate_dependency_fields(fields: dict[str, object]) -> list[str]:
+    """Extra checks for a dependency/SCA-shaped finding - a no-op for every
+    ordinary finding, since the default ``reachability`` is ``"unknown"``
+    and an absent key reads the same way. A closed enum, and every
+    non-"unknown" value must carry a stated reason: a reachability CLAIM
+    with no evidence behind it is the same unfalsifiable-claim problem
+    REQUIRED_TEXT_FIELDS already polices for counterevidence and
+    severity_change_conditions above - a scanner-reported CVE against an
+    installed version proves nothing about whether the vulnerable code
+    path is ever actually reached.
+    """
+    reachability = str(fields.get("reachability") or "unknown").strip().lower()
+    errors: list[str] = []
+    if reachability not in _VALID_REACHABILITY:
+        errors.append(
+            f"reachability must be one of {sorted(_VALID_REACHABILITY)}, got {reachability!r}"
+        )
+    elif reachability != "unknown" and not str(fields.get("reachability_evidence") or "").strip():
+        errors.append(
+            "reachability_evidence cannot be empty when reachability is not 'unknown' - "
+            "state what you traced (a real call path, or a confirmed-absent import) "
+            "to reach that verdict"
+        )
+    return errors
+
 
 @dataclass(frozen=True)
 class Finding:
@@ -85,6 +113,30 @@ class Finding:
     prerequisites: str = ""
     impact: str = ""
     exploitation_steps: list[str] = field(default_factory=list)
+    # Set when an agent re-tests a PREVIOUSLY reported finding against a
+    # claimed fix and confirms it actually holds - never required, never
+    # blocking anything; a finding with fix_verified=False simply has no
+    # verification opinion yet, the same "absence is not a claim" stance
+    # every other optional field here already takes.
+    fix_verified: bool = False
+    fix_verification_notes: str = ""
+    # Each entry: {"location": "path:line", "fix_before": str, "fix_after": str} -
+    # what actually changed at a specific location, distinct from
+    # source_location's single vulnerability-location/chain-hop role above.
+    code_locations: list[dict[str, str]] = field(default_factory=list)
+    # Dependency/SCA-shaped finding fields - all optional, all "" / "unknown"
+    # by default so an ordinary (non-dependency) finding is entirely
+    # unaffected. contextual_cvss is deliberately distinct from
+    # cvss_breakdown/the computed cvss_score above: an advisory's own base
+    # score describes the vulnerability in the abstract, this one reflects
+    # THIS specific deployment's actual reachability and blast radius.
+    package_name: str = ""
+    installed_version: str = ""
+    ecosystem: str = ""
+    manifest_path: str = ""
+    reachability: str = "unknown"
+    reachability_evidence: str = ""
+    contextual_cvss: float | None = None
 
 
 def validate_finding_fields(fields: dict[str, object]) -> list[str]:

@@ -95,6 +95,16 @@ class FindingRecord:
     prerequisites: str = ""
     impact: str = ""
     exploitation_steps: list[str] = field(default_factory=list)
+    code_locations: list[dict[str, str]] = field(default_factory=list)
+    fix_verified: bool = False
+    fix_verification_notes: str = ""
+    package_name: str = ""
+    installed_version: str = ""
+    ecosystem: str = ""
+    manifest_path: str = ""
+    reachability: str = "unknown"
+    reachability_evidence: str = ""
+    contextual_cvss: float | None = None
 
     @property
     def effective_severity(self) -> str:
@@ -138,6 +148,16 @@ def collect_findings(graph: ReachabilityGraph) -> list[FindingRecord]:
                 prerequisites=str(node.get("prerequisites", "")),
                 impact=str(node.get("impact", "")),
                 exploitation_steps=list(node.get("exploitation_steps", [])),
+                code_locations=list(node.get("code_locations", [])),
+                fix_verified=bool(node.get("fix_verified", False)),
+                fix_verification_notes=str(node.get("fix_verification_notes", "")),
+                package_name=str(node.get("package_name", "")),
+                installed_version=str(node.get("installed_version", "")),
+                ecosystem=str(node.get("ecosystem", "")),
+                manifest_path=str(node.get("manifest_path", "")),
+                reachability=str(node.get("reachability", "unknown")),
+                reachability_evidence=str(node.get("reachability_evidence", "")),
+                contextual_cvss=node.get("contextual_cvss"),
             )
         )
     return records
