@@ -56,6 +56,19 @@ from ..skills.loader import Skill, SkillCategory
 from .collect import FindingRecord
 
 
+def _normalize_phrasing(text: str) -> str:
+    """Collapse whitespace/underscores to hyphens and lowercase - closes the
+    most common residual drift (a finding filed as "sql injection" or
+    "access_control" instead of the skill's own hyphenated slug) without
+    the full free-text synonym table this module's own docstring explains
+    was deliberately not adopted."""
+    return "-".join(text.strip().lower().replace("_", " ").split())
+
+
+def _matches_skill(vuln_class: str, skill_name: str) -> bool:
+    return _normalize_phrasing(vuln_class) == skill_name.lower()
+
+
 @dataclass(frozen=True)
 class CoverageSummary:
     assessed: list[str]
@@ -83,17 +96,19 @@ def build_coverage_summary(
     known = sorted(
         {skill.name.lower() for skill in skills if skill.category == SkillCategory.VULNERABILITY}
     )
-    seen = {record.vuln_class.strip().lower() for record in records}
+    seen_normalized = {_normalize_phrasing(record.vuln_class) for record in records}
     safe_classes: dict[str, str] = {}
     if graph is not None:
         for node_id in graph.nodes_of_kind(NodeKind.VERIFIED_SAFE):
             node = graph.node(node_id)
-            vuln_class = str(node.get("vuln_class", "")).strip().lower()
+            vuln_class = _normalize_phrasing(str(node.get("vuln_class", "")))
             if vuln_class and vuln_class not in safe_classes:
                 safe_classes[vuln_class] = str(node.get("defense_mechanism", ""))
-    assessed = [name for name in known if name in seen]
-    verified_safe = [name for name in known if name not in seen and name in safe_classes]
-    not_assessed = [name for name in known if name not in seen and name not in safe_classes]
+    assessed = [name for name in known if name in seen_normalized]
+    verified_safe = [name for name in known if name not in seen_normalized and name in safe_classes]
+    not_assessed = [
+        name for name in known if name not in seen_normalized and name not in safe_classes
+    ]
     return CoverageSummary(
         assessed=assessed,
         not_assessed=not_assessed,

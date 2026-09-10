@@ -167,3 +167,85 @@ def test_build_coverage_summary_with_no_graph_behaves_exactly_as_before() -> Non
     assert summary.verified_safe == []
     assert summary.safe_reasons == {}
     assert summary.not_assessed == ["sql-injection", "xss"]
+
+
+def _skill(name: str) -> Skill:
+    """Helper to create a test skill."""
+    return Skill(
+        name=name,
+        category=SkillCategory.VULNERABILITY,
+        description="test",
+        keywords=(),
+        body="test",
+        path=Path(f"{name}.md"),
+    )
+
+
+def test_build_coverage_summary_matches_a_space_separated_phrasing() -> None:
+    graph = ReachabilityGraph()
+    ToolRegistry([build_record_finding_tool(graph)]).dispatch(
+        "record_finding",
+        {
+            "title": "t",
+            "description": "d",
+            "vuln_class": "sql injection",
+            "target": "https://x.example.com/search",
+            "evidence": ["e"],
+            "evidence_excerpt": "e",
+            "counterevidence": "none",
+            "severity_change_conditions": "x",
+            "remediation": "Apply input validation and least-privilege fixes.",
+            "cvss_breakdown": _VALID_CVSS,
+        },
+    )
+    records = collect_findings(graph)
+    skills = [_skill("sql-injection")]
+    summary = build_coverage_summary(skills, records)
+    assert summary.assessed == ["sql-injection"]
+    assert summary.not_assessed == []
+
+
+def test_build_coverage_summary_matches_underscore_separated_phrasing() -> None:
+    graph = ReachabilityGraph()
+    ToolRegistry([build_record_finding_tool(graph)]).dispatch(
+        "record_finding",
+        {
+            "title": "t",
+            "description": "d",
+            "vuln_class": "access_control",
+            "target": "https://x.example.com/search",
+            "evidence": ["e"],
+            "evidence_excerpt": "e",
+            "counterevidence": "none",
+            "severity_change_conditions": "x",
+            "remediation": "Apply input validation and least-privilege fixes.",
+            "cvss_breakdown": _VALID_CVSS,
+        },
+    )
+    records = collect_findings(graph)
+    skills = [_skill("access-control")]
+    summary = build_coverage_summary(skills, records)
+    assert summary.assessed == ["access-control"]
+
+
+def test_build_coverage_summary_still_reports_not_assessed_for_a_real_miss() -> None:
+    graph = ReachabilityGraph()
+    ToolRegistry([build_record_finding_tool(graph)]).dispatch(
+        "record_finding",
+        {
+            "title": "t",
+            "description": "d",
+            "vuln_class": "sql injection",
+            "target": "https://x.example.com/search",
+            "evidence": ["e"],
+            "evidence_excerpt": "e",
+            "counterevidence": "none",
+            "severity_change_conditions": "x",
+            "remediation": "Apply input validation and least-privilege fixes.",
+            "cvss_breakdown": _VALID_CVSS,
+        },
+    )
+    records = collect_findings(graph)
+    skills = [_skill("xss")]
+    summary = build_coverage_summary(skills, records)
+    assert summary.not_assessed == ["xss"]
