@@ -464,6 +464,15 @@ _SOURCE_REVIEWER_TOOL_NAMES = frozenset(
     {"run_command", "record_finding", "recall", "query_graph", "note"}
 )
 
+# Confined identically to source_reviewer (pure reasoning over already-
+# accessible content, no live-firing tools) plus coverage_ledger - a
+# dependency/SCA specialist's whole job (manifest discovery, running a
+# scanner via the free shell, reachability tracing) needs no network-
+# firing tool at all.
+_DEPENDENCY_ANALYST_TOOL_NAMES = frozenset(
+    {"run_command", "record_finding", "recall", "query_graph", "note", "coverage_ledger"}
+)
+
 # The single source of truth mapping an opt-in spawn role (see
 # agent/spawn.py's own role/valid_roles) to its tool-name preset. "full" is
 # every existing agent's only role prior to this - unaffected by this
@@ -471,6 +480,7 @@ _SOURCE_REVIEWER_TOOL_NAMES = frozenset(
 _ROLE_TOOL_NAMES: dict[str, frozenset[str] | None] = {
     "full": None,
     "source_reviewer": _SOURCE_REVIEWER_TOOL_NAMES,
+    "dependency_analyst": _DEPENDENCY_ANALYST_TOOL_NAMES,
 }
 
 

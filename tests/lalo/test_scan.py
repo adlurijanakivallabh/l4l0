@@ -1287,6 +1287,16 @@ def test_a_source_reviewer_registry_drift_is_caught_by_the_self_check(
     assert any("drifted from its declared allowlist" in p for p in captured_root_prompts)
 
 
+def test_dependency_analyst_role_has_no_live_firing_tools() -> None:
+    from lalo.scan import _ROLE_TOOL_NAMES
+
+    tools = _ROLE_TOOL_NAMES["dependency_analyst"]
+    assert tools is not None
+    assert "http" not in tools
+    assert "run_command" in tools
+    assert "record_finding" in tools
+
+
 def _respond_with_a_sequentially_spawned_child_running_a_command(
     call_index: int, prompt: str
 ) -> str:

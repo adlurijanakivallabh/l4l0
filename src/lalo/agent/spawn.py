@@ -513,11 +513,14 @@ def build_spawn_tools(
             "scope — a duplicate specialist wastes turns. In 'task', state what is ALREADY "
             "KNOWN (what recon already mapped, which surfaces are already covered) so the "
             "child builds on it instead of rediscovering it from scratch. "
-            'args: {"name": str, "task": str, "role": "full"|"source_reviewer" (optional, '
+            'args: {"name": str, "task": str, "role": "full"|"source_reviewer"|'
+            '"dependency_analyst" (optional, '
             'default "full" - source_reviewer confines the child to run_command/'
             "record_finding/recall/query_graph/note only, no live-firing tools and no "
             "further spawning - use it for a subtask that's purely reading and reasoning "
-            'about source code), "resume_agent_id": str (optional - resume an orphaned '
+            "about source code; dependency_analyst is the same confinement plus "
+            "coverage_ledger, for manifest discovery/SCA-scanner/reachability-triage "
+            'subtasks), "resume_agent_id": str (optional - resume an orphaned '
             "agent shown by view_agent_graph as [orphaned] (interrupted by a crash on a "
             "prior run) instead of starting a new one; when set, 'name'/'task'/'role' are "
             "ignored and the agent's own original task continues from its last completed "
@@ -739,7 +742,8 @@ def build_parallel_spawn_tool(
             "investigation (e.g. the same vuln class across several distinct hosts) that "
             "don't depend on each other's findings. Use spawn_agent instead for a single "
             "child, or when a later child's task depends on an earlier one's result. "
-            'args: {"tasks": [{"name": str, "task": str, "role": "full"|"source_reviewer" '
+            'args: {"tasks": [{"name": str, "task": str, "role": '
+            '"full"|"source_reviewer"|"dependency_analyst" '
             '(optional, default "full", same meaning as spawn_agent\'s own role arg)}, ...]} '
             "(at least 2 entries)"
         ),
