@@ -355,6 +355,15 @@ class AgentConfig:
     # ceiling instead of giving up there unconditionally.
     provider_outage_max_retries: int = 3
     provider_outage_base_delay_s: float = 30.0
+    # An operator-known context-window size for the configured model, used
+    # ONLY as an additional, earlier compaction trigger alongside the
+    # existing fixed _COMPACTION_BATCH item count - None (the default)
+    # means every existing caller keeps today's item-count-only behavior
+    # exactly. When set, compaction fires as soon as EITHER condition is
+    # met, since firing early only costs one extra summarization call,
+    # never data loss - a small-context model that would otherwise
+    # overflow gets protected without needing every caller to opt in.
+    context_window_tokens: int | None = None
 
     def __post_init__(self) -> None:
         # A reference agent's own turn-budget constructor validates a minimum
@@ -411,6 +420,17 @@ def _truncate_observation(text: str, max_chars: int) -> str:
         return f"[...truncated {len(text)} chars...]"
     dropped = len(text) - 2 * half
     return f"{text[:half]}\n\n[...truncated {dropped} chars...]\n\n{text[-half:]}"
+
+
+# A conservative, model-agnostic estimate (no tokenizer dependency) - real
+# BPE tokenizers vary, but 4 characters per token is a widely-used
+# conservative approximation that never wildly under-counts for English
+# or code text, which is what this loop's transcripts are made of.
+_CHARS_PER_TOKEN_ESTIMATE = 4
+
+
+def _estimate_tokens(text: str) -> int:
+    return len(text) // _CHARS_PER_TOKEN_ESTIMATE
 
 
 class AgentLoop:
@@ -662,11 +682,32 @@ class AgentLoop:
             return self._history_summary
         return response.text.strip() or self._history_summary
 
+    def _pending_batch_exceeds_budget(
+        self, transcript: list[dict[str, object]], hidden_boundary: int
+    ) -> bool:
+        if self.config.context_window_tokens is None:
+            return False
+        pending_text = "\n".join(
+            f"{e['tool']}{e['args']}{e['observation']}"
+            for e in transcript[self._summarized_through : hidden_boundary]
+        )
+        # A conservative reserve (half the configured window) rather than the
+        # full window: this pending batch is only PART of what a real prompt
+        # carries (system prompt, tool descriptions, the visible window,
+        # mission text all add more) - triggering well before the nominal
+        # ceiling is the whole point of an early, opt-in second trigger.
+        return _estimate_tokens(pending_text) > self.config.context_window_tokens // 2
+
     def _maybe_compact_history(self, transcript: list[dict[str, object]]) -> None:
         hidden_boundary = max(0, len(transcript) - _VISIBLE_HISTORY_WINDOW)
-        if hidden_boundary - self._summarized_through < _COMPACTION_BATCH:
+        pending = hidden_boundary - self._summarized_through
+        if pending < _COMPACTION_BATCH and not self._pending_batch_exceeds_budget(
+            transcript, hidden_boundary
+        ):
             return
         newly_hidden = transcript[self._summarized_through : hidden_boundary]
+        if not newly_hidden:
+            return
         self._history_summary = self._compact_history(newly_hidden)
         # Advanced regardless of whether that compaction call actually
         # succeeded - see _compact_history's own docstring for why retrying

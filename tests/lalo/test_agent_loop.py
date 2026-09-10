@@ -16,7 +16,7 @@ import httpx
 import pytest
 
 import lalo.core.usage as usage_module
-from lalo.agent.loop import AgentConfig, AgentLoop, _truncate_observation
+from lalo.agent.loop import AgentConfig, AgentLoop, _estimate_tokens, _truncate_observation
 from lalo.agent.tools import FunctionTool, ToolRegistry, ToolResult
 from lalo.core.errors import AllProvidersFailedError
 from lalo.core.model_router import CompletionRequest, CompletionResponse
@@ -573,6 +573,13 @@ def test_two_agent_loops_do_not_share_a_tracer_by_default() -> None:
     assert loop2.tracer.counters.get("tool_calls") == 1
 
 
+def test_estimate_tokens_divides_by_four() -> None:
+    """_estimate_tokens uses a 4-chars-per-token estimate."""
+    assert _estimate_tokens("0123") == 1
+    assert _estimate_tokens("01234567") == 2
+    assert _estimate_tokens("x" * 200) == 50
+
+
 def test_truncate_observation_keeps_short_text_untouched() -> None:
     assert _truncate_observation("hello", 100) == "hello"
 
@@ -960,6 +967,38 @@ def test_maybe_compact_history_advances_bookkeeping_even_on_a_failed_compaction(
     loop._maybe_compact_history(transcript)  # noqa: SLF001
     assert loop._history_summary == ""  # noqa: SLF001
     assert loop._summarized_through == 8  # noqa: SLF001 - still advanced despite the failure
+
+
+def test_compaction_fires_early_when_a_small_context_window_would_otherwise_overflow() -> None:
+    """A tiny context_window_tokens must trigger compaction well before the
+    fixed _COMPACTION_BATCH=8 item count would, since 8 items of ordinary
+    size can already exceed a genuinely small budget."""
+    calls = {"compact": 0}
+
+    class _CountingRouter:
+        def complete(self, role: str, request: CompletionRequest) -> CompletionResponse:
+            calls["compact"] += 1
+            return CompletionResponse(
+                text="summary", provider="fake", model="fake", input_tokens=1, output_tokens=1
+            )
+
+    loop = AgentLoop(
+        _CountingRouter(),  # type: ignore[arg-type]
+        ToolRegistry([]),
+        system_prompt="sys",
+        config=AgentConfig(context_window_tokens=50),
+    )
+    # Build a transcript with enough items to push some past the visible window,
+    # each carrying enough text that a 50-token budget is already exceeded well
+    # before 8 items accumulate (the fixed _COMPACTION_BATCH). 3 items of 200
+    # chars each = 600 chars ≈ 150 tokens, which exceeds half of the 50-token
+    # budget (25 tokens).
+    transcript = [
+        {"tool": "http", "args": {}, "observation": "x" * 200}
+        for _ in range(3 + 12)  # 3 visible + 12 to ensure hidden_boundary > 0
+    ]
+    loop._maybe_compact_history(transcript)  # noqa: SLF001
+    assert calls["compact"] == 1
 
 
 def test_usage_is_attributed_to_the_loops_own_agent_id(tmp_path) -> None:
