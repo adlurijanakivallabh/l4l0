@@ -23,6 +23,7 @@ from typing import Any
 
 from ..findings.dedup import dedup_key
 from .collect import FindingRecord
+from .coverage import CoverageSummary
 from .taxonomy import OWASP_API_BY_VULN_CLASS, OWASP_API_TOP10_NAMES, cwe_for, owasp_api_for
 
 SARIF_SCHEMA = "https://json.schemastore.org/sarif-2.1.0.json"
@@ -112,6 +113,38 @@ def _owasp_taxonomy_component() -> dict[str, Any]:
         "informationUri": "https://owasp.org/API-Security/editions/2023/en/0x11-t10/",
         "taxa": [{"id": cat_id, "name": OWASP_API_TOP10_NAMES[cat_id]} for cat_id in used_ids],
     }
+
+
+def _coverage_results(
+    coverage: CoverageSummary, rule_index_by_id: dict[str, int], rules: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """One SARIF result per verified-safe class - a class actively tested
+    and confirmed clean, rendered as ``kind: "notApplicable"`` so a CI
+    consumer can tell it apart from a class nobody looked at (which gets
+    no result at all here, matching CoverageSummary's own "not asserted"
+    honesty principle - see report/coverage.py's module docstring)."""
+    results: list[dict[str, Any]] = []
+    for vuln_class in coverage.verified_safe:
+        if vuln_class not in rule_index_by_id:
+            rule_index_by_id[vuln_class] = len(rules)
+            rules.append(
+                {
+                    "id": vuln_class,
+                    "name": vuln_class,
+                    "shortDescription": {"text": vuln_class},
+                    "defaultConfiguration": {"level": "none"},
+                }
+            )
+        results.append(
+            {
+                "ruleId": vuln_class,
+                "ruleIndex": rule_index_by_id[vuln_class],
+                "kind": "notApplicable",
+                "level": "none",
+                "message": {"text": coverage.safe_reasons.get(vuln_class, "verified safe")},
+            }
+        )
+    return results
 
 
 def _result_markdown(record: FindingRecord) -> str:
@@ -226,6 +259,7 @@ def _build_result(record: FindingRecord, rule_index: int) -> dict[str, Any]:
     result: dict[str, Any] = {
         "ruleId": _rule_id(record),
         "ruleIndex": rule_index,
+        "kind": "fail",
         "level": _sarif_level(record),
         "message": {"text": message or record.finding_id, "markdown": _result_markdown(record)},
         "locations": locations,
@@ -256,6 +290,7 @@ def render_sarif(
     *,
     execution_successful: bool = True,
     automation_id: str | None = None,
+    coverage: CoverageSummary | None = None,
 ) -> dict[str, Any]:
     """Build a SARIF 2.1.0 document with one rule per vuln_class and one result per finding.
 
@@ -279,6 +314,9 @@ def render_sarif(
             if owasp_api_for(record.vuln_class):
                 owasp_taxonomy_used = True
         results.append(_build_result(record, rule_index_by_id[rule_id]))
+
+    if coverage is not None:
+        results.extend(_coverage_results(coverage, rule_index_by_id, rules))
 
     run: dict[str, Any] = {
         "tool": {"driver": {"name": TOOL_NAME, "rules": rules}},

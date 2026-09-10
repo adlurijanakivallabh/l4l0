@@ -371,3 +371,34 @@ def test_render_sarif_skips_an_unparseable_code_location() -> None:
     record = _record(code_locations=[{"location": "not-a-location", "fix_after": "x"}])
     doc = render_sarif([record])
     assert "fixes" not in doc["runs"][0]["results"][0]
+
+
+def test_render_sarif_with_coverage_emits_a_not_applicable_result_for_verified_safe() -> None:
+    from lalo.report.coverage import CoverageSummary
+
+    coverage = CoverageSummary(
+        assessed=["xss"],
+        not_assessed=["ssrf"],
+        verified_safe=["sql-injection"],
+        safe_reasons={"sql-injection": "parameterized queries confirmed via source read"},
+    )
+    doc = render_sarif([], coverage=coverage)
+    results = doc["runs"][0]["results"]
+    assert len(results) == 1
+    assert results[0]["ruleId"] == "sql-injection"
+    assert results[0]["kind"] == "notApplicable"
+    assert "parameterized queries" in results[0]["message"]["text"]
+
+
+def test_render_sarif_with_coverage_never_emits_a_result_for_not_assessed() -> None:
+    from lalo.report.coverage import CoverageSummary
+
+    coverage = CoverageSummary(assessed=[], not_assessed=["ssrf"])
+    doc = render_sarif([], coverage=coverage)
+    assert doc["runs"][0]["results"] == []
+
+
+def test_render_sarif_without_coverage_arg_is_unchanged() -> None:
+    doc = render_sarif([])
+    assert doc["runs"][0]["results"] == []
+    assert "coverage" not in doc["runs"][0]
