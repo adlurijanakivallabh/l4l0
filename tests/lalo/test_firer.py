@@ -390,3 +390,45 @@ def test_probe_reachability_reports_unreachable_when_nothing_responds() -> None:
     firer = HttpFirer(scope, client=httpx.Client(transport=httpx.MockTransport(handler)))
     reachable, _reason = probe_reachability(eng, firer)["app.example.com"]
     assert reachable is False
+
+
+# --- attach_recorder / passive history --------------------------------------
+
+
+def _make_firer() -> HttpFirer:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=b"ok")
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    return HttpFirer(_scope(), client=client)
+
+
+def test_firer_records_a_fired_request_into_an_attached_history() -> None:
+    from lalo.execution.history import RequestHistory
+
+    firer = _make_firer()
+    history = RequestHistory()
+    firer.attach_recorder(history)
+    firer.fire("GET", "https://example.com/")
+    entries = history.list()
+    assert len(entries) == 1
+    assert entries[0].url == "https://example.com/"
+
+
+def test_firer_with_no_recorder_attached_does_not_error() -> None:
+    firer = _make_firer()
+    result = firer.fire("GET", "https://example.com/")
+    assert result.fired
+
+
+def test_firer_does_not_record_a_request_that_was_not_fired() -> None:
+    """Out-of-scope/circuit-open/etc results must never populate history -
+    only genuinely fired requests are a byproduct worth recording."""
+    from lalo.execution.history import RequestHistory
+
+    firer = _make_firer()
+    history = RequestHistory()
+    firer.attach_recorder(history)
+    result = firer.fire("GET", "https://evil.com/")
+    assert result.fired is False
+    assert history.list() == []

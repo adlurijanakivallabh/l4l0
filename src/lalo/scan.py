@@ -155,6 +155,7 @@ from .core.providers import build_router, verify_router
 from .core.redaction import set_redaction_enabled
 from .core.usage import load_usage, usage_accounting_status
 from .execution.firer import HttpFirer, probe_reachability
+from .execution.history import RequestHistory
 from .execution.scope import ScopeGuard
 from .execution.target import Engagement
 from .execution.tool import (
@@ -162,6 +163,7 @@ from .execution.tool import (
     build_diff_responses_tool,
     build_dns_query_tool,
     build_fire_concurrent_tool,
+    build_http_history_tool,
     build_http_tool,
     build_raw_tcp_tool,
     build_ws_fire_tool,
@@ -1187,6 +1189,13 @@ class ScanRunner:
         # agent) so every agent in the hierarchy shares the same coverage
         # state, the same single-instance-per-scan pattern firer/scope use.
         access_control_matrix_tool = build_access_control_matrix_tool()
+        # Same single-instance-per-scan pattern: one history shared by every
+        # agent (via the one shared `firer`), so a request fired by any
+        # agent anywhere in the hierarchy shows up for every other agent's
+        # http_history tool, not just the firing agent's own.
+        history = RequestHistory()
+        firer.attach_recorder(history)
+        history_tool = build_http_history_tool(history, firer)
         identities = IdentityStore()
         for identity in self.config.identities.values():
             identities.add(identity)
@@ -1366,6 +1375,7 @@ class ScanRunner:
                 build_http_tool(firer),
                 build_fire_concurrent_tool(firer),
                 build_diff_responses_tool(firer),
+                history_tool,
                 build_raw_tcp_tool(scope),
                 build_ws_fire_tool(scope),
                 build_dns_query_tool(scope),

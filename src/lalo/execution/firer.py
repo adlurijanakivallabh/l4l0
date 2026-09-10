@@ -50,6 +50,7 @@ from __future__ import annotations
 import threading
 import time
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 from urllib.parse import urljoin, urlsplit, urlunsplit
 
 import httpx
@@ -57,6 +58,9 @@ import httpx
 from ..core.logging import get_logger
 from .scope import ScopeGuard
 from .target import Engagement
+
+if TYPE_CHECKING:
+    from .history import RequestHistory
 
 _log = get_logger("lalo.firer")
 
@@ -144,6 +148,7 @@ class HttpFirer:
         self._breaker_reset_after_s = breaker_reset_after_s
         self._max_response_bytes = max_response_bytes
         self._breakers: dict[str, _Breaker] = {}
+        self._recorder: RequestHistory | None = None
         # Guards ONLY the breaker-state check/update below (never the network
         # I/O in fire()) - fire_concurrent fires up to 50 requests to the same
         # host through one shared HttpFirer instance at once, and spawn_agents
@@ -167,7 +172,29 @@ class HttpFirer:
                 ),
             )
 
+    def attach_recorder(self, recorder: RequestHistory) -> None:
+        """Opt a scan into passive request/response history recording -
+        every subsequently fired request that actually goes out (`fired`)
+        is recorded through `fire()`'s one choke point, with zero change to
+        any of `fire()`'s existing callers (http/fire_concurrent/
+        diff_responses). Purely observational: recording never blocks or
+        alters a real fire, and no recorder attached is a silent no-op."""
+        self._recorder = recorder
+
     def fire(
+        self,
+        method: str,
+        url: str,
+        *,
+        headers: dict[str, str] | None = None,
+        content: bytes | None = None,
+    ) -> FireResult:
+        result = self._fire_impl(method, url, headers=headers, content=content)
+        if self._recorder is not None and result.fired:
+            self._recorder.record(method, url, headers, content, result)
+        return result
+
+    def _fire_impl(
         self,
         method: str,
         url: str,

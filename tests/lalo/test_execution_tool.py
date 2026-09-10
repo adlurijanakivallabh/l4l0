@@ -16,12 +16,14 @@ import pytest
 import lalo.execution.tool as execution_tool_module
 from lalo.agent.tools import ToolRegistry
 from lalo.execution import FireResult, HttpFirer, RawResult, ScopeGuard, build_http_tool
+from lalo.execution.history import RequestHistory
 from lalo.execution.target import Engagement
 from lalo.execution.tool import (
     build_access_control_matrix_tool,
     build_diff_responses_tool,
     build_dns_query_tool,
     build_fire_concurrent_tool,
+    build_http_history_tool,
     build_raw_tcp_tool,
     build_ws_fire_tool,
 )
@@ -837,3 +839,127 @@ def test_dns_query_zone_transfer_refusal_is_a_clean_non_error_result(
     result = registry.dispatch("dns_query", {"host": "app.example.com", "record_type": "AXFR"})
     assert result.ok  # refusal is the secure, expected outcome - not a tool failure
     assert "refused" in result.observation.lower()
+
+
+# --- http_history ------------------------------------------------------
+
+
+def _history_and_firer(handler: httpx.MockTransport) -> tuple[RequestHistory, HttpFirer]:
+    eng = Engagement.from_specs(["app.example.com"])
+    scope = ScopeGuard(engagement=eng, resolver=lambda h: frozenset({"93.184.216.34"}))
+    firer = HttpFirer(scope, client=httpx.Client(transport=handler))
+    history = RequestHistory()
+    firer.attach_recorder(history)
+    return history, firer
+
+
+def test_replay_headers_drops_transfer_encoding_and_recomputes_content_length() -> None:
+    from lalo.execution.tool import _replay_headers
+
+    original = {"Content-Length": "3", "Transfer-Encoding": "chunked", "Accept": "*/*"}
+    merged = _replay_headers(original, {}, b"a longer body now")
+    assert "Transfer-Encoding" not in merged
+    assert merged["Content-Length"] == str(len(b"a longer body now"))
+    assert merged["Accept"] == "*/*"
+
+
+def test_http_history_tool_list_is_empty_before_anything_is_fired() -> None:
+    history, firer = _history_and_firer(httpx.MockTransport(lambda r: httpx.Response(200)))
+    registry = ToolRegistry([build_http_history_tool(history, firer)])
+    result = registry.dispatch("http_history", {"action": "list"})
+    assert result.observation == "(no history yet)"
+
+
+def test_http_history_tool_list_shows_a_fired_request() -> None:
+    history, firer = _history_and_firer(httpx.MockTransport(lambda r: httpx.Response(200)))
+    firer.fire("GET", "https://app.example.com/x")
+    registry = ToolRegistry([build_http_history_tool(history, firer)])
+    result = registry.dispatch("http_history", {"action": "list"})
+    assert "[0] GET https://app.example.com/x -> 200" in result.observation
+
+
+def test_http_history_tool_view_shows_request_and_response_detail() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=b"hello")
+
+    history, firer = _history_and_firer(httpx.MockTransport(handler))
+    firer.fire("GET", "https://app.example.com/x", headers={"X-Test": "1"})
+    registry = ToolRegistry([build_http_history_tool(history, firer)])
+    result = registry.dispatch("http_history", {"action": "view", "index": 0})
+    assert result.ok is True
+    assert "X-Test" in result.observation
+    assert "hello" in result.observation
+
+
+def test_http_history_tool_view_unknown_index_errors() -> None:
+    history, firer = _history_and_firer(httpx.MockTransport(lambda r: httpx.Response(200)))
+    registry = ToolRegistry([build_http_history_tool(history, firer)])
+    result = registry.dispatch("http_history", {"action": "view", "index": 5})
+    assert result.ok is False
+    assert "5" in result.observation
+
+
+def test_http_history_tool_view_requires_index() -> None:
+    history, firer = _history_and_firer(httpx.MockTransport(lambda r: httpx.Response(200)))
+    registry = ToolRegistry([build_http_history_tool(history, firer)])
+    result = registry.dispatch("http_history", {"action": "view"})
+    assert result.ok is False
+
+
+def test_http_history_tool_replay_refires_with_the_original_request() -> None:
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, content=b"replayed")
+
+    history, firer = _history_and_firer(httpx.MockTransport(handler))
+    firer.fire("POST", "https://app.example.com/x", headers={"X-Test": "1"}, content=b"orig")
+    registry = ToolRegistry([build_http_history_tool(history, firer)])
+    result = registry.dispatch("http_history", {"action": "replay", "index": 0})
+    assert result.ok is True
+    assert "replayed" in result.observation
+    assert len(seen) == 2  # the original fire + the replay
+    assert seen[1].headers.get("x-test") == "1"
+    assert seen[1].content == b"orig"
+
+
+def test_http_history_tool_replay_with_a_body_override_recomputes_content_length() -> None:
+    """The load-bearing replay-safety behavior: a modified body must never go
+    out with a stale Content-Length or an inherited chunked Transfer-Encoding
+    that was never actually chunked for the new body."""
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200)
+
+    history, firer = _history_and_firer(httpx.MockTransport(handler))
+    firer.fire(
+        "POST",
+        "https://app.example.com/x",
+        headers={"Content-Length": "4", "Transfer-Encoding": "chunked"},
+        content=b"orig",
+    )
+    registry = ToolRegistry([build_http_history_tool(history, firer)])
+    registry.dispatch(
+        "http_history", {"action": "replay", "index": 0, "body": "a much longer body"}
+    )
+    assert seen[1].content == b"a much longer body"
+    assert seen[1].headers["content-length"] == str(len(b"a much longer body"))
+    assert "transfer-encoding" not in seen[1].headers
+
+
+def test_http_history_tool_replay_unknown_index_errors() -> None:
+    history, firer = _history_and_firer(httpx.MockTransport(lambda r: httpx.Response(200)))
+    registry = ToolRegistry([build_http_history_tool(history, firer)])
+    result = registry.dispatch("http_history", {"action": "replay", "index": 9})
+    assert result.ok is False
+
+
+def test_http_history_tool_rejects_an_unknown_action() -> None:
+    history, firer = _history_and_firer(httpx.MockTransport(lambda r: httpx.Response(200)))
+    registry = ToolRegistry([build_http_history_tool(history, firer)])
+    result = registry.dispatch("http_history", {"action": "bogus"})
+    assert result.ok is False
+    assert "bogus" in result.observation

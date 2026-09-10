@@ -25,6 +25,7 @@ import websockets
 from ..agent.tools import FunctionTool, ToolResult, str_arg
 from ..identity.role_matrix import RoleMatrixEntry, build_role_matrix
 from .firer import FireResult, HttpFirer
+from .history import HistoryEntry, RequestHistory
 from .rawsock import tcp_send_recv
 from .scope import ScopeGuard
 
@@ -500,4 +501,108 @@ def build_dns_query_tool(scope: ScopeGuard) -> FunctionTool:
             '"timeout": number (optional, seconds, default 5.0)}'
         ),
         func=_dns_query,
+    )
+
+
+_TRANSFER_ENCODING_HEADER = "transfer-encoding"
+_CONTENT_LENGTH_HEADER = "content-length"
+
+
+def _replay_headers(
+    original: dict[str, str], overrides: dict[str, str], body: bytes
+) -> dict[str, str]:
+    """Merge ``overrides`` onto ``original`` for a replay, then fix up the
+    two headers a modified body can silently make wrong: drop any
+    inherited Transfer-Encoding (chunked framing the new, different-length
+    body was never actually chunked for) and recompute Content-Length from
+    the ACTUAL body being sent, never trust a stale inherited value."""
+    merged = {
+        k: v for k, v in {**original, **overrides}.items() if k.lower() != _TRANSFER_ENCODING_HEADER
+    }
+    merged = {k: v for k, v in merged.items() if k.lower() != _CONTENT_LENGTH_HEADER}
+    merged["Content-Length"] = str(len(body))
+    return merged
+
+
+def build_http_history_tool(history: RequestHistory, firer: HttpFirer) -> FunctionTool:
+    """List, inspect, or replay-with-edits requests already fired via
+    http/fire_concurrent/diff_responses - passive by construction, `history`
+    is only ever read here, never itself the thing that fires (`replay`
+    fires through the same `firer.fire()` every other tool uses, so a
+    replay is scope-checked/pinned/breaker-guarded exactly like any other
+    request, never a bypass)."""
+
+    def _describe(entry: HistoryEntry) -> str:
+        status = entry.result.status if entry.result.status is not None else "-"
+        return f"[{entry.index}] {entry.method} {entry.url} -> {status}"
+
+    def _history_tool(args: dict[str, object]) -> ToolResult:
+        action = str_arg(args, "action", "list").strip() or "list"
+        if action == "list":
+            url_contains = str_arg(args, "url_contains", "").strip() or None
+            method = str_arg(args, "method", "").strip() or None
+            entries = history.list(url_contains=url_contains, method=method)
+            shown = entries[-50:]
+            lines = [_describe(e) for e in shown]
+            return ToolResult(observation="\n".join(lines) if lines else "(no history yet)")
+        if action == "view":
+            index_raw = args.get("index")
+            if index_raw is None:
+                return ToolResult(
+                    observation="error: 'index' is required for action=view", ok=False
+                )
+            entry = history.get(int(index_raw))  # type: ignore[call-overload]
+            if entry is None:
+                return ToolResult(observation=f"error: no history entry {index_raw}", ok=False)
+            body_text = entry.result.body[:_MAX_BODY_CHARS].decode("utf-8", errors="replace")
+            return ToolResult(
+                observation=(
+                    f"{entry.method} {entry.url}\nrequest headers={entry.request_headers}\n"
+                    f"request body={entry.request_body[:_MAX_BODY_CHARS]!r}\n\n"
+                    f"status={entry.result.status} "
+                    f"response headers={dict(entry.result.headers)}\n\n"
+                    f"{body_text}"
+                )
+            )
+        if action == "replay":
+            index_raw = args.get("index")
+            if index_raw is None:
+                return ToolResult(
+                    observation="error: 'index' is required for action=replay", ok=False
+                )
+            entry = history.get(int(index_raw))  # type: ignore[call-overload]
+            if entry is None:
+                return ToolResult(observation=f"error: no history entry {index_raw}", ok=False)
+            header_overrides = _headers_arg(args, "headers")
+            if isinstance(header_overrides, str):
+                return ToolResult(observation=f"error: {header_overrides}", ok=False)
+            body_override = _bytes_arg(args, "body")
+            if isinstance(body_override, str):
+                return ToolResult(observation=f"error: {body_override}", ok=False)
+            url = str_arg(args, "url", entry.url) or entry.url
+            body = body_override if body_override is not None else entry.request_body
+            headers = _replay_headers(entry.request_headers, header_overrides or {}, body)
+            result = firer.fire(entry.method, url, headers=headers, content=body)
+            if not result.fired:
+                return ToolResult(observation=f"not fired: {result.scope_reason}", ok=False)
+            body_text = result.body[:_MAX_BODY_CHARS].decode("utf-8", errors="replace")
+            return ToolResult(observation=f"status={result.status}\n\n{body_text}")
+        return ToolResult(
+            observation=f"error: unknown action {action!r} - use list|view|replay", ok=False
+        )
+
+    return FunctionTool(
+        name="http_history",
+        description=(
+            "List, inspect, or replay (with optional field edits) requests already fired "
+            "via http/fire_concurrent/diff_responses - a passive-by-default record of what "
+            "you've already sent, so you never have to re-derive a URL/header/body you "
+            'fired earlier just to look at it again. args: {"action": "list"|"view"|'
+            '"replay", ...}. list: {"url_contains": str (optional), "method": str '
+            '(optional)} - shows the most recent 50. view: {"index": int}. replay: '
+            '{"index": int, "url": str (optional override), "headers": dict (optional, '
+            "merged onto the original - Content-Length is always recomputed and any "
+            'inherited Transfer-Encoding always dropped), "body": str (optional override)}'
+        ),
+        func=_history_tool,
     )
