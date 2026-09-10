@@ -147,3 +147,20 @@ def test_parse_tool_call_skips_non_tool_json_then_finds_real_call() -> None:
     assert call is not None
     assert call.name == "act"
     assert call.args == {"k": "v"}
+
+
+def test_parse_tool_call_decodes_a_json_encoded_string_args_value() -> None:
+    """A model sometimes emits args as a JSON-encoded STRING rather than a
+    native object - today this silently becomes empty args with no signal
+    anything went wrong."""
+    call = parse_tool_call('{"tool": "http", "args": "{\\"url\\": \\"http://x\\"}"}')
+    assert call is not None
+    assert call.args == {"url": "http://x"}
+
+
+def test_parse_tool_call_still_defaults_a_non_object_non_string_args_to_empty() -> None:
+    """A genuinely nonsensical args value (a number, a list) must still
+    degrade to empty args, not raise."""
+    call = parse_tool_call('{"tool": "http", "args": 42}')
+    assert call is not None
+    assert call.args == {}

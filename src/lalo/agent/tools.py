@@ -120,9 +120,26 @@ def _try_load(blob: str) -> dict[str, object] | None:
     return obj if isinstance(obj, dict) else None
 
 
+def _coerce_args(raw: object) -> dict[str, object]:
+    """``args`` as the model actually sent it - a native dict is used as-is;
+    a JSON-encoded STRING that decodes to an object is decoded (a real,
+    observed small-model failure mode: emitting the whole ``args`` value as
+    a quoted JSON string instead of a nested object); anything else
+    (missing, a number, a list, a malformed string) degrades to an empty
+    dict rather than raising, matching this parser's overall tolerant
+    design.
+    """
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str):
+        decoded = _try_load(raw)
+        if decoded is not None:
+            return decoded
+    return {}
+
+
 def _to_call(obj: dict[str, object], *, dropped_calls: int = 0) -> ToolCall:
-    raw_args = obj.get("args", {})
-    args = raw_args if isinstance(raw_args, dict) else {}
+    args = _coerce_args(obj.get("args", {}))
     return ToolCall(name=str(obj["tool"]), args=args, dropped_calls=dropped_calls)
 
 
