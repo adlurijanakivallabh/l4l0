@@ -198,6 +198,12 @@ def check_tool_call(config: MCPServerConfig, tool_name: str) -> str | None:
 
 SessionConnector = Callable[[MCPServerConfig, str], AbstractAsyncContextManager["ClientSession"]]
 
+# A hung handshake (session.initialize()) should be caught faster than a
+# legitimately slow but healthy tool call is allowed to run - one flat
+# number previously covered both, unable to distinguish "the server is
+# genuinely dead at connect time" from "this specific call is just slow."
+_DEFAULT_CONNECT_TIMEOUT = timedelta(seconds=10)
+
 # Applied as ClientSession's own per-request default (covers initialize() and
 # every call_tool()), not just the http transport's own underlying-httpx
 # default: the mcp SDK applies no read timeout at all when one isn't given
@@ -222,7 +228,9 @@ async def _default_connector(
             async with ClientSession(
                 read, write, read_timeout_seconds=_DEFAULT_SESSION_TIMEOUT
             ) as session:
-                await session.initialize()
+                await asyncio.wait_for(
+                    session.initialize(), timeout=_DEFAULT_CONNECT_TIMEOUT.total_seconds()
+                )
                 yield session
     else:
         from mcp.client.streamable_http import streamablehttp_client
@@ -236,7 +244,9 @@ async def _default_connector(
             async with ClientSession(
                 read, write, read_timeout_seconds=_DEFAULT_SESSION_TIMEOUT
             ) as session:
-                await session.initialize()
+                await asyncio.wait_for(
+                    session.initialize(), timeout=_DEFAULT_CONNECT_TIMEOUT.total_seconds()
+                )
                 yield session
 
 
