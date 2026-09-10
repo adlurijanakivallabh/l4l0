@@ -1599,3 +1599,9 @@ def test_compaction_system_prompt_instructs_verbatim_credential_preservation() -
     lowered = _COMPACTION_SYSTEM_PROMPT.lower()
     assert "verbatim" in lowered
     assert "credential" in lowered or "secret" in lowered
+
+
+def test_protocol_mentions_coverage_ledger_before_finishing() -> None:
+    from lalo.agent.loop import _PROTOCOL
+
+    assert "coverage_ledger" in _PROTOCOL

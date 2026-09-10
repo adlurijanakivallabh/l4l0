@@ -211,6 +211,10 @@ _PROTOCOL = (
     '  {"tool": "<name>", "args": {...}}\n'
     "When the objective is genuinely met, and only then: "
     '{"tool": "finish", "args": {"summary": "..."}}\n'
+    "Before finishing, self-report any surface you tested where neither record_finding "
+    "nor record_safe applied (not-applicable, or ran out of time) via coverage_ledger — "
+    "this never blocks finishing, it just keeps the report honest about what you "
+    "actually covered.\n"
     "Emit only the single JSON object, nothing else."
 )
 

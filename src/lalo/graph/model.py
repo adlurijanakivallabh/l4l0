@@ -62,6 +62,12 @@ class NodeKind(StrEnum):
     # A freeform scratch note an agent leaves for itself or another agent -
     # deliberately untyped/unstructured, unlike every other kind above.
     NOTE = "note"
+    # A self-attested coverage entry - "I tested this and here's what
+    # happened" for a surface/outcome shape none of the existing
+    # machine-observed signals cover (record_finding for a real finding,
+    # VERIFIED_SAFE for a confirmed working defense). Purely informational,
+    # never a gate on anything - see graph/coverage_ledger.py.
+    COVERAGE_LEDGER = "coverage_ledger"
 
 
 class EdgeKind(StrEnum):

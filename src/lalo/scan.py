@@ -168,6 +168,7 @@ from .execution.tool import (
 from .findings.confidence import compute_confidence
 from .findings.review import ReviewResult, ReviewVerdict, run_adversarial_review
 from .findings.tool import build_record_finding_tool, build_record_safe_tool
+from .graph.coverage_ledger import build_coverage_ledger_tool
 from .graph.model import NodeKind, ReachabilityGraph
 from .graph.tool import build_note_tool, build_query_graph_tool
 from .identity.credentials import EmailAccount, Identity, IdentityStore
@@ -1361,6 +1362,7 @@ class ScanRunner:
                 access_control_matrix_tool,
                 build_record_finding_tool(agent_graph),
                 build_record_safe_tool(agent_graph),
+                build_coverage_ledger_tool(agent_graph),
                 *build_oast_tools(oast),
                 build_recall_tool(skills),
                 build_query_graph_tool(agent_graph),
