@@ -335,6 +335,15 @@ def test_group_by_verdict_preserves_input_order_within_a_bucket() -> None:
     assert [r.finding_id for r in groups["Ruled Out"]] == ["f-first", "f-second"]
 
 
+def test_collect_findings_strips_control_characters_from_the_title() -> None:
+    graph = ReachabilityGraph()
+    _file_finding(graph, title="Reflected value\r\ncontains a newline")
+    record = collect_findings(graph)[0]
+    assert "\r" not in record.title
+    assert "\n" not in record.title
+    assert "Reflected value" in record.title
+
+
 def test_first_finding_id_by_vuln_class_keeps_the_first_occurrence() -> None:
     graph = ReachabilityGraph()
     _file_finding(graph, target="https://x.example.com/a", vuln_class="xss")

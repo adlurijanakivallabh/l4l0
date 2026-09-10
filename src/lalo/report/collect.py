@@ -31,6 +31,7 @@ report ever reads it, not something this module has to re-derive.
 
 from __future__ import annotations
 
+import re
 from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -41,6 +42,16 @@ from ..findings.review import ReviewVerdict
 from ..graph.model import Chain, NodeKind, ReachabilityGraph
 
 SEVERITY_ORDER: dict[str, int] = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
+
+_CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]|\r\n?|\n")
+
+
+def _clean_title(title: str) -> str:
+    """Collapse embedded control characters (a raw newline/CR most commonly,
+    from a target-controlled title quoting a reflected value verbatim) to a
+    single space, so a title can never inject a fake extra Markdown heading,
+    corrupt a CSV row, or break a GUI list row's own structure."""
+    return _CONTROL_CHARS.sub(" ", title).strip()
 
 
 @dataclass(frozen=True)
@@ -102,7 +113,7 @@ def collect_findings(graph: ReachabilityGraph) -> list[FindingRecord]:
         records.append(
             FindingRecord(
                 finding_id=finding_id,
-                title=str(node.get("title", "")),
+                title=_clean_title(str(node.get("title", ""))),
                 description=str(node.get("description", "")),
                 vuln_class=vuln_class,
                 target=target,
