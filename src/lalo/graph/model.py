@@ -68,6 +68,11 @@ class NodeKind(StrEnum):
     # VERIFIED_SAFE for a confirmed working defense). Purely informational,
     # never a gate on anything - see graph/coverage_ledger.py.
     COVERAGE_LEDGER = "coverage_ledger"
+    # A shared, append-only artifact per normalized target identity - see
+    # graph/baseline.py. Never overwritten wholesale after its initial
+    # save; only ever amended, so a concurrent amendment from a different
+    # agent can never lose another's.
+    BASELINE = "baseline"
 
 
 class EdgeKind(StrEnum):
