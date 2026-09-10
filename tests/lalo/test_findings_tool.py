@@ -6,6 +6,8 @@ from lalo.agent.tools import ToolRegistry
 from lalo.core.redaction import shared_redactor
 from lalo.findings.tool import build_record_finding_tool, build_record_safe_tool
 from lalo.graph.model import EdgeKind, NodeKind, ReachabilityGraph
+from lalo.report.collect import collect_findings
+from lalo.report.sarif import render_sarif
 
 _VALID_CVSS = {
     "attack_vector": "N",
@@ -500,6 +502,91 @@ def test_record_finding_rejects_reachability_claim_with_no_evidence() -> None:
     result = tool.run(args)
     assert not result.ok
     assert "reachability_evidence" in result.observation
+
+
+def test_fix_verification_reverification_merges_onto_the_original_finding() -> None:
+    """fix-verification-discipline.md's own "Filing the Result" section: a
+    fix re-check re-files the SAME vuln_class/target/param and relies on the
+    dedup merge path to carry fix_verified/code_locations onto the ORIGINAL
+    finding node. Real bug this closes: the merge branch only ever updated
+    evidence/identities/reproduced/evidence_grounded(/cvss), so fix_verified
+    silently stayed False and code_locations silently stayed empty forever,
+    no matter what a re-verification call passed - and render_sarif's own
+    _build_fixes (which reads record.code_locations) then never emitted a
+    SARIF fixes[] entry for a verified fix filed via the documented path."""
+    graph = ReachabilityGraph()
+    registry = _registry(graph)
+
+    registry.dispatch("record_finding", _args())
+    fix_locations = [
+        {
+            "location": "app.py:42",
+            "fix_before": "eval(user_input)",
+            "fix_after": "ast.literal_eval(user_input)",
+        }
+    ]
+    second = registry.dispatch(
+        "record_finding",
+        _args(
+            evidence=["re-tested the original payload post-patch: now rejected with a 400"],
+            fix_verified=True,
+            fix_verification_notes="original payload no longer succeeds; 2 bypass variants tried",
+            code_locations=fix_locations,
+        ),
+    )
+    assert second.ok is True
+    assert "merged into existing finding" in second.observation
+
+    (finding_id,) = graph.nodes_of_kind(NodeKind.FINDING)
+    node = graph.node(finding_id)
+    assert node["fix_verified"] is True
+    assert node["code_locations"] == fix_locations
+    assert "no longer succeeds" in node["fix_verification_notes"]
+
+    (record,) = collect_findings(graph)
+    assert record.fix_verified is True
+    assert record.code_locations == fix_locations
+
+    doc = render_sarif([record])
+    assert "fixes" in doc["runs"][0]["results"][0]
+
+
+def test_fix_verification_explicit_false_can_flag_a_regression() -> None:
+    """The un-verification edge case: a later call that EXPLICITLY sets
+    fix_verified=False (a deliberate re-check finding the fix does NOT hold)
+    must be honored, not silently suppressed behind an earlier True - a
+    regression is meaningfully different, report-worthy information."""
+    graph = ReachabilityGraph()
+    registry = _registry(graph)
+
+    registry.dispatch("record_finding", _args(fix_verified=True))
+    registry.dispatch(
+        "record_finding",
+        _args(
+            evidence=["regression: the original payload succeeds again post-rollback"],
+            fix_verified=False,
+            fix_verification_notes="fix regressed - original payload works again",
+        ),
+    )
+    (finding_id,) = graph.nodes_of_kind(NodeKind.FINDING)
+    assert graph.node(finding_id)["fix_verified"] is False
+
+
+def test_fix_verification_omitting_fix_verified_never_erases_a_confirmed_fix() -> None:
+    """The inverse of the regression case: an ordinary duplicate re-filing
+    that never mentions fix_verified at all (no fix-verification intent)
+    must never silently flip an already-confirmed True back to False just
+    because the tool's own default is False."""
+    graph = ReachabilityGraph()
+    registry = _registry(graph)
+
+    registry.dispatch("record_finding", _args(fix_verified=True))
+    registry.dispatch(
+        "record_finding",
+        _args(evidence=["an unrelated second independent capture of the same bug"]),
+    )
+    (finding_id,) = graph.nodes_of_kind(NodeKind.FINDING)
+    assert graph.node(finding_id)["fix_verified"] is True
 
 
 def test_record_finding_accepts_code_locations() -> None:

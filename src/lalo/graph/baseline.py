@@ -105,10 +105,14 @@ def build_baseline_tool(graph: ReachabilityGraph, agent_id: str) -> FunctionTool
         name="baseline",
         description=(
             "A shared, append-only threat-model/inventory note per target - every agent "
-            "in the hierarchy reads and adds to the SAME entry for the same target "
-            "identity (host[:non-default-port], scheme/path/default-port ignored). "
-            'args: {"action": "save"|"get"|"amend", "target": str, ...}. save (once per '
-            'target - use amend after): {"category": str, "summary": str}. get: {}. '
+            "reads and adds to the SAME entry for the same target identity "
+            "(host[:non-default-port], scheme/path/default-port ignored). Note: a "
+            "spawned child's own save/amend calls stay on its own isolated copy and "
+            "don't propagate back to the parent or siblings once it returns - this "
+            "works best when the PARENT writes context before fanning children out, so "
+            'they inherit it. args: {"action": "save"|"get"|"amend", "target": str, ...}. '
+            'save (once per target - use amend after): {"category": str, "summary": str}. '
+            "get: {}. "
             'amend (adds to an existing baseline, never overwrites it): {"text": str}.'
         ),
         func=_baseline,

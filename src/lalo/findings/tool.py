@@ -189,6 +189,37 @@ def build_record_finding_tool(graph: ReachabilityGraph) -> FunctionTool:
                 merge_fields["cvss_score"] = cvss.score
                 merge_fields["cvss_severity"] = cvss.severity
                 merge_fields["cvss_vector"] = cvss.vector
+            # fix-verification-discipline.md's own documented path: re-testing
+            # a previously filed finding against a claimed fix re-files it
+            # with the SAME vuln_class/target/param and relies on THIS merge
+            # branch to carry fix_verified/code_locations/etc. onto the
+            # existing node - without the block below every one of those
+            # fields silently stayed at its unfilled default forever, no
+            # matter what a re-verification call passed.
+            if code_locations:
+                merge_fields["code_locations"] = code_locations
+            # fix_verified is the one field here that is NOT simply
+            # "strongest/most-informative wins": an explicit call (the key is
+            # actually present in args, true or false) is a deliberate claim
+            # that must be honored verbatim, including a regression - a later
+            # check finding the fix does NOT hold is meaningfully different,
+            # report-worthy information (the skill's own "assume it isn't
+            # fixed by default" posture), not something to bury behind a
+            # stale earlier True. A call that never mentions fix_verified at
+            # all - an ordinary duplicate re-filing with no fix-verification
+            # intent - falls back to OR, so mere omission can never silently
+            # erase an already-confirmed fix.
+            if "fix_verified" in args:
+                merge_fields["fix_verified"] = fix_verified
+            else:
+                merge_fields["fix_verified"] = existing.get("fix_verified", False) or fix_verified
+            if fix_verification_notes:
+                merge_fields["fix_verification_notes"] = fix_verification_notes
+            if reachability != "unknown":
+                merge_fields["reachability"] = reachability
+                merge_fields["reachability_evidence"] = reachability_evidence
+            if contextual_cvss is not None:
+                merge_fields["contextual_cvss"] = contextual_cvss
             graph.add_node(existing_id, NodeKind.FINDING, **merge_fields)
             chain_note = _link_enabling_finding(graph, existing_id, args)
             return ToolResult(
