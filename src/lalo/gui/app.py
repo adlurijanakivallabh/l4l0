@@ -110,7 +110,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, Query, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -170,6 +170,62 @@ _SETTINGS_ENV_PATH = Path(".env")
 # path segment at all - see build_app's own module docstring for the real
 # bug this closed).
 _SAFE_RUN_ID = re.compile(r"^[A-Za-z0-9_-]+$")
+
+
+def _normalize_loopback(hostname: str) -> str:
+    """Normalize loopback hostnames to a canonical form.
+
+    Treats {'localhost', '127.0.0.1', '0.0.0.0'} as equivalent, all normalizing
+    to '127.0.0.1', so a same-origin check doesn't reject legitimate requests
+    just because the operator accessed the GUI via http://localhost:8000/
+    instead of http://127.0.0.1:8000/ (both route to the same loopback socket).
+    Any non-loopback hostname returns unchanged.
+    """
+    if hostname.lower() in {"localhost", "127.0.0.1", "0.0.0.0"}:  # noqa: S104
+        return "127.0.0.1"
+    return hostname
+
+
+def _rejects_foreign_origin(request: Request, *, host: str, port: int) -> bool:
+    """True if ``request`` carries an Origin header that does NOT match this
+    server's own bound address - a request with no Origin header at all
+    (any non-browser client: curl, a script, local dev tooling) is never
+    rejected here, only a browser-sent one that names a DIFFERENT origin.
+    A browser always sets Origin on a cross-origin POST/PUT/DELETE; a
+    same-origin request from the GUI's own served frontend also always
+    carries a matching one (including if accessed via localhost instead of
+    127.0.0.1), so this closes the drive-by/CSRF gap noted in this module's
+    own docstring without requiring any credential or confirmation step.
+    """
+    origin = request.headers.get("origin")
+    if origin is None:
+        return False
+    # Parse origin to extract hostname and port, e.g. "http://localhost:8000"
+    # → ("localhost", "8000")
+    try:
+        # origin format: "http://hostname:port" or "https://..."
+        if "://" not in origin:
+            return True  # Malformed origin, reject as foreign
+        scheme_rest = origin.split("://", 1)[1]
+        if ":" in scheme_rest:
+            origin_host, origin_port_str = scheme_rest.rsplit(":", 1)
+            try:
+                origin_port = int(origin_port_str)
+            except ValueError:
+                return True  # Malformed port, reject as foreign
+        else:
+            # No port in origin; use default port based on scheme
+            origin_host = scheme_rest
+            origin_port = 80 if origin.startswith("http://") else 443
+    except Exception:
+        return True  # Any parse error, reject as foreign
+
+    # Normalize both hostnames for loopback equivalence
+    normalized_origin_host = _normalize_loopback(origin_host)
+    normalized_config_host = _normalize_loopback(host)
+
+    # Reject if either hostname or port doesn't match
+    return normalized_origin_host != normalized_config_host or origin_port != port
 
 
 class SteeringMessage(BaseModel):
@@ -279,7 +335,13 @@ def _list_runs(runs_dir: Path, *, running_run_ids: set[str] | None = None) -> li
     return summaries
 
 
-def build_app(event_log: EventLog, *, runs_dir: Path | None = None) -> FastAPI:
+def build_app(
+    event_log: EventLog,
+    *,
+    runs_dir: Path | None = None,
+    host: str = "127.0.0.1",
+    port: int = 8000,
+) -> FastAPI:
     app = FastAPI()
     runs_dir = runs_dir or _DEFAULT_RUNS_DIR
     # A single mutable slot, not a list/registry: this GUI is a single-operator
@@ -306,7 +368,9 @@ def build_app(event_log: EventLog, *, runs_dir: Path | None = None) -> FastAPI:
         return FileResponse(STATIC_DIR / "index.html")
 
     @app.post("/scan")
-    async def start_scan(request: ScanRequest) -> JSONResponse:
+    async def start_scan(request: ScanRequest, http_request: Request) -> JSONResponse:
+        if _rejects_foreign_origin(http_request, host=host, port=port):
+            return JSONResponse({"error": "cross-origin request rejected"}, status_code=403)
         if request.resume_run_id:
             run_id = request.resume_run_id
             if not _SAFE_RUN_ID.match(run_id):
@@ -585,7 +649,11 @@ def build_app(event_log: EventLog, *, runs_dir: Path | None = None) -> FastAPI:
         )
 
     @app.post("/settings/providers")
-    def set_provider_settings(request: ProviderSettingsRequest) -> JSONResponse:
+    def set_provider_settings(
+        http_request: Request, request: ProviderSettingsRequest
+    ) -> JSONResponse:
+        if _rejects_foreign_origin(http_request, host=host, port=port):
+            return JSONResponse({"error": "cross-origin request rejected"}, status_code=403)
         spec = next((s for s in CURATED_PROVIDERS if s.id == request.provider_id), None)
         if spec is None:
             return JSONResponse(
@@ -612,7 +680,11 @@ def build_app(event_log: EventLog, *, runs_dir: Path | None = None) -> FastAPI:
         return JSONResponse({"ok": True, "provider_id": spec.id})
 
     @app.post("/scan/stop")
-    async def stop_scan(run_id: str | None = Query(default=None)) -> JSONResponse:
+    async def stop_scan(
+        http_request: Request, run_id: str | None = Query(default=None)
+    ) -> JSONResponse:
+        if _rejects_foreign_origin(http_request, host=host, port=port):
+            return JSONResponse({"error": "cross-origin request rejected"}, status_code=403)
         target_run_id = run_id or primary_run_id[0]
         runner = current_runners.get(target_run_id) if target_run_id is not None else None
         if runner is None:
@@ -622,8 +694,10 @@ def build_app(event_log: EventLog, *, runs_dir: Path | None = None) -> FastAPI:
 
     @app.post("/steer")
     async def steer(
-        message: SteeringMessage, run_id: str | None = Query(default=None)
+        http_request: Request, message: SteeringMessage, run_id: str | None = Query(default=None)
     ) -> JSONResponse:
+        if _rejects_foreign_origin(http_request, host=host, port=port):
+            return JSONResponse({"error": "cross-origin request rejected"}, status_code=403)
         text = message.text.strip()
         if not text:
             return JSONResponse({"error": "'text' is required"}, status_code=400)
@@ -686,7 +760,7 @@ def main() -> None:
     import uvicorn
 
     event_log = EventLog()
-    app = build_app(event_log)
     host, port = "127.0.0.1", 8000
+    app = build_app(event_log, host=host, port=port)
     print(f"L4L0 GUI: http://{host}:{port}/")
     uvicorn.run(app, host=host, port=port)

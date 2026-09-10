@@ -1241,3 +1241,88 @@ def test_scan_resume_response_also_carries_resolved_fields(
     response = client.post("/scan", json={"resume_run_id": "abc123"})
     assert response.status_code == 200
     assert response.json()["resolved_targets"] == ["example.com"]
+
+
+def test_post_scan_rejects_a_foreign_origin_header(tmp_path: Path) -> None:
+    client, _ = _client(runs_dir=tmp_path)
+    resp = client.post(
+        "/scan",
+        json={"mission": "test", "targets": ["http://example.com"]},
+        headers={"Origin": "http://evil.example.com"},
+    )
+    assert resp.status_code == 403
+
+
+def test_post_scan_allows_a_matching_origin_header(tmp_path: Path) -> None:
+    client, _ = _client(runs_dir=tmp_path)
+    resp = client.post(
+        "/scan",
+        json={"mission": "test", "targets": ["http://example.com"]},
+        headers={"Origin": "http://127.0.0.1:8000"},
+    )
+    assert resp.status_code == 200
+
+
+def test_post_scan_allows_a_request_with_no_origin_header(tmp_path: Path) -> None:
+    # Non-browser API clients (curl, a script, local dev tooling) never send
+    # Origin at all - must not be broken by this fix.
+    client, _ = _client(runs_dir=tmp_path)
+    resp = client.post("/scan", json={"mission": "test", "targets": ["http://example.com"]})
+    assert resp.status_code == 200
+
+
+def test_post_steer_rejects_a_foreign_origin_header(tmp_path: Path) -> None:
+    client, _ = _client(runs_dir=tmp_path)
+    resp = client.post(
+        "/steer",
+        json={"text": "hello"},
+        headers={"Origin": "http://evil.example.com"},
+    )
+    assert resp.status_code == 403
+
+
+def test_post_scan_allows_localhost_as_same_origin(tmp_path: Path) -> None:
+    # Operator can access GUI via http://localhost:8000/ instead of
+    # http://127.0.0.1:8000/ - both route to the same loopback socket and
+    # should be treated as same-origin, not rejected.
+    client, _ = _client(runs_dir=tmp_path)
+    resp = client.post(
+        "/scan",
+        json={"mission": "test", "targets": ["http://example.com"]},
+        headers={"Origin": "http://localhost:8000"},
+    )
+    assert resp.status_code == 200
+
+
+def test_post_scan_stop_rejects_a_foreign_origin_header(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    block = threading.Event()
+    _FakeScanRunner.block = block
+    monkeypatch.setattr(app_module, "ScanRunner", _FakeScanRunner)
+    try:
+        client, _ = _client(runs_dir=tmp_path)
+        client.post("/scan", json={"mission": "find a bug", "targets": ["example.com"]})
+        resp = client.post(
+            "/scan/stop",
+            headers={"Origin": "http://evil.example.com"},
+        )
+        assert resp.status_code == 403
+    finally:
+        block.set()
+        _FakeScanRunner.block = None
+
+
+def test_post_settings_providers_rejects_a_foreign_origin_header(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        app_module, "verify_router", lambda _router: {"anthropic": (False, "rejected")}
+    )
+    client, _ = _client(runs_dir=tmp_path)
+    resp = client.post(
+        "/settings/providers",
+        json={"provider_id": "anthropic", "api_key": "sk-ant-real", "extra": {}},
+        headers={"Origin": "http://evil.example.com"},
+    )
+    assert resp.status_code == 403
