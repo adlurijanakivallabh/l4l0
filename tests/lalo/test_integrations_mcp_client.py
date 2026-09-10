@@ -10,13 +10,14 @@ own ``connector`` seam instead of spawning a subprocess or hitting a URL.
 from __future__ import annotations
 
 import asyncio
-from contextlib import AbstractAsyncContextManager
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from datetime import timedelta
 
 import pytest
 from mcp import ClientSession
 from mcp.server.fastmcp import FastMCP
 from mcp.shared.memory import create_connected_server_and_client_session
+from mcp.types import TextContent
 
 from lalo.agent.tools import ToolRegistry
 from lalo.integrations.mcp_client import (
@@ -317,6 +318,47 @@ def test_call_external_tool_a_hung_server_times_out_instead_of_hanging_forever()
     )
     assert result.ok is False
     assert "failed" in result.observation
+
+
+def test_call_external_tool_retries_a_transient_connection_failure() -> None:
+    """A single transient network-shaped failure (a ConnectionError, not an
+    auth/policy denial) should be retried a bounded number of times before
+    giving up, rather than failing on the very first attempt."""
+    attempts = {"n": 0}
+    config = MCPServerConfig(
+        name="test",
+        transport="http",
+        credential_env_var="TEST_MCP_TOKEN",
+        allowed_tools={"do_thing": "read"},
+        url="https://example.com/mcp",
+    )
+
+    @asynccontextmanager
+    async def _flaky_connector(cfg: MCPServerConfig, credential: str):
+        attempts["n"] += 1
+        if attempts["n"] < 3:
+            raise ConnectionError("transient network failure")
+
+        class _FakeSession:
+            async def call_tool(self, name: str, args: dict[str, object]) -> object:
+                class _Result:
+                    content = [TextContent(type="text", text="ok")]
+                    isError = False
+
+                return _Result()
+
+        yield _FakeSession()
+
+    result = call_external_tool(
+        config,
+        "do_thing",
+        {},
+        connector=_flaky_connector,
+        env={"TEST_MCP_TOKEN": "secret"},
+    )
+    assert result.ok
+    assert result.observation == "ok"
+    assert attempts["n"] == 3
 
 
 # --- build_mcp_tool: the agent-facing wiring --------------------------------

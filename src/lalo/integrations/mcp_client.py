@@ -76,6 +76,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import time
 from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass
@@ -241,6 +242,23 @@ async def _default_connector(
 
 _MAX_RESULT_CHARS = 4_000
 
+_MAX_TRANSIENT_RETRIES = 3
+_TRANSIENT_RETRY_DELAY_S = 0.5
+
+# Network/connection-shaped failures only - never a policy denial (those
+# are returned as a failed ToolResult BEFORE any connection attempt, per
+# check_tool_call/validate_server_url/resolve_credential above, so they
+# never reach this classifier at all) and never an application-level tool
+# error the server itself reported (isError=True in _run(), which raises
+# RuntimeError with the server's own message - retrying an identical call
+# against a server that just said "invalid arguments" wastes attempts on
+# a failure retrying can never fix).
+_TRANSIENT_EXCEPTION_TYPES = (ConnectionError, TimeoutError, OSError)
+
+
+def _is_transient_mcp_failure(exc: Exception) -> bool:
+    return isinstance(exc, _TRANSIENT_EXCEPTION_TYPES) and not isinstance(exc, RuntimeError)
+
 
 def _render_content(content: list[object]) -> str:
     parts = [block.text for block in content if isinstance(block, TextContent)]
@@ -288,11 +306,18 @@ def call_external_tool(
                 raise RuntimeError(msg)
             return text
 
-    try:
-        text = asyncio.run(_run())
-    except Exception as exc:  # noqa: BLE001 - one dead/misbehaving integration must degrade, never crash the turn
-        return ToolResult(observation=f"error: connection {config.name!r} failed: {exc}", ok=False)
-    return ToolResult(observation=text, ok=True)
+    last_exc: Exception | None = None
+    for attempt in range(_MAX_TRANSIENT_RETRIES):
+        try:
+            text = asyncio.run(_run())
+        except Exception as exc:  # noqa: BLE001 - one dead/misbehaving integration must degrade, never crash the turn
+            last_exc = exc
+            if not _is_transient_mcp_failure(exc) or attempt == _MAX_TRANSIENT_RETRIES - 1:
+                break
+            time.sleep(_TRANSIENT_RETRY_DELAY_S)
+            continue
+        return ToolResult(observation=text, ok=True)
+    return ToolResult(observation=f"error: connection {config.name!r} failed: {last_exc}", ok=False)
 
 
 def build_mcp_tool(
