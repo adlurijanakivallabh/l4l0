@@ -1588,3 +1588,14 @@ def test_a_context_overflow_error_forces_compaction_and_retries_once() -> None:
     assert result.stop_reason == "finished"
     assert attempts["n"] == 2
     assert sleeps == []  # must never enter the 30s-scaled outage-retry wait
+
+
+def test_compaction_system_prompt_instructs_verbatim_credential_preservation() -> None:
+    """The compaction summarizer must be told to preserve credentials/
+    secrets/tokens/findings VERBATIM, not paraphrased - a real data-loss
+    risk for a tool whose whole value is what it captured."""
+    from lalo.agent.loop import _COMPACTION_SYSTEM_PROMPT
+
+    lowered = _COMPACTION_SYSTEM_PROMPT.lower()
+    assert "verbatim" in lowered
+    assert "credential" in lowered or "secret" in lowered

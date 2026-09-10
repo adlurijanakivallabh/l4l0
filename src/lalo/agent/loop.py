@@ -292,10 +292,16 @@ _COMPACTION_SYSTEM_PROMPT = (
     "a dense working-memory summary for that SAME agent's continued reasoning. "
     "Preserve concrete facts only: targets tested, tools run, findings filed, "
     "approaches that failed and why, anything the agent should not repeat. "
-    "Never state a verdict on whether anything is a real vulnerability - this "
-    "summary is orientation for the agent, never evidence for a finding. "
-    "A few dense bullet points, terse - fold any existing summary shown in "
-    "with the newly completed steps into one updated summary."
+    "Any captured credential, secret, token, session value, or specific "
+    "finding detail must be copied VERBATIM, character-for-character, never "
+    "paraphrased, generalized, or replaced with a placeholder - the agent "
+    "needs the exact value to keep using it, and a summary that only says "
+    "'found a weak credential' has silently destroyed the one thing that "
+    "made the finding useful. Never state a verdict on whether anything is "
+    "a real vulnerability - this summary is orientation for the agent, "
+    "never evidence for a finding. A few dense bullet points, terse - fold "
+    "any existing summary shown in with the newly completed steps into one "
+    "updated summary."
 )
 
 # Long-horizon provider-outage retry: distinct from _post_with_retry's own
