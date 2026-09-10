@@ -409,3 +409,22 @@ def test_connect_timeout_is_shorter_than_the_operation_timeout() -> None:
     from lalo.integrations.mcp_client import _DEFAULT_CONNECT_TIMEOUT, _DEFAULT_SESSION_TIMEOUT
 
     assert _DEFAULT_CONNECT_TIMEOUT < _DEFAULT_SESSION_TIMEOUT
+
+
+def test_build_mcp_tool_sanitizes_a_connection_name_with_invalid_characters() -> None:
+    """A connection name from an operator's config file might contain
+    spaces/punctuation a model's tool-calling API won't accept as a tool
+    name - the exposed name must be sanitized even though the real
+    dispatch still uses the connection's own unmodified name internally."""
+    config = MCPServerConfig(
+        name="my db (prod)",
+        transport="http",
+        credential_env_var="X",
+        allowed_tools={},
+        url="https://example.com",
+    )
+    tool = build_mcp_tool(config)
+    assert tool.name == "mcp_my_db__prod_"
+    import re
+
+    assert re.fullmatch(r"[a-zA-Z0-9_-]+", tool.name)

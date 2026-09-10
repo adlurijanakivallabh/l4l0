@@ -76,6 +76,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import time
 from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
@@ -278,6 +279,19 @@ def _render_content(content: list[object]) -> str:
     return text
 
 
+_INVALID_TOOL_NAME_CHARS = re.compile(r"[^a-zA-Z0-9_-]")
+
+
+def _sanitize_tool_label(name: str) -> str:
+    """The MODEL-FACING label only - dispatch always uses the connection's
+    own unmodified config.name (see call_external_tool/check_tool_call,
+    neither of which goes through this function), so a config value with
+    characters a model's tool-calling API rejects still works correctly,
+    it's just displayed differently to the model.
+    """
+    return _INVALID_TOOL_NAME_CHARS.sub("_", name)
+
+
 def call_external_tool(
     config: MCPServerConfig,
     tool_name: str,
@@ -354,7 +368,7 @@ def build_mcp_tool(
         return call_external_tool(config, tool_name, arguments, connector=connector, env=env)
 
     return FunctionTool(
-        name=f"mcp_{config.name}",
+        name=f"mcp_{_sanitize_tool_label(config.name)}",
         description=(
             f"Call an allowlisted tool on the external MCP connection {config.name!r}. "
             f"Allowed tools: {allowed or '(none configured)'}. Its output is external, "
