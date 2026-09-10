@@ -170,6 +170,35 @@ def _code_flow(hops: list[dict[str, str]]) -> dict[str, Any] | None:
     return {"threadFlows": [{"locations": thread_locations}]}
 
 
+def _build_fixes(code_locations: list[dict[str, str]]) -> list[dict[str, Any]]:
+    """One SARIF ``fix`` per code location that parses - an unparseable
+    location is dropped, the same graceful-degrade every other location
+    helper in this module already applies, never a reason to fail the
+    whole result."""
+    fixes: list[dict[str, Any]] = []
+    for location in code_locations:
+        physical = _physical_location(str(location.get("location", "")))
+        if physical is None:
+            continue
+        fixes.append(
+            {
+                "description": {"text": f"Verified fix at {location.get('location', '')}"},
+                "artifactChanges": [
+                    {
+                        "artifactLocation": physical["artifactLocation"],
+                        "replacements": [
+                            {
+                                "deletedRegion": physical["region"],
+                                "insertedContent": {"text": str(location.get("fix_after", ""))},
+                            }
+                        ],
+                    }
+                ],
+            }
+        )
+    return fixes
+
+
 def _build_result(record: FindingRecord, rule_index: int) -> dict[str, Any]:
     logical_name = record.target + (f"#{record.param}" if record.param else "")
     message = f"{record.title}\n\n{record.description}" if record.description else record.title
@@ -215,6 +244,10 @@ def _build_result(record: FindingRecord, rule_index: int) -> dict[str, Any]:
     }
     if code_flows:
         result["codeFlows"] = code_flows
+    if record.code_locations:
+        fixes = _build_fixes(record.code_locations)
+        if fixes:
+            result["fixes"] = fixes
     return result
 
 

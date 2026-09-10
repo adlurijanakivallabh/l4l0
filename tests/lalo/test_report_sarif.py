@@ -50,6 +50,16 @@ def _records(graph: ReachabilityGraph) -> list[FindingRecord]:
     return collect_findings(graph)
 
 
+def _record(**overrides: object) -> FindingRecord:
+    """Build a minimal FindingRecord for render_sarif tests - a thin helper
+    that creates a graph, files a finding with the given overrides, and
+    returns the record. Used for direct render_sarif testing without the full
+    finding-dispatch flow."""
+    graph = ReachabilityGraph()
+    _file(graph, **overrides)
+    return _records(graph)[0]
+
+
 def test_render_sarif_document_shape() -> None:
     doc = render_sarif([])
     assert doc["$schema"] == SARIF_SCHEMA
@@ -333,3 +343,31 @@ def test_render_sarif_result_drops_an_unparseable_hop_from_the_code_flow() -> No
     result = doc["runs"][0]["results"][0]
     # only one hop survived parsing - no flow worth showing
     assert "codeFlows" not in result
+
+
+def test_render_sarif_includes_fixes_from_code_locations() -> None:
+    record = _record(
+        code_locations=[
+            {"location": "app.py:42", "fix_before": "eval(x)", "fix_after": "ast.literal_eval(x)"}
+        ]
+    )
+    doc = render_sarif([record])
+    result = doc["runs"][0]["results"][0]
+    assert "fixes" in result
+    fix = result["fixes"][0]
+    assert fix["artifactChanges"][0]["artifactLocation"]["uri"] == "app.py"
+    assert fix["artifactChanges"][0]["replacements"][0]["insertedContent"]["text"] == (
+        "ast.literal_eval(x)"
+    )
+
+
+def test_render_sarif_omits_fixes_key_when_no_code_locations() -> None:
+    record = _record()
+    doc = render_sarif([record])
+    assert "fixes" not in doc["runs"][0]["results"][0]
+
+
+def test_render_sarif_skips_an_unparseable_code_location() -> None:
+    record = _record(code_locations=[{"location": "not-a-location", "fix_after": "x"}])
+    doc = render_sarif([record])
+    assert "fixes" not in doc["runs"][0]["results"][0]
