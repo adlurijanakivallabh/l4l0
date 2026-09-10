@@ -60,9 +60,11 @@ on its own once the capability is actually present.
 
 from __future__ import annotations
 
+import io
 import ipaddress
 import shutil
 import subprocess
+import tarfile
 import threading
 import uuid
 from collections.abc import Callable
@@ -480,6 +482,39 @@ class RuntimeContainer:
             stderr="".join(stderr_chunks),
             timed_out=timed_out,
         )
+
+    def seed_files(self, files: dict[str, bytes], *, dest_dir: str | None = None) -> None:
+        """Seed the container's workspace with pre-existing content at any
+        point after start() - via ``docker cp`` reading a tar stream from
+        stdin, never a live host bind-mount (this module's own one non-
+        negotiable line, see its module docstring). ``files`` maps a
+        relative path to its raw bytes; ``dest_dir`` defaults to this
+        container's own configured workdir.
+        """
+        if not self._started:
+            raise ContainerError("cannot seed files: container not started")
+        dest = dest_dir or self.config.workdir
+        buffer = io.BytesIO()
+        with tarfile.open(fileobj=buffer, mode="w") as tar:
+            for rel_path, content in files.items():
+                info = tarfile.TarInfo(name=rel_path)
+                info.size = len(content)
+                tar.addfile(info, io.BytesIO(content))
+        try:
+            result = subprocess.run(  # noqa: S603 - resolved binary; destination is this
+                # container's own workdir, and content is caller-supplied, not
+                # attacker-supplied network input.
+                [_docker_bin(), "cp", "-", f"{self._name}:{dest}"],
+                input=buffer.getvalue(),
+                capture_output=True,
+                timeout=30,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise ContainerError(f"seeding files timed out: {exc}") from exc
+        if result.returncode != 0:
+            raise ContainerError(
+                f"seeding files failed: {result.stderr.decode(errors='replace').strip()}"
+            )
 
     def stop(self, *, failed: bool = False) -> None:
         if self._started:
