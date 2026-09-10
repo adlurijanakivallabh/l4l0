@@ -262,10 +262,20 @@ class AgentCoordinator:
         self, agent_id: str, timeout: float | None = None
     ) -> tuple[str, list[str], bool] | None:
         with self._lock:
-            future = self._pending.pop(agent_id, None)
+            future = self._pending.get(agent_id)
         if future is None:
             return None
-        return future.result(timeout=timeout)
+        # Only popped once the result is actually in hand: a caller-supplied
+        # timeout that expires raises TimeoutError before this line, leaving
+        # the future in _pending so a later, unhurried wait_for(agent_id) can
+        # still retry and join it - popping unconditionally up front (as a
+        # first version of this did) would have discarded it right away,
+        # permanently misreporting a merely-slow background agent as unknown/
+        # already-awaited even though it was still alive and would finish.
+        result = future.result(timeout=timeout)
+        with self._lock:
+            self._pending.pop(agent_id, None)
+        return result
 
     def close(self) -> None:
         self._executor.shutdown(wait=False, cancel_futures=True)

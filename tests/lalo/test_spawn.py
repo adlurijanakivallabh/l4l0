@@ -761,3 +761,27 @@ def test_wait_for_agents_reports_an_unknown_or_already_awaited_id() -> None:
     wait_tool = build_wait_for_agents_tool(coordinator)
     result = wait_tool.run({"agent_ids": ["agent-999"]})
     assert "error" in result.observation
+
+
+def test_wait_for_can_be_retried_after_a_timeout_and_still_joins_the_result() -> None:
+    """A TimeoutError from wait_for's own timeout arg must never pop the
+    pending future - otherwise a timed-out wait can never be retried, forever
+    misreporting a merely-slow (still alive) background agent as unknown/
+    already-awaited."""
+    release = threading.Event()
+
+    def _slow() -> tuple[str, list[str], bool]:
+        release.wait(timeout=5)
+        return "finished slowly", ["finding-1"], True
+
+    coordinator = AgentCoordinator()
+    root_id = coordinator.register_root("root", "mission")
+    child_id = coordinator.spawn(root_id, "child", "task")
+    coordinator.submit_background(child_id, _slow)
+
+    with pytest.raises(TimeoutError):
+        coordinator.wait_for(child_id, timeout=0.05)
+
+    release.set()
+    result = coordinator.wait_for(child_id)
+    assert result == ("finished slowly", ["finding-1"], True)
