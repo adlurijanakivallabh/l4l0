@@ -58,7 +58,7 @@ from __future__ import annotations
 import json
 import threading
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Protocol, Self, runtime_checkable
@@ -160,6 +160,7 @@ class AgentNode:
     summary: str = ""
     finding_ids: list[str] = field(default_factory=list)
     role: str = "full"
+    stop_reason: str = ""
 
 
 class AgentCoordinator:
@@ -182,6 +183,9 @@ class AgentCoordinator:
         # run on one child's thread while another child's spawn() mutates
         # the same dict) are all unsafe against that without this.
         self._lock = threading.Lock()
+        self._stopped: set[str] = set()
+        self._pending: dict[str, Future[tuple[str, list[str], bool]]] = {}
+        self._executor = ThreadPoolExecutor(max_workers=_MAX_PARALLEL_WORKERS)
 
     def seed_counter(self, minimum: int) -> None:
         """Advance the child-id counter to at least ``minimum``, never lower it.
@@ -236,6 +240,35 @@ class AgentCoordinator:
             node.summary = summary
             node.finding_ids = list(finding_ids or [])
             node.status = AgentStatus.COMPLETED if success else AgentStatus.FAILED
+
+    def mark_stopped(self, agent_id: str, reason: str) -> None:
+        with self._lock:
+            self._stopped.add(agent_id)
+            node = self._nodes.get(agent_id)
+            if node is not None:
+                node.stop_reason = reason
+
+    def is_stopped(self, agent_id: str) -> bool:
+        with self._lock:
+            return agent_id in self._stopped
+
+    def submit_background(
+        self, agent_id: str, run: Callable[[], tuple[str, list[str], bool]]
+    ) -> None:
+        with self._lock:
+            self._pending[agent_id] = self._executor.submit(run)
+
+    def wait_for(
+        self, agent_id: str, timeout: float | None = None
+    ) -> tuple[str, list[str], bool] | None:
+        with self._lock:
+            future = self._pending.pop(agent_id, None)
+        if future is None:
+            return None
+        return future.result(timeout=timeout)
+
+    def close(self) -> None:
+        self._executor.shutdown(wait=False, cancel_futures=True)
 
     def node(self, agent_id: str) -> AgentNode:
         return self._nodes[agent_id]
@@ -349,8 +382,8 @@ def build_spawn_tools(
     *,
     self_id: str,
     valid_roles: frozenset[str] = frozenset({"full"}),
-) -> tuple[Tool, Tool]:
-    """Build the ``spawn_agent``/``view_agent_graph`` tools for one agent's registry.
+) -> tuple[Tool, Tool, Tool]:
+    """Build the ``spawn_agent``/``view_agent_graph``/``stop_agent`` tools for one agent's registry.
 
     ``run_child(child_id, name, task) -> (summary, finding_ids, success)`` is
     the host's injected child-execution callback — build and run that child's
@@ -415,6 +448,28 @@ def build_spawn_tools(
             child_id = coordinator.spawn(self_id, name, task, role=role)
         except SpawnDepthExceededError as exc:
             return ToolResult(observation=f"error: {exc}", ok=False)
+        background = bool(args.get("background", False))
+        if background:
+
+            def _run_background(
+                _child_id: str = child_id, _name: str = name, _task: str = task
+            ) -> tuple[str, list[str], bool]:
+                try:
+                    return run_child(_child_id, _name, _task)
+                except Exception as exc:  # noqa: BLE001 - matches the synchronous path's
+                    # own crash handling: a crashed background child must still resolve
+                    # to a terminal tuple, never leave wait_for_agents hanging on an
+                    # exception it has to catch itself.
+                    return f"child crashed: {type(exc).__name__}: {exc}", [], False
+
+            coordinator.submit_background(child_id, _run_background)
+            return ToolResult(
+                observation=(
+                    f"{warning}started {child_id} in the background - call wait_for_agents "
+                    f"with this agent_id once you need its result, or stop_agent to cancel it"
+                ),
+                ok=True,
+            )
         try:
             summary, finding_ids, success = run_child(child_id, name, task)
         except Exception as exc:  # noqa: BLE001 - a crashed child must still reach a terminal
@@ -456,7 +511,9 @@ def build_spawn_tools(
             "agent shown by view_agent_graph as [orphaned] (interrupted by a crash on a "
             "prior run) instead of starting a new one; when set, 'name'/'task'/'role' are "
             "ignored and the agent's own original task continues from its last completed "
-            "step)}"
+            'step), "background": bool (optional, default false - when true, returns '
+            "this agent's id immediately without waiting for it to finish; use "
+            "wait_for_agents to get its result once you need it)}"
         ),
         func=_spawn,
     )
@@ -465,7 +522,92 @@ def build_spawn_tools(
         description="View the multi-agent tree with every agent's status. args: {}",
         func=_view_graph,
     )
-    return spawn_tool, graph_tool
+
+    def _stop_agent(args: dict[str, object]) -> ToolResult:
+        agent_id = str_arg(args, "agent_id", "").strip()
+        reason = str_arg(args, "reason", "no reason given").strip()
+        if not agent_id:
+            return ToolResult(observation="error: 'agent_id' is required", ok=False)
+        if not coordinator.has_node(agent_id):
+            return ToolResult(
+                observation=f"error: {agent_id!r} is not a known agent - "
+                "call view_agent_graph to see valid ids",
+                ok=False,
+            )
+        node = coordinator.node(agent_id)
+        if node.status is not AgentStatus.RUNNING:
+            return ToolResult(
+                observation=f"error: {agent_id!r} is not running (status: "
+                f"{node.status.value}) - only a running agent can be stopped",
+                ok=False,
+            )
+        coordinator.mark_stopped(agent_id, reason)
+        return ToolResult(
+            observation=f"requested stop for {agent_id}: {reason} - it will stop at its "
+            "next checkpoint, not necessarily instantly"
+        )
+
+    stop_tool = FunctionTool(
+        name="stop_agent",
+        description=(
+            "Request that a running agent (yours or any descendant, per view_agent_graph) "
+            "stop at its next checkpoint - e.g. a duplicate specialist, or one whose task "
+            "is now known to be moot. Cooperative, not instant. args: "
+            '{"agent_id": str, "reason": str}'
+        ),
+        func=_stop_agent,
+    )
+    return spawn_tool, graph_tool, stop_tool
+
+
+def build_wait_for_agents_tool(coordinator: AgentCoordinator) -> Tool:
+    """Join specific background-spawned children (see ``spawn_agent``'s ``background``
+    arg) and get each one's authoritative result, without touching ``spawn_agents``'
+    own separate wait-for-all-then-join-every-result barrier semantics.
+    """
+
+    def _wait(args: dict[str, object]) -> ToolResult:
+        raw_ids = args.get("agent_ids")
+        if not isinstance(raw_ids, list) or not raw_ids:
+            return ToolResult(observation="error: 'agent_ids' must be a non-empty list", ok=False)
+        reports: list[dict[str, object]] = []
+        overall_ok = True
+        for raw in raw_ids:
+            agent_id = str(raw)
+            result = coordinator.wait_for(agent_id)
+            if result is None:
+                reports.append(
+                    {
+                        "agent_id": agent_id,
+                        "error": "not a background-spawned agent, or already awaited elsewhere",
+                    }
+                )
+                overall_ok = False
+                continue
+            summary, finding_ids, success = result
+            coordinator.record_result(
+                agent_id, summary=summary, finding_ids=finding_ids, success=success
+            )
+            reports.append(
+                {
+                    "agent_id": agent_id,
+                    "success": success,
+                    "summary": summary,
+                    "filed_finding_ids": finding_ids,
+                }
+            )
+            overall_ok = overall_ok and success
+        return ToolResult(observation=json.dumps(reports), ok=overall_ok)
+
+    return FunctionTool(
+        name="wait_for_agents",
+        description=(
+            "Block until every listed background-spawned agent (see spawn_agent's "
+            "'background' arg) finishes, and get each one's authoritative result. "
+            'args: {"agent_ids": list[str]}'
+        ),
+        func=_wait,
+    )
 
 
 def build_parallel_spawn_tool(

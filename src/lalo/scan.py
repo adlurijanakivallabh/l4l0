@@ -131,6 +131,7 @@ from .agent.spawn import (
     AgentCoordinator,
     build_parallel_spawn_tool,
     build_spawn_tools,
+    build_wait_for_agents_tool,
     isolate_for_child,
     merge_finding_nodes,
 )
@@ -741,6 +742,11 @@ class ScanRunner:
         self.event_log = event_log
         self._cancelled = False
         self._container: RuntimeContainer | None = None
+        # Set inside _run_inside, once the AgentCoordinator exists - closed in
+        # run()'s own outermost finally below so the persistent background-
+        # dispatch thread pool it owns (see AgentCoordinator.close()) never
+        # outlives this scan, on both the success and the exception path.
+        self._coordinator: AgentCoordinator | None = None
         # Multi-lane concurrent sub-agents (spawn_agents) run several
         # children's own AgentLoops on real OS threads at once - _emit_lock
         # serializes every _emit() call (the durable file append plus
@@ -1141,6 +1147,9 @@ class ScanRunner:
         finally:
             browser.close()
             firer.close()
+            if self._coordinator is not None:
+                self._coordinator.close()
+                self._coordinator = None
 
     def _run_inside(
         self,
@@ -1183,6 +1192,7 @@ class ScanRunner:
             identities.add(identity)
         sessions = SessionRegistry(graph)
         coordinator = AgentCoordinator(max_depth=self.config.spawn_max_depth)
+        self._coordinator = coordinator
         # spent= reconstructs the TRUE cumulative spend across every agent -
         # root and every spawned child - not just root's own replayed steps.
         # AgentLoop.run()'s own replay loop deliberately does NOT spend per
@@ -1254,7 +1264,7 @@ class ScanRunner:
                     tracer=tracer,
                     budget=budget,
                     on_event=lambda ev, pl: self._on_agent_event(child_id, ev, pl),
-                    should_stop=self._should_stop,
+                    should_stop=lambda: self._should_stop() or coordinator.is_stopped(child_id),
                     usage_path=self.config.usage_path,
                     agent_id=child_id,
                     get_steering=self._pending_steering,
@@ -1379,13 +1389,20 @@ class ScanRunner:
             if self.config.email_accounts:
                 tools.append(build_email_fetch_tool(self.config.email_accounts))
             tools += [build_mcp_tool(conn) for conn in self.config.mcp_connections.values()]
-            spawn_tool, view_graph_tool = build_spawn_tools(
+            spawn_tool, view_graph_tool, stop_agent_tool = build_spawn_tools(
                 coordinator, _run_child, self_id=self_id, valid_roles=frozenset(_ROLE_TOOL_NAMES)
             )
+            wait_for_agents_tool = build_wait_for_agents_tool(coordinator)
             parallel_spawn_tool = build_parallel_spawn_tool(
                 coordinator, _run_child, self_id=self_id, valid_roles=frozenset(_ROLE_TOOL_NAMES)
             )
-            tools += [spawn_tool, parallel_spawn_tool, view_graph_tool]
+            tools += [
+                spawn_tool,
+                parallel_spawn_tool,
+                view_graph_tool,
+                stop_agent_tool,
+                wait_for_agents_tool,
+            ]
             return ToolRegistry(_filter_tools(tools, tool_names))
 
         self._emit("status", {"event": "scan_started", "targets": self.config.target_specs})

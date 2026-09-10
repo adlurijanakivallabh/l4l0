@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+import time
 from dataclasses import dataclass, field
 
 import pytest
@@ -12,6 +13,7 @@ from lalo.agent.spawn import (
     AgentStatus,
     build_parallel_spawn_tool,
     build_spawn_tools,
+    build_wait_for_agents_tool,
     isolate_for_child,
     merge_finding_nodes,
 )
@@ -166,7 +168,7 @@ def test_build_spawn_tools_dispatches_a_real_child_run() -> None:
         calls.append((child_id, name, task))
         return "confirmed the bug", ["f-9"], True
 
-    spawn_tool, graph_tool = build_spawn_tools(coord, run_child, self_id=root)
+    spawn_tool, graph_tool, _stop = build_spawn_tools(coord, run_child, self_id=root)
     registry = ToolRegistry([spawn_tool, graph_tool])
 
     result = registry.dispatch("spawn_agent", {"name": "XSS Specialist", "task": "test /search"})
@@ -182,7 +184,7 @@ def test_build_spawn_tools_dispatches_a_real_child_run() -> None:
 def test_spawn_agent_rejects_an_unknown_role_without_registering_a_child() -> None:
     coord = AgentCoordinator(max_depth=5)
     root = coord.register_root("root", "mission")
-    spawn_tool, _ = build_spawn_tools(
+    spawn_tool, _, _ = build_spawn_tools(
         coord,
         lambda *_a: ("", [], True),
         self_id=root,
@@ -197,7 +199,7 @@ def test_spawn_agent_rejects_an_unknown_role_without_registering_a_child() -> No
 def test_spawn_agent_passes_a_valid_role_through_to_the_coordinator() -> None:
     coord = AgentCoordinator(max_depth=5)
     root = coord.register_root("root", "mission")
-    spawn_tool, _ = build_spawn_tools(
+    spawn_tool, _, _ = build_spawn_tools(
         coord,
         lambda *_a: ("", [], True),
         self_id=root,
@@ -212,7 +214,7 @@ def test_spawn_agent_passes_a_valid_role_through_to_the_coordinator() -> None:
 def test_spawn_agent_role_defaults_to_full_when_omitted() -> None:
     coord = AgentCoordinator(max_depth=5)
     root = coord.register_root("root", "mission")
-    spawn_tool, _ = build_spawn_tools(coord, lambda *_a: ("", [], True), self_id=root)
+    spawn_tool, _, _ = build_spawn_tools(coord, lambda *_a: ("", [], True), self_id=root)
     registry = ToolRegistry([spawn_tool])
     registry.dispatch("spawn_agent", {"name": "x", "task": "y"})
     child_id = coord.children_of(root)[0]
@@ -236,7 +238,7 @@ def test_spawn_agent_resumes_a_real_orphan_using_its_original_task() -> None:
         calls.append((child_id, name, task))
         return "continued and confirmed", ["f-1"], True
 
-    spawn_tool, _ = build_spawn_tools(coord, run_child, self_id=root)
+    spawn_tool, _, _ = build_spawn_tools(coord, run_child, self_id=root)
     registry = ToolRegistry([spawn_tool])
     result = registry.dispatch(
         "spawn_agent",
@@ -250,7 +252,7 @@ def test_spawn_agent_resumes_a_real_orphan_using_its_original_task() -> None:
 def test_spawn_agent_rejects_a_resume_agent_id_that_is_not_a_known_orphan() -> None:
     coord = AgentCoordinator(max_depth=5)
     root = coord.register_root("root", "mission")
-    spawn_tool, _ = build_spawn_tools(coord, lambda *_a: ("", [], True), self_id=root)
+    spawn_tool, _, _ = build_spawn_tools(coord, lambda *_a: ("", [], True), self_id=root)
     registry = ToolRegistry([spawn_tool])
     result = registry.dispatch("spawn_agent", {"resume_agent_id": "agent-999"})
     assert result.ok is False
@@ -261,7 +263,7 @@ def test_spawn_agent_rejects_resuming_a_node_that_is_not_orphaned() -> None:
     root = coord.register_root("root", "mission")
     child = coord.spawn(root, "child", "subtask")
     coord.record_result(child, summary="done", finding_ids=[])
-    spawn_tool, _ = build_spawn_tools(coord, lambda *_a: ("", [], True), self_id=root)
+    spawn_tool, _, _ = build_spawn_tools(coord, lambda *_a: ("", [], True), self_id=root)
     registry = ToolRegistry([spawn_tool])
     result = registry.dispatch("spawn_agent", {"resume_agent_id": child})
     assert result.ok is False
@@ -270,7 +272,7 @@ def test_spawn_agent_rejects_resuming_a_node_that_is_not_orphaned() -> None:
 def test_spawn_agent_tool_requires_name_and_task() -> None:
     coord = AgentCoordinator()
     root = coord.register_root("root", "mission")
-    spawn_tool, _ = build_spawn_tools(coord, lambda *_a: ("", [], True), self_id=root)
+    spawn_tool, _, _ = build_spawn_tools(coord, lambda *_a: ("", [], True), self_id=root)
     registry = ToolRegistry([spawn_tool])
     result = registry.dispatch("spawn_agent", {"name": "", "task": ""})
     assert result.ok is False
@@ -281,7 +283,7 @@ def test_spawn_agent_tool_requires_name_and_task_even_as_explicit_json_null() ->
     field, not stringified into the literal, non-empty "None"."""
     coord = AgentCoordinator()
     root = coord.register_root("root", "mission")
-    spawn_tool, _ = build_spawn_tools(coord, lambda *_a: ("", [], True), self_id=root)
+    spawn_tool, _, _ = build_spawn_tools(coord, lambda *_a: ("", [], True), self_id=root)
     registry = ToolRegistry([spawn_tool])
     result = registry.dispatch("spawn_agent", {"name": None, "task": None})
     assert result.ok is False
@@ -290,7 +292,7 @@ def test_spawn_agent_tool_requires_name_and_task_even_as_explicit_json_null() ->
 def test_spawn_agent_tool_reports_depth_ceiling_as_a_failed_result_not_an_exception() -> None:
     coord = AgentCoordinator(max_depth=0)
     root = coord.register_root("root", "mission")
-    spawn_tool, _ = build_spawn_tools(coord, lambda *_a: ("", [], True), self_id=root)
+    spawn_tool, _, _ = build_spawn_tools(coord, lambda *_a: ("", [], True), self_id=root)
     registry = ToolRegistry([spawn_tool])
     result = registry.dispatch("spawn_agent", {"name": "child", "task": "subtask"})
     assert result.ok is False
@@ -304,7 +306,7 @@ def test_spawn_warns_on_a_near_duplicate_sibling_task_but_still_succeeds() -> No
     def run_child(child_id: str, name: str, task: str) -> tuple[str, list[str], bool]:
         return "confirmed", [], True
 
-    spawn_tool, _ = build_spawn_tools(coord, run_child, self_id=root)
+    spawn_tool, _, _ = build_spawn_tools(coord, run_child, self_id=root)
     registry = ToolRegistry([spawn_tool])
 
     first = registry.dispatch(
@@ -331,7 +333,7 @@ def test_spawn_does_not_warn_on_unrelated_sibling_tasks() -> None:
     def run_child(child_id: str, name: str, task: str) -> tuple[str, list[str], bool]:
         return "confirmed", [], True
 
-    spawn_tool, _ = build_spawn_tools(coord, run_child, self_id=root)
+    spawn_tool, _, _ = build_spawn_tools(coord, run_child, self_id=root)
     registry = ToolRegistry([spawn_tool])
 
     registry.dispatch("spawn_agent", {"name": "S3 Specialist", "task": "enumerate S3 buckets"})
@@ -352,7 +354,7 @@ def test_a_crashing_child_still_reaches_a_terminal_status_not_a_permanent_ghost(
     def crashing_run_child(child_id: str, name: str, task: str) -> tuple[str, list[str], bool]:
         raise RuntimeError("child agent loop crashed")
 
-    spawn_tool, _ = build_spawn_tools(coord, crashing_run_child, self_id=root)
+    spawn_tool, _, _ = build_spawn_tools(coord, crashing_run_child, self_id=root)
     registry = ToolRegistry([spawn_tool])
 
     result = registry.dispatch("spawn_agent", {"name": "child", "task": "subtask"})
@@ -665,7 +667,7 @@ def test_spawn_agents_warns_about_a_duplicate_task_against_a_running_sibling() -
     def run_child(child_id: str, name: str, task: str) -> tuple[str, list[str], bool]:
         return "confirmed", [], True
 
-    spawn_tool, _ = build_spawn_tools(coord, run_child, self_id=root)
+    spawn_tool, _, _ = build_spawn_tools(coord, run_child, self_id=root)
     ToolRegistry([spawn_tool]).dispatch(
         "spawn_agent",
         {"name": "S3 Specialist", "task": "enumerate S3 buckets for public read access"},
@@ -684,3 +686,78 @@ def test_spawn_agents_warns_about_a_duplicate_task_against_a_running_sibling() -
     )
     assert result.ok is True  # never blocked
     assert "similar to running agent" in result.observation
+
+
+# --- stop_agent / background spawn_agent / wait_for_agents ------------------
+
+
+def test_stop_agent_marks_a_running_agent_stopped() -> None:
+    coordinator = AgentCoordinator()
+    root_id = coordinator.register_root("root", "mission")
+    child_id = coordinator.spawn(root_id, "child", "task")
+    spawn_tool, view_tool, stop_tool = build_spawn_tools(
+        coordinator, lambda cid, n, t: ("done", [], True), self_id=root_id
+    )
+    result = stop_tool.run({"agent_id": child_id, "reason": "duplicate of another agent"})
+    assert result.ok
+    assert coordinator.is_stopped(child_id)
+    assert coordinator.node(child_id).stop_reason == "duplicate of another agent"
+
+
+def test_stop_agent_rejects_an_unknown_id() -> None:
+    coordinator = AgentCoordinator()
+    root_id = coordinator.register_root("root", "mission")
+    _spawn, _view, stop_tool = build_spawn_tools(
+        coordinator, lambda cid, n, t: ("done", [], True), self_id=root_id
+    )
+    result = stop_tool.run({"agent_id": "agent-999", "reason": "x"})
+    assert not result.ok
+
+
+def test_stop_agent_rejects_an_already_completed_agent() -> None:
+    coordinator = AgentCoordinator()
+    root_id = coordinator.register_root("root", "mission")
+    child_id = coordinator.spawn(root_id, "child", "task")
+    coordinator.record_result(child_id, summary="done", success=True)
+    _spawn, _view, stop_tool = build_spawn_tools(
+        coordinator, lambda cid, n, t: ("done", [], True), self_id=root_id
+    )
+    result = stop_tool.run({"agent_id": child_id, "reason": "x"})
+    assert not result.ok
+
+
+def test_background_spawn_returns_immediately_and_wait_for_agents_joins_it() -> None:
+    release = threading.Event()
+
+    def _slow_run_child(child_id: str, name: str, task: str) -> tuple[str, list[str], bool]:
+        release.wait(timeout=5)
+        return "finished slowly", ["finding-1"], True
+
+    coordinator = AgentCoordinator()
+    root_id = coordinator.register_root("root", "mission")
+    spawn_tool, _view, _stop = build_spawn_tools(coordinator, _slow_run_child, self_id=root_id)
+    wait_tool = build_wait_for_agents_tool(coordinator)
+
+    start = time.monotonic()
+    spawn_result = spawn_tool.run({"name": "child", "task": "task", "background": True})
+    elapsed = time.monotonic() - start
+    assert spawn_result.ok
+    assert elapsed < 1.0  # returned immediately, did not block on release
+    import re
+
+    match = re.search(r"agent-\d+", spawn_result.observation)
+    assert match is not None
+    child_id = match.group(0)
+
+    release.set()
+    wait_result = wait_tool.run({"agent_ids": [child_id]})
+    assert wait_result.ok
+    assert "finished slowly" in wait_result.observation
+    assert coordinator.node(child_id).status is AgentStatus.COMPLETED
+
+
+def test_wait_for_agents_reports_an_unknown_or_already_awaited_id() -> None:
+    coordinator = AgentCoordinator()
+    wait_tool = build_wait_for_agents_tool(coordinator)
+    result = wait_tool.run({"agent_ids": ["agent-999"]})
+    assert "error" in result.observation
